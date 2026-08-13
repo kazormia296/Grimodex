@@ -52,6 +52,29 @@ fn ensure_write_allowed(server: &GrimodexServer) -> Result<(), ErrorData> {
     Ok(())
 }
 
+/// MCP has no current-scene disclosure context, so secret events must remain
+/// indistinguishable from missing/cross-project events for every write-by-id.
+fn ensure_event_visible_for_write(
+    server: &GrimodexServer,
+    event_id: &str,
+) -> Result<(), ErrorData> {
+    let conn = server.conn.lock().map_err(internal_err)?;
+    let visible: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM events
+                 WHERE id = ?1 AND project_id = ?2 AND secret = 0
+             )",
+            rusqlite::params![event_id, server.project_id()],
+            |row| row.get(0),
+        )
+        .map_err(internal_err)?;
+    if !visible {
+        return Err(ErrorData::invalid_params("event not found", None));
+    }
+    Ok(())
+}
+
 fn valid_kind(kind: &str) -> bool {
     matches!(kind, "generic" | "birth" | "death")
 }
@@ -500,6 +523,8 @@ fn map_write(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateEventParams {
+    /// Stable logical request id. Reuse it only when retrying this create.
+    pub request_id: String,
     /// Event title (required).
     pub title: String,
     /// Freeform note (optional).
@@ -561,41 +586,59 @@ pub async fn create_event(
     let participants = params.participant_codex_ids.unwrap_or_default();
     let scene_ids = params.scene_ids.unwrap_or_default();
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let res = db::chronicle_create_event(
-        &conn,
-        db::ChronicleCreateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            title: Some(&title),
-            note: note.as_deref(),
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let res = grimodex_db::agent_writes::agent_event_create_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventCreatePayload {
+            request_id: request_id.to_string(),
+            event_id: None,
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            title: Some(title.clone()),
+            note,
+            detail: None,
             ordinal: None,
-            primary_codex_id: params.primary_codex_id.as_deref(),
-            location_codex_id: params.location_codex_id.as_deref(),
+            primary_codex_id: params.primary_codex_id,
+            lane_group: None,
+            location_codex_id: params.location_codex_id,
             start_time: params.start_time,
             end_time: params.end_time,
             start_minute: params.start_minute,
             end_minute: params.end_minute,
-            start_granularity: params.start_granularity.as_deref(),
-            end_granularity: params.end_granularity.as_deref(),
+            start_granularity: params.start_granularity,
+            end_granularity: params.end_granularity,
             precision: None,
-            kind,
+            kind: kind.map(str::to_string),
             secret: params.secret,
-            reveal_scene_id: params.reveal_scene_id.as_deref(),
-            participant_codex_ids: &participants,
-            scene_ids: &scene_ids,
+            reveal_scene_id: params.reveal_scene_id,
+            participant_codex_ids: Some(participants),
+            scene_ids: Some(scene_ids),
         },
     )
     .map_err(internal_err)?;
     ok_json(&CreateEventResult {
-        id: res.entity_id,
+        id: res["entityId"]
+            .as_str()
+            .ok_or_else(|| internal_err("Event writer returned no entityId"))?
+            .to_string(),
         title,
-        version: res.version,
+        version: res["version"]
+            .as_i64()
+            .ok_or_else(|| internal_err("Event writer returned no version"))?,
     })
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateEventParams {
+    /// Stable logical request id. Reuse it only when retrying this update.
+    pub request_id: String,
     /// The event id (required).
     pub event_id: String,
     /// Required aggregate OCC token returned by create/list/detail/the previous write.
@@ -655,36 +698,50 @@ pub async fn update_event(
         .transpose()
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_update_event(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &event_id,
-        params.base_version,
-        db::ChroniclePatch {
-            title: title.as_deref(),
-            note: note.as_deref(),
+    ensure_event_visible_for_write(server, &event_id)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_event_update_with_request_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventUpdatePayload {
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            event_id,
+            base_version: params.base_version,
+            title,
+            note,
+            detail: None,
             ordinal: None,
-            primary_codex_id: params.primary_codex_id.as_deref(),
-            location_codex_id: params.location_codex_id.as_deref(),
+            primary_codex_id: params.primary_codex_id,
+            lane_group: None,
+            location_codex_id: params.location_codex_id,
             start_time: params.start_time,
             end_time: params.end_time,
             start_minute: params.start_minute,
             end_minute: params.end_minute,
-            start_granularity: params.start_granularity.as_deref(),
-            end_granularity: params.end_granularity.as_deref(),
+            start_granularity: params.start_granularity,
+            end_granularity: params.end_granularity,
             precision: None,
-            kind: params.kind.as_deref(),
+            kind: params.kind,
             secret: params.secret,
-            reveal_scene_id: params.reveal_scene_id.as_deref(),
+            reveal_scene_id: params.reveal_scene_id,
         },
-    );
-    map_write(outcome, "Event not found in this project")
+        Some(request_id),
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EventIdParams {
+    /// Stable logical request id. Reuse it only when retrying this delete.
+    pub request_id: String,
     /// The event id (required).
     pub event_id: String,
     /// Required aggregate OCC token returned by create/list/detail/the previous write.
@@ -703,19 +760,33 @@ pub async fn delete_event(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_delete_event(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &event_id,
-        params.base_version,
-    );
-    map_write(outcome, "Event not found in this project")
+    ensure_event_visible_for_write(server, &event_id)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_event_delete_with_request_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventIdPayload {
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            event_id,
+            base_version: params.base_version,
+        },
+        Some(request_id),
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SceneEventParams {
+    /// Stable logical request id. Reuse it only when retrying this link write.
+    pub request_id: String,
     /// The scene id (required).
     pub scene_id: String,
     /// The event id (required).
@@ -735,16 +806,28 @@ pub async fn stamp_scene_event(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_scene_event(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &scene_id,
-        &event_id,
+    ensure_event_visible_for_write(server, &event_id)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_scene_event_mutate_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentSceneEventPayload {
+            request_id: request_id.to_string(),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            scene_id,
+            event_id,
+        },
         true,
-    );
-    map_write(outcome, "Scene or event not found in this project")
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 pub async fn unstamp_scene_event(
@@ -760,20 +843,34 @@ pub async fn unstamp_scene_event(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_scene_event(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &scene_id,
-        &event_id,
+    ensure_event_visible_for_write(server, &event_id)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_scene_event_mutate_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentSceneEventPayload {
+            request_id: request_id.to_string(),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            scene_id,
+            event_id,
+        },
         false,
-    );
-    map_write(outcome, "Scene or event not found in this project")
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SetParticipantsParams {
+    /// Stable logical request id. Reuse it only when retrying this replacement.
+    pub request_id: String,
     /// The event id (required).
     pub event_id: String,
     /// Required aggregate OCC token returned by create/list/detail/the previous write.
@@ -794,20 +891,35 @@ pub async fn set_event_participants(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_set_participants(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &event_id,
-        params.base_version,
-        &params.codex_entry_ids,
-    );
-    map_write(outcome, "Event not found in this project")
+    ensure_event_visible_for_write(server, &event_id)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_event_set_participants_with_request_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventParticipantsPayload {
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            event_id,
+            base_version: params.base_version,
+            codex_entry_ids: params.codex_entry_ids,
+            participant_roles: None,
+        },
+        Some(request_id),
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct EventRelationParams {
+    /// Stable logical request id. Reuse it only when retrying this relation write.
+    pub request_id: String,
     /// Cause event id (required).
     pub cause_event_id: String,
     /// Effect event id (required).
@@ -833,16 +945,29 @@ pub async fn add_event_relation(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_event_relation(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &cause,
-        &effect,
+    ensure_event_visible_for_write(server, &cause)?;
+    ensure_event_visible_for_write(server, &effect)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_event_relation_mutate_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventRelationPayload {
+            request_id: request_id.to_string(),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            cause_event_id: cause,
+            effect_event_id: effect,
+        },
         true,
-    );
-    map_write(outcome, "Cause or effect event not found in this project")
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 pub async fn remove_event_relation(
@@ -864,16 +989,29 @@ pub async fn remove_event_relation(
             None,
         ));
     }
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let outcome = db::chronicle_event_relation(
-        &conn,
-        &server.project_id(),
-        &server.session_id,
-        &cause,
-        &effect,
+    ensure_event_visible_for_write(server, &cause)?;
+    ensure_event_visible_for_write(server, &effect)?;
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let outcome = grimodex_db::agent_writes::agent_event_relation_mutate_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentEventRelationPayload {
+            request_id: request_id.to_string(),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            surface: Some("mcp".to_string()),
+            cause_event_id: cause,
+            effect_event_id: effect,
+        },
         false,
-    );
-    map_write(outcome, "Cause or effect event not found in this project")
+    )
+    .map_err(internal_err)?;
+    ok_json(&outcome)
 }
 
 #[cfg(test)]
@@ -1025,6 +1163,7 @@ mod tests {
         let upd = update_event(
             &server,
             UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "sec".into(),
                 base_version: 0,
                 title: Some("leaked".into()),
@@ -1047,6 +1186,7 @@ mod tests {
         let del = delete_event(
             &server,
             EventIdParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "sec".into(),
                 base_version: 0,
             },
@@ -1072,6 +1212,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Hidden".into(),
                 note: None,
                 kind: None,
@@ -1234,6 +1375,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "First clash".to_string(),
                 note: Some("a note".to_string()),
                 kind: Some("generic".to_string()),
@@ -1289,6 +1431,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Dawn raid".to_string(),
                 note: None,
                 kind: None,
@@ -1348,6 +1491,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Inferred".to_string(),
                 note: None,
                 kind: None,
@@ -1384,6 +1528,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Vague".to_string(),
                 note: None,
                 kind: None,
@@ -1430,6 +1575,7 @@ mod tests {
         update_event(
             &server,
             UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 title: None,
@@ -1486,6 +1632,7 @@ mod tests {
         let server = make_server(false);
         seed_event(&server, "p1", "e1", "Seed", "a0");
         let params = |title: &str, base_version| UpdateEventParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
             event_id: "e1".to_string(),
             base_version,
             title: Some(title.to_string()),
@@ -1540,6 +1687,7 @@ mod tests {
         update_event(
             &server,
             UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 title: Some("Fresh".to_string()),
@@ -1563,6 +1711,7 @@ mod tests {
         assert!(delete_event(
             &server,
             EventIdParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
             },
@@ -1601,6 +1750,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Host".to_string(),
                 note: None,
                 kind: None,
@@ -1624,6 +1774,7 @@ mod tests {
         add_event_relation(
             &server,
             EventRelationParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 cause_event_id: "cause".to_string(),
                 effect_event_id: host.clone(),
             },
@@ -1634,6 +1785,7 @@ mod tests {
         delete_event(
             &server,
             EventIdParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: host.clone(),
                 base_version: 1,
             },
@@ -1681,7 +1833,11 @@ mod tests {
             .unwrap();
         let snap: serde_json::Value = serde_json::from_str(&before).unwrap();
         assert_eq!(snap["participants"][0]["codexEntryId"], "alice");
-        assert_eq!(snap["sceneLinks"][0], "s1");
+        assert_eq!(snap["sceneLinks"][0]["sceneId"], "s1");
+        assert!(!snap["sceneLinks"][0]["incarnationToken"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty());
         assert_eq!(snap["relations"]["asEffect"][0]["causeEventId"], "cause");
     }
 
@@ -1695,6 +1851,7 @@ mod tests {
         let first = set_event_participants(
             &server,
             SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 codex_entry_ids: vec!["a".to_string(), "b".to_string()],
@@ -1715,6 +1872,7 @@ mod tests {
         let second = set_event_participants(
             &server,
             SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 1,
                 codex_entry_ids: vec!["c".to_string()],
@@ -1742,6 +1900,7 @@ mod tests {
         set_event_participants(
             &server,
             SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 codex_entry_ids: vec!["fresh".to_string()],
@@ -1753,6 +1912,7 @@ mod tests {
         assert!(set_event_participants(
             &server,
             SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 codex_entry_ids: vec!["stale".to_string()],
@@ -1790,6 +1950,7 @@ mod tests {
         assert!(set_event_participants(
             &server,
             SetParticipantsParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "e1".to_string(),
                 base_version: 0,
                 codex_entry_ids: vec!["foreign".to_string()],
@@ -1825,6 +1986,7 @@ mod tests {
         seed_scene(&server, "p2", "foreign-scene");
 
         let params = |participants: Vec<String>, scenes: Vec<String>| CreateEventParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
             title: "Host".to_string(),
             note: None,
             kind: None,
@@ -1877,6 +2039,7 @@ mod tests {
         let params = |primary_codex_id: Option<&str>,
                       location_codex_id: Option<&str>,
                       reveal_scene_id: Option<&str>| CreateEventParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
             title: "Host".to_string(),
             note: None,
             kind: None,
@@ -1933,6 +2096,7 @@ mod tests {
         let params = |primary_codex_id: Option<&str>,
                       location_codex_id: Option<&str>,
                       reveal_scene_id: Option<&str>| UpdateEventParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
             event_id: "e1".to_string(),
             base_version: 0,
             title: None,
@@ -2001,6 +2165,7 @@ mod tests {
         stamp_scene_event(
             &server,
             SceneEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 scene_id: "s1".to_string(),
                 event_id: "e1".to_string(),
             },
@@ -2018,6 +2183,7 @@ mod tests {
         unstamp_scene_event(
             &server,
             SceneEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 scene_id: "s1".to_string(),
                 event_id: "e1".to_string(),
             },
@@ -2043,6 +2209,7 @@ mod tests {
         let res = add_event_relation(
             &server,
             EventRelationParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 cause_event_id: "e1".to_string(),
                 effect_event_id: "e1".to_string(),
             },
@@ -2067,6 +2234,7 @@ mod tests {
         let res = stamp_scene_event(
             &server,
             SceneEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 scene_id: "s2".to_string(),
                 event_id: "e1".to_string(),
             },
@@ -2090,6 +2258,7 @@ mod tests {
         let res = update_event(
             &server,
             UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: "theirs".to_string(),
                 base_version: 0,
                 title: Some("hijack".to_string()),
@@ -2128,6 +2297,7 @@ mod tests {
         let res = create_event(
             &server,
             CreateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "blocked".to_string(),
                 note: None,
                 kind: None,

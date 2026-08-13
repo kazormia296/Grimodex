@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 import type React from "react";
 import { CodexManagementPanel } from "./CodexManagementPanel";
 import { useCodexStore } from "./codexStore";
-import type { CodexEntry } from "./api";
+import type { CodexEntryWriteResult } from "./api";
 
 // Mock ResizeObserver for react-resizable-panels
 class ResizeObserverMock {
@@ -97,7 +97,7 @@ import { listCodexEntries, updateCodexEntry } from "./api";
 const mockListCodexEntries = vi.mocked(listCodexEntries);
 const mockUpdateCodexEntry = vi.mocked(updateCodexEntry);
 
-const mockEntries: CodexEntry[] = [
+const mockEntries: CodexEntryWriteResult[] = [
   {
     id: "codex-1",
     projectId: "proj-1",
@@ -118,6 +118,11 @@ const mockEntries: CodexEntry[] = [
     version: 0,
     createdAt: "2024-01-01T00:00:00Z",
     updatedAt: "2024-01-01T00:00:00Z",
+    __writeReceipt: {
+      changeEventUid: "change-event-1",
+      maintenanceTransactionId: "maintenance-transaction-1",
+      undoJournalId: "undo-journal-1",
+    },
   },
   {
     id: "codex-2",
@@ -139,6 +144,11 @@ const mockEntries: CodexEntry[] = [
     version: 0,
     createdAt: "2024-01-02T00:00:00Z",
     updatedAt: "2024-01-02T00:00:00Z",
+    __writeReceipt: {
+      changeEventUid: "change-event-2",
+      maintenanceTransactionId: "maintenance-transaction-2",
+      undoJournalId: "undo-journal-2",
+    },
   },
   {
     id: "codex-3",
@@ -160,6 +170,11 @@ const mockEntries: CodexEntry[] = [
     version: 0,
     createdAt: "2024-01-03T00:00:00Z",
     updatedAt: "2024-01-03T00:00:00Z",
+    __writeReceipt: {
+      changeEventUid: "change-event-3",
+      maintenanceTransactionId: "maintenance-transaction-3",
+      undoJournalId: "undo-journal-3",
+    },
   },
   {
     id: "codex-4",
@@ -181,6 +196,11 @@ const mockEntries: CodexEntry[] = [
     version: 0,
     createdAt: "2024-01-04T00:00:00Z",
     updatedAt: "2024-01-04T00:00:00Z",
+    __writeReceipt: {
+      changeEventUid: "change-event-4",
+      maintenanceTransactionId: "maintenance-transaction-4",
+      undoJournalId: "undo-journal-4",
+    },
   },
 ];
 

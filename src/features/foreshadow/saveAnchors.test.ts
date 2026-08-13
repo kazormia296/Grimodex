@@ -211,10 +211,14 @@ describe("saveForeshadowAnchors FK sweep", () => {
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const payload = mockInvoke.mock.calls[0][1] as {
-      setups: Array<{ id: string }>;
-      baseVersions: Record<string, number>;
-    };
+    const payload = (
+      mockInvoke.mock.calls[0][1] as {
+        payload: {
+          setups: Array<{ id: string }>;
+          baseVersions: Record<string, number>;
+        };
+      }
+    ).payload;
     expect(payload.setups.some((s) => s.id === "s-1")).toBe(true);
     expect(payload.baseVersions).toEqual({ "f-valid": 0 });
     editor.destroy();
@@ -230,9 +234,13 @@ describe("saveForeshadowAnchors FK sweep", () => {
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const payload = mockInvoke.mock.calls[0][1] as {
-      setups: Array<{ id: string; foreshadowId: string }>;
-    };
+    const payload = (
+      mockInvoke.mock.calls[0][1] as {
+        payload: {
+          setups: Array<{ id: string; foreshadowId: string }>;
+        };
+      }
+    ).payload;
     const hasDeleted = payload.setups.some(
       (s) => s.id === "s-deleted" || s.foreshadowId === "f-deleted",
     );
@@ -250,9 +258,13 @@ describe("saveForeshadowAnchors FK sweep", () => {
 
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
-    const payload = mockInvoke.mock.calls[0][1] as {
-      setups: Array<{ id: string }>;
-    };
+    const payload = (
+      mockInvoke.mock.calls[0][1] as {
+        payload: {
+          setups: Array<{ id: string }>;
+        };
+      }
+    ).payload;
     const hasValid = payload.setups.some((s) => s.id === "s-valid");
     const hasGone = payload.setups.some((s) => s.id === "s-gone");
     expect(hasValid).toBe(true);
@@ -271,11 +283,15 @@ describe("saveForeshadowAnchors FK sweep", () => {
     // …but the save still runs with empty arrays so the Rust-side orphan sweep
     // (scene-clear case) is preserved.
     expect(mockInvoke).toHaveBeenCalledOnce();
-    const payload = mockInvoke.mock.calls[0][1] as {
-      setups: unknown[];
-      payoffs: unknown[];
-      baseVersions: Record<string, number>;
-    };
+    const payload = (
+      mockInvoke.mock.calls[0][1] as {
+        payload: {
+          setups: unknown[];
+          payoffs: unknown[];
+          baseVersions: Record<string, number>;
+        };
+      }
+    ).payload;
     expect(payload.setups).toEqual([]);
     expect(payload.payoffs).toEqual([]);
     expect(payload.baseVersions).toEqual({});
@@ -291,7 +307,9 @@ describe("saveForeshadowAnchors FK sweep", () => {
 
     await saveForeshadowAnchors("scene-1", editor.state.doc);
 
-    const payload = mockInvoke.mock.calls[0][1] as { docContentSize: number };
+    const payload = (
+      mockInvoke.mock.calls[0][1] as { payload: { docContentSize: number } }
+    ).payload;
     expect(payload.docContentSize).toBe(expectedSize);
     editor.destroy();
   });

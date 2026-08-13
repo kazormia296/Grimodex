@@ -10,7 +10,7 @@ describe("createBrowserMock", () => {
   let mock: Awaited<ReturnType<typeof createBrowserMock>>;
 
   beforeEach(async () => {
-    mock = await createBrowserMock();
+    mock = await createBrowserMock({ allowProtectedWriterTestFixtures: true });
   });
 
   afterEach(() => {
@@ -122,6 +122,9 @@ describe("createBrowserMock", () => {
       await mock.invoke("map_write_bundle", {
         payload: {
           kind: "create-board",
+          requestId: "typed-map-board-request",
+          sessionId: "typed-map-board-session",
+          eventUid: "typed-map-board-event",
           projectId: "default-project",
           board: {
             id: "typed-map-board",
@@ -157,6 +160,442 @@ describe("createBrowserMock", () => {
           id: "typed-map-board",
           project_id: "default-project",
           title: "Typed map",
+        },
+      ]);
+    });
+
+    it("frame extraction creates the Codex position in the aggregate transaction", async () => {
+      const now = new Date().toISOString();
+      const context = {
+        requestId: "browser-map-frame-request",
+        sessionId: "browser-map-session",
+        eventUid: "browser-map-frame-event",
+      };
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-board",
+          ...context,
+          projectId: "default-project",
+          board: {
+            id: "browser-frame-board",
+            projectId: "default-project",
+            title: "Frame board",
+            sortOrder: 1,
+            mode: "free",
+            viewportX: 0,
+            viewportY: 0,
+            viewportZoom: 1,
+            showConfig: "{}",
+            colorBy: "none",
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [],
+          edges: [],
+          frames: [
+            {
+              id: "browser-frame",
+              boardId: "browser-frame-board",
+              title: "People",
+              x: 10,
+              y: 20,
+              width: 400,
+              height: 200,
+              background: "transparent",
+              borderColor: "currentColor",
+              zIndex: -1,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+        },
+      });
+
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "extract-frame-to-codex",
+          ...context,
+          requestId: "browser-map-frame-extract-request",
+          eventUid: "browser-map-frame-extract-event",
+          projectId: "default-project",
+          boardId: "browser-frame-board",
+          codexId: "browser-frame-codex",
+          codexType: "lore",
+          title: "People",
+          content: '{"type":"doc","content":[]}',
+          frameId: "browser-frame",
+          stickyIds: [],
+          positions: [
+            {
+              id: "browser-frame-position",
+              boardId: "browser-frame-board",
+              nodeRefType: "codex",
+              treeNodeId: null,
+              codexEntryId: "browser-frame-codex",
+              snippetId: null,
+              stickyId: null,
+              aiBranchId: null,
+              x: 210,
+              y: 120,
+              pinned: 0,
+              zIndex: 0,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: `SELECT position.codex_entry_id, entry.project_id
+                  FROM map_node_positions position
+                  JOIN codex_entries entry ON entry.id = position.codex_entry_id
+                 WHERE position.id = ?`,
+          params: ["browser-frame-position"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toEqual([
+        {
+          codex_entry_id: "browser-frame-codex",
+          project_id: "default-project",
+        },
+      ]);
+    });
+
+    it("user edge promotion creates the Codex relation and deletes the edge atomically", async () => {
+      const now = new Date().toISOString();
+      for (const [id, name] of [
+        ["browser-codex-a", "Alice"],
+        ["browser-codex-b", "Bob"],
+      ]) {
+        await mock.invoke("db_execute", {
+          sql: `INSERT INTO codex_entries
+                  (id, project_id, type, name, content, created_at, updated_at)
+                VALUES (?, ?, 'character', ?, '{}', ?, ?)`,
+          params: [id, "default-project", name, now, now],
+          method: "run",
+        });
+      }
+      const context = {
+        requestId: "browser-map-relation-board-request",
+        sessionId: "browser-map-session",
+        eventUid: "browser-map-relation-board-event",
+      };
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-board",
+          ...context,
+          projectId: "default-project",
+          board: {
+            id: "browser-relation-board",
+            projectId: "default-project",
+            title: "Relation board",
+            sortOrder: 1,
+            mode: "free",
+            viewportX: 0,
+            viewportY: 0,
+            viewportZoom: 1,
+            showConfig: "{}",
+            colorBy: "none",
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [
+            {
+              id: "browser-position-a",
+              boardId: "browser-relation-board",
+              nodeRefType: "codex",
+              treeNodeId: null,
+              codexEntryId: "browser-codex-a",
+              snippetId: null,
+              stickyId: null,
+              aiBranchId: null,
+              x: 0,
+              y: 0,
+              pinned: 0,
+              zIndex: 0,
+              createdAt: now,
+              updatedAt: now,
+            },
+            {
+              id: "browser-position-b",
+              boardId: "browser-relation-board",
+              nodeRefType: "codex",
+              treeNodeId: null,
+              codexEntryId: "browser-codex-b",
+              snippetId: null,
+              stickyId: null,
+              aiBranchId: null,
+              x: 100,
+              y: 0,
+              pinned: 0,
+              zIndex: 0,
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          edges: [
+            {
+              id: "browser-user-edge",
+              boardId: "browser-relation-board",
+              fromPositionId: "browser-position-a",
+              toPositionId: "browser-position-b",
+              forwardLabel: "師匠",
+              backwardLabel: null,
+              labels: "[]",
+              style: "solid",
+              color: "currentColor",
+              direction: "forward",
+              createdAt: now,
+              updatedAt: now,
+            },
+          ],
+          frames: [],
+        },
+      });
+
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "promote-user-edge-to-codex-relation",
+          ...context,
+          requestId: "browser-map-relation-promote-request",
+          eventUid: "browser-map-relation-promote-event",
+          projectId: "default-project",
+          boardId: "browser-relation-board",
+          edgeId: "browser-user-edge",
+          relationId: "browser-relation",
+          fromCodexId: "browser-codex-a",
+          toCodexId: "browser-codex-b",
+          relationType: "mentor",
+          label: "師匠",
+          reuseExistingRelation: false,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: `SELECT relation.id, relation.source_map_edge_id,
+                       COUNT(edge.id) AS edge_count
+                  FROM codex_relations relation
+                  LEFT JOIN map_edges edge ON edge.id = relation.source_map_edge_id
+                 WHERE relation.id = ?
+                 GROUP BY relation.id, relation.source_map_edge_id`,
+          params: ["browser-relation"],
+          method: "all",
+        },
+      );
+      expect(result.rows).toEqual([
+        {
+          id: "browser-relation",
+          source_map_edge_id: "browser-user-edge",
+          edge_count: 0,
+        },
+      ]);
+    });
+
+    it("AI branch delete/undo/retry/redo preserves Change Feed lineage", async () => {
+      const now = new Date().toISOString();
+      const baseContext = {
+        origin: "human",
+        originalTransactionId: null,
+        undoJournalId: null,
+        sessionId: "browser-map-history-session",
+      };
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-board",
+          ...baseContext,
+          requestId: "browser-map-history-board-request",
+          eventUid: "browser-map-history-board-event",
+          projectId: "default-project",
+          board: {
+            id: "browser-map-history-board",
+            projectId: "default-project",
+            title: "History board",
+            sortOrder: 1,
+            mode: "free",
+            viewportX: 0,
+            viewportY: 0,
+            viewportZoom: 1,
+            showConfig: "{}",
+            colorBy: "none",
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [],
+          edges: [],
+          frames: [],
+        },
+      });
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "create-ai-branch",
+          ...baseContext,
+          requestId: "browser-map-history-create-request",
+          eventUid: "browser-map-history-create-event",
+          projectId: "default-project",
+          branch: {
+            id: "browser-map-history-branch",
+            boardId: "browser-map-history-board",
+            prompt: "Ideas",
+            seedNodeIds: "[]",
+            sessionId: null,
+            model: null,
+            tokenUsage: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+          branchPosition: {
+            id: "browser-map-history-position",
+            boardId: "browser-map-history-board",
+            nodeRefType: "ai_branch",
+            treeNodeId: null,
+            codexEntryId: null,
+            snippetId: null,
+            stickyId: null,
+            aiBranchId: "browser-map-history-branch",
+            x: 0,
+            y: 0,
+            pinned: 0,
+            zIndex: 0,
+            createdAt: now,
+            updatedAt: now,
+          },
+          stickies: [],
+          positions: [],
+          edges: [],
+          spans: [],
+        },
+      });
+      const forward = await mock.invoke<{
+        changeEventUid: string;
+        maintenanceTransactionId: string;
+        undoJournalId: string;
+      }>("map_write_bundle", {
+        payload: {
+          kind: "erase-ai-branch",
+          ...baseContext,
+          requestId: "browser-map-history-delete-request",
+          eventUid: "browser-map-history-delete-event",
+          projectId: "default-project",
+          branchId: "browser-map-history-branch",
+          spanIds: [],
+          stickyPositionIds: [],
+          stickyIds: [],
+        },
+      });
+      const restorePayload = {
+        kind: "restore-ai-branch",
+        origin: "undo",
+        originalTransactionId: forward.maintenanceTransactionId,
+        undoJournalId: forward.undoJournalId,
+        requestId: "browser-map-history-undo-request",
+        sessionId: "browser-map-history-session",
+        eventUid: "browser-map-history-undo-event",
+        projectId: "default-project",
+        branch: {
+          id: "browser-map-history-branch",
+          boardId: "browser-map-history-board",
+          prompt: "Ideas",
+          seedNodeIds: "[]",
+          sessionId: null,
+          model: null,
+          tokenUsage: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+        branchPosition: {
+          id: "browser-map-history-position",
+          boardId: "browser-map-history-board",
+          nodeRefType: "ai_branch",
+          treeNodeId: null,
+          codexEntryId: null,
+          snippetId: null,
+          stickyId: null,
+          aiBranchId: "browser-map-history-branch",
+          x: 0,
+          y: 0,
+          pinned: 0,
+          zIndex: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+        stickies: [],
+        positions: [],
+        edges: [],
+        spans: [],
+      };
+      const undo = await mock.invoke<{
+        maintenanceTransactionId: string;
+      }>("map_write_bundle", { payload: restorePayload });
+      const retry = await mock.invoke<{ maintenanceTransactionId: string }>(
+        "map_write_bundle",
+        { payload: { ...restorePayload, eventUid: "ignored-on-retry" } },
+      );
+      expect(retry).toEqual(undo);
+
+      await mock.invoke("map_write_bundle", {
+        payload: {
+          kind: "erase-ai-branch",
+          origin: "redo",
+          originalTransactionId: forward.maintenanceTransactionId,
+          undoJournalId: forward.undoJournalId,
+          requestId: "browser-map-history-redo-request",
+          sessionId: "browser-map-history-session",
+          eventUid: "browser-map-history-redo-event",
+          projectId: "default-project",
+          branchId: "browser-map-history-branch",
+          spanIds: [],
+          stickyPositionIds: [],
+          stickyIds: [],
+        },
+      });
+
+      const result = await mock.invoke<{ rows: Record<string, unknown>[] }>(
+        "db_execute",
+        {
+          sql: `SELECT origin, cause_kind, original_transaction_id,
+                       undo_journal_id
+                  FROM narrative_change_transactions
+                 WHERE request_id IN (?, ?, ?)
+                 ORDER BY created_at`,
+          params: [
+            "browser-map-history-delete-request",
+            "browser-map-history-undo-request",
+            "browser-map-history-redo-request",
+          ],
+          method: "all",
+        },
+      );
+      expect(result.rows).toEqual([
+        {
+          origin: "human",
+          cause_kind: "forward",
+          original_transaction_id: null,
+          undo_journal_id: forward.undoJournalId,
+        },
+        {
+          origin: "undo",
+          cause_kind: "undo",
+          original_transaction_id: forward.maintenanceTransactionId,
+          undo_journal_id: forward.undoJournalId,
+        },
+        {
+          origin: "redo",
+          cause_kind: "redo",
+          original_transaction_id: forward.maintenanceTransactionId,
+          undo_journal_id: forward.undoJournalId,
         },
       ]);
     });

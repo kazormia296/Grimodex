@@ -1,6 +1,7 @@
 import { db } from "@/db/client";
 import { snippets } from "@/db/schema";
 import { eq, and, sql, desc } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
 import { SnippetVersionConflictError } from "./occ";
 import { chatPersistenceDeletionGuard } from "@/lib/chatPersistenceDeletionGuard";
 import {
@@ -8,11 +9,43 @@ import {
   tryAcquireChatAnchorDeletionLease,
 } from "@/lib/chatNavigationGuard";
 import { notifySnippetDeleted } from "./anchorNotify";
+import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
 
 export type Snippet = Omit<typeof snippets.$inferSelect, "contentSource"> & {
   contentSource?: string | null;
 };
 export type NewSnippet = typeof snippets.$inferInsert;
+export type SnippetWriteResult = Snippet & {
+  __writeReceipt: CanonicalWriteReceipt;
+};
+
+interface NativeSnippetWriteResult extends CanonicalWriteReceipt {
+  entityId: string;
+  version: number;
+  undoJournalId: string;
+}
+
+function attachWriteReceipt(
+  snippet: Snippet,
+  receipt: CanonicalWriteReceipt,
+): SnippetWriteResult {
+  Object.defineProperty(snippet, "__writeReceipt", {
+    value: receipt,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return snippet as SnippetWriteResult;
+}
+
+function nativeNullable(value: string | null | undefined): string | undefined {
+  return value === null ? "" : value;
+}
 
 export async function listSnippets(
   projectId: string,
@@ -45,79 +78,121 @@ export async function createSnippet(
         "tagsCache" | "sceneId" | "sourceChatMessageId" | "contentSource"
       >
     >,
-): Promise<Snippet> {
-  const now = new Date().toISOString();
-  const rows = await db
-    .insert(snippets)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  return rows[0];
+  opts?: { writeContext?: CanonicalWriteContext },
+): Promise<SnippetWriteResult> {
+  const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+  const result = await invoke<NativeSnippetWriteResult>("snippet_create", {
+    payload: {
+      ...writeContext,
+      projectId: data.projectId,
+      snippetId: data.id,
+      title: data.title,
+      content: data.content,
+      tagsCache: data.tagsCache ?? null,
+      contentSource: data.contentSource ?? null,
+      sceneId: data.sceneId ?? null,
+      sourceChatMessageId: data.sourceChatMessageId ?? null,
+      canonicalPayload: {
+        title: data.title,
+        sceneId: data.sceneId ?? null,
+      },
+    },
+  });
+  const created = await getSnippet(data.projectId, result.entityId);
+  if (!created) throw new Error(`Snippet ${result.entityId} was not created`);
+  return attachWriteReceipt(created, {
+    changeEventUid: result.changeEventUid,
+    maintenanceTransactionId: result.maintenanceTransactionId,
+    undoJournalId: result.undoJournalId,
+  });
+}
+
+type SnippetUpdateData = Partial<
+  Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
+>;
+
+function snippetUpdateCanonicalPayload(
+  current: Snippet,
+  data: SnippetUpdateData,
+): { fields: string[]; diffs?: Record<string, BodyDiff> } {
+  const fields = Object.keys(data).sort();
+  if (data.content === undefined) return { fields };
+  const diff = computeDocDiff(current.content, data.content);
+  return diff ? { fields, diffs: { content: diff } } : { fields };
 }
 
 export async function updateSnippet(
   projectId: string,
   id: string,
-  data: Partial<
-    Pick<NewSnippet, "title" | "content" | "tagsCache" | "sceneId">
-  >,
-  opts?: { baseVersion?: number },
-): Promise<Snippet | undefined> {
-  // OCC: baseVersion 指定時のみ条件付き UPDATE (version 照合 + インクリメント)。
-  // 省略時は従来通りの blind UPDATE で完全後方互換 (version 列は触らない)。
-  // codex の updateCodexEntry (codex/api.ts) と同型。
-  const useOcc = opts?.baseVersion !== undefined;
-  const baseVersion = opts?.baseVersion ?? 0;
-  const rows = await db
-    .update(snippets)
-    .set(
-      useOcc
-        ? {
-            ...data,
-            version: baseVersion + 1,
-            updatedAt: new Date().toISOString(),
-          }
-        : { ...data, updatedAt: new Date().toISOString() },
-    )
-    .where(
-      useOcc
-        ? and(
-            eq(snippets.id, id),
-            eq(snippets.projectId, projectId),
-            eq(snippets.version, baseVersion),
-          )
-        : and(eq(snippets.id, id), eq(snippets.projectId, projectId)),
-    )
-    .returning();
-
-  // 0 件マッチ。OCC 有効時は「行が存在するのに 0 件」= version 衝突として
-  // SnippetVersionConflictError を投げ、呼び出し側に非破壊リロードを委ねる。
-  // 行が存在しないなら従来通り undefined (別プロジェクト等のスコープ miss)。
-  if (!rows[0]) {
-    if (useOcc) {
-      const exists = await db
-        .select({ id: snippets.id })
-        .from(snippets)
-        .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)))
-        .limit(1);
-      if (exists[0]) throw new SnippetVersionConflictError(id);
+  data: SnippetUpdateData,
+  opts?: { baseVersion?: number; writeContext?: CanonicalWriteContext },
+): Promise<SnippetWriteResult | undefined> {
+  const current = await getSnippet(projectId, id);
+  if (!current) return undefined;
+  const baseVersion = opts?.baseVersion ?? current.version;
+  const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+  let result: NativeSnippetWriteResult;
+  try {
+    result = await invoke<NativeSnippetWriteResult>("snippet_update", {
+      payload: {
+        ...writeContext,
+        projectId,
+        snippetId: id,
+        baseVersion,
+        canonicalPayload: snippetUpdateCanonicalPayload(current, data),
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.content !== undefined ? { content: data.content } : {}),
+        ...(data.tagsCache !== undefined
+          ? { tagsCache: nativeNullable(data.tagsCache) }
+          : {}),
+        ...(data.sceneId !== undefined
+          ? { sceneId: nativeNullable(data.sceneId) }
+          : {}),
+      },
+    });
+  } catch (error) {
+    if (String(error).toLowerCase().includes("version conflict")) {
+      throw new SnippetVersionConflictError(id);
     }
-    return undefined;
+    throw error;
   }
-  return rows[0];
+  const updated = await getSnippet(projectId, id);
+  if (!updated) return undefined;
+  return attachWriteReceipt(updated, {
+    changeEventUid: result.changeEventUid,
+    maintenanceTransactionId: result.maintenanceTransactionId,
+    undoJournalId: result.undoJournalId,
+  });
 }
 
 export async function deleteSnippet(
   projectId: string,
   id: string,
-): Promise<void> {
+  opts?: { baseVersion?: number; writeContext?: CanonicalWriteContext },
+): Promise<CanonicalWriteReceipt | undefined> {
   const deletionAuthority = tryAcquireChatAnchorDeletionLease();
   if (!deletionAuthority) throw new ChatAnchorDeletionBlockedError();
   try {
     chatPersistenceDeletionGuard.assertDeletionAllowed();
-    await db
-      .delete(snippets)
-      .where(and(eq(snippets.id, id), eq(snippets.projectId, projectId)));
+    const existing = await getSnippet(projectId, id);
+    const baseVersion = opts?.baseVersion ?? existing?.version;
+    if (baseVersion === undefined) return undefined;
+    const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
+    const result = await invoke<NativeSnippetWriteResult>("snippet_delete", {
+      payload: {
+        ...writeContext,
+        projectId,
+        snippetId: id,
+        baseVersion,
+        canonicalPayload: { title: existing?.title ?? null },
+      },
+    });
     notifySnippetDeleted(id);
+    return {
+      changeEventUid: result.changeEventUid,
+      maintenanceTransactionId: result.maintenanceTransactionId,
+      undoJournalId: result.undoJournalId,
+    };
   } finally {
     deletionAuthority.release();
   }

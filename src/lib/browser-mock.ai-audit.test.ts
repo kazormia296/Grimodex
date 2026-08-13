@@ -74,6 +74,7 @@ async function legacyProjectOwnedAuditDatabase() {
   const event = auditEvent("legacy-project-event", "execution.started", 1);
   const source = await createBrowserMock({
     workspaceIdentity: expectedWorkspacePath,
+    allowProtectedWriterTestFixtures: true,
   });
   const now = new Date().toISOString();
   await source.invoke("db_execute", {
@@ -1841,6 +1842,7 @@ describe("BrowserMock AI audit ledger", () => {
     const reopened = await createBrowserMock({
       databaseBytes: bytes,
       workspaceIdentity: expectedWorkspacePath,
+      allowProtectedWriterTestFixtures: true,
     });
     owned.push(reopened);
     await expect(

@@ -11,12 +11,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use crate::recovery::{
-    OpenWorkspacePayload, WorkspaceOpenOutcome,
-};
-use crate::state::{
-    ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState,
-};
+use crate::recovery::{OpenWorkspacePayload, WorkspaceOpenOutcome};
+use crate::state::{ActiveWorkspace, GlobalSettingsPath, WorkspaceAuthority, WorkspaceState};
 use crate::workspace;
 use crate::{AppError, Database};
 
@@ -309,7 +305,12 @@ pub(crate) fn try_claim_workspace_maintenance(path: &Path) -> Option<WorkspaceMa
 pub(crate) fn claim_workspace_maintenance_exclusive(
     path: &Path,
 ) -> Result<WorkspaceMaintenanceClaim, AppError> {
-    claim_workspace_maintenance_exclusive_with_timeout(path, Duration::from_secs(10))
+    // A detached worker may be inside VACUUM INTO while the host is under
+    // heavy CPU or disk pressure.  Ten seconds made a same-path reopen fail
+    // spuriously even though the worker was healthy and would release its
+    // claim shortly afterwards; keep the fail-closed path, but give normal
+    // maintenance enough time to finish.
+    claim_workspace_maintenance_exclusive_with_timeout(path, Duration::from_secs(30))
 }
 
 fn claim_workspace_maintenance_exclusive_with_timeout(
@@ -681,9 +682,7 @@ impl<'a> QuiescedSamePath<'a> {
                 .lock()
                 .map_err(|e| AppError::Anyhow(anyhow::anyhow!("{e}")))?;
             match inner.as_ref() {
-                Some(active) if paths_equal_for_workspace(active.path(), ws_path) => {
-                    inner.take()
-                }
+                Some(active) if paths_equal_for_workspace(active.path(), ws_path) => inner.take(),
                 _ => None,
             }
         };
@@ -855,15 +854,12 @@ fn open_workspace_sync_impl(
     let maintenance_workspace_path = ws_path.clone();
     let maintenance_settings_path = gs_path.path.clone();
     let db_outcome = trace.record_result(NativeWorkspaceOpenSpanName::Migrate, || {
-        crate::migration_supervisor::open_or_migrate_workspace_db(&ws_path)
-            .map_err(AppError::from)
+        crate::migration_supervisor::open_or_migrate_workspace_db(&ws_path).map_err(AppError::from)
     })?;
 
     // Gate A2: Safe Mode / RecoveryRequired are structured Ok outcomes.
     // Never publish WorkspaceAuthority; enter restore-only SafeModeSession.
-    if let Some(session) =
-        crate::recovery::session_from_db_outcome(&ws_path, &db_outcome)?
-    {
+    if let Some(session) = crate::recovery::session_from_db_outcome(&ws_path, &db_outcome)? {
         quiesced.commit_safe_mode();
         // Drop any leftover authority for this path and clear prior session.
         {
@@ -905,9 +901,7 @@ fn open_workspace_sync_impl(
     ws_state.safe_mode.clear()?;
 
     let (opened, migration_info) = match db_outcome {
-        crate::migration_supervisor::WorkspaceOpenDbOutcome::Ready { opened, .. } => {
-            (opened, None)
-        }
+        crate::migration_supervisor::WorkspaceOpenDbOutcome::Ready { opened, .. } => (opened, None),
         crate::migration_supervisor::WorkspaceOpenDbOutcome::Migrated {
             opened,
             from_schema,
@@ -1364,11 +1358,9 @@ mod tests {
                 Ok(())
             })
             .expect("seed maintenance fixture");
-        let previous_authority = WorkspaceAuthority::from_database_for_test(
-            previous_database,
-            ws_dir.clone(),
-        )
-        .expect("previous authority");
+        let previous_authority =
+            WorkspaceAuthority::from_database_for_test(previous_database, ws_dir.clone())
+                .expect("previous authority");
         let previous_weak = Arc::downgrade(&previous_authority);
 
         let ws_state = Arc::new(WorkspaceState {
@@ -1519,10 +1511,7 @@ mod tests {
         let second_json = serde_json::to_value(&second).expect("json");
         assert_eq!(second_json["status"], "ready");
         assert_eq!(second_json["workspace"]["isExisting"], true);
-        assert_eq!(
-            second_json["workspace"]["workspaceId"],
-            first_workspace_id
-        );
+        assert_eq!(second_json["workspace"]["workspaceId"], first_workspace_id);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

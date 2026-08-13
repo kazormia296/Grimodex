@@ -24,28 +24,27 @@ vi.mock("./search", () => ({
   searchSnippets: vi.fn(() => Promise.resolve([])),
 }));
 
-vi.mock("@/features/timelapse/recorder", () => ({
-  recordChangeEvent: vi.fn(),
+vi.mock("@/features/agent-writes/undoJournal", () => ({
+  applyUndoJournal: vi.fn(() => Promise.resolve()),
 }));
 
 import * as snippetApi from "./api";
 import * as snippetSearch from "./search";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
-
-const mockRecord = vi.mocked(recordChangeEvent);
-
-function pmDoc(text: string): string {
-  return JSON.stringify({
-    type: "doc",
-    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
-  });
-}
+import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 
 const mockListSnippets = vi.mocked(snippetApi.listSnippets);
 const mockCreateSnippet = vi.mocked(snippetApi.createSnippet);
 const mockUpdateSnippet = vi.mocked(snippetApi.updateSnippet);
 const mockDeleteSnippet = vi.mocked(snippetApi.deleteSnippet);
+const mockGetSnippet = vi.mocked(snippetApi.getSnippet);
 const mockSearchSnippets = vi.mocked(snippetSearch.searchSnippets);
+const mockApplyUndoJournal = vi.mocked(applyUndoJournal);
+
+const TEST_WRITE_RECEIPT = {
+  changeEventUid: "snippet-change-event-1",
+  maintenanceTransactionId: "snippet-maintenance-transaction-1",
+  undoJournalId: "snippet-undo-journal-1",
+};
 
 const fakeSnippet = (
   overrides: Partial<snippetApi.Snippet> = {},
@@ -65,11 +64,22 @@ const fakeSnippet = (
   ...overrides,
 });
 
+const fakeWriteSnippet = (
+  overrides: Partial<snippetApi.Snippet> = {},
+): snippetApi.SnippetWriteResult => {
+  const snippet = fakeSnippet(overrides);
+  Object.defineProperty(snippet, "__writeReceipt", {
+    value: TEST_WRITE_RECEIPT,
+    enumerable: false,
+  });
+  return snippet as snippetApi.SnippetWriteResult;
+};
+
 describe("snippetStore", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     setSnippetEditConflictHandler(() => {}); // reset to no-op between tests
-    useGlobalHistoryStore.setState({ past: [], future: [] });
+    useGlobalHistoryStore.getState().clear();
     useSnippetStore.setState({
       entries: [],
       searchQuery: "",
@@ -213,7 +223,7 @@ describe("snippetStore", () => {
 
   describe("create", () => {
     it("creates a snippet and adds it to entries", async () => {
-      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const created = fakeWriteSnippet({ id: "snippet-10", title: "新規" });
       mockCreateSnippet.mockResolvedValue(created);
 
       await useSnippetStore.getState().create({
@@ -236,7 +246,7 @@ describe("snippetStore", () => {
     });
 
     it("adds entry immediately without isLoading cycle when not loading", async () => {
-      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const created = fakeWriteSnippet({ id: "snippet-10", title: "新規" });
       mockCreateSnippet.mockResolvedValue(created);
       // isLoading starts as false (set in beforeEach)
 
@@ -251,7 +261,7 @@ describe("snippetStore", () => {
     });
 
     it("triggers background re-sync when isLoading is true at create time", async () => {
-      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const created = fakeWriteSnippet({ id: "snippet-10", title: "新規" });
       const syncResult = [fakeSnippet({ id: "snippet-1" }), created];
       mockCreateSnippet.mockResolvedValue(created);
       mockListSnippets.mockResolvedValue(syncResult);
@@ -270,7 +280,7 @@ describe("snippetStore", () => {
     });
 
     it("background re-sync does not overwrite active search results", async () => {
-      const created = fakeSnippet({ id: "snippet-10", title: "新規" });
+      const created = fakeWriteSnippet({ id: "snippet-10", title: "新規" });
       const searchResults = [
         fakeSnippet({ id: "snippet-99", title: "検索結果" }),
       ];
@@ -298,7 +308,7 @@ describe("snippetStore", () => {
   describe("update", () => {
     it("updates a snippet in entries", async () => {
       const original = fakeSnippet({ id: "snippet-1", title: "元のタイトル" });
-      const updated = { ...original, title: "更新後" };
+      const updated = fakeWriteSnippet({ ...original, title: "更新後" });
       useSnippetStore.setState({ entries: [original] });
       mockUpdateSnippet.mockResolvedValue(updated);
 
@@ -318,7 +328,9 @@ describe("snippetStore", () => {
     it("読み込み時点の version を baseVersion として渡す (OCC)", async () => {
       const original = fakeSnippet({ id: "snippet-1", version: 5 });
       useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({ ...original, version: 6 });
+      mockUpdateSnippet.mockResolvedValue(
+        fakeWriteSnippet({ ...original, version: 6 }),
+      );
 
       await useSnippetStore.getState().update("snippet-1", { content: "new" });
 
@@ -350,37 +362,52 @@ describe("snippetStore", () => {
 
       expect(handler).toHaveBeenCalledWith("snippet-1");
       expect(useSnippetStore.getState().entries[0].content).toBe("old"); // 非破壊
-      // 保存されていないので timelapse にも undo 履歴にも残さない
-      expect(mockRecord).not.toHaveBeenCalled();
+      // 保存されていないので undo 履歴にも残さない
       expect(useGlobalHistoryStore.getState().past).toHaveLength(0);
     });
 
-    it("undo/redo クロージャは blind (baseVersion なし) で再生する", async () => {
+    it("undo/redo は同じ Native Undo Journal を再生してfresh versionを同期する", async () => {
       const original = fakeSnippet({ id: "snippet-1", version: 3 });
       useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({
-        ...original,
-        title: "更新後",
-        version: 4,
-      });
+      mockUpdateSnippet.mockResolvedValue(
+        fakeWriteSnippet({
+          ...original,
+          title: "更新後",
+          version: 4,
+        }),
+      );
 
       await useSnippetStore.getState().update("snippet-1", { title: "更新後" });
 
       const cmd = useGlobalHistoryStore.getState().past.at(-1);
       expect(cmd).toBeTruthy();
+      expect(cmd?.operationId).toBe(TEST_WRITE_RECEIPT.undoJournalId);
 
       mockUpdateSnippet.mockClear();
-      mockUpdateSnippet.mockResolvedValue(original);
+      mockGetSnippet.mockResolvedValueOnce({ ...original, version: 5 });
       await cmd!.undo();
-      // replay 中の version 移動は後続 OCC を壊すため、opts (第4引数) を渡さない
-      expect(mockUpdateSnippet).toHaveBeenCalledTimes(1);
-      expect(mockUpdateSnippet.mock.calls[0]).toHaveLength(3);
+      expect(mockApplyUndoJournal).toHaveBeenCalledWith(
+        TEST_WRITE_RECEIPT.undoJournalId,
+        "undo",
+      );
+      expect(mockUpdateSnippet).not.toHaveBeenCalled();
+      expect(useSnippetStore.getState().entries[0].version).toBe(5);
 
-      mockUpdateSnippet.mockClear();
-      mockUpdateSnippet.mockResolvedValue({ ...original, title: "更新後" });
+      mockApplyUndoJournal.mockClear();
+      mockGetSnippet.mockResolvedValueOnce({
+        ...original,
+        title: "更新後",
+        version: 6,
+      });
       await cmd!.redo();
-      expect(mockUpdateSnippet).toHaveBeenCalledTimes(1);
-      expect(mockUpdateSnippet.mock.calls[0]).toHaveLength(3);
+      expect(mockApplyUndoJournal).toHaveBeenCalledWith(
+        TEST_WRITE_RECEIPT.undoJournalId,
+        "redo",
+      );
+      expect(useSnippetStore.getState().entries[0]).toMatchObject({
+        title: "更新後",
+        version: 6,
+      });
     });
 
     it("does nothing if update returns undefined", async () => {
@@ -401,11 +428,13 @@ describe("snippetStore", () => {
     it("成功時は persisted と新 version を返す", async () => {
       const original = fakeSnippet({ id: "snippet-1" });
       useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({
-        ...original,
-        title: "新題",
-        version: 1,
-      });
+      mockUpdateSnippet.mockResolvedValue(
+        fakeWriteSnippet({
+          ...original,
+          title: "新題",
+          version: 1,
+        }),
+      );
 
       await expect(
         useSnippetStore.getState().update("snippet-1", { title: "新題" }),
@@ -456,7 +485,9 @@ describe("snippetStore", () => {
     it("editor が渡した loadedVersion を store 内の行より優先する", async () => {
       const original = fakeSnippet({ id: "snippet-1", version: 9 });
       useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({ ...original, version: 6 });
+      mockUpdateSnippet.mockResolvedValue(
+        fakeWriteSnippet({ ...original, version: 6 }),
+      );
 
       await useSnippetStore
         .getState()
@@ -468,65 +499,6 @@ describe("snippetStore", () => {
         { content: "new" },
         { baseVersion: 5 },
       );
-    });
-
-    it("records snippet.update with a content diff over extracted text", async () => {
-      const original = fakeSnippet({
-        id: "snippet-1",
-        content: pmDoc("alpha beta"),
-      });
-      useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({
-        ...original,
-        content: pmDoc("alpha gamma"),
-      });
-
-      await useSnippetStore
-        .getState()
-        .update("snippet-1", { content: pmDoc("alpha gamma") });
-
-      const call = mockRecord.mock.calls.find(
-        ([arg]) => arg.opType === "snippet.update",
-      );
-      expect(call).toBeTruthy();
-      const payload = call![0].payload as {
-        fields: string[];
-        diffs?: { content?: { segments: [number, string][] } };
-      };
-      expect(payload.fields).toContain("content");
-      const segs = payload.diffs?.content?.segments;
-      expect(segs).toBeTruthy();
-      // diff is over extracted plain text, not raw JSON
-      const joined = segs!.map(([, t]) => t).join("");
-      expect(joined).not.toContain("paragraph");
-      // reconstruct both sides from the diff (segment boundaries are
-      // diff-match-patch's choice; reconstruction is the stable invariant)
-      const reconBefore = segs!
-        .filter(([op]) => op !== 1)
-        .map(([, t]) => t)
-        .join("");
-      const reconAfter = segs!
-        .filter(([op]) => op !== -1)
-        .map(([, t]) => t)
-        .join("");
-      expect(reconBefore).toBe("alpha beta");
-      expect(reconAfter).toBe("alpha gamma");
-    });
-
-    it("omits diffs when no content field changed", async () => {
-      const original = fakeSnippet({ id: "snippet-1" });
-      useSnippetStore.setState({ entries: [original] });
-      mockUpdateSnippet.mockResolvedValue({ ...original, title: "新題" });
-
-      await useSnippetStore.getState().update("snippet-1", { title: "新題" });
-
-      const call = mockRecord.mock.calls.find(
-        ([arg]) => arg.opType === "snippet.update",
-      );
-      expect(call).toBeTruthy();
-      const payload = call![0].payload as { fields: string[]; diffs?: unknown };
-      expect(payload.fields).toContain("title");
-      expect(payload.diffs).toBeUndefined();
     });
   });
 

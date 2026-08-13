@@ -3,8 +3,8 @@ use grimodex_db::narrative_extraction::{
     CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
 };
 use grimodex_db::{
-    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
-    SetNarrativeRuntimePolicyInput, Database,
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
 };
 use serde_json::{json, Value};
 
@@ -150,12 +150,14 @@ fn build_prepare(
 ) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
-        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-            kind: kind.clone(),
-            payload: payload.clone(),
-            proposal_id: proposal_id.clone(),
-            revision_id: revision_id.clone(),
-        })
+        .map(
+            |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            },
+        )
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
         .iter()
@@ -180,14 +182,10 @@ fn build_prepare(
     }
 }
 
-fn prepare_and_apply(
-    db: &Database,
-    prepare: PrepareCommitPayload,
-) -> Value {
+fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
     enable_manual_apply(db);
-    let prepared =
-        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
-            .expect("prepare");
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
     narrative_extraction::narrative_extraction_apply_commit(
         db,
         ApplyCommitPayload {
@@ -233,12 +231,7 @@ fn thread_create(thread_id: &str, hypothesis_id: &str, name: &str) -> Value {
     })
 }
 
-fn marker_create(
-    marker_id: &str,
-    hypothesis_id: &str,
-    scene_id: &str,
-    phase_type: &str,
-) -> Value {
+fn marker_create(marker_id: &str, hypothesis_id: &str, scene_id: &str, phase_type: &str) -> Value {
     json!({
         "markerId": marker_id,
         "hypothesisId": hypothesis_id,
@@ -293,7 +286,9 @@ fn plot_thread_and_markers_atomic_commit() {
         let thread_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM plot_threads", [], |r| r.get(0))?;
         let marker_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| {
+                r.get(0)
+            })?;
         let version: i64 = conn.query_row(
             "SELECT version FROM plot_threads WHERE id = 'thread-a'",
             [],
@@ -360,7 +355,9 @@ fn plot_marker_failure_rolls_back_entire_commit() {
         let thread_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM plot_threads", [], |r| r.get(0))?;
         let marker_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(thread_count, 0);
         assert_eq!(marker_count, 0);
         Ok(())
@@ -402,7 +399,9 @@ fn plot_request_id_replay_does_not_duplicate() {
         let thread_count: i64 =
             conn.query_row("SELECT COUNT(*) FROM plot_threads", [], |r| r.get(0))?;
         let marker_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM plot_thread_scene_links", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(thread_count, 1);
         assert_eq!(marker_count, 1);
         Ok(())
@@ -471,7 +470,9 @@ fn plot_two_threads_merge_branch_at_same_scene() {
 
     db.with_conn(|conn| {
         let branch_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM plot_thread_branches", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM plot_thread_branches", [], |r| {
+                r.get(0)
+            })?;
         let semantic_key: String = conn.query_row(
             "SELECT semantic_key FROM plot_thread_branches WHERE id = 'branch-merge'",
             [],

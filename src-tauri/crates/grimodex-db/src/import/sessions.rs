@@ -31,7 +31,9 @@ pub struct SaveImportSourcePackagePayload {
 }
 
 pub fn create_session(db: &Database, payload: ImportSessionCreatePayload) -> anyhow::Result<Value> {
-    let session_id = payload.session_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let session_id = payload
+        .session_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now();
     db.with_conn(|conn| {
         require_generic_import_capture_allowed(conn)?;
@@ -87,7 +89,10 @@ pub fn cancel_session(db: &Database, session_id: String) -> anyhow::Result<Value
               WHERE id = ?3 AND state NOT IN ('committed', 'cancelled')",
             params![STATE_CANCELLED, now, session_id],
         )?;
-        anyhow::ensure!(changed == 1, "import session '{session_id}' cannot be cancelled");
+        anyhow::ensure!(
+            changed == 1,
+            "import session '{session_id}' cannot be cancelled"
+        );
         get_session_value(conn, &session_id)?
             .ok_or_else(|| anyhow::anyhow!("cancelled import session '{session_id}' was not found"))
     })
@@ -97,7 +102,9 @@ pub fn save_source_package(
     db: &Database,
     payload: SaveImportSourcePackagePayload,
 ) -> anyhow::Result<Value> {
-    let package_id = payload.package_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let package_id = payload
+        .package_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now();
     db.with_conn(|conn| {
         require_generic_import_capture_allowed(conn)?;

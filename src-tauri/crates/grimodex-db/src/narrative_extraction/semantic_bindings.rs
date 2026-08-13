@@ -197,20 +197,13 @@ fn validate_enums(payload: &CodexSemanticBindingUpsertPayload) -> anyhow::Result
     anyhow::ensure!(
         matches!(
             payload.temporal_policy.as_str(),
-            "base-only"
-                | "phase-on-durable-change"
-                | "base-and-phase"
-                | "derived"
-                | "manual-only"
+            "base-only" | "phase-on-durable-change" | "base-and-phase" | "derived" | "manual-only"
         ),
         "invalid temporalPolicy '{}'",
         payload.temporal_policy
     );
     anyhow::ensure!(
-        matches!(
-            payload.source.as_str(),
-            "preset" | "user" | "reviewed-ai"
-        ),
+        matches!(payload.source.as_str(), "preset" | "user" | "reviewed-ai"),
         "invalid source '{}'",
         payload.source
     );

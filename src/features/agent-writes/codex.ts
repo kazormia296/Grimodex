@@ -1,7 +1,6 @@
 import i18next from "i18next";
 import { invoke } from "@/lib/tauri";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
@@ -18,10 +17,11 @@ import { scheduleCodexIndex } from "@/features/semantic-search/scheduler";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
 import { validateAgentProseMirrorJson } from "./richTextInput";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export interface AgentCodexCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
-  requestId?: string;
+  requestId: string;
   /** Reuse this domain ID when retrying the same logical create. */
   entryId?: string;
   type: string;
@@ -48,6 +48,8 @@ export interface TrackedWriteOpts {
 }
 
 export interface AgentCodexUpdateInput {
+  /** Stable identity of the logical update request when the caller can retry. */
+  requestId?: string;
   entryId: string;
   type?: string;
   name?: string | null;
@@ -71,6 +73,18 @@ interface AgentWriteResult {
   version: number;
   changeEventUid: string;
   undoJournalId: string;
+  maintenanceTransactionId: string;
+}
+
+function agentCodexWriteContext(
+  surface: string | undefined,
+  requestId?: string,
+) {
+  return createCanonicalWriteContext(
+    surface === "manual" ? "human" : "ai-apply",
+    undefined,
+    requestId,
+  );
 }
 
 function buildCodexAuthorshipSpans(
@@ -140,9 +154,12 @@ export async function agentCreateCodexEntry(
   if (!writeOpts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
   }
+  if (input.requestId.trim().length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
 
   const projectId = writeOpts?.projectId ?? getCurrentProjectId();
-  const entryId = input.entryId ?? crypto.randomUUID();
+  const entryId = input.entryId ?? `codex-entry:${input.requestId}`;
   const content = input.content
     ? markCodexContentAsAi(input.content, {
         model: input.model,
@@ -159,13 +176,21 @@ export async function agentCreateCodexEntry(
       traceId: input.traceId,
     },
   );
+  const writeContext = agentCodexWriteContext(
+    writeOpts?.surface,
+    input.requestId,
+  );
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
     payload: {
-      requestId: input.requestId ?? null,
+      ...writeContext,
+      canonicalPayload: {
+        type: input.type,
+        name: input.name,
+        parentId: input.parentId ?? null,
+      },
       entryId,
       projectId,
-      sessionId: getRecorderSessionId(),
       surface: writeOpts?.surface ?? null,
       typeSlug: input.type,
       name: input.name,
@@ -265,11 +290,20 @@ export async function agentUpdateCodexEntry(
           },
         )
       : undefined;
+  const writeContext = agentCodexWriteContext(
+    options?.writeOpts?.surface,
+    input.requestId,
+  );
 
   const result = await invoke<AgentWriteResult>("agent_codex_update", {
     payload: {
+      ...writeContext,
+      canonicalPayload: {
+        fields: Object.keys(input)
+          .filter((field) => field !== "entryId" && field !== "requestId")
+          .sort(),
+      },
       projectId,
-      sessionId: getRecorderSessionId(),
       surface: options?.writeOpts?.surface ?? null,
       entryId: input.entryId,
       baseVersion: await getCodexEntryVersion(projectId, input.entryId),

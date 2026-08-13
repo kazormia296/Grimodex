@@ -65,6 +65,7 @@ pub struct CodexEntrySummary {
     pub context_mode: String,
     pub created_at: String,
     pub updated_at: String,
+    pub version: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -291,7 +292,7 @@ pub fn list_codex_entries(
     let mut sql = String::from(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type) as type_slug,
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.project_id = ?1",
@@ -343,6 +344,7 @@ fn map_codex_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<CodexEntrySumm
         context_mode: row.get(8)?,
         created_at: row.get(9)?,
         updated_at: row.get(10)?,
+        version: row.get(11)?,
     })
 }
 
@@ -359,7 +361,7 @@ pub fn get_codex_entry_full(
             "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type) as type_slug,
                     e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
                     e.created_at, e.updated_at, e.content, e.notes, e.icon,
-                    e.children_budget, e.source_chat_message_id
+                    e.children_budget, e.source_chat_message_id, e.version
              FROM codex_entries e
              LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
              WHERE e.id = ?1 AND e.project_id = ?2",
@@ -378,6 +380,7 @@ pub fn get_codex_entry_full(
                         context_mode: row.get(8)?,
                         created_at: row.get(9)?,
                         updated_at: row.get(10)?,
+                        version: row.get(16)?,
                     },
                     row.get::<_, String>(11)?,         // content
                     row.get::<_, Option<String>>(12)?, // notes
@@ -448,7 +451,7 @@ pub fn get_codex_entry_full(
     let mut stmt = conn.prepare(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type),
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.parent_id = ?1 ORDER BY e.name",
@@ -481,7 +484,7 @@ pub fn find_codex_by_name(
     let mut stmt = conn.prepare(
         "SELECT e.id, e.project_id, e.parent_id, COALESCE(ct.slug, e.type),
                 e.name, e.aliases, e.summary, e.tags_cache, e.context_mode,
-                e.created_at, e.updated_at
+                e.created_at, e.updated_at, e.version
          FROM codex_entries e
          LEFT JOIN codex_types ct ON ct.project_id = e.project_id AND ct.slug = e.type
          WHERE e.project_id = ?1 AND e.name LIKE ?2 ORDER BY e.name",
@@ -3352,11 +3355,13 @@ pub(crate) mod tests {
                 type TEXT NOT NULL DEFAULT 'character',
                 name TEXT NOT NULL DEFAULT 'Untitled',
                 aliases TEXT, excluded_aliases TEXT,
+                readings TEXT,
                 summary TEXT, content TEXT NOT NULL DEFAULT '{}',
                 icon TEXT, tags_cache TEXT,
                 context_mode TEXT NOT NULL DEFAULT 'mentioned',
                 children_budget TEXT NOT NULL DEFAULT 'compact',
                 source_chat_message_id TEXT, notes TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3439,6 +3444,7 @@ pub(crate) mod tests {
                 scene_id TEXT,
                 source_chat_message_id TEXT,
                 usage_count INTEGER NOT NULL DEFAULT 0,
+                version INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
@@ -3459,6 +3465,7 @@ pub(crate) mod tests {
                 model TEXT,
                 timestamp TEXT,
                 chat_msg_id TEXT,
+                trace_id TEXT,
                 phase_id TEXT
             );
             CREATE TABLE foreshadows (
@@ -3487,6 +3494,7 @@ pub(crate) mod tests {
                 from_pos INTEGER NOT NULL DEFAULT 0,
                 to_pos INTEGER NOT NULL DEFAULT 0,
                 kind TEXT NOT NULL DEFAULT 'designated_existing',
+                role TEXT NOT NULL DEFAULT 'unspecified',
                 strength TEXT,
                 ai_strength TEXT,
                 ai_reasoning TEXT,
@@ -3494,8 +3502,41 @@ pub(crate) mod tests {
                 ai_rationale TEXT,
                 last_evaluated_at INTEGER,
                 is_orphan INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
                 created_at INTEGER NOT NULL DEFAULT 0,
                 updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE foreshadow_codex_links (
+                foreshadow_id TEXT NOT NULL,
+                codex_entry_id TEXT NOT NULL,
+                PRIMARY KEY (foreshadow_id, codex_entry_id)
+            );
+            CREATE TABLE foreshadow_payoffs (
+                id TEXT PRIMARY KEY,
+                foreshadow_id TEXT NOT NULL,
+                scene_id TEXT NOT NULL,
+                from_pos INTEGER,
+                to_pos INTEGER,
+                role TEXT NOT NULL DEFAULT 'unspecified',
+                confirmed INTEGER NOT NULL DEFAULT 0,
+                is_primary INTEGER NOT NULL DEFAULT 0,
+                attribution TEXT NOT NULL DEFAULT 'human',
+                ai_rationale TEXT,
+                is_orphan INTEGER NOT NULL DEFAULT 0,
+                evidence_anchor_id TEXT,
+                semantic_key TEXT NOT NULL DEFAULT '',
+                created_at INTEGER NOT NULL DEFAULT 0,
+                updated_at INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE foreshadow_setup_payoff_links (
+                foreshadow_id TEXT NOT NULL,
+                setup_id TEXT NOT NULL,
+                payoff_id TEXT NOT NULL,
+                bridge_kind TEXT NOT NULL DEFAULT 'unspecified',
+                explanation TEXT,
+                created_at INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (foreshadow_id, setup_id, payoff_id)
             );
             CREATE TABLE events (
                 id TEXT PRIMARY KEY,
@@ -3551,6 +3592,69 @@ pub(crate) mod tests {
                 age_reckoning TEXT NOT NULL DEFAULT 'full',
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE narrative_change_transactions (
+                id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                request_id TEXT NOT NULL CHECK(length(request_id) > 0),
+                source_domain TEXT NOT NULL CHECK(length(source_domain) > 0),
+                source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')),
+                origin TEXT NOT NULL CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')),
+                original_transaction_id TEXT,
+                commit_id TEXT,
+                journal_id TEXT,
+                undo_journal_id TEXT,
+                application_ids_json TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'),
+                payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                created_at TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, source_domain, request_id),
+                UNIQUE(project_id, source_change_event_uid),
+                FOREIGN KEY(project_id, source_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                FOREIGN KEY(project_id, original_transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+            );
+            CREATE TABLE narrative_change_events (
+                id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                transaction_id TEXT NOT NULL,
+                canonical_change_event_uid TEXT NOT NULL,
+                canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                object_key_json TEXT NOT NULL CHECK(json_valid(object_key_json)),
+                change_kind TEXT NOT NULL
+                    CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')),
+                mutation_kind TEXT NOT NULL CHECK(mutation_kind IN ('create','update','delete','restore')),
+                before_version INTEGER,
+                before_digest TEXT,
+                after_version INTEGER,
+                after_digest TEXT,
+                changed_paths_json TEXT NOT NULL
+                    CHECK(json_valid(changed_paths_json) AND json_type(changed_paths_json) = 'array'),
+                text_impact_json TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)),
+                structural_impact_json TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)),
+                occurred_at TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, canonical_change_event_uid, event_ordinal),
+                FOREIGN KEY(project_id, transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE,
+                FOREIGN KEY(project_id, canonical_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
+            );
+            CREATE TABLE idempotency_requests (
+                domain TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                payload_hash TEXT NOT NULL,
+                tombstone_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(domain, request_id)
             );",
         )
         .unwrap();

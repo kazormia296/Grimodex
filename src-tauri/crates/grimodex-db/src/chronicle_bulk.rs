@@ -7,17 +7,27 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use grimodex_core::chronicle_time::{
     validate_canonical_chronicle_date_range, ChronicleDateRange, ChronicleTimestamp,
 };
 
-use crate::agent_writes::{apply_event_snapshot, collect_event_snapshot, delete_event_cascade};
+use crate::agent_writes::{
+    apply_event_snapshot, chronicle_event_transition_input, collect_event_snapshot,
+    delete_event_cascade,
+};
+use crate::canonical_feed_snapshots::canonical_scene_snapshot;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::idempotency::{
     insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
+};
+use crate::narrative_extraction::change_feed::{
+    append_narrative_change_transaction_in_tx, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::Database;
@@ -27,6 +37,14 @@ const BULK_IDEMPOTENCY_DOMAIN: &str = "agent_chronicle_bulk_mutate";
 const MAX_CHRONICLE_BULK_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
 const MAX_CHRONICLE_BULK_JOURNAL_BYTES: usize = 16 * 1024 * 1024;
 const SQLITE_READ_CHUNK_ROWS: usize = 400;
+
+fn narrative_origin_for_surface(surface: Option<&str>) -> NarrativeChangeOrigin {
+    match surface.unwrap_or("manual") {
+        "in-app-agent" | "mcp" => NarrativeChangeOrigin::AiApply,
+        "import" => NarrativeChangeOrigin::Import,
+        _ => NarrativeChangeOrigin::Human,
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(
@@ -330,6 +348,381 @@ fn bulk_change_target_metadata(snapshot: &ChronicleBulkSnapshot) -> Value {
         "sceneIds": scene_ids,
         "relatedEventIds": related_event_ids.into_iter().collect::<Vec<_>>(),
     })
+}
+
+fn canonicalize_feed_snapshot(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                canonicalize_feed_snapshot(value);
+            }
+        }
+        Value::Object(object) => {
+            let old = std::mem::take(object);
+            let mut entries = old.into_iter().collect::<Vec<_>>();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            for (key, mut value) in entries {
+                canonicalize_feed_snapshot(&mut value);
+                object.insert(key, value);
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+    }
+}
+
+fn feed_snapshot_digest(value: Option<&Value>) -> anyhow::Result<Option<String>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let mut canonical = value.clone();
+    canonicalize_feed_snapshot(&mut canonical);
+    Ok(Some(format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(serde_json::to_vec(&canonical)?))
+    )))
+}
+
+fn event_feed_state(state: &BulkEventState) -> anyhow::Result<Option<Value>> {
+    match (&state.fields, &state.snapshot) {
+        (Some(fields), None) => Ok(Some(serde_json::to_value(fields)?)),
+        (None, Some(snapshot)) => Ok(Some(snapshot.clone())),
+        (None, None) => Ok(None),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("chronicle bulk event feed state mixes compact and composite snapshots")
+        }
+    }
+}
+
+fn event_feed_contract(kind: &str) -> anyhow::Result<(&'static str, Vec<String>)> {
+    let (change_kind, paths): (&str, &[&str]) = match kind {
+        "eventDelete" => ("metadata", &["/"]),
+        "eventClearDate" | "eventSetDate" => (
+            "calendar",
+            &[
+                "/startTime",
+                "/startMinute",
+                "/startGranularity",
+                "/endTime",
+                "/endMinute",
+                "/endGranularity",
+            ],
+        ),
+        "eventSetLane" => ("association", &["/primaryCodexId", "/laneGroup"]),
+        other => anyhow::bail!("unsupported Chronicle bulk feed event kind '{other}'"),
+    };
+    Ok((
+        change_kind,
+        paths.iter().map(|path| (*path).to_string()).collect(),
+    ))
+}
+
+fn scene_feed_contract(kind: &str) -> anyhow::Result<(&'static str, Vec<String>)> {
+    let (change_kind, paths): (&str, &[&str]) = match kind {
+        "sceneClearDate" | "sceneSetDate" => (
+            "calendar",
+            &[
+                "/chronicleStartTime",
+                "/chronicleStartMinute",
+                "/chronicleStartGranularity",
+                "/chronicleEndTime",
+                "/chronicleEndMinute",
+                "/chronicleEndGranularity",
+            ],
+        ),
+        "sceneSetPov" => ("association", &["/povCharacterId"]),
+        other => anyhow::bail!("unsupported Chronicle bulk feed scene kind '{other}'"),
+    };
+    Ok((
+        change_kind,
+        paths.iter().map(|path| (*path).to_string()).collect(),
+    ))
+}
+
+fn event_feed_input(
+    before: &BulkEventState,
+    after: &BulkEventState,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    anyhow::ensure!(
+        before.event_id == after.event_id && before.kind == after.kind,
+        "chronicle bulk feed event snapshot identity mismatch"
+    );
+    let before_state = event_feed_state(before)?;
+    let after_state = event_feed_state(after)?;
+    let mutation_kind = match (before_state.is_some(), after_state.is_some()) {
+        (true, true) => "update",
+        (true, false) => "delete",
+        (false, true) => "restore",
+        other => anyhow::bail!("unsupported Chronicle bulk feed event transition {other:?}"),
+    };
+    let (change_kind, changed_paths) = event_feed_contract(&before.kind)?;
+    Ok(NarrativeChangeEventInput {
+        object_key: json!({
+            "kind": "chronicle-event",
+            "eventId": before.event_id,
+        }),
+        change_kind: change_kind.to_string(),
+        mutation_kind: mutation_kind.to_string(),
+        before_version: event_state_version(before)?,
+        before_digest: feed_snapshot_digest(before_state.as_ref())?,
+        after_version: event_state_version(after)?,
+        after_digest: feed_snapshot_digest(after_state.as_ref())?,
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+fn scene_feed_input(
+    before: &BulkSceneState,
+    after: &BulkSceneState,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    anyhow::ensure!(
+        before.scene_id == after.scene_id && before.kind == after.kind,
+        "chronicle bulk feed scene snapshot identity mismatch"
+    );
+    let before_state = serde_json::to_value(before)?;
+    let after_state = serde_json::to_value(after)?;
+    let (change_kind, changed_paths) = scene_feed_contract(&before.kind)?;
+    Ok(NarrativeChangeEventInput {
+        object_key: json!({
+            "kind": "scene",
+            "sceneId": before.scene_id,
+        }),
+        change_kind: change_kind.to_string(),
+        mutation_kind: "update".to_string(),
+        before_version: None,
+        before_digest: feed_snapshot_digest(Some(&before_state))?,
+        after_version: None,
+        after_digest: feed_snapshot_digest(Some(&after_state))?,
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+fn narrative_feed_events(
+    before: &ChronicleBulkSnapshot,
+    after: &ChronicleBulkSnapshot,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    anyhow::ensure!(
+        before.events.len() == after.events.len() && before.scenes.len() == after.scenes.len(),
+        "chronicle bulk feed snapshot shape mismatch"
+    );
+    let mut event_pairs = before.events.iter().zip(&after.events).collect::<Vec<_>>();
+    event_pairs.sort_by(|(left, _), (right, _)| left.event_id.cmp(&right.event_id));
+    let mut scene_pairs = before.scenes.iter().zip(&after.scenes).collect::<Vec<_>>();
+    scene_pairs.sort_by(|(left, _), (right, _)| left.scene_id.cmp(&right.scene_id));
+
+    event_pairs
+        .into_iter()
+        .map(|(before, after)| event_feed_input(before, after))
+        .chain(
+            scene_pairs
+                .into_iter()
+                .map(|(before, after)| scene_feed_input(before, after)),
+        )
+        .collect()
+}
+
+type FullEventFeedStates = BTreeMap<String, Option<Value>>;
+type FullSceneFeedStates = BTreeMap<String, Value>;
+
+fn bulk_event_feed_ids(snapshot: &ChronicleBulkSnapshot) -> BTreeSet<String> {
+    let mut ids = BTreeSet::new();
+    for state in &snapshot.events {
+        ids.insert(state.event_id.clone());
+        if state.kind == "eventDelete" {
+            if let Some(event_snapshot) = state.snapshot.as_ref() {
+                ids.extend(event_snapshot_related_ids(event_snapshot));
+            }
+        }
+    }
+    ids
+}
+
+fn collect_full_event_feed_states(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_ids: &BTreeSet<String>,
+) -> anyhow::Result<FullEventFeedStates> {
+    event_ids
+        .iter()
+        .map(|event_id| {
+            let owned = conn
+                .query_row(
+                    "SELECT 1 FROM events WHERE id = ?1 AND project_id = ?2",
+                    rusqlite::params![event_id, project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            let snapshot = owned
+                .then(|| collect_event_snapshot(conn, event_id))
+                .transpose()?;
+            Ok((event_id.clone(), snapshot))
+        })
+        .collect()
+}
+
+fn bulk_scene_feed_ids(snapshot: &ChronicleBulkSnapshot) -> BTreeSet<String> {
+    snapshot
+        .scenes
+        .iter()
+        .map(|state| state.scene_id.clone())
+        .collect()
+}
+
+fn collect_full_scene_feed_states(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    scene_ids: &BTreeSet<String>,
+) -> anyhow::Result<FullSceneFeedStates> {
+    scene_ids
+        .iter()
+        .map(|scene_id| {
+            Ok((
+                scene_id.clone(),
+                canonical_scene_snapshot(conn, project_id, scene_id)?,
+            ))
+        })
+        .collect()
+}
+
+fn full_scene_feed_input(
+    before: &BulkSceneState,
+    after: &BulkSceneState,
+    before_state: &Value,
+    after_state: &Value,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    anyhow::ensure!(
+        before.scene_id == after.scene_id && before.kind == after.kind,
+        "chronicle bulk canonical scene snapshot identity mismatch"
+    );
+    let (change_kind, changed_paths) = scene_feed_contract(&before.kind)?;
+    Ok(NarrativeChangeEventInput {
+        object_key: json!({
+            "kind": "scene",
+            "sceneId": before.scene_id,
+        }),
+        change_kind: change_kind.to_string(),
+        mutation_kind: "update".to_string(),
+        before_version: before_state.get("version").and_then(Value::as_i64),
+        before_digest: feed_snapshot_digest(Some(before_state))?,
+        after_version: after_state.get("version").and_then(Value::as_i64),
+        after_digest: feed_snapshot_digest(Some(after_state))?,
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+fn narrative_feed_events_with_full_event_states(
+    before: &ChronicleBulkSnapshot,
+    after: &ChronicleBulkSnapshot,
+    before_events: &FullEventFeedStates,
+    after_events: &FullEventFeedStates,
+    before_scenes: &FullSceneFeedStates,
+    after_scenes: &FullSceneFeedStates,
+    restore_when_created: bool,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    anyhow::ensure!(
+        before.events.len() == after.events.len() && before.scenes.len() == after.scenes.len(),
+        "chronicle bulk feed snapshot shape mismatch"
+    );
+    let primary_contracts = before
+        .events
+        .iter()
+        .zip(&after.events)
+        .map(|(before_state, after_state)| {
+            anyhow::ensure!(
+                before_state.event_id == after_state.event_id
+                    && before_state.kind == after_state.kind,
+                "chronicle bulk feed event snapshot identity mismatch"
+            );
+            let (change_kind, paths) = event_feed_contract(&before_state.kind)?;
+            Ok((
+                before_state.event_id.clone(),
+                (change_kind.to_string(), paths),
+            ))
+        })
+        .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+
+    let mut event_ids = before_events
+        .keys()
+        .chain(after_events.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    event_ids.extend(primary_contracts.keys().cloned());
+    let mut events = event_ids
+        .into_iter()
+        .map(|event_id| {
+            let (change_kind, paths) = primary_contracts
+                .get(&event_id)
+                .cloned()
+                .unwrap_or_else(|| ("association".to_string(), vec!["/relations".to_string()]));
+            chronicle_event_transition_input(
+                &event_id,
+                before_events.get(&event_id).and_then(Option::as_ref),
+                after_events.get(&event_id).and_then(Option::as_ref),
+                &change_kind,
+                paths,
+                restore_when_created,
+            )
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    let mut scene_pairs = before.scenes.iter().zip(&after.scenes).collect::<Vec<_>>();
+    scene_pairs.sort_by(|(left, _), (right, _)| left.scene_id.cmp(&right.scene_id));
+    events.extend(
+        scene_pairs
+            .into_iter()
+            .map(|(before, after)| {
+                full_scene_feed_input(
+                    before,
+                    after,
+                    before_scenes.get(&before.scene_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "chronicle bulk before snapshot missing scene '{}'",
+                            before.scene_id
+                        )
+                    })?,
+                    after_scenes.get(&after.scene_id).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "chronicle bulk after snapshot missing scene '{}'",
+                            after.scene_id
+                        )
+                    })?,
+                )
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?,
+    );
+    Ok(events)
+}
+
+pub(crate) fn narrative_feed_events_from_journal(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: NarrativeChangeCauseKind,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    anyhow::ensure!(
+        row.entity_kind == BULK_ENTITY_KIND,
+        "Chronicle bulk Feed replay requires a Chronicle bulk Undo Journal"
+    );
+    let before: ChronicleBulkSnapshot = serde_json::from_str(
+        row.before_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Chronicle bulk journal missing before_json"))?,
+    )?;
+    let after: ChronicleBulkSnapshot = serde_json::from_str(
+        row.after_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Chronicle bulk journal missing after_json"))?,
+    )?;
+    match direction {
+        NarrativeChangeCauseKind::Forward | NarrativeChangeCauseKind::Redo => {
+            narrative_feed_events(&before, &after)
+        }
+        NarrativeChangeCauseKind::Undo => narrative_feed_events(&after, &before),
+    }
 }
 
 pub(crate) fn enrich_replay_change_payload(
@@ -717,7 +1110,7 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     project_id: &str,
     row: &grimodex_core::undo_journal::UndoJournalRow,
     direction: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
     let (target_raw, current_raw, target_column) = match direction {
         "undo" => (
             row.before_json.as_deref(),
@@ -738,6 +1131,12 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
         current_raw.ok_or_else(|| anyhow::anyhow!("chronicle bulk current snapshot missing"))?,
     )?;
     validate_snapshot_pair(&target, &current)?;
+    let mut feed_event_ids = bulk_event_feed_ids(&current);
+    feed_event_ids.extend(bulk_event_feed_ids(&target));
+    let before_event_feed = collect_full_event_feed_states(conn, project_id, &feed_event_ids)?;
+    let mut feed_scene_ids = bulk_scene_feed_ids(&current);
+    feed_scene_ids.extend(bulk_scene_feed_ids(&target));
+    let before_scene_feed = collect_full_scene_feed_states(conn, project_id, &feed_scene_ids)?;
 
     // Validate the complete observed state with chunked set-based reads before
     // touching either table.
@@ -886,7 +1285,17 @@ pub(crate) fn replay_chronicle_bulk_in_tx(
     if updated != 1 {
         anyhow::bail!("chronicle bulk journal state update failed");
     }
-    Ok(())
+    let after_event_feed = collect_full_event_feed_states(conn, project_id, &feed_event_ids)?;
+    let after_scene_feed = collect_full_scene_feed_states(conn, project_id, &feed_scene_ids)?;
+    narrative_feed_events_with_full_event_states(
+        &current,
+        &target,
+        &before_event_feed,
+        &after_event_feed,
+        &before_scene_feed,
+        &after_scene_feed,
+        true,
+    )
 }
 
 pub fn agent_chronicle_bulk_mutate_impl(
@@ -1257,6 +1666,14 @@ pub fn agent_chronicle_bulk_mutate_impl(
 
             // Bound the fully expanded journal before the first UPDATE/DELETE.
             let (before_json, after_json) = serialize_bounded_journal(&before, &after)?;
+            let mut event_feed_ids = bulk_event_feed_ids(&before);
+            event_feed_ids.extend(bulk_event_feed_ids(&after));
+            let before_event_feed =
+                collect_full_event_feed_states(conn, &payload.project_id, &event_feed_ids)?;
+            let mut scene_feed_ids = bulk_scene_feed_ids(&before);
+            scene_feed_ids.extend(bulk_scene_feed_ids(&after));
+            let before_scene_feed =
+                collect_full_scene_feed_states(conn, &payload.project_id, &scene_feed_ids)?;
 
             let mut event_results = Vec::new();
             let mut scene_results = Vec::new();
@@ -1336,6 +1753,10 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     }
                 }
             }
+            let after_event_feed =
+                collect_full_event_feed_states(conn, &payload.project_id, &event_feed_ids)?;
+            let after_scene_feed =
+                collect_full_scene_feed_states(conn, &payload.project_id, &scene_feed_ids)?;
             insert_undo_journal_in_tx(
                 conn,
                 UndoJournalInsert {
@@ -1369,6 +1790,38 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     payload: serde_json::to_string(&change_payload)?,
                     timestamp,
                 }],
+            )?;
+            append_narrative_change_transaction_in_tx(
+                conn,
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: "chronicle.bulk".to_string(),
+                    source_change_event_uid: event_uid.clone(),
+                    cause_kind: NarrativeChangeCauseKind::Forward,
+                    origin: narrative_origin_for_surface(payload.surface.as_deref()),
+                    original_transaction_id: None,
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: Some(undo_id.clone()),
+                    application_ids: Vec::new(),
+                    occurred_at: chrono::DateTime::from_timestamp_millis(timestamp)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "chronicle bulk timestamp is outside the supported range"
+                            )
+                        })?
+                        .to_rfc3339(),
+                    events: narrative_feed_events_with_full_event_states(
+                        &before,
+                        &after,
+                        &before_event_feed,
+                        &after_event_feed,
+                        &before_scene_feed,
+                        &after_scene_feed,
+                        false,
+                    )?,
+                },
             )?;
 
             let response = serde_json::to_value(AgentChronicleBulkResult {
@@ -1477,6 +1930,321 @@ mod tests {
         .expect("latest change payload")
     }
 
+    fn narrative_feed_events(db: &Database) -> Vec<Value> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT event_ordinal, object_key_json, change_kind, mutation_kind,
+                        before_version, before_digest, after_version, after_digest,
+                        changed_paths_json
+                   FROM narrative_change_events
+                  ORDER BY canonical_sequence, event_ordinal",
+            )?;
+            let rows = statement.query_map([], |row| {
+                let object_key: String = row.get(1)?;
+                let changed_paths: String = row.get(8)?;
+                Ok(json!({
+                    "eventOrdinal": row.get::<_, i64>(0)?,
+                    "objectKey": serde_json::from_str::<Value>(&object_key).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            object_key.len(),
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
+                    "changeKind": row.get::<_, String>(2)?,
+                    "mutationKind": row.get::<_, String>(3)?,
+                    "beforeVersion": row.get::<_, Option<i64>>(4)?,
+                    "beforeDigest": row.get::<_, Option<String>>(5)?,
+                    "afterVersion": row.get::<_, Option<i64>>(6)?,
+                    "afterDigest": row.get::<_, Option<String>>(7)?,
+                    "changedPaths": serde_json::from_str::<Value>(&changed_paths).map_err(
+                        |error| rusqlite::Error::FromSqlConversionFailure(
+                            changed_paths.len(),
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        ),
+                    )?,
+                }))
+            })?;
+            Ok(rows.collect::<Result<Vec<_>, _>>()?)
+        })
+        .expect("load Narrative Change Feed events")
+    }
+
+    #[test]
+    fn forward_bulk_appends_one_deterministic_narrative_feed_transaction() {
+        let db = test_db();
+        let (project_id, codex_id, event_delete_id, event_clear_id, scene_id) = setup(&db);
+        let result = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "feed-forward".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                // Deliberately do not arrange the operations in object-key order.
+                operations: vec![
+                    ChronicleBulkOperation::SceneSetPov {
+                        scene_id: scene_id.clone(),
+                        base_updated_at: "2026-07-29T00:00:00.000Z".to_string(),
+                        pov_character_id: Some(codex_id),
+                    },
+                    ChronicleBulkOperation::EventClearDate {
+                        event_id: event_clear_id.clone(),
+                        base_version: 1,
+                    },
+                    ChronicleBulkOperation::EventDelete {
+                        event_id: event_delete_id.clone(),
+                        base_version: 1,
+                    },
+                ],
+            },
+        )
+        .expect("bulk mutation with feed");
+
+        db.with_conn(|conn| {
+            let transaction: (
+                String,
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT request_id, source_domain, source_change_event_uid,
+                            cause_kind, origin, journal_id, undo_journal_id
+                       FROM narrative_change_transactions",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(
+                transaction,
+                (
+                    "feed-forward".to_string(),
+                    "chronicle.bulk".to_string(),
+                    result["changeEventUid"].as_str().unwrap().to_string(),
+                    "forward".to_string(),
+                    "human".to_string(),
+                    None,
+                    Some(result["undoJournalId"].as_str().unwrap().to_string()),
+                )
+            );
+            Ok(())
+        })
+        .expect("inspect feed transaction");
+
+        let events = narrative_feed_events(&db);
+        assert_eq!(events.len(), 3);
+        let mut expected_event_ids = vec![event_clear_id.clone(), event_delete_id.clone()];
+        expected_event_ids.sort();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| {
+                    let key = &event["objectKey"];
+                    (
+                        key["kind"].as_str().unwrap().to_string(),
+                        key.get("eventId")
+                            .or_else(|| key.get("sceneId"))
+                            .and_then(Value::as_str)
+                            .unwrap()
+                            .to_string(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                ("chronicle-event".to_string(), expected_event_ids[0].clone()),
+                ("chronicle-event".to_string(), expected_event_ids[1].clone()),
+                ("scene".to_string(), scene_id.clone()),
+            ]
+        );
+
+        let deleted = events
+            .iter()
+            .find(|event| event["objectKey"]["eventId"] == event_delete_id)
+            .expect("delete feed event");
+        assert_eq!(deleted["changeKind"], "metadata");
+        assert_eq!(deleted["mutationKind"], "delete");
+        assert_eq!(deleted["beforeVersion"], 1);
+        assert!(deleted["beforeDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(deleted["afterVersion"], Value::Null);
+        assert_eq!(deleted["afterDigest"], Value::Null);
+        assert_eq!(deleted["changedPaths"], json!(["/"]));
+
+        let cleared = events
+            .iter()
+            .find(|event| event["objectKey"]["eventId"] == event_clear_id)
+            .expect("date feed event");
+        assert_eq!(cleared["changeKind"], "calendar");
+        assert_eq!(cleared["mutationKind"], "update");
+        assert_eq!(cleared["beforeVersion"], 1);
+        assert_eq!(cleared["afterVersion"], 2);
+        assert!(cleared["beforeDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert!(cleared["afterDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(
+            cleared["changedPaths"],
+            json!([
+                "/startTime",
+                "/startMinute",
+                "/startGranularity",
+                "/endTime",
+                "/endMinute",
+                "/endGranularity",
+            ])
+        );
+
+        let scene = events
+            .iter()
+            .find(|event| event["objectKey"]["sceneId"] == scene_id)
+            .expect("scene feed event");
+        assert_eq!(scene["changeKind"], "association");
+        assert_eq!(scene["mutationKind"], "update");
+        assert_eq!(scene["beforeVersion"], 0);
+        assert_eq!(scene["afterVersion"], 0);
+        assert!(scene["beforeDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert!(scene["afterDigest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:"));
+        assert_eq!(scene["changedPaths"], json!(["/povCharacterId"]));
+    }
+
+    #[test]
+    fn narrative_feed_origin_tracks_the_authoritative_surface() {
+        for (surface, expected_origin) in [
+            ("manual", "human"),
+            ("in-app-agent", "ai-apply"),
+            ("mcp", "ai-apply"),
+            ("import", "import"),
+        ] {
+            let db = test_db();
+            let (project_id, _codex_id, _event_delete_id, event_clear_id, _scene_id) = setup(&db);
+            agent_chronicle_bulk_mutate_impl(
+                &db,
+                AgentChronicleBulkPayload {
+                    request_id: format!("origin-{surface}"),
+                    project_id,
+                    session_id: "session".to_string(),
+                    surface: Some(surface.to_string()),
+                    operations: vec![ChronicleBulkOperation::EventClearDate {
+                        event_id: event_clear_id,
+                        base_version: 1,
+                    }],
+                },
+            )
+            .expect("bulk mutation with mapped origin");
+
+            db.with_conn(|conn| {
+                let origin: String = conn.query_row(
+                    "SELECT origin FROM narrative_change_transactions",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(origin, expected_origin, "surface {surface}");
+                Ok(())
+            })
+            .expect("inspect mapped origin");
+        }
+    }
+
+    #[test]
+    fn narrative_feed_failure_rolls_back_domain_journal_canonical_and_request_ledger() {
+        let db = test_db();
+        let (project_id, _codex_id, _event_delete_id, event_id, _scene_id) = setup(&db);
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER force_chronicle_bulk_feed_failure
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced chronicle bulk feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install forced feed failure");
+
+        let error = agent_chronicle_bulk_mutate_impl(
+            &db,
+            AgentChronicleBulkPayload {
+                request_id: "feed-failure".to_string(),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: Some("manual".to_string()),
+                operations: vec![ChronicleBulkOperation::EventClearDate {
+                    event_id: event_id.clone(),
+                    base_version: 1,
+                }],
+            },
+        )
+        .expect_err("feed failure must reject the whole bulk mutation");
+        assert!(error
+            .to_string()
+            .contains("forced chronicle bulk feed failure"));
+
+        db.with_conn(|conn| {
+            let event_state: (Option<i64>, String, i64) = conn.query_row(
+                "SELECT start_time, start_granularity, version FROM events WHERE id = ?1",
+                rusqlite::params![event_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let journals: i64 =
+                conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
+            let canonical: i64 =
+                conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            let feed_transactions: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions",
+                [],
+                |row| row.get(0),
+            )?;
+            let feed_events: i64 =
+                conn.query_row("SELECT COUNT(*) FROM narrative_change_events", [], |row| {
+                    row.get(0)
+                })?;
+            let requests: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM idempotency_requests
+                  WHERE domain = ?1 AND request_id = 'feed-failure'",
+                [BULK_IDEMPOTENCY_DOMAIN],
+                |row| row.get(0),
+            )?;
+            assert_eq!(event_state, (Some(20), "time".to_string(), 1));
+            assert_eq!(
+                (
+                    journals,
+                    canonical,
+                    feed_transactions,
+                    feed_events,
+                    requests
+                ),
+                (0, 0, 0, 0, 0)
+            );
+            Ok(())
+        })
+        .expect("verify full rollback after feed failure");
+    }
+
     #[test]
     fn mixed_bulk_is_one_transaction_and_one_undo_round_trip() {
         let db = test_db();
@@ -1549,7 +2317,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("mixed-undo".to_string()),
+                request_id: "mixed-undo".to_string(),
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
@@ -1595,7 +2363,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("mixed-redo".to_string()),
+                request_id: "mixed-redo".to_string(),
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
@@ -1827,7 +2595,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("legacy-undo".to_string()),
+                request_id: "legacy-undo".to_string(),
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"]
@@ -1853,7 +2621,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("legacy-redo".to_string()),
+                request_id: "legacy-redo".to_string(),
                 project_id,
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"]
@@ -2009,13 +2777,32 @@ mod tests {
                 conn.query_row("SELECT COUNT(*) FROM undo_journal", [], |row| row.get(0))?;
             let changes: i64 =
                 conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?;
+            let feed_transactions: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions",
+                [],
+                |row| row.get(0),
+            )?;
+            let feed_events: i64 =
+                conn.query_row("SELECT COUNT(*) FROM narrative_change_events", [], |row| {
+                    row.get(0)
+                })?;
             let ledger: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM idempotency_requests
                   WHERE domain = ?1 AND request_id = ?2",
                 rusqlite::params![BULK_IDEMPOTENCY_DOMAIN, "forward-retry"],
                 |row| row.get(0),
             )?;
-            assert_eq!((version, journals, changes, ledger), (2, 1, 1, 1));
+            assert_eq!(
+                (
+                    version,
+                    journals,
+                    changes,
+                    feed_transactions,
+                    feed_events,
+                    ledger,
+                ),
+                (2, 1, 1, 1, 1, 1)
+            );
             Ok(())
         })
         .unwrap();
@@ -2076,7 +2863,7 @@ mod tests {
         )
         .expect("forward");
         let undo = crate::agent_writes::AgentUndoJournalPayload {
-            request_id: Some("same-undo-retry".to_string()),
+            request_id: "same-undo-retry".to_string(),
             project_id: project_id.clone(),
             session_id: "session".to_string(),
             journal_id: forward["undoJournalId"].as_str().unwrap().to_string(),
@@ -2120,7 +2907,7 @@ mod tests {
         );
 
         let redo = crate::agent_writes::AgentUndoJournalPayload {
-            request_id: Some("same-redo-retry".to_string()),
+            request_id: "same-redo-retry".to_string(),
             direction: "redo".to_string(),
             ..undo
         };
@@ -2187,7 +2974,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("lane-undo".to_string()),
+                request_id: "lane-undo".to_string(),
                 project_id,
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
@@ -2384,7 +3171,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("date-undo".to_string()),
+                request_id: "date-undo".to_string(),
                 project_id: project_id.clone(),
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
@@ -2414,7 +3201,7 @@ mod tests {
         crate::agent_writes::agent_undo_journal_impl(
             &db,
             crate::agent_writes::AgentUndoJournalPayload {
-                request_id: Some("date-redo".to_string()),
+                request_id: "date-redo".to_string(),
                 project_id,
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),

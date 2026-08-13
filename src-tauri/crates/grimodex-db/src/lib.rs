@@ -184,6 +184,25 @@ fn slim_backup_copy(path: &Path) -> anyhow::Result<()> {
 }
 
 impl Database {
+    /// Adopt an already-open trusted connection.
+    ///
+    /// The standalone MCP server owns a connection whose open/schema guard is
+    /// performed before the server is constructed.  Adopting it here lets MCP
+    /// writes use the same canonical Native writer authority as Electron while
+    /// preserving the existing connection for all read tools.
+    pub fn from_connection(conn: Connection) -> Self {
+        Self {
+            conn: Mutex::new(conn),
+            foreground_connection_waiters: AtomicUsize::new(0),
+        }
+    }
+
+    /// Compatibility lock for trusted in-process consumers that still perform
+    /// direct read projections. Domain writes must use the typed APIs instead.
+    pub fn lock(&self) -> anyhow::Result<MutexGuard<'_, Connection>> {
+        self.lock_conn()
+    }
+
     pub fn new(path: &Path) -> anyhow::Result<Self> {
         Self::new_with_busy_timeout(path, Duration::from_millis(5_000))
     }
@@ -543,11 +562,12 @@ impl Database {
 pub mod agent_writes;
 pub mod ai_audit;
 pub mod backup_restore;
+pub(crate) mod canonical_feed_snapshots;
 pub mod change_events;
 pub mod chronicle;
 pub mod chronicle_bulk;
-pub mod codex_writes;
 pub mod codex_relation_keys;
+pub mod codex_writes;
 pub mod domain_writes;
 pub mod editor_stickies;
 mod execute;
@@ -560,18 +580,20 @@ mod integrity;
 pub mod lint_ignores;
 pub mod lint_terms;
 pub mod map_writes;
-pub mod narrative_extraction;
 mod migrate;
+pub mod narrative_extraction;
 pub mod narrative_runtime_policy;
 pub mod plot_threads;
 pub mod post_effect;
 pub mod project_snapshots;
 pub mod protected_writers;
+pub mod revision_restore;
 pub mod runtime_performance_seed;
 pub mod runtime_threads;
 pub mod sample_seed;
 pub mod scene_body;
 pub mod schema_contract;
+pub mod snippet_writes;
 pub mod trash_bin;
 pub mod undo_journal;
 
@@ -590,23 +612,23 @@ pub mod workspace_lease;
 // フラットに import できるように)。
 pub use error::{AppError, AppResult, QueryResult};
 pub use execute::{SqlOrigin, RENDERER_SQL_SECURITY_ERROR};
-pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
+pub use integrity::{RepairIntegrityPayload, RepairIntegrityReport};
 pub use narrative_runtime_policy::{
     ensure_narrative_runtime_policy_row, load_narrative_runtime_policy,
     load_narrative_runtime_policy_from_db, require_background_ai_allowed,
     require_generic_import_allowed, require_generic_import_apply_allowed,
     require_generic_import_capture_allowed, require_manual_apply_authority_in_tx,
-    validate_narrative_apply_authority_in_tx,
     require_narrative_apply_allowed, require_narrative_extraction_allowed,
     require_narrative_maintenance_allowed, require_narrative_maintenance_mutation_allowed,
     require_narrative_maintenance_preview_allowed, require_narrative_redo_allowed,
     require_narrative_undo_allowed, set_narrative_runtime_policy,
-    set_narrative_runtime_policy_in_tx,
+    set_narrative_runtime_policy_in_tx, validate_narrative_apply_authority_in_tx,
     NarrativeRuntimeMode, NarrativeRuntimePolicy, SetNarrativeRuntimePolicyInput,
     NARRATIVE_APPROVAL_REQUIRED, NARRATIVE_BACKGROUND_AI_DISABLED, NARRATIVE_ENGINE_DISABLED,
     NARRATIVE_GENERIC_IMPORT_DISABLED, NARRATIVE_MAINTENANCE_DISABLED, NARRATIVE_REVIEW_ONLY,
     NARRATIVE_RUNTIME_POLICY_CONFLICT,
 };
+pub use protected_writers::PROTECTED_WRITER_SQL_ERROR;
 pub use recovery::{
     MigrationReceipt, OpenWorkspacePayload, RecoveryCandidate, RecoveryCandidateKind,
     WorkspaceOpenOutcome,

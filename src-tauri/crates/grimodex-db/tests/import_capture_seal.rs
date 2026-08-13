@@ -1,6 +1,6 @@
 use grimodex_db::import::{
-    create_capture, get_capture, seal_capture, update_selection, CaptureEntryInput, CreateCaptureInput,
-    UpdateCaptureSelectionInput,
+    create_capture, get_capture, seal_capture, update_selection, CaptureEntryInput,
+    CreateCaptureInput, UpdateCaptureSelectionInput,
 };
 use grimodex_db::Database;
 use grimodex_db::{
@@ -81,7 +81,9 @@ fn sealing_selected_entries_persists_a_stable_capture_digest() {
     let sealed = seal_capture(&db, capture_id).expect("seal capture");
 
     assert_eq!(sealed["state"], "sealed");
-    assert!(sealed["sealedDigest"].as_str().is_some_and(|value| !value.is_empty()));
+    assert!(sealed["sealedDigest"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
     let loaded = get_capture(&db, "capture-1".to_string()).expect("load capture");
     assert_eq!(loaded["entries"].as_array().expect("entries").len(), 2);
 }

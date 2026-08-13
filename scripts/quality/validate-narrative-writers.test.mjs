@@ -57,6 +57,25 @@ function writeColumnProtectedFixtureRegistry(root) {
   return path.join(policiesDir, "protected-writers.json");
 }
 
+function writeStructuralOnlyProjectRegistry(root) {
+  const policiesDir = path.join(root, "policies/narrative");
+  mkdirSync(policiesDir, { recursive: true });
+  writeFileSync(
+    path.join(policiesDir, "protected-writers.json"),
+    JSON.stringify([
+      {
+        aggregate: "project-lifecycle",
+        table: "projects",
+        protection: "columns",
+        columns: [],
+        writer: "project.lifecycle",
+        enforcement: "active",
+      },
+    ]),
+  );
+  return path.join(policiesDir, "protected-writers.json");
+}
+
 describe("validate-narrative-writers", () => {
   it("passes for the bundled registry with fixture-only active tables", () => {
     const result = validateNarrativeWriters({ repoRoot: REPO_ROOT });
@@ -192,6 +211,35 @@ describe("validate-narrative-writers", () => {
     assert.deepEqual(
       result.violations.map((violation) => violation.table),
       ["tree_nodes", "tree_nodes"],
+    );
+  });
+
+  it("allows arbitrary metadata updates but rejects Project insert/delete", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const registryPath = writeStructuralOnlyProjectRegistry(root);
+    const srcDir = path.join(root, "src/features/example");
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(
+      path.join(srcDir, "update.ts"),
+      [
+        "import { projects } from '@/db/schema';",
+        "await db.update(projects).set({ ...patch, updatedAt: now });",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(
+      path.join(srcDir, "insert.ts"),
+      "import { projects } from '@/db/schema';\nawait db.insert(projects).values({ id: 'x' });\n",
+    );
+    writeFileSync(
+      path.join(srcDir, "delete.ts"),
+      "import { projects } from '@/db/schema';\nawait db.delete(projects);\n",
+    );
+
+    const result = validateNarrativeWriters({ repoRoot: root, registryPath });
+    assert.deepEqual(
+      result.violations.map((violation) => violation.file),
+      ["src/features/example/delete.ts", "src/features/example/insert.ts"],
     );
   });
 

@@ -6,6 +6,16 @@ import type { ForeshadowRow } from "@/features/foreshadow/types";
 export interface SaveSceneBodyBundlePayload extends SceneBodyDerivedSnapshot {
   sceneId: string;
   projectId: string;
+  requestId: string;
+  sessionId: string;
+  eventUid: string;
+  origin: "human" | "ai-apply";
+  /**
+   * Replayable ProseMirror steps for a headless body mutation. When present,
+   * the Native writer adopts them as its canonical `doc.step` Change Event so
+   * the replay row cannot commit separately from the body and Change Feed.
+   */
+  timelapseSteps?: readonly unknown[];
   includeSidecars: boolean;
   /** Loaded scene version for editor OCC; omitted by headless writers. */
   baseVersion?: number;

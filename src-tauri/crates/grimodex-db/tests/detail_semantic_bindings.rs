@@ -175,11 +175,9 @@ fn v4_checkpoint_rejects_a_malformed_definition_owner_index() {
     let error = db
         .migrate()
         .expect_err("malformed owner index must not be stamped as current");
-    assert!(
-        error
-            .to_string()
-            .contains("current schema invariants after migration")
-    );
+    assert!(error
+        .to_string()
+        .contains("current schema invariants after migration"));
     db.with_conn(|conn| {
         let user_version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         assert_eq!(user_version, 3);
@@ -400,7 +398,11 @@ fn codex_snapshot_restore_round_trips_bindings_without_touching_another_project(
                             .as_object()
                             .cloned()
                             .ok_or_else(|| rusqlite::Error::InvalidQuery)?,
-                        mode: SnapshotInsertMode::Insert,
+                        mode: if table == SnapshotRestoreTable::CodexTypes {
+                            SnapshotInsertMode::Replace
+                        } else {
+                            SnapshotInsertMode::Insert
+                        },
                     });
                 }
             }
@@ -416,6 +418,8 @@ fn codex_snapshot_restore_round_trips_bindings_without_touching_another_project(
     apply_project_snapshot_restore(
         &db,
         ApplyProjectSnapshotRestorePayload {
+            request_id: "binding-roundtrip-restore".to_string(),
+            session_id: "binding-roundtrip-session".to_string(),
             project_id: "binding-project-a".to_string(),
             snapshot_id: "binding-roundtrip-snapshot".to_string(),
             scopes: vec![RestoreScope::Codex],

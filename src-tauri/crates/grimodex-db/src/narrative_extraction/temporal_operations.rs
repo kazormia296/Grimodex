@@ -9,8 +9,10 @@ use grimodex_core::chronicle_time::{
     validate_canonical_chronicle_date_range, ChronicleDateRange, ChronicleTimestamp,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use super::change_feed::NarrativeChangeOrigin;
 
 pub(crate) const OP_KIND_SCENE_METADATA_PATCH: &str = "temporal.scene.metadata.patch";
 pub(crate) const OP_KIND_EVENT_METADATA_PATCH: &str = "temporal.event.metadata.patch";
@@ -214,9 +216,7 @@ pub(crate) fn restore_scene_chronicle_patch(
         |row| row.get(0),
     )?;
     if live_version != expected_after_version {
-        anyhow::bail!(
-            "NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' was modified after commit"
-        );
+        anyhow::bail!("NEX_COMMIT_SCENE_EDITED: scene '{scene_id}' was modified after commit");
     }
     let next_version = live_version
         .checked_add(1)
@@ -373,9 +373,7 @@ pub(crate) fn restore_event_chronicle_patch(
         |row| row.get(0),
     )?;
     if live_version != expected_after_version {
-        anyhow::bail!(
-            "NEX_COMMIT_EVENT_EDITED: event '{event_id}' was modified after commit"
-        );
+        anyhow::bail!("NEX_COMMIT_EVENT_EDITED: event '{event_id}' was modified after commit");
     }
     let next_version = live_version
         .checked_add(1)
@@ -422,9 +420,17 @@ pub(crate) fn restore_event_chronicle_patch(
     Ok(next_version)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TemporalScenePatchPayload {
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
     pub project_id: String,
     pub target_id: String,
     pub base_version: i64,
@@ -446,6 +452,35 @@ pub struct TemporalScenePatchPayload {
     pub end_granularity: String,
     #[serde(default = "default_precision")]
     pub precision: String,
+}
+
+pub(crate) fn collect_scene_temporal_snapshot(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> anyhow::Result<Value> {
+    let raw: String = conn
+        .query_row(
+            "SELECT json_object(
+                'id', id,
+                'storyTimeOrder', story_time_order,
+                'storyTimeLabel', story_time_label,
+                'startTime', chronicle_start_time,
+                'startMinute', chronicle_start_minute,
+                'startGranularity', chronicle_start_granularity,
+                'endTime', chronicle_end_time,
+                'endMinute', chronicle_end_minute,
+                'endGranularity', chronicle_end_granularity,
+                'precision', chronicle_precision,
+                'version', version
+             ) FROM tree_nodes
+             WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![scene_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("scene '{scene_id}' not found in project '{project_id}'"))?;
+    serde_json::from_str(&raw).map_err(Into::into)
 }
 
 /// Human scene temporal metadata write. This is the typed Native boundary for
@@ -549,9 +584,8 @@ pub(crate) struct TemporalStoryOrderMaterializePayload {
 pub(crate) fn parse_story_order_materialize_payload(
     payload: &Value,
 ) -> anyhow::Result<TemporalStoryOrderMaterializePayload> {
-    serde_json::from_value(payload.clone()).map_err(|err| {
-        anyhow::anyhow!("invalid temporal.story-order.materialize payload: {err}")
-    })
+    serde_json::from_value(payload.clone())
+        .map_err(|err| anyhow::anyhow!("invalid temporal.story-order.materialize payload: {err}"))
 }
 
 pub(crate) fn collect_scene_story_order_snapshot(
@@ -664,8 +698,12 @@ pub(crate) fn restore_scene_story_order_patch(
                 updated_at = ?4
           WHERE id = ?5 AND version = ?6",
         params![
-            before_snapshot.get("storyTimeOrder").and_then(Value::as_str),
-            before_snapshot.get("storyTimeLabel").and_then(Value::as_str),
+            before_snapshot
+                .get("storyTimeOrder")
+                .and_then(Value::as_str),
+            before_snapshot
+                .get("storyTimeLabel")
+                .and_then(Value::as_str),
             next_version,
             now,
             scene_id,

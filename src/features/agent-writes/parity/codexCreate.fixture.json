@@ -3,7 +3,8 @@
     "domain": "codex",
     "opType": "entry.create",
     "entityType": "codex_entry",
-    "payloadKeys": ["type", "name", "parentId"]
+    "payloadKeys": ["type", "name", "parentId"],
+    "auditPayloadKeys": ["requestHash"]
   },
   "authorshipSpan": {
     "ownerLane": "codex_entry_id",

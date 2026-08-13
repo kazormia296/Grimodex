@@ -235,4 +235,54 @@ describe("trashBinStore Project authority and delayed persistence", () => {
     expect(useTrashBinStore.getState().items).toEqual(new Map());
     expect(useTrashBinStore.getState().pendingQueue).toEqual([]);
   });
+
+  it("does not issue a second renderer delete after Native structural restore", async () => {
+    const structure = {
+      ...createdItem("structure-1"),
+      kind: "structure-item" as const,
+      subKind: "grid-chapter" as const,
+      payload: {
+        originalId: "old-folder",
+        title: "Chapter",
+        parentId: null,
+        sortOrder: "a0",
+        metadata: {},
+      },
+    };
+    useTrashBinStore.setState({
+      items: new Map([[structure.id, structure]]),
+    });
+
+    await expect(
+      useTrashBinStore.getState().pickup(structure.id, async () => ({
+        ok: true,
+        newId: "restored-grid-chapter:structure-1",
+        brokenLinks: [],
+      })),
+    ).resolves.toMatchObject({ ok: true });
+
+    expect(trashApi.deleteTrashItem).not.toHaveBeenCalled();
+    expect(useTrashBinStore.getState().items.has(structure.id)).toBe(false);
+  });
+
+  it("keeps an editor-local text fragment when its separate Trash delete fails", async () => {
+    const fragment = createdItem("fragment-delete-failure");
+    useTrashBinStore.setState({
+      items: new Map([[fragment.id, fragment]]),
+    });
+    vi.mocked(trashApi.deleteTrashItem).mockRejectedValueOnce(
+      new Error("delete failed"),
+    );
+
+    const result = await useTrashBinStore
+      .getState()
+      .pickup(fragment.id, async () => ({
+        ok: true,
+        newId: fragment.id,
+        brokenLinks: [],
+      }));
+
+    expect(result).toMatchObject({ ok: false, reason: "internal-error" });
+    expect(useTrashBinStore.getState().items.has(fragment.id)).toBe(true);
+  });
 });

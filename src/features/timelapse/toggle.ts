@@ -314,9 +314,11 @@ export async function ensureGenesisBaselines(
  * `anchorSequence <= asOfSequence`, so both segments stay coherent and the
  * `RangeError: Position out of range` that a stale baseline caused is avoided.
  *
- * Contract: the caller MUST have already `recordChangeEvent`-enqueued its meta
- * event (e.g. `revision`/`snapshot.restore`) BEFORE calling this. We flush so
- * the in-memory head equals the committed DB tail, then anchor there.
+ * Contract: a renderer-recorded caller MUST have already enqueued its meta
+ * event before calling this. Native aggregate callers pass the sequence that
+ * was committed with the domain mutation; this avoids anchoring at the stale
+ * in-memory recorder head when Native appended the canonical event directly.
+ * We still flush first so any earlier renderer events reach the DB.
  * Best-effort per scene: a failure degrades that scene's replay seek but never
  * corrupts the chain. No-op when recording is disabled (nothing to keep
  * coherent) or the scene list is empty.
@@ -324,10 +326,11 @@ export async function ensureGenesisBaselines(
 export async function rebaselineEntitiesAtTail(
   projectId: string,
   refs: EntityBaselineRef[],
+  committedSequence?: number,
 ): Promise<void> {
   if (!isRecorderEnabled() || refs.length === 0) return;
-  await flushNow(); // commit the caller's meta event -> lastSequence == DB tail
-  const anchorSequence = getRecorderChainHead();
+  await flushNow();
+  const anchorSequence = committedSequence ?? getRecorderChainHead();
   const anchorTimestamp = Date.now();
   for (const ref of refs) {
     try {

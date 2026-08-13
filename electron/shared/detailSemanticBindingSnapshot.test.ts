@@ -8,12 +8,16 @@ import {
 
 describe("detail semantic binding snapshot IPC contract", () => {
   it("allows the native restore plan to insert a semantic binding row", async () => {
-    const projectSnapshotApplyRestore = vi.fn().mockResolvedValue(undefined);
+    const projectSnapshotApplyRestore = vi
+      .fn()
+      .mockResolvedValue(JSON.stringify(null));
     const backend = {
       projectSnapshotApplyRestore,
     } as unknown as NapiBackendLike;
 
     const payload = {
+      requestId: "snapshot-restore-request-1",
+      sessionId: "session-1",
       projectId: "project-1",
       snapshotId: "snapshot-1",
       scopes: ["codex"],

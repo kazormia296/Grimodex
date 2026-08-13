@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+import { withCanonicalWriterTestContext } from "./browser-mock.canonical-test-context";
 
 async function run(
   mock: PersistentBrowserMock,
@@ -44,7 +45,12 @@ describe("Browser Foreshadow aggregate OCC", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
   });
 
   afterEach(() => mock.close());
@@ -70,10 +76,16 @@ describe("Browser Foreshadow aggregate OCC", () => {
     ).rejects.toThrow(/version conflict/i);
     await expect(
       mock.invoke("foreshadow_delete", {
-        id: "stale-root",
-        projectId: "default-project",
-        baseVersion: 0,
-        sessionId: "stale-window",
+        payload: {
+          id: "stale-root",
+          projectId: "default-project",
+          requestId: "stale-root-delete",
+          sessionId: "stale-window",
+          eventUid: "stale-root-delete-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: 0,
+        },
       }),
     ).rejects.toThrow("FORESHADOW_VERSION_MISMATCH");
 
@@ -316,10 +328,16 @@ describe("Browser Foreshadow aggregate OCC", () => {
     const receipt = await mock.invoke<{ undoJournalId: string }>(
       "foreshadow_delete",
       {
-        id: "aggregate-root",
-        projectId: "default-project",
-        baseVersion: 0,
-        sessionId: "manual-window",
+        payload: {
+          id: "aggregate-root",
+          projectId: "default-project",
+          requestId: "aggregate-root-delete",
+          sessionId: "manual-window",
+          eventUid: "aggregate-root-delete-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: 0,
+        },
       },
     );
     expect(

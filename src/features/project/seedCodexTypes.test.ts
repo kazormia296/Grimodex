@@ -8,16 +8,22 @@ import {
   codexDetailValues,
   codexTags,
   codexEntryTags,
+  narrativeChangeTransactions,
 } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { listCodexEntries } from "@/features/codex/api";
 import { seedCodexTypesFromProject } from "./seedCodexTypes";
 import { PROJECT_ID } from "./constants";
+import { createBrowserMock } from "@/lib/browser-mock";
+import { installBrowserMock } from "@/lib/tauri";
 
 const SOURCE = PROJECT_ID;
 const TARGET = "seed-target-project";
 
 beforeEach(async () => {
+  installBrowserMock(
+    await createBrowserMock({ allowProtectedWriterTestFixtures: true }),
+  );
   const now = new Date().toISOString();
   // This suite intentionally reuses the shared browser database. Clear the
   // fixture's dependent rows explicitly because canonical foreign keys now
@@ -124,6 +130,15 @@ describe("seedCodexTypesFromProject", () => {
       .where(eq(codexDetailValues.entryId, parent!.id));
     expect(targetValues).toHaveLength(1);
     expect(targetValues[0].value).toBe("20");
+
+    const importTransactions = await db
+      .select({ origin: narrativeChangeTransactions.origin })
+      .from(narrativeChangeTransactions)
+      .where(eq(narrativeChangeTransactions.projectId, TARGET));
+    expect(importTransactions.length).toBeGreaterThan(0);
+    expect(importTransactions.every(({ origin }) => origin === "import")).toBe(
+      true,
+    );
   });
 
   it("copies custom codex types that do not exist on the target project", async () => {

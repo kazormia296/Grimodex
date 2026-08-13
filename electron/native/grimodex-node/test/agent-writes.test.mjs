@@ -37,6 +37,18 @@ process.on("exit", () => {
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed（'character' codex_type も seed 済み）
 
+function canonical(requestId, origin = "human") {
+  return {
+    requestId,
+    projectId: PROJECT,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin,
+    originalTransactionId: null,
+    undoJournalId: null,
+  };
+}
+
 async function rows(sql, params = []) {
   return JSON.parse(await backend.dbExecute(sql, params, "all")).rows;
 }
@@ -44,6 +56,7 @@ async function rows(sql, params = []) {
 test("workspace 未オープンの agentCodexCreate は 'No workspace is open' で reject", async () => {
   await assert.rejects(
     backend.agentCodexCreate({
+      ...canonical("unopened-codex-create", "ai-apply"),
       projectId: PROJECT,
       sessionId: "s1",
       typeSlug: "character",
@@ -61,6 +74,7 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
   await backend.openWorkspace(join(root, "ws"));
 
   const payload = {
+    ...canonical("agent-tool:codex-napi-request-1", "ai-apply"),
     requestId: "agent-tool:codex-napi-request-1",
     entryId: "codex-napi-entity-attempt-1",
     projectId: PROJECT,
@@ -114,13 +128,14 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
   const retry = JSON.parse(
     await backend.agentCodexCreate({
       ...payload,
-      entryId: "codex-napi-entity-attempt-2",
+      sessionId: "sess-1-after-restart",
+      eventUid: "agent-tool:codex-napi-retry-event",
     }),
   );
   assert.deepEqual(
     retry,
     res,
-    "same requestId returns the original result despite a fresh entity UUID",
+    "same requestId returns the original result despite fresh transport identity",
   );
   await assert.rejects(
     backend.agentCodexCreate({ ...payload, name: "別人" }),
@@ -131,6 +146,7 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
 test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {
   const created = JSON.parse(
     await backend.agentCodexMutate({
+      ...canonical("preset-semantic-create", "human"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -175,6 +191,7 @@ test("agentCodexMutate creates a Detail Definition and semantic binding atomical
 
   await assert.rejects(
     backend.agentCodexMutate({
+      ...canonical("preset-semantic-conflict", "human"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -283,6 +300,109 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     backend.agentEventCreate({ ...event, title: "出発" }),
     /AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT/,
   );
+  await assert.rejects(
+    backend.agentEventCreate({
+      projectId: PROJECT,
+      sessionId: "sess-missing-event-request",
+      title: "missing request",
+    }),
+    /requestId|request_id/,
+  );
+  await assert.rejects(
+    backend.agentSceneEventLink({
+      projectId: PROJECT,
+      sessionId: "sess-missing-scene-link-request",
+      sceneId: "scene-missing",
+      eventId: "event-missing",
+    }),
+    /requestId|request_id/,
+  );
+  await assert.rejects(
+    backend.agentEventRelationAdd({
+      projectId: PROJECT,
+      sessionId: "sess-missing-relation-request",
+      causeEventId: "event-a",
+      effectEventId: "event-b",
+    }),
+    /requestId|request_id/,
+  );
+});
+
+test("manual Snippet CRUD crosses napi through one canonical transaction per write", async () => {
+  const identity = (requestId) => ({
+    requestId,
+    projectId: PROJECT,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin: "human",
+    originalTransactionId: null,
+    undoJournalId: null,
+  });
+  const createPayload = {
+    ...identity("manual-snippet-create-napi"),
+    snippetId: "manual-snippet-napi",
+    title: "Manual",
+    content: "{}",
+    tagsCache: null,
+    contentSource: "human",
+    sceneId: null,
+    sourceChatMessageId: null,
+    canonicalPayload: { title: "Manual", sceneId: null },
+  };
+  const created = JSON.parse(await backend.snippetCreate(createPayload));
+  assert.deepEqual(
+    JSON.parse(
+      await backend.snippetCreate({
+        ...createPayload,
+        sessionId: "manual-snippet-create-retry-session",
+        eventUid: "manual-snippet-create-retry-event",
+      }),
+    ),
+    created,
+  );
+  assert.equal(created.entityId, createPayload.snippetId);
+  assert.equal(created.version, 1);
+
+  const updated = JSON.parse(
+    await backend.snippetUpdate({
+      ...identity("manual-snippet-update-napi"),
+      snippetId: createPayload.snippetId,
+      baseVersion: created.version,
+      title: "Updated",
+      canonicalPayload: { fields: ["title"] },
+    }),
+  );
+  assert.equal(updated.version, 2);
+
+  const deleted = JSON.parse(
+    await backend.snippetDelete({
+      ...identity("manual-snippet-delete-napi"),
+      snippetId: createPayload.snippetId,
+      baseVersion: updated.version,
+      canonicalPayload: { title: "Updated" },
+    }),
+  );
+  assert.equal(deleted.version, 2);
+  assert.deepEqual(
+    await rows(
+      `SELECT
+         (SELECT COUNT(*) FROM snippets WHERE id = ?) AS domain_count,
+         (SELECT COUNT(*) FROM undo_journal
+           WHERE id IN (?, ?, ?)) AS journal_count,
+         (SELECT COUNT(*) FROM narrative_change_transactions
+           WHERE request_id IN (?, ?, ?)) AS feed_count`,
+      [
+        createPayload.snippetId,
+        createPayload.requestId,
+        "manual-snippet-update-napi",
+        "manual-snippet-delete-napi",
+        createPayload.requestId,
+        "manual-snippet-update-napi",
+        "manual-snippet-delete-napi",
+      ],
+    ),
+    [{ domain_count: 0, journal_count: 3, feed_count: 3 }],
+  );
 });
 
 test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
@@ -316,6 +436,7 @@ test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越�
 
   const updated = JSON.parse(
     await backend.agentEventUpdate({
+      requestId: "agent-tool:event-napi-chronicle-update-1",
       projectId: PROJECT,
       sessionId: "sess-chronicle-boundaries",
       eventId: created.entityId,
@@ -344,6 +465,7 @@ test("agentCodexUpdate: 存在しない entry は reject し、副作用を残�
   const before = await rows("SELECT COUNT(*) AS n FROM change_events");
   await assert.rejects(
     backend.agentCodexUpdate({
+      ...canonical("missing-codex-update", "ai-apply"),
       projectId: PROJECT,
       sessionId: "sess-1",
       entryId: "does-not-exist",
@@ -393,6 +515,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
 
   const scene = JSON.parse(
     await backend.treeNodeCreate({
+      ...canonical(`tree-create:${sceneId}`, "human"),
       id: sceneId,
       projectId: PROJECT,
       parentId: null,
@@ -404,6 +527,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   );
   const sceneTemporal = JSON.parse(
     await backend.temporalScenePatch({
+      ...canonical(`temporal-patch:${sceneId}`, "human"),
       projectId: PROJECT,
       targetId: sceneId,
       baseVersion: scene.version,
@@ -417,6 +541,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
 
   const datedScene = JSON.parse(
     await backend.treeNodeCreate({
+      ...canonical(`tree-create:${datedSceneId}`, "human"),
       id: datedSceneId,
       projectId: PROJECT,
       parentId: null,
@@ -428,6 +553,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   );
   const datedSceneTemporal = JSON.parse(
     await backend.temporalScenePatch({
+      ...canonical(`temporal-patch:${datedSceneId}`, "human"),
       projectId: PROJECT,
       targetId: datedSceneId,
       baseVersion: datedScene.version,

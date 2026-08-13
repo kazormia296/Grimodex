@@ -3,7 +3,6 @@ import { toast } from "sonner";
 import i18next from "i18next";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { readRuntimeSettingBoolean } from "@/features/settings/runtimeSettings";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import * as trashApi from "./api";
 import {
   isInterestingStructureItem,
@@ -326,24 +325,21 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         }
         if (!result.ok) return result;
 
-        // The delete side was already recorded (grid.node.delete etc.); the
-        // restore is a distinct durable event that would otherwise be
-        // invisible. Metadata domain — no rebaseline (the restored body
-        // re-enters via its own path).
-        recordChangeEvent({
-          domain: "trash",
-          opType: "restore",
-          entityType: "trash_item",
-          entityId: itemId,
-          payload: { itemId, kind: item.kind },
-        });
-
-        // 復元成功 → trash 側から削除 (DB + store)。失敗時は trash に残す。
-        try {
-          await trashApi.deleteTrashItem(itemId);
-        } catch (e) {
-          debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
-          // 復元自体は成功しているので呼び出し側には ok を返す
+        // Structural restore consumes the Trash row inside its Native
+        // aggregate transaction. Text fragments are editor-local, so only
+        // that path needs the separate Trash delete; a failed delete must keep
+        // the store row and report failure instead of pretending atomicity.
+        if (item.kind === "text-fragment") {
+          try {
+            await trashApi.deleteTrashItem(itemId);
+          } catch (e) {
+            debugLog.error("TrashBinStore", "pickup/delete", errorDetail(e));
+            return {
+              ok: false,
+              reason: "internal-error",
+              message: e instanceof Error ? e.message : String(e),
+            } satisfies PickupResult;
+          }
         }
         return result;
       });

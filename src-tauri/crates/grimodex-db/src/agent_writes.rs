@@ -18,9 +18,14 @@ use grimodex_core::chronicle_time::{
 // (Electron 移行 Phase 3 バッチ1 — napi Backend と Tauri コマンドで共用)。
 // grimodex-db は grimodex-core に依存済みなので tracked write / undo_journal を直接呼べる。
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
-use crate::execute::with_writer_mutation_denied;
 use crate::idempotency::{
     insert_idempotent_response, load_idempotent_response, IdempotencyRequest,
+};
+use crate::narrative_extraction::change_feed::{
+    append_canonical_and_narrative_change_in_tx, append_narrative_change_transaction_in_tx,
+    event_from_undo_journal_row, narrative_snapshot_digest, require_replay_lineage_in_project,
+    transaction_id_for_undo_journal, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 use crate::undo_journal::{insert_undo_journal_in_tx, UndoJournalInsert};
 use crate::{BatchStatement, Database};
@@ -28,12 +33,12 @@ use crate::{BatchStatement, Database};
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthorshipSpanInput {
-    from_pos: i64,
-    to_pos: i64,
-    source: String,
-    model: Option<String>,
-    chat_msg_id: Option<String>,
-    trace_id: Option<String>,
+    pub from_pos: i64,
+    pub to_pos: i64,
+    pub source: String,
+    pub model: Option<String>,
+    pub chat_msg_id: Option<String>,
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -42,98 +47,129 @@ pub struct AgentCodexCreatePayload {
     /// Stable identity of the logical request. This is deliberately separate
     /// from `entry_id`, which remains the domain entity identity.
     #[serde(default)]
-    request_id: Option<String>,
-    /// Domain-owned idempotency key. New renderer callers always provide it;
-    /// `None` preserves compatibility with older native clients.
+    pub request_id: Option<String>,
+    /// Domain-owned identity for the created row. The Native entrypoints reject
+    /// a missing request id even when this entity id is present.
     #[serde(default)]
-    entry_id: Option<String>,
-    project_id: String,
-    session_id: String,
+    pub entry_id: Option<String>,
+    pub project_id: String,
+    pub session_id: String,
     /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
     /// UI 手動作成 (legacy api.ts 経路) は "manual" を明示送信する。
     #[serde(default)]
-    surface: Option<String>,
-    type_slug: String,
-    name: String,
-    summary: Option<String>,
-    content: Option<String>,
-    aliases: Option<String>,
+    pub surface: Option<String>,
+    pub type_slug: String,
+    pub name: String,
+    pub summary: Option<String>,
+    pub content: Option<String>,
+    pub aliases: Option<String>,
     #[serde(default)]
-    excluded_aliases: Option<String>,
+    pub excluded_aliases: Option<String>,
     #[serde(default)]
-    readings: Option<String>,
+    pub readings: Option<String>,
     #[serde(default)]
-    tags_cache: Option<String>,
-    parent_id: Option<String>,
-    source_chat_message_id: Option<String>,
-    model: Option<String>,
-    chat_message_id: Option<String>,
-    trace_id: Option<String>,
-    authorship_spans: Vec<AuthorshipSpanInput>,
+    pub tags_cache: Option<String>,
+    pub parent_id: Option<String>,
+    pub source_chat_message_id: Option<String>,
+    pub model: Option<String>,
+    pub chat_message_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub authorship_spans: Vec<AuthorshipSpanInput>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCodexUpdatePayload {
-    project_id: String,
-    session_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
     #[serde(default)]
-    surface: Option<String>,
-    entry_id: String,
+    pub surface: Option<String>,
+    pub entry_id: String,
     /// Client-observed version before this write (optimistic lock).
-    base_version: i64,
+    pub base_version: i64,
     /// Human 経路のみ更新する type。AI 経路は type を書き換えない。
     #[serde(default)]
-    type_slug: Option<String>,
-    name: Option<String>,
-    summary: Option<String>,
-    content: Option<String>,
-    aliases: Option<String>,
+    pub type_slug: Option<String>,
+    pub name: Option<String>,
+    pub summary: Option<String>,
+    pub content: Option<String>,
+    pub aliases: Option<String>,
     /// set-if-present。空文字は NULL（除外語なし）に正規化する。
     #[serde(default)]
-    excluded_aliases: Option<String>,
+    pub excluded_aliases: Option<String>,
     /// set-if-present。空文字は NULL（読み情報なし）に正規化する。
     #[serde(default)]
-    readings: Option<String>,
+    pub readings: Option<String>,
     /// set-if-present。空文字は NULL（タグなし）に正規化する。
     #[serde(default)]
-    tags_cache: Option<String>,
+    pub tags_cache: Option<String>,
     /// set-if-present。空文字は NULL（親なし=ルート）に正規化する。
     #[serde(default)]
-    parent_id: Option<String>,
+    pub parent_id: Option<String>,
     #[serde(default)]
-    context_mode: Option<String>,
+    pub context_mode: Option<String>,
     /// set-if-present。空文字は NULL（アイコンなし）に正規化する。
     #[serde(default)]
-    icon: Option<String>,
+    pub icon: Option<String>,
     #[serde(default)]
-    children_budget: Option<String>,
+    pub children_budget: Option<String>,
     /// set-if-present。空文字は NULL（メモなし）に正規化する。
     #[serde(default)]
-    notes: Option<String>,
-    model: Option<String>,
-    chat_message_id: Option<String>,
-    trace_id: Option<String>,
-    authorship_spans: Option<Vec<AuthorshipSpanInput>>,
+    pub notes: Option<String>,
+    pub model: Option<String>,
+    pub chat_message_id: Option<String>,
+    pub trace_id: Option<String>,
+    pub authorship_spans: Option<Vec<AuthorshipSpanInput>>,
     /// Per-span lane for partial updates: "summary" | "content".
-    authorship_span_lanes: Option<Vec<Option<String>>>,
+    pub authorship_span_lanes: Option<Vec<Option<String>>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCodexDeletePayload {
-    project_id: String,
-    session_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// undo_journal に記録する書き込み元の表面。省略時は in-app-agent（AI）。
     #[serde(default)]
-    surface: Option<String>,
-    entry_id: String,
+    pub surface: Option<String>,
+    pub entry_id: String,
     /// Client-observed version before this write (optimistic lock).
-    base_version: i64,
+    pub base_version: i64,
 }
 
-#[derive(serde::Serialize)]
+/// Renderer-only identity carried alongside the long-lived Agent Codex DTOs.
+///
+/// The domain payload structs stay source-compatible with standalone MCP
+/// callers, while Electron/N-API must deserialize and pass this context to the
+/// strict renderer entry points below.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RendererCanonicalWriteContext {
+    pub request_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+    /// Renderer Codex create/restore fields that are not part of the historic
+    /// MCP-compatible AgentCodexCreatePayload.
+    #[serde(default)]
+    pub context_mode: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub children_budget: Option<String>,
+    #[serde(default)]
+    pub notes: Option<String>,
+    /// Audit payload computed before the renderer crosses the Native boundary.
+    /// Native commits it as the one canonical Change Event in the same DB tx.
+    #[serde(default)]
+    pub canonical_payload: Option<Value>,
+}
+
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentWriteResult {
     entity_id: String,
@@ -163,6 +199,214 @@ const EVENT_AUTHORITY_FIELDS: &[&str] = &[
     "/sceneIds",
     "/relations",
 ];
+
+fn narrative_origin_for_surface(surface: Option<&str>) -> NarrativeChangeOrigin {
+    match surface {
+        Some("manual") => NarrativeChangeOrigin::Human,
+        Some("import") => NarrativeChangeOrigin::Import,
+        _ => NarrativeChangeOrigin::AiApply,
+    }
+}
+
+fn validate_renderer_codex_identity(
+    project_id: &str,
+    session_id: &str,
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId must not be empty");
+    anyhow::ensure!(!session_id.trim().is_empty(), "sessionId must not be empty");
+    anyhow::ensure!(
+        !context.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
+    anyhow::ensure!(
+        !context.event_uid.trim().is_empty(),
+        "eventUid must not be empty"
+    );
+    let replay = matches!(
+        context.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = context
+        .original_transaction_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && context
+            .undo_journal_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        replay == complete_lineage
+            && (replay
+                || (context.original_transaction_id.is_none()
+                    && context.undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
+    Ok(())
+}
+
+fn renderer_cause_kind(origin: NarrativeChangeOrigin) -> NarrativeChangeCauseKind {
+    match origin {
+        NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+        NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+        _ => NarrativeChangeCauseKind::Forward,
+    }
+}
+
+fn is_renderer_replay(context: Option<&RendererCanonicalWriteContext>) -> bool {
+    context.is_some_and(|context| {
+        matches!(
+            context.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        )
+    })
+}
+
+fn validate_renderer_replay_lineage_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<()> {
+    let Some(context) = context.filter(|context| {
+        matches!(
+            context.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        )
+    }) else {
+        return Ok(());
+    };
+    require_replay_lineage_in_project(
+        conn,
+        project_id,
+        context
+            .original_transaction_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("originalTransactionId is required"))?,
+        context
+            .undo_journal_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("undoJournalId is required"))?,
+    )
+}
+
+fn change_occurred_at(timestamp: i64) -> anyhow::Result<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp_millis(timestamp)
+        .map(|value| value.to_rfc3339())
+        .ok_or_else(|| anyhow::anyhow!("canonical Change Event timestamp is out of range"))
+}
+
+fn append_agent_forward_change_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+    surface: Option<&str>,
+    request_id: Option<&str>,
+    undo_journal_id: &str,
+    canonical_event: &AppendChangeEvent,
+    narrative_events: Option<Vec<NarrativeChangeEventInput>>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<String> {
+    let mut events = match narrative_events {
+        Some(events) => events,
+        None => {
+            let row =
+                grimodex_core::undo_journal::load_undo_journal(conn, project_id, undo_journal_id)?;
+            vec![event_from_undo_journal_row(
+                &row,
+                renderer_context.map_or(NarrativeChangeCauseKind::Forward, |context| {
+                    renderer_cause_kind(context.origin)
+                }),
+            )?]
+        }
+    };
+    normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
+    let append = append_canonical_and_narrative_change_in_tx(
+        conn,
+        project_id,
+        session_id,
+        canonical_event,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: project_id.to_string(),
+            request_id: renderer_context
+                .map(|context| context.request_id.as_str())
+                .or(request_id)
+                .unwrap_or(&canonical_event.event_uid)
+                .to_string(),
+            source_domain: canonical_event.op_type.clone(),
+            source_change_event_uid: canonical_event.event_uid.clone(),
+            cause_kind: renderer_context.map_or(NarrativeChangeCauseKind::Forward, |context| {
+                renderer_cause_kind(context.origin)
+            }),
+            origin: renderer_context.map_or_else(
+                || narrative_origin_for_surface(surface),
+                |context| context.origin,
+            ),
+            original_transaction_id: renderer_context
+                .and_then(|context| context.original_transaction_id.clone()),
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: Some(
+                renderer_context
+                    .and_then(|context| context.undo_journal_id.as_deref())
+                    .unwrap_or(undo_journal_id)
+                    .to_string(),
+            ),
+            application_ids: vec![],
+            occurred_at: change_occurred_at(canonical_event.timestamp)?,
+            events,
+        },
+    )?;
+    Ok(append.narrative.transaction_id)
+}
+
+fn normalize_foreshadow_feed_events_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    events: &mut [NarrativeChangeEventInput],
+) -> anyhow::Result<()> {
+    // The shared core Foreshadow writer deliberately stores a compact root row
+    // in its Undo Journal.  The C1 Feed root, however, is the full aggregate
+    // used by the manual Native writer (setups, payoffs, support edges, and
+    // Codex links included).  Normalize the AI writer's event to that same
+    // canonical snapshot before appending it, and use the existing Feed head
+    // for the before state so a later delete/restore can chain without a
+    // root-only/aggregate digest split.
+    for event in events {
+        if event.object_key.get("kind").and_then(Value::as_str) != Some("foreshadow") {
+            continue;
+        }
+        let current = if event.mutation_kind == "delete" {
+            None
+        } else {
+            crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
+                conn,
+                project_id,
+                &event.object_key,
+            )?
+        };
+        if let Some(snapshot) = current {
+            if matches!(
+                event.mutation_kind.as_str(),
+                "create" | "update" | "restore"
+            ) {
+                event.after_version = snapshot_version(&snapshot);
+                event.after_digest = Some(narrative_snapshot_digest(&snapshot)?);
+            }
+        }
+        if matches!(event.mutation_kind.as_str(), "update" | "delete") {
+            let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
+            if let Some((version, digest)) =
+                crate::narrative_extraction::change_feed::previous_event_after_state(
+                    conn, project_id, &identity,
+                )?
+            {
+                event.before_version = version;
+                event.before_digest = digest;
+            }
+        }
+    }
+    Ok(())
+}
 
 fn record_manual_event_fields(
     conn: &rusqlite::Connection,
@@ -241,6 +485,125 @@ fn manual_update_fields(payload: &AgentCodexUpdatePayload) -> Vec<&'static str> 
     .collect()
 }
 
+fn codex_patch_invalidates_linked_foreshadows(payload: &AgentCodexUpdatePayload) -> bool {
+    payload.name.is_some()
+        || payload.aliases.is_some()
+        || payload.summary.is_some()
+        || payload.content.is_some()
+}
+
+fn invalidate_linked_foreshadows_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    codex_entry_id: &str,
+    now_millis: i64,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let mut statement = conn.prepare(
+        "SELECT json_object(
+             'id', foreshadow.id,
+             'projectId', foreshadow.project_id,
+             'version', foreshadow.version,
+             'codexLinkDirtyAt', foreshadow.codex_link_dirty_at,
+             'updatedAt', foreshadow.updated_at
+           )
+           FROM foreshadows foreshadow
+           JOIN foreshadow_codex_links link ON link.foreshadow_id = foreshadow.id
+          WHERE foreshadow.project_id = ?1 AND link.codex_entry_id = ?2
+          ORDER BY foreshadow.id",
+    )?;
+    let before = statement
+        .query_map(rusqlite::params![project_id, codex_entry_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .map(|row| {
+            let raw = row?;
+            serde_json::from_str::<Value>(&raw).map_err(Into::into)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    drop(statement);
+    if before.is_empty() {
+        return Ok(Vec::new());
+    }
+    let updated = conn.execute(
+        "UPDATE foreshadows
+            SET codex_link_dirty_at = ?1,
+                version = version + 1,
+                updated_at = ?1
+          WHERE project_id = ?2
+            AND id IN (
+                SELECT foreshadow_id
+                  FROM foreshadow_codex_links
+                 WHERE codex_entry_id = ?3
+            )",
+        rusqlite::params![now_millis, project_id, codex_entry_id],
+    )?;
+    anyhow::ensure!(
+        updated == before.len(),
+        "linked Foreshadow invalidation changed an unexpected number of rows"
+    );
+
+    before
+        .into_iter()
+        .map(|before| {
+            let foreshadow_id = before
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("Foreshadow invalidation snapshot has no id"))?;
+            let after_raw: String = conn.query_row(
+                "SELECT json_object(
+                     'id', id,
+                     'projectId', project_id,
+                     'version', version,
+                     'codexLinkDirtyAt', codex_link_dirty_at,
+                     'updatedAt', updated_at
+                   )
+                   FROM foreshadows
+                  WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![foreshadow_id, project_id],
+                |row| row.get(0),
+            )?;
+            let after: Value = serde_json::from_str(&after_raw)?;
+            let changed_paths = vec!["/codexLinkDirtyAt".to_string()];
+            Ok(NarrativeChangeEventInput {
+                object_key: json!({
+                    "kind": "foreshadow",
+                    "foreshadowId": foreshadow_id,
+                }),
+                change_kind: "metadata".to_string(),
+                mutation_kind: "update".to_string(),
+                before_version: snapshot_version(&before),
+                before_digest: Some(narrative_snapshot_digest(&before)?),
+                after_version: snapshot_version(&after),
+                after_digest: Some(narrative_snapshot_digest(&after)?),
+                changed_paths: changed_paths.clone(),
+                text_impact: None,
+                structural_impact: Some(json!({ "changedPaths": changed_paths })),
+            })
+        })
+        .collect()
+}
+
+fn linked_foreshadow_rows(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    codex_entry_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let rows = Database::execute_with_conn(
+        conn,
+        "SELECT foreshadow.*
+           FROM foreshadows foreshadow
+           JOIN foreshadow_codex_links link ON link.foreshadow_id = foreshadow.id
+          WHERE foreshadow.project_id = ?1 AND link.codex_entry_id = ?2
+          ORDER BY foreshadow.id",
+        &[
+            Value::String(project_id.to_string()),
+            Value::String(codex_entry_id.to_string()),
+        ],
+        "all",
+    )?;
+    Ok(rows.into_iter().map(Value::Object).collect())
+}
+
 fn idempotency_hash<T: Serialize>(domain: &str, payload: &T) -> anyhow::Result<String> {
     let mut canonical = serde_json::to_value((domain, payload))?;
     canonicalize_json_value(&mut canonical);
@@ -297,7 +660,29 @@ fn normalize_prosemirror_for_idempotency(raw: &str) -> String {
     serde_json::to_string(&parsed).unwrap_or_else(|_| raw.to_string())
 }
 
-fn codex_create_request_hash(payload: &AgentCodexCreatePayload) -> anyhow::Result<String> {
+fn normalize_tag_set(tags: &[String]) -> Vec<String> {
+    let mut normalized = tags
+        .iter()
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    normalized
+}
+
+fn require_agent_request_id(request_id: Option<&str>) -> anyhow::Result<&str> {
+    let request_id = request_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
+    Ok(request_id)
+}
+
+fn codex_create_request_hash(
+    payload: &AgentCodexCreatePayload,
+    tags: Option<&[String]>,
+) -> anyhow::Result<String> {
     let mut normalized = payload.clone();
     normalized.request_id = None;
     normalized.entry_id = None;
@@ -306,7 +691,125 @@ fn codex_create_request_hash(payload: &AgentCodexCreatePayload) -> anyhow::Resul
     normalized.content = Some(normalize_prosemirror_for_idempotency(
         normalized.content.as_deref().unwrap_or("{}"),
     ));
-    idempotency_hash("agent_codex_create", &normalized)
+    match tags {
+        Some(tags) => {
+            idempotency_hash("agent_codex_create", &(normalized, normalize_tag_set(tags)))
+        }
+        None => idempotency_hash("agent_codex_create", &normalized),
+    }
+}
+
+fn codex_update_request_hash(
+    payload: &AgentCodexUpdatePayload,
+    tags: Option<&[String]>,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    normalized.surface = None;
+    match tags {
+        Some(tags) => {
+            idempotency_hash("agent_codex_update", &(normalized, normalize_tag_set(tags)))
+        }
+        None => idempotency_hash("agent_codex_update", &normalized),
+    }
+}
+
+fn renderer_codex_request_hash<T: Serialize>(
+    domain: &str,
+    payload: &T,
+    context: &RendererCanonicalWriteContext,
+    tags: Option<&[String]>,
+) -> anyhow::Result<String> {
+    let mut payload = serde_json::to_value(payload)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("requestId");
+        object.remove("sessionId");
+    }
+    let mut context = serde_json::to_value(context)?;
+    if let Some(object) = context.as_object_mut() {
+        object.remove("requestId");
+        object.remove("eventUid");
+    }
+    idempotency_hash(
+        domain,
+        &json!({
+            "payload": payload,
+            "context": context,
+            "tags": tags.map(normalize_tag_set),
+        }),
+    )
+}
+
+fn attach_maintenance_transaction_id(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    result: &AgentWriteResult,
+) -> anyhow::Result<Value> {
+    let transaction_id = crate::narrative_extraction::change_feed::transaction_id_for_source_event(
+        conn,
+        project_id,
+        &result.change_event_uid,
+    )?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "Narrative Change Feed transaction missing for canonical event '{}'",
+            result.change_event_uid
+        )
+    })?;
+    let mut value = serde_json::to_value(result)?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("Agent write receipt must serialize as an object"))?;
+    object.insert(
+        "maintenanceTransactionId".to_string(),
+        Value::String(transaction_id),
+    );
+    Ok(value)
+}
+
+fn apply_renderer_codex_create_fields(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    undo_journal_id: &str,
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    let updated = conn.execute(
+        "UPDATE codex_entries
+            SET context_mode = COALESCE(?3, context_mode),
+                icon = ?4,
+                children_budget = COALESCE(?5, children_budget),
+                notes = ?6
+          WHERE id = ?1 AND project_id = ?2",
+        rusqlite::params![
+            entry_id,
+            project_id,
+            context.context_mode,
+            context.icon,
+            context.children_budget,
+            context.notes,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "Codex entry '{}' escaped its project during renderer create",
+        entry_id
+    );
+    if !is_renderer_replay(Some(context)) {
+        let after_json = collect_codex_entry_snapshot(conn, entry_id)?.to_string();
+        let journal_updated = conn.execute(
+            "UPDATE undo_journal
+                SET after_json = ?3
+              WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![undo_journal_id, project_id, after_json],
+        )?;
+        anyhow::ensure!(
+            journal_updated == 1,
+            "Codex create Undo Journal '{}' is missing from its transaction",
+            undo_journal_id
+        );
+    }
+    Ok(())
 }
 
 fn snippet_create_request_hash(payload: &AgentSnippetCreatePayload) -> anyhow::Result<String> {
@@ -322,7 +825,7 @@ fn snippet_create_request_hash(payload: &AgentSnippetCreatePayload) -> anyhow::R
 
 fn event_create_request_hash(payload: &AgentEventCreatePayload) -> anyhow::Result<String> {
     let mut normalized = payload.clone();
-    normalized.request_id = None;
+    normalized.request_id.clear();
     normalized.event_id = None;
     normalized.session_id.clear();
     normalized.surface = None;
@@ -351,6 +854,31 @@ fn event_create_request_hash(payload: &AgentEventCreatePayload) -> anyhow::Resul
     idempotency_hash("agent_event_create", &normalized)
 }
 
+fn event_update_request_hash(payload: &AgentEventUpdatePayload) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    normalized.surface = None;
+    idempotency_hash("agent_event_update", &normalized)
+}
+
+fn event_delete_request_hash(payload: &AgentEventIdPayload) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    normalized.surface = None;
+    idempotency_hash("agent_event_delete", &normalized)
+}
+
+fn event_participants_request_hash(
+    payload: &AgentEventParticipantsPayload,
+) -> anyhow::Result<String> {
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    normalized.surface = None;
+    normalized.codex_entry_ids.sort();
+    normalized.codex_entry_ids.dedup();
+    idempotency_hash("agent_event_participants", &normalized)
+}
+
 fn normalize_id_set(ids: Option<Vec<String>>) -> Vec<String> {
     let mut ids = ids.unwrap_or_default();
     ids.sort();
@@ -362,7 +890,7 @@ fn foreshadow_create_request_hash(
     payload: &AgentForeshadowCreatePayload,
 ) -> anyhow::Result<String> {
     let mut normalized = payload.clone();
-    normalized.request_id = None;
+    normalized.request_id.clear();
     normalized.foreshadow_id = None;
     normalized.session_id.clear();
     idempotency_hash("agent_foreshadow_create", &normalized)
@@ -373,7 +901,7 @@ fn scene_event_request_hash(
     link: bool,
 ) -> anyhow::Result<String> {
     let mut normalized = payload.clone();
-    normalized.request_id = None;
+    normalized.request_id.clear();
     normalized.session_id.clear();
     normalized.surface = None;
     idempotency_hash(
@@ -403,7 +931,7 @@ fn event_relation_request_hash(
     add: bool,
 ) -> anyhow::Result<String> {
     let mut normalized = payload.clone();
-    normalized.request_id = None;
+    normalized.request_id.clear();
     normalized.session_id.clear();
     normalized.surface = None;
     idempotency_hash(
@@ -611,6 +1139,64 @@ fn merge_codex_authorship_spans(
     Ok(())
 }
 
+fn replace_codex_tags_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    tags: &[String],
+) -> anyhow::Result<()> {
+    conn.execute(
+        "DELETE FROM codex_entry_tags WHERE entry_id = ?1",
+        rusqlite::params![entry_id],
+    )?;
+    let mut normalized = tags
+        .iter()
+        .map(|tag| tag.trim())
+        .filter(|tag| !tag.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    for tag_name in &normalized {
+        let tag_id = conn
+            .query_row(
+                "SELECT id FROM codex_tags WHERE project_id = ?1 AND name = ?2",
+                rusqlite::params![project_id, tag_name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        conn.execute(
+            "INSERT OR IGNORE INTO codex_tags (id, project_id, name) VALUES (?1, ?2, ?3)",
+            rusqlite::params![tag_id, project_id, tag_name],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO codex_entry_tags (entry_id, tag_id) VALUES (?1, ?2)",
+            rusqlite::params![entry_id, tag_id],
+        )?;
+    }
+    let mut statement = conn.prepare(
+        "SELECT tag.name, tag.color
+           FROM codex_entry_tags link
+           JOIN codex_tags tag ON tag.id = link.tag_id
+          WHERE link.entry_id = ?1 AND tag.project_id = ?2
+          ORDER BY tag.name, tag.id",
+    )?;
+    let cache = statement
+        .query_map(rusqlite::params![entry_id, project_id], |row| {
+            Ok(json!({
+                "name": row.get::<_, String>(0)?,
+                "color": row.get::<_, Option<String>>(1)?,
+            }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    conn.execute(
+        "UPDATE codex_entries SET tags_cache = ?1 WHERE id = ?2 AND project_id = ?3",
+        rusqlite::params![serde_json::to_string(&cache)?, entry_id, project_id],
+    )?;
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CodexEntryCreateTxInput<'a> {
     pub project_id: &'a str,
@@ -627,6 +1213,7 @@ pub(crate) struct CodexEntryCreateTxInput<'a> {
     pub excluded_aliases: Option<&'a str>,
     pub readings: Option<&'a str>,
     pub tags_cache: Option<&'a str>,
+    pub tags: Option<&'a [String]>,
     pub parent_id: Option<&'a str>,
     pub source_chat_message_id: Option<&'a str>,
     pub authorship_spans: &'a [AuthorshipSpanInput],
@@ -647,6 +1234,7 @@ pub(crate) struct CodexEntryCreateTxResult {
     pub change_event_uid: String,
     pub undo_journal_id: String,
     pub after_snapshot: Value,
+    pub canonical_event: AppendChangeEvent,
 }
 
 fn normalize_codex_parent_id(parent_id: Option<&str>) -> Option<&str> {
@@ -721,6 +1309,9 @@ pub(crate) fn apply_codex_entry_create_in_tx(
             trace_id: input.trace_id,
         },
     )?;
+    if let Some(tags) = input.tags {
+        replace_codex_tags_in_tx(conn, input.project_id, input.entry_id, tags)?;
+    }
 
     let after_snapshot = collect_codex_entry_snapshot(conn, input.entry_id)?;
     let after_json = after_snapshot.to_string();
@@ -744,29 +1335,30 @@ pub(crate) fn apply_codex_entry_create_in_tx(
         )?;
     }
 
+    let mut change_payload = json!({
+        "type": input.type_slug,
+        "name": input.name,
+        "parentId": parent_id,
+    });
+    if let Some(request_hash) = input.request_hash {
+        change_payload["requestHash"] = Value::String(request_hash.to_string());
+    }
+    let canonical_event = AppendChangeEvent {
+        event_uid: input.event_uid.to_string(),
+        scene_id: None,
+        domain: "codex".to_string(),
+        op_type: "entry.create".to_string(),
+        entity_type: Some("codex_entry".to_string()),
+        entity_id: Some(input.entry_id.to_string()),
+        payload: change_payload.to_string(),
+        timestamp: input.timestamp,
+    };
     if input.write_change_event {
-        let mut change_payload = json!({
-            "type": input.type_slug,
-            "name": input.name,
-            "parentId": parent_id,
-        });
-        if let Some(request_hash) = input.request_hash {
-            change_payload["requestHash"] = Value::String(request_hash.to_string());
-        }
         append_change_events_in_tx(
             conn,
             input.project_id,
             input.session_id,
-            &[AppendChangeEvent {
-                event_uid: input.event_uid.to_string(),
-                scene_id: None,
-                domain: "codex".to_string(),
-                op_type: "entry.create".to_string(),
-                entity_type: Some("codex_entry".to_string()),
-                entity_id: Some(input.entry_id.to_string()),
-                payload: change_payload.to_string(),
-                timestamp: input.timestamp,
-            }],
+            std::slice::from_ref(&canonical_event),
         )?;
     }
 
@@ -776,6 +1368,7 @@ pub(crate) fn apply_codex_entry_create_in_tx(
         change_event_uid: input.event_uid.to_string(),
         undo_journal_id: input.undo_id.to_string(),
         after_snapshot,
+        canonical_event,
     })
 }
 
@@ -809,6 +1402,7 @@ pub(crate) struct CodexEntryPatchTxInput<'a> {
     pub readings: Option<&'a str>,
     /// set-if-present。空文字は NULL（タグなし）に正規化する。
     pub tags_cache: Option<&'a str>,
+    pub tags: Option<&'a [String]>,
     /// set-if-present。空文字は NULL（親なし=ルート）に正規化する。
     pub parent_id: Option<&'a str>,
     pub context_mode: Option<&'a str>,
@@ -838,6 +1432,7 @@ pub(crate) struct CodexEntryPatchTxResult {
     pub undo_journal_id: String,
     pub before_snapshot: Value,
     pub after_snapshot: Value,
+    pub canonical_event: AppendChangeEvent,
 }
 
 /// Shared Codex entry patch body (OCC on base_version) inside a caller-owned transaction.
@@ -1015,6 +1610,9 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
             },
         )?;
     }
+    if let Some(tags) = input.tags {
+        replace_codex_tags_in_tx(conn, input.project_id, input.entry_id, tags)?;
+    }
 
     let after_snapshot = collect_codex_entry_snapshot(conn, input.entry_id)?;
     let after_json = after_snapshot.to_string();
@@ -1038,39 +1636,41 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
         )?;
     }
 
+    let fields: Vec<&str> = [
+        input.type_slug.map(|_| "type"),
+        input.name.map(|_| "name"),
+        effective_summary.map(|_| "summary"),
+        input.content.map(|_| "content"),
+        input.aliases.map(|_| "aliases"),
+        input.excluded_aliases.map(|_| "excludedAliases"),
+        input.readings.map(|_| "readings"),
+        input.tags_cache.map(|_| "tagsCache"),
+        input.tags.map(|_| "tags"),
+        input.parent_id.map(|_| "parentId"),
+        input.context_mode.map(|_| "contextMode"),
+        input.icon.map(|_| "icon"),
+        input.children_budget.map(|_| "childrenBudget"),
+        input.notes.map(|_| "notes"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let canonical_event = AppendChangeEvent {
+        event_uid: input.event_uid.to_string(),
+        scene_id: None,
+        domain: "codex".to_string(),
+        op_type: "entry.update".to_string(),
+        entity_type: Some("codex_entry".to_string()),
+        entity_id: Some(input.entry_id.to_string()),
+        payload: json!({ "fields": fields }).to_string(),
+        timestamp: input.timestamp,
+    };
     if input.write_change_event {
-        let fields: Vec<&str> = [
-            input.type_slug.map(|_| "type"),
-            input.name.map(|_| "name"),
-            effective_summary.map(|_| "summary"),
-            input.content.map(|_| "content"),
-            input.aliases.map(|_| "aliases"),
-            input.excluded_aliases.map(|_| "excludedAliases"),
-            input.readings.map(|_| "readings"),
-            input.tags_cache.map(|_| "tagsCache"),
-            input.parent_id.map(|_| "parentId"),
-            input.context_mode.map(|_| "contextMode"),
-            input.icon.map(|_| "icon"),
-            input.children_budget.map(|_| "childrenBudget"),
-            input.notes.map(|_| "notes"),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
         append_change_events_in_tx(
             conn,
             input.project_id,
             input.session_id,
-            &[AppendChangeEvent {
-                event_uid: input.event_uid.to_string(),
-                scene_id: None,
-                domain: "codex".to_string(),
-                op_type: "entry.update".to_string(),
-                entity_type: Some("codex_entry".to_string()),
-                entity_id: Some(input.entry_id.to_string()),
-                payload: json!({ "fields": fields }).to_string(),
-                timestamp: input.timestamp,
-            }],
+            std::slice::from_ref(&canonical_event),
         )?;
     }
 
@@ -1081,6 +1681,7 @@ pub(crate) fn apply_codex_entry_patch_in_tx(
         undo_journal_id: input.undo_id.to_string(),
         before_snapshot,
         after_snapshot,
+        canonical_event,
     })
 }
 
@@ -1088,22 +1689,553 @@ pub(crate) fn collect_codex_entry_snapshot(
     conn: &rusqlite::Connection,
     entry_id: &str,
 ) -> anyhow::Result<Value> {
-    let after_base: String = conn.query_row(
-        "SELECT json_object(
-            'id', id, 'projectId', project_id, 'type', type, 'name', name,
-            'summary', summary, 'content', content, 'aliases', aliases,
-            'excludedAliases', excluded_aliases, 'readings', readings,
-            'tagsCache', tags_cache, 'parentId', parent_id, 'icon', icon,
-            'contextMode', context_mode, 'childrenBudget', children_budget,
-            'sourceChatMessageId', source_chat_message_id, 'notes', notes,
-            'createdAt', created_at, 'version', version
-         ) FROM codex_entries WHERE id = ?1",
+    let project_id: String = conn.query_row(
+        "SELECT project_id FROM codex_entries WHERE id = ?1",
         rusqlite::params![entry_id],
         |row| row.get(0),
     )?;
-    let after_json =
-        grimodex_core::undo_journal::codex_update_after_snapshot(conn, entry_id, &after_base)?;
-    serde_json::from_str(&after_json).map_err(Into::into)
+    crate::canonical_feed_snapshots::canonical_codex_entry_snapshot(conn, &project_id, entry_id)
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexDeleteCascadeSnapshot {
+    relations: Vec<Value>,
+    phases: Vec<Value>,
+    details: Vec<Value>,
+    tags: Vec<Value>,
+    children: Vec<Value>,
+}
+
+fn codex_delete_journal_snapshot(entry: Value, cascade: CodexDeleteCascadeSnapshot) -> Value {
+    json!({
+        "entry": entry,
+        "cascade": cascade,
+    })
+}
+
+fn restore_deleted_codex_entry_from_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    journal_snapshot: &Value,
+    replay_version: i64,
+) -> anyhow::Result<()> {
+    let entry = journal_snapshot
+        .get("entry")
+        .ok_or_else(|| anyhow::anyhow!("Codex delete journal snapshot has no entry"))?;
+    anyhow::ensure!(
+        entry.get("id").and_then(Value::as_str) == Some(entry_id)
+            && entry.get("projectId").and_then(Value::as_str) == Some(project_id),
+        "Codex delete journal snapshot escaped its project"
+    );
+    let cascade: CodexDeleteCascadeSnapshot = serde_json::from_value(
+        journal_snapshot
+            .get("cascade")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Codex delete journal snapshot has no cascade"))?,
+    )?;
+    let existing: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM codex_entries WHERE id = ?1",
+        rusqlite::params![entry_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        existing == 0,
+        "codex entry '{}' version conflict during journal restore",
+        entry_id
+    );
+    let now = chrono::Utc::now().to_rfc3339();
+    let inserted = conn.execute(
+        "INSERT INTO codex_entries
+         (id, project_id, type, name, aliases, excluded_aliases, readings, summary,
+          content, parent_id, icon, tags_cache, context_mode, children_budget,
+          source_chat_message_id, notes, version, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                 ?14, ?15, ?16, ?17, coalesce(?18, ?19), ?19)",
+        rusqlite::params![
+            entry_id,
+            project_id,
+            entry.get("type").and_then(Value::as_str).unwrap_or("lore"),
+            entry
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("Untitled"),
+            entry.get("aliases").and_then(Value::as_str),
+            entry.get("excludedAliases").and_then(Value::as_str),
+            entry.get("readings").and_then(Value::as_str),
+            entry.get("summary").and_then(Value::as_str),
+            entry.get("content").and_then(Value::as_str).unwrap_or("{}"),
+            entry.get("parentId").and_then(Value::as_str),
+            entry.get("icon").and_then(Value::as_str),
+            entry.get("tagsCache").and_then(Value::as_str),
+            entry
+                .get("contextMode")
+                .and_then(Value::as_str)
+                .unwrap_or("mentioned"),
+            entry
+                .get("childrenBudget")
+                .and_then(Value::as_str)
+                .unwrap_or("compact"),
+            entry.get("sourceChatMessageId").and_then(Value::as_str),
+            entry.get("notes").and_then(Value::as_str),
+            replay_version,
+            entry.get("createdAt").and_then(Value::as_str),
+            now,
+        ],
+    )?;
+    anyhow::ensure!(
+        inserted == 1,
+        "Codex delete restore did not insert its root"
+    );
+    grimodex_core::snapshots::restore_codex_authorship_spans(conn, entry_id, entry)?;
+
+    for child in &cascade.children {
+        let child_id = child
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex child restore snapshot has no id"))?;
+        anyhow::ensure!(
+            child.get("projectId").and_then(Value::as_str) == Some(project_id),
+            "Codex child restore snapshot escaped its project"
+        );
+        let updated = conn.execute(
+            "UPDATE codex_entries
+                SET parent_id = ?1, version = version + 1, updated_at = ?2
+              WHERE id = ?3 AND project_id = ?4 AND parent_id IS NULL",
+            rusqlite::params![entry_id, now, child_id, project_id],
+        )?;
+        anyhow::ensure!(
+            updated == 1,
+            "Codex child '{child_id}' changed before restore"
+        );
+    }
+    for relation in &cascade.relations {
+        anyhow::ensure!(
+            relation.get("projectId").and_then(Value::as_str) == Some(project_id),
+            "Codex relation restore snapshot escaped its project"
+        );
+        conn.execute(
+            "INSERT INTO codex_relations
+             (id, project_id, from_codex_id, to_codex_id, relation_type, label,
+              directionality, inverse_label, semantic_key, depth_hint,
+              source_map_edge_id, version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                     coalesce(?13, datetime('now')),
+                     coalesce(?14, datetime('now')))",
+            rusqlite::params![
+                relation.get("id").and_then(Value::as_str),
+                project_id,
+                relation.get("fromCodexId").and_then(Value::as_str),
+                relation.get("toCodexId").and_then(Value::as_str),
+                relation
+                    .get("relationType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("custom"),
+                relation.get("label").and_then(Value::as_str),
+                relation
+                    .get("directionality")
+                    .and_then(Value::as_str)
+                    .unwrap_or("directed"),
+                relation.get("inverseLabel").and_then(Value::as_str),
+                relation
+                    .get("semanticKey")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                relation.get("depthHint").and_then(Value::as_i64),
+                relation.get("sourceMapEdgeId").and_then(Value::as_str),
+                relation.get("version").and_then(Value::as_i64).unwrap_or(1),
+                relation.get("createdAt").and_then(Value::as_str),
+                relation.get("updatedAt").and_then(Value::as_str),
+            ],
+        )?;
+    }
+    for phase in &cascade.phases {
+        conn.execute(
+            "INSERT INTO codex_entry_phases
+             (id, entry_id, anchor_node_id, label, summary_override,
+              content_override, context_mode_override, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            rusqlite::params![
+                phase.get("id").and_then(Value::as_str),
+                entry_id,
+                phase.get("anchorNodeId").and_then(Value::as_str),
+                phase.get("label").and_then(Value::as_str).unwrap_or(""),
+                phase.get("summaryOverride").and_then(Value::as_str),
+                phase.get("contentOverride").and_then(Value::as_str),
+                phase.get("contextModeOverride").and_then(Value::as_str),
+                phase.get("version").and_then(Value::as_i64).unwrap_or(0),
+            ],
+        )?;
+    }
+    for detail in &cascade.details {
+        conn.execute(
+            "INSERT INTO codex_detail_values
+             (id, entry_id, definition_id, value, version, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                     coalesce(?6, datetime('now')),
+                     coalesce(?7, datetime('now')))",
+            rusqlite::params![
+                detail.get("id").and_then(Value::as_str),
+                entry_id,
+                detail.get("definitionId").and_then(Value::as_str),
+                detail.get("value").and_then(Value::as_str),
+                detail.get("version").and_then(Value::as_i64).unwrap_or(0),
+                detail.get("createdAt").and_then(Value::as_str),
+                detail.get("updatedAt").and_then(Value::as_str),
+            ],
+        )?;
+    }
+    for tag in &cascade.tags {
+        anyhow::ensure!(
+            tag.get("entryId").and_then(Value::as_str) == Some(entry_id),
+            "Codex tag restore snapshot escaped its entry"
+        );
+        conn.execute(
+            "INSERT INTO codex_entry_tags (entry_id, tag_id) VALUES (?1, ?2)",
+            rusqlite::params![entry_id, tag.get("tagId").and_then(Value::as_str)],
+        )?;
+    }
+    Ok(())
+}
+
+fn restored_cascade_event(
+    object_key: Value,
+    after: &Value,
+    change_kind: &str,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    Ok(NarrativeChangeEventInput {
+        object_key,
+        change_kind: change_kind.to_string(),
+        mutation_kind: "restore".to_string(),
+        before_version: None,
+        before_digest: None,
+        after_version: snapshot_version(after),
+        after_digest: Some(narrative_snapshot_digest(after)?),
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+fn codex_delete_cascade_restore_feed_events(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+    root_after: &Value,
+    cascade: &CodexDeleteCascadeSnapshot,
+    child_before: &[Value],
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let mut events = vec![restored_cascade_event(
+        json!({ "kind": "codex-entry", "entryId": entry_id }),
+        root_after,
+        "metadata",
+        vec!["/".to_string()],
+    )?];
+    for relation in &cascade.relations {
+        let id = relation
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex relation restore snapshot has no id"))?;
+        let after = crate::canonical_feed_snapshots::canonical_codex_relation_snapshot(
+            conn, project_id, id,
+        )?;
+        events.push(restored_cascade_event(
+            json!({ "kind": "codex-relation", "relationId": id }),
+            &after,
+            "association",
+            vec!["/".to_string()],
+        )?);
+    }
+    for phase in &cascade.phases {
+        let id = phase
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex phase restore snapshot has no id"))?;
+        events.push(restored_cascade_event(
+            json!({ "kind": "codex-phase", "phaseId": id }),
+            phase,
+            "metadata",
+            vec!["/".to_string()],
+        )?);
+    }
+    for detail in &cascade.details {
+        let definition_id = detail
+            .get("definitionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no definitionId"))?;
+        let after = crate::canonical_feed_snapshots::canonical_codex_detail_snapshot(
+            conn,
+            project_id,
+            entry_id,
+            definition_id,
+        )?;
+        events.push(restored_cascade_event(
+            json!({
+                "kind": "component",
+                "componentId": format!(
+                    "codex-detail-value:{entry_id}:{definition_id}"
+                ),
+            }),
+            &after,
+            "metadata",
+            vec!["/".to_string()],
+        )?);
+    }
+    anyhow::ensure!(
+        child_before.len() == cascade.children.len(),
+        "Codex child restore snapshot count changed"
+    );
+    for before in child_before {
+        let child_id = before
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex child restore snapshot has no id"))?;
+        let after = collect_codex_entry_snapshot(conn, child_id)?;
+        let changed_paths = vec!["/parentId".to_string()];
+        events.push(NarrativeChangeEventInput {
+            object_key: json!({ "kind": "codex-entry", "entryId": child_id }),
+            change_kind: "metadata".to_string(),
+            mutation_kind: "update".to_string(),
+            before_version: snapshot_version(before),
+            before_digest: Some(narrative_snapshot_digest(before)?),
+            after_version: snapshot_version(&after),
+            after_digest: Some(narrative_snapshot_digest(&after)?),
+            changed_paths: changed_paths.clone(),
+            text_impact: None,
+            structural_impact: Some(json!({ "changedPaths": changed_paths })),
+        });
+    }
+    anyhow::ensure!(
+        root_after.get("projectId").and_then(Value::as_str) == Some(project_id),
+        "restored Codex root escaped its project"
+    );
+    Ok(events)
+}
+
+fn collect_json_rows<P: rusqlite::Params>(
+    conn: &rusqlite::Connection,
+    sql: &str,
+    params: P,
+) -> anyhow::Result<Vec<Value>> {
+    let mut statement = conn.prepare(sql)?;
+    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+    rows.map(|row| {
+        let raw = row?;
+        serde_json::from_str(&raw).map_err(Into::into)
+    })
+    .collect()
+}
+
+fn collect_codex_delete_cascade_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entry_id: &str,
+) -> anyhow::Result<CodexDeleteCascadeSnapshot> {
+    let relations = collect_json_rows(
+        conn,
+        "SELECT json_object(
+             'id', relation.id,
+             'projectId', relation.project_id,
+             'fromCodexId', relation.from_codex_id,
+             'toCodexId', relation.to_codex_id,
+             'relationType', relation.relation_type,
+             'label', relation.label,
+             'directionality', relation.directionality,
+             'inverseLabel', relation.inverse_label,
+             'semanticKey', relation.semantic_key,
+             'depthHint', relation.depth_hint,
+             'sourceMapEdgeId', relation.source_map_edge_id,
+             'version', relation.version,
+             'createdAt', relation.created_at,
+             'updatedAt', relation.updated_at
+           )
+           FROM codex_relations relation
+          WHERE relation.project_id = ?1
+            AND (relation.from_codex_id = ?2 OR relation.to_codex_id = ?2)
+          ORDER BY relation.id",
+        rusqlite::params![project_id, entry_id],
+    )?;
+    let phases = collect_json_rows(
+        conn,
+        "SELECT json_object(
+             'id', phase.id,
+             'entryId', phase.entry_id,
+             'anchorNodeId', phase.anchor_node_id,
+             'label', phase.label,
+             'summaryOverride', phase.summary_override,
+             'contentOverride', phase.content_override,
+             'contextModeOverride', phase.context_mode_override,
+             'version', phase.version
+           )
+           FROM codex_entry_phases phase
+           JOIN codex_entries entry ON entry.id = phase.entry_id
+          WHERE entry.project_id = ?1 AND phase.entry_id = ?2
+          ORDER BY phase.id",
+        rusqlite::params![project_id, entry_id],
+    )?;
+    let details = collect_json_rows(
+        conn,
+        "SELECT json_object(
+             'id', value.id,
+             'entryId', value.entry_id,
+             'definitionId', value.definition_id,
+             'value', value.value,
+             'version', value.version,
+             'createdAt', value.created_at,
+             'updatedAt', value.updated_at
+           )
+           FROM codex_detail_values value
+           JOIN codex_entries entry ON entry.id = value.entry_id
+          WHERE entry.project_id = ?1 AND value.entry_id = ?2
+          ORDER BY value.id",
+        rusqlite::params![project_id, entry_id],
+    )?;
+    let tags = collect_json_rows(
+        conn,
+        "SELECT json_object('entryId', association.entry_id, 'tagId', association.tag_id)
+           FROM codex_entry_tags association
+           JOIN codex_entries entry ON entry.id = association.entry_id
+           JOIN codex_tags tag ON tag.id = association.tag_id
+          WHERE entry.project_id = ?1 AND tag.project_id = ?1
+            AND association.entry_id = ?2
+          ORDER BY association.tag_id",
+        rusqlite::params![project_id, entry_id],
+    )?;
+    let mut child_ids = conn.prepare(
+        "SELECT id FROM codex_entries
+          WHERE project_id = ?1 AND parent_id = ?2
+          ORDER BY id",
+    )?;
+    let children = child_ids
+        .query_map(rusqlite::params![project_id, entry_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .map(|child_id| collect_codex_entry_snapshot(conn, &child_id))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    Ok(CodexDeleteCascadeSnapshot {
+        relations,
+        phases,
+        details,
+        tags,
+        children,
+    })
+}
+
+fn snapshot_version(snapshot: &Value) -> Option<i64> {
+    snapshot.get("version").and_then(Value::as_i64)
+}
+
+fn deleted_cascade_event(
+    object_key: Value,
+    before: &Value,
+    change_kind: &str,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    Ok(NarrativeChangeEventInput {
+        object_key,
+        change_kind: change_kind.to_string(),
+        mutation_kind: "delete".to_string(),
+        before_version: snapshot_version(before),
+        before_digest: Some(narrative_snapshot_digest(before)?),
+        after_version: None,
+        after_digest: None,
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+fn codex_delete_cascade_feed_events(
+    conn: &rusqlite::Connection,
+    snapshot: &CodexDeleteCascadeSnapshot,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    let mut events = Vec::new();
+    for relation in &snapshot.relations {
+        let id = relation
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex relation cascade snapshot has no id"))?;
+        events.push(deleted_cascade_event(
+            json!({ "kind": "codex-relation", "relationId": id }),
+            relation,
+            "association",
+            vec!["/".to_string()],
+        )?);
+    }
+    for phase in &snapshot.phases {
+        let id = phase
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex phase cascade snapshot has no id"))?;
+        events.push(deleted_cascade_event(
+            json!({ "kind": "codex-phase", "phaseId": id }),
+            phase,
+            "metadata",
+            vec!["/".to_string()],
+        )?);
+    }
+    for detail in &snapshot.details {
+        let entry_id = detail
+            .get("entryId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex detail cascade snapshot has no entryId"))?;
+        let definition_id = detail
+            .get("definitionId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex detail cascade snapshot has no definitionId"))?;
+        events.push(deleted_cascade_event(
+            json!({
+                "kind": "component",
+                "componentId": format!(
+                    "codex-detail-value:{entry_id}:{definition_id}"
+                ),
+            }),
+            detail,
+            "metadata",
+            vec!["/".to_string()],
+        )?);
+    }
+    for child_before in &snapshot.children {
+        let child_id = child_before
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("Codex child cascade snapshot has no id"))?;
+        let child_after = collect_codex_entry_snapshot(conn, child_id)?;
+        let changed_paths = vec!["/parentId".to_string()];
+        events.push(NarrativeChangeEventInput {
+            object_key: json!({ "kind": "codex-entry", "entryId": child_id }),
+            change_kind: "metadata".to_string(),
+            mutation_kind: "update".to_string(),
+            before_version: snapshot_version(child_before),
+            before_digest: Some(narrative_snapshot_digest(child_before)?),
+            after_version: snapshot_version(&child_after),
+            after_digest: Some(narrative_snapshot_digest(&child_after)?),
+            changed_paths: changed_paths.clone(),
+            text_impact: None,
+            structural_impact: Some(json!({ "changedPaths": changed_paths })),
+        });
+    }
+    Ok(events)
+}
+
+fn codex_delete_cascade_ids(snapshot: &CodexDeleteCascadeSnapshot) -> Value {
+    let ids = |rows: &[Value]| {
+        rows.iter()
+            .filter_map(|row| row.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    json!({
+        "relationIds": ids(&snapshot.relations),
+        "phaseIds": ids(&snapshot.phases),
+        "detailValueIds": ids(&snapshot.details),
+        "tagIds": snapshot.tags.iter().filter_map(|row| row.get("tagId").and_then(Value::as_str)).map(str::to_string).collect::<Vec<_>>(),
+        "childEntryIds": ids(&snapshot.children),
+    })
 }
 
 pub(crate) fn delete_codex_entry_cascade(
@@ -1137,25 +2269,202 @@ pub(crate) fn delete_codex_entry_cascade(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn restore_renderer_codex_delete_cascade_in_tx(
+    conn: &rusqlite::Connection,
+    payload: &AgentCodexCreatePayload,
+    context: &RendererCanonicalWriteContext,
+    entry_id: &str,
+    event_uid: &str,
+    request_hash: &str,
+    timestamp: i64,
+) -> anyhow::Result<Option<AgentWriteResult>> {
+    if context.origin != NarrativeChangeOrigin::Undo {
+        return Ok(None);
+    }
+    let journal_id = context
+        .undo_journal_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Codex restore requires undoJournalId"))?;
+    let journal =
+        grimodex_core::undo_journal::load_undo_journal(conn, &payload.project_id, journal_id)?;
+    if journal.entity_kind != "codex_entry" || journal.op_kind != "delete" {
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        journal.entity_id == entry_id,
+        "Codex delete restore journal identifies another entry"
+    );
+    let raw = journal
+        .before_json
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Codex delete restore journal has no before snapshot"))?;
+    let journal_snapshot: Value = serde_json::from_str(raw)?;
+    let Some(cascade_value) = journal_snapshot.get("cascade") else {
+        // Legacy root-only delete journal. The normal create replay below
+        // preserves backward compatibility for workspaces created pre-C1.
+        return Ok(None);
+    };
+    let cascade: CodexDeleteCascadeSnapshot = serde_json::from_value(cascade_value.clone())?;
+    let child_before = cascade
+        .children
+        .iter()
+        .map(|child| {
+            let child_id = child
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("Codex child restore snapshot has no id"))?;
+            collect_codex_entry_snapshot(conn, child_id)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let replay_version = journal
+        .base_version
+        .checked_add(1)
+        .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
+    restore_deleted_codex_entry_from_snapshot(
+        conn,
+        &payload.project_id,
+        entry_id,
+        &journal_snapshot,
+        replay_version,
+    )?;
+    grimodex_core::undo_journal::advance_codex_journal_state_token(
+        conn,
+        &payload.project_id,
+        entry_id,
+        journal.base_version,
+        replay_version,
+    )?;
+    let root_after = collect_codex_entry_snapshot(conn, entry_id)?;
+    let narrative_events = codex_delete_cascade_restore_feed_events(
+        conn,
+        &payload.project_id,
+        entry_id,
+        &root_after,
+        &cascade,
+        &child_before,
+    )?;
+    let canonical_payload = context.canonical_payload.clone().unwrap_or_else(|| {
+        json!({
+            "name": root_after.get("name").cloned().unwrap_or(Value::Null),
+            "type": root_after.get("type").cloned().unwrap_or(Value::Null),
+            "cascade": codex_delete_cascade_ids(&cascade),
+        })
+    });
+    let canonical_event = AppendChangeEvent {
+        event_uid: event_uid.to_string(),
+        scene_id: None,
+        domain: "codex".to_string(),
+        op_type: "entry.restore".to_string(),
+        entity_type: Some("codex_entry".to_string()),
+        entity_id: Some(entry_id.to_string()),
+        payload: canonical_payload.to_string(),
+        timestamp,
+    };
+    append_agent_forward_change_in_tx(
+        conn,
+        &payload.project_id,
+        &payload.session_id,
+        payload.surface.as_deref(),
+        Some(&context.request_id),
+        journal_id,
+        &canonical_event,
+        Some(narrative_events),
+        Some(context),
+    )?;
+    // Ensure semantically-different retries cannot claim the restored result.
+    let _ = request_hash;
+    Ok(Some(AgentWriteResult {
+        entity_id: entry_id.to_string(),
+        version: root_after
+            .get("version")
+            .and_then(Value::as_i64)
+            .unwrap_or(journal.base_version + 1),
+        change_event_uid: event_uid.to_string(),
+        undo_journal_id: journal_id.to_string(),
+    }))
+}
+
 pub fn agent_codex_create_impl(
     db: &Database,
     payload: AgentCodexCreatePayload,
 ) -> anyhow::Result<Value> {
-    let request_hash = codex_create_request_hash(&payload)?;
+    require_agent_request_id(payload.request_id.as_deref())?;
+    agent_codex_create_internal(db, payload, None, None)
+}
+
+pub fn agent_codex_create_with_tags_impl(
+    db: &Database,
+    payload: AgentCodexCreatePayload,
+    tags: Option<&[String]>,
+) -> anyhow::Result<Value> {
+    require_agent_request_id(payload.request_id.as_deref())?;
+    agent_codex_create_internal(db, payload, tags, None)
+}
+
+pub fn renderer_codex_create_impl(
+    db: &Database,
+    payload: AgentCodexCreatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_renderer_codex_identity(&payload.project_id, &payload.session_id, &context)?;
+    agent_codex_create_internal(db, payload, None, Some(context))
+}
+
+fn agent_codex_create_internal(
+    db: &Database,
+    payload: AgentCodexCreatePayload,
+    tags: Option<&[String]>,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    let request_hash = match renderer_context.as_ref() {
+        Some(context) => {
+            renderer_codex_request_hash("renderer_agent_codex_create", &payload, context, tags)?
+        }
+        None => codex_create_request_hash(&payload, tags)?,
+    };
     let legacy_entity_request = payload.request_id.is_none() && payload.entry_id.is_some();
-    let request_id = payload
-        .request_id
-        .clone()
+    let feed_request_id = renderer_context
+        .as_ref()
+        .map(|context| context.request_id.clone())
+        .or_else(|| payload.request_id.clone());
+    let request_id = renderer_context
+        .as_ref()
+        .map(|context| context.request_id.clone())
+        .or_else(|| payload.request_id.clone())
         .or_else(|| payload.entry_id.clone());
+    let renderer_request_hash = renderer_context
+        .as_ref()
+        .map(|context| {
+            renderer_codex_request_hash("renderer_agent_codex_create", &payload, context, tags)
+        })
+        .transpose()?;
+    let renderer_request =
+        renderer_request_hash
+            .as_deref()
+            .map(|payload_hash| IdempotencyRequest {
+                domain: "renderer_agent_codex_create",
+                request_id: renderer_context
+                    .as_ref()
+                    .map(|context| context.request_id.as_str()),
+                payload_hash,
+                conflict_marker: "AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT",
+            });
     let entry_id = payload
         .entry_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let undo_id = request_id
-        .clone()
+    let undo_id = renderer_context
+        .as_ref()
+        .and_then(|context| context.undo_journal_id.clone())
+        .or_else(|| request_id.clone())
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
+    let restore_payload = payload.clone();
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
     let summary = payload.summary.unwrap_or_default();
     let aliases = payload.aliases;
@@ -1171,6 +2480,37 @@ pub fn agent_codex_create_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request) = renderer_request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+            validate_renderer_replay_lineage_in_tx(
+                conn,
+                &payload.project_id,
+                renderer_context.as_ref(),
+            )?;
+            if let Some(context) = renderer_context.as_ref() {
+                if let Some(restored) = restore_renderer_codex_delete_cascade_in_tx(
+                    conn,
+                    &restore_payload,
+                    context,
+                    &entry_id,
+                    &event_uid,
+                    &request_hash,
+                    timestamp,
+                )? {
+                    if let Some(request) = renderer_request.as_ref() {
+                        insert_idempotent_response(
+                            conn,
+                            request,
+                            &payload.project_id,
+                            &serde_json::to_value(&restored)?,
+                        )?;
+                    }
+                    return Ok(restored);
+                }
+            }
             if let Some(request_id) = request_id.as_deref() {
                 if let Some(existing) = existing_request_result(
                     conn,
@@ -1211,6 +2551,7 @@ pub fn agent_codex_create_impl(
                     excluded_aliases: excluded_aliases.as_deref(),
                     readings: readings.as_deref(),
                     tags_cache: tags_cache.as_deref(),
+                    tags,
                     parent_id: parent_id.as_deref(),
                     source_chat_message_id: source_chat_message_id.as_deref(),
                     authorship_spans: &payload.authorship_spans,
@@ -1220,30 +2561,75 @@ pub fn agent_codex_create_impl(
                     request_hash: request_id.as_ref().map(|_| request_hash.as_str()),
                     now: &now,
                     timestamp,
-                    write_undo_journal: true,
-                    write_change_event: true,
+                    write_undo_journal: !is_renderer_replay(renderer_context.as_ref()),
+                    write_change_event: false,
                 },
             )?;
-            record_manual_codex_entry_fields(
+            if let Some(context) = renderer_context.as_ref() {
+                apply_renderer_codex_create_fields(
+                    conn,
+                    &payload.project_id,
+                    &created.entity_id,
+                    &created.undo_journal_id,
+                    context,
+                )?;
+            }
+            let mut canonical_event = created.canonical_event.clone();
+            if let Some(audit_payload) = renderer_context
+                .as_ref()
+                .and_then(|context| context.canonical_payload.as_ref())
+            {
+                canonical_event.payload = audit_payload.to_string();
+            }
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
-                &created.entity_id,
+                &payload.session_id,
                 surface.as_deref(),
-                CODEX_ENTRY_AUTHORITY_FIELDS,
-                &now,
+                feed_request_id.as_deref(),
+                &created.undo_journal_id,
+                &canonical_event,
+                None,
+                renderer_context.as_ref(),
             )?;
-            Ok(AgentWriteResult {
+            if renderer_context
+                .as_ref()
+                .is_none_or(|context| context.origin == NarrativeChangeOrigin::Human)
+            {
+                record_manual_codex_entry_fields(
+                    conn,
+                    &payload.project_id,
+                    &created.entity_id,
+                    surface.as_deref(),
+                    CODEX_ENTRY_AUTHORITY_FIELDS,
+                    &now,
+                )?;
+            }
+            let response = AgentWriteResult {
                 entity_id: created.entity_id,
                 version: created.version,
                 change_event_uid: created.change_event_uid,
                 undo_journal_id: created.undo_journal_id,
-            })
+            };
+            if let Some(request) = renderer_request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
             Ok(res) => {
                 grimodex_core::commit_or_rollback(conn)?;
-                Ok(serde_json::to_value(res)?)
+                if renderer_context.is_some() {
+                    attach_maintenance_transaction_id(conn, &payload.project_id, &res)
+                } else {
+                    Ok(serde_json::to_value(res)?)
+                }
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1257,8 +2643,66 @@ pub fn agent_codex_update_impl(
     db: &Database,
     payload: AgentCodexUpdatePayload,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    agent_codex_update_internal(db, payload, None, None, None)
+}
+
+pub fn agent_codex_update_with_request_impl(
+    db: &Database,
+    payload: AgentCodexUpdatePayload,
+    request_id: Option<&str>,
+    tags: Option<&[String]>,
+) -> anyhow::Result<Value> {
+    agent_codex_update_internal(db, payload, request_id, tags, None)
+}
+
+pub fn renderer_codex_update_impl(
+    db: &Database,
+    payload: AgentCodexUpdatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_renderer_codex_identity(&payload.project_id, &payload.session_id, &context)?;
+    agent_codex_update_internal(db, payload, None, None, Some(context))
+}
+
+fn agent_codex_update_internal(
+    db: &Database,
+    payload: AgentCodexUpdatePayload,
+    legacy_request_id: Option<&str>,
+    tags: Option<&[String]>,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    let request_id = renderer_context
+        .as_ref()
+        .map(|context| context.request_id.as_str())
+        .or(legacy_request_id);
+    let request_hash = match renderer_context.as_ref() {
+        Some(context) => Some(renderer_codex_request_hash(
+            "renderer_agent_codex_update",
+            &payload,
+            context,
+            tags,
+        )?),
+        None => request_id
+            .map(|_| codex_update_request_hash(&payload, tags))
+            .transpose()?,
+    };
+    let request = request_hash
+        .as_deref()
+        .map(|payload_hash| IdempotencyRequest {
+            domain: "agent_codex_update",
+            request_id,
+            payload_hash,
+            conflict_marker: "AGENT_CODEX_UPDATE_IDEMPOTENCY_CONFLICT",
+        });
+    let undo_id = renderer_context
+        .as_ref()
+        .and_then(|context| context.undo_journal_id.clone())
+        .or_else(|| request_id.map(str::to_string))
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
 
@@ -1267,6 +2711,16 @@ pub fn agent_codex_update_impl(
         conn.execute_batch("BEGIN IMMEDIATE")?;
 
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request) = request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+            validate_renderer_replay_lineage_in_tx(
+                conn,
+                &payload.project_id,
+                renderer_context.as_ref(),
+            )?;
             let manual_fields = manual_update_fields(&payload);
             let patched = apply_codex_entry_patch_in_tx(
                 conn,
@@ -1287,6 +2741,7 @@ pub fn agent_codex_update_impl(
                     excluded_aliases: payload.excluded_aliases.as_deref(),
                     readings: payload.readings.as_deref(),
                     tags_cache: payload.tags_cache.as_deref(),
+                    tags,
                     parent_id: payload.parent_id.as_deref(),
                     context_mode: payload.context_mode.as_deref(),
                     icon: payload.icon.as_deref(),
@@ -1299,31 +2754,95 @@ pub fn agent_codex_update_impl(
                     trace_id: payload.trace_id.as_deref(),
                     now: &now,
                     timestamp,
-                    write_undo_journal: true,
-                    write_change_event: true,
+                    write_undo_journal: !is_renderer_replay(renderer_context.as_ref()),
+                    write_change_event: false,
                     aliases_and_empty_summary_only: false,
                 },
             )?;
-            record_manual_codex_entry_fields(
+            let mut canonical_event = patched.canonical_event.clone();
+            if let Some(audit_payload) = renderer_context
+                .as_ref()
+                .and_then(|context| context.canonical_payload.as_ref())
+            {
+                canonical_event.payload = audit_payload.to_string();
+            }
+            let cause_kind = renderer_context
+                .as_ref()
+                .map_or(NarrativeChangeCauseKind::Forward, |context| {
+                    renderer_cause_kind(context.origin)
+                });
+            let journal_row = grimodex_core::undo_journal::load_undo_journal(
                 conn,
                 &payload.project_id,
-                &patched.entity_id,
-                payload.surface.as_deref(),
-                &manual_fields,
-                &now,
+                &patched.undo_journal_id,
             )?;
-            Ok(AgentWriteResult {
+            let mut narrative_events = vec![event_from_undo_journal_row(&journal_row, cause_kind)?];
+            if codex_patch_invalidates_linked_foreshadows(&payload) {
+                narrative_events.extend(invalidate_linked_foreshadows_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &patched.entity_id,
+                    timestamp,
+                )?);
+            }
+            append_agent_forward_change_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                payload.surface.as_deref(),
+                request_id,
+                &patched.undo_journal_id,
+                &canonical_event,
+                Some(narrative_events),
+                renderer_context.as_ref(),
+            )?;
+            if renderer_context
+                .as_ref()
+                .is_none_or(|context| context.origin == NarrativeChangeOrigin::Human)
+            {
+                record_manual_codex_entry_fields(
+                    conn,
+                    &payload.project_id,
+                    &patched.entity_id,
+                    payload.surface.as_deref(),
+                    &manual_fields,
+                    &now,
+                )?;
+            }
+            let response = AgentWriteResult {
                 entity_id: patched.entity_id,
                 version: patched.version,
                 change_event_uid: patched.change_event_uid,
                 undo_journal_id: patched.undo_journal_id,
-            })
+            };
+            if let Some(request) = request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
             Ok(res) => {
                 grimodex_core::commit_or_rollback(conn)?;
-                Ok(serde_json::to_value(res)?)
+                if renderer_context.is_some() {
+                    let mut value =
+                        attach_maintenance_transaction_id(conn, &payload.project_id, &res)?;
+                    if codex_patch_invalidates_linked_foreshadows(&payload) {
+                        value["relatedForeshadows"] = Value::Array(linked_foreshadow_rows(
+                            conn,
+                            &payload.project_id,
+                            &payload.entry_id,
+                        )?);
+                    }
+                    Ok(value)
+                } else {
+                    Ok(serde_json::to_value(res)?)
+                }
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1333,23 +2852,70 @@ pub fn agent_codex_update_impl(
     })
 }
 
-/// Codex entry の削除 (OCC + undo_journal + change_event)。Human (legacy
-/// `deleteCodexEntry`) 経路専用。`delete_codex_entry_cascade` の FK CASCADE で
-/// relations/phases/detail values も一緒に消える。undo (revert) は codex_entries
-/// 行と authorship_spans のみ復元する — カスケードされた子は復元しない
-/// (cutover 前の `deleteCodexEntry` に undo が無かった挙動をそのまま維持)。
+/// Codex entry deletion (OCC + Undo Journal + canonical/maintenance events).
+/// Renderer deletes snapshot the authoritative Codex cascade before the FK
+/// delete and restore that snapshot through the typed create/undo path.
 pub fn agent_codex_delete_impl(
     db: &Database,
     payload: AgentCodexDeletePayload,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    agent_codex_delete_internal(db, payload, None)
+}
+
+pub fn renderer_codex_delete_impl(
+    db: &Database,
+    payload: AgentCodexDeletePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    validate_renderer_codex_identity(&payload.project_id, &payload.session_id, &context)?;
+    agent_codex_delete_internal(db, payload, Some(context))
+}
+
+fn agent_codex_delete_internal(
+    db: &Database,
+    payload: AgentCodexDeletePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
+    let request_hash = renderer_context
+        .as_ref()
+        .map(|context| {
+            renderer_codex_request_hash("renderer_agent_codex_delete", &payload, context, None)
+        })
+        .transpose()?;
+    let idempotency_request = request_hash
+        .as_deref()
+        .map(|payload_hash| IdempotencyRequest {
+            domain: "renderer_agent_codex_delete",
+            request_id: renderer_context
+                .as_ref()
+                .map(|context| context.request_id.as_str()),
+            payload_hash,
+            conflict_marker: "AGENT_CODEX_DELETE_IDEMPOTENCY_CONFLICT",
+        });
+    let undo_id = renderer_context
+        .as_ref()
+        .and_then(|context| context.undo_journal_id.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request) = idempotency_request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+            validate_renderer_replay_lineage_in_tx(
+                conn,
+                &payload.project_id,
+                renderer_context.as_ref(),
+            )?;
             let db_version: i64 = conn.query_row(
                 "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.entry_id, payload.project_id],
@@ -1364,7 +2930,14 @@ pub fn agent_codex_delete_impl(
                 );
             }
             let before_snapshot = collect_codex_entry_snapshot(conn, &payload.entry_id)?;
-            let before_json = before_snapshot.to_string();
+            let cascade_snapshot = collect_codex_delete_cascade_snapshot(
+                conn,
+                &payload.project_id,
+                &payload.entry_id,
+            )?;
+            let before_json =
+                codex_delete_journal_snapshot(before_snapshot.clone(), cascade_snapshot.clone())
+                    .to_string();
 
             delete_codex_entry_cascade(
                 conn,
@@ -1373,60 +2946,108 @@ pub fn agent_codex_delete_impl(
                 Some(payload.base_version),
             )?;
 
-            insert_undo_journal_in_tx(
-                conn,
-                UndoJournalInsert {
-                    id: &undo_id,
-                    project_id: &payload.project_id,
-                    surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
-                    entity_kind: "codex_entry",
-                    entity_id: &payload.entry_id,
-                    op_kind: "delete",
-                    before_json: Some(&before_json),
-                    after_json: None,
-                    base_version: payload.base_version,
-                    result_version: payload.base_version,
-                    change_event_uid: Some(&event_uid),
-                },
-            )?;
+            if !is_renderer_replay(renderer_context.as_ref()) {
+                insert_undo_journal_in_tx(
+                    conn,
+                    UndoJournalInsert {
+                        id: &undo_id,
+                        project_id: &payload.project_id,
+                        surface: payload.surface.as_deref().unwrap_or("in-app-agent"),
+                        entity_kind: "codex_entry",
+                        entity_id: &payload.entry_id,
+                        op_kind: "delete",
+                        before_json: Some(&before_json),
+                        after_json: None,
+                        base_version: payload.base_version,
+                        result_version: payload.base_version,
+                        change_event_uid: Some(&event_uid),
+                    },
+                )?;
+            }
 
-            append_change_events_in_tx(
+            let mut canonical_payload = renderer_context
+                .as_ref()
+                .and_then(|context| context.canonical_payload.clone())
+                .unwrap_or_else(|| {
+                    json!({
+                        "name": before_snapshot.get("name").cloned().unwrap_or(Value::Null),
+                        "type": before_snapshot.get("type").cloned().unwrap_or(Value::Null),
+                    })
+                });
+            if let Some(payload_object) = canonical_payload.as_object_mut() {
+                payload_object.insert(
+                    "cascade".to_string(),
+                    codex_delete_cascade_ids(&cascade_snapshot),
+                );
+            }
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "codex".to_string(),
+                op_type: "entry.delete".to_string(),
+                entity_type: Some("codex_entry".to_string()),
+                entity_id: Some(payload.entry_id.clone()),
+                payload: canonical_payload.to_string(),
+                timestamp,
+            };
+            let mut narrative_events = vec![deleted_cascade_event(
+                json!({ "kind": "codex-entry", "entryId": payload.entry_id }),
+                &before_snapshot,
+                "metadata",
+                vec!["/".to_string()],
+            )?];
+            narrative_events.extend(codex_delete_cascade_feed_events(conn, &cascade_snapshot)?);
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "codex".to_string(),
-                    op_type: "entry.delete".to_string(),
-                    entity_type: Some("codex_entry".to_string()),
-                    entity_id: Some(payload.entry_id.clone()),
-                    payload: json!({}).to_string(),
-                    timestamp,
-                }],
-            )?;
-
-            record_manual_codex_entry_fields(
-                conn,
-                &payload.project_id,
-                &payload.entry_id,
                 payload.surface.as_deref(),
-                CODEX_ENTRY_AUTHORITY_FIELDS,
-                &chrono::Utc::now().to_rfc3339(),
+                None,
+                &undo_id,
+                &canonical_event,
+                Some(narrative_events),
+                renderer_context.as_ref(),
             )?;
 
-            Ok(AgentWriteResult {
+            if renderer_context
+                .as_ref()
+                .is_none_or(|context| context.origin == NarrativeChangeOrigin::Human)
+            {
+                record_manual_codex_entry_fields(
+                    conn,
+                    &payload.project_id,
+                    &payload.entry_id,
+                    payload.surface.as_deref(),
+                    CODEX_ENTRY_AUTHORITY_FIELDS,
+                    &chrono::Utc::now().to_rfc3339(),
+                )?;
+            }
+
+            let response = AgentWriteResult {
                 entity_id: payload.entry_id.clone(),
                 version: payload.base_version,
                 change_event_uid: event_uid.clone(),
                 undo_journal_id: undo_id.clone(),
-            })
+            };
+            if let Some(request) = idempotency_request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
             Ok(res) => {
                 grimodex_core::commit_or_rollback(conn)?;
-                Ok(serde_json::to_value(res)?)
+                if renderer_context.is_some() {
+                    attach_maintenance_transaction_id(conn, &payload.project_id, &res)
+                } else {
+                    Ok(serde_json::to_value(res)?)
+                }
             }
             Err(e) => {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -1493,16 +3114,6 @@ pub struct AgentSnippetCreatePayload {
     pub authorship_spans: Vec<AuthorshipSpanInput>,
 }
 
-fn run_statements_in_tx(
-    conn: &rusqlite::Connection,
-    statements: &[BatchStatement],
-) -> anyhow::Result<()> {
-    for stmt in statements {
-        Database::execute_with_conn(conn, &stmt.sql, &stmt.params, &stmt.method)?;
-    }
-    Ok(())
-}
-
 fn replace_snippet_authorship_spans(
     conn: &rusqlite::Connection,
     snippet_id: &str,
@@ -1539,76 +3150,19 @@ fn replace_snippet_authorship_spans(
 }
 
 pub fn agent_write_bundle_impl(
-    db: &Database,
-    payload: AgentWriteBundlePayload,
+    _db: &Database,
+    _payload: AgentWriteBundlePayload,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
-    db.with_conn(|conn| {
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch("BEGIN IMMEDIATE")?;
-        let result = (|| -> anyhow::Result<AgentWriteResult> {
-            with_writer_mutation_denied(conn, "narrative.maintenance-feed", |conn| {
-                run_statements_in_tx(conn, &payload.statements)
-            })?;
-
-            insert_undo_journal_in_tx(
-                conn,
-                UndoJournalInsert {
-                    id: &undo_id,
-                    project_id: &payload.project_id,
-                    surface: &payload.surface,
-                    entity_kind: &payload.undo_journal.entity_kind,
-                    entity_id: &payload.undo_journal.entity_id,
-                    op_kind: &payload.undo_journal.op_kind,
-                    before_json: payload.undo_journal.before_json.as_deref(),
-                    after_json: payload.undo_journal.after_json.as_deref(),
-                    base_version: payload.undo_journal.base_version,
-                    result_version: payload.undo_journal.result_version,
-                    change_event_uid: Some(&payload.change_event.event_uid),
-                },
-            )?;
-
-            append_change_events_in_tx(
-                conn,
-                &payload.project_id,
-                &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: payload.change_event.event_uid.clone(),
-                    scene_id: payload.change_event.scene_id.clone(),
-                    domain: payload.change_event.domain.clone(),
-                    op_type: payload.change_event.op_type.clone(),
-                    entity_type: payload.change_event.entity_type.clone(),
-                    entity_id: payload.change_event.entity_id.clone(),
-                    payload: payload.change_event.payload.clone(),
-                    timestamp: payload.change_event.timestamp,
-                }],
-            )?;
-
-            Ok(AgentWriteResult {
-                entity_id: payload.undo_journal.entity_id.clone(),
-                version: payload.undo_journal.result_version,
-                change_event_uid: payload.change_event.event_uid.clone(),
-                undo_journal_id: undo_id,
-            })
-        })();
-
-        match result {
-            Ok(res) => {
-                grimodex_core::commit_or_rollback(conn)?;
-                Ok(serde_json::to_value(res)?)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
-    })
+    anyhow::bail!(
+        "AGENT_WRITE_BUNDLE_TYPED_WRITER_REQUIRED: generic SQL domain mutations are disabled"
+    )
 }
 
 pub fn agent_snippet_create_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
 ) -> anyhow::Result<Value> {
+    require_agent_request_id(payload.request_id.as_deref())?;
     let request_hash = snippet_create_request_hash(&payload)?;
     let legacy_entity_request = payload.request_id.is_none() && payload.snippet_id.is_some();
     let request_id = payload
@@ -1673,6 +3227,40 @@ pub fn agent_snippet_create_impl(
                     return Ok(existing);
                 }
             }
+            if let Some(scene_id) = payload.scene_id.as_deref() {
+                let owned_scene = conn
+                    .query_row(
+                        "SELECT 1 FROM tree_nodes
+                          WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+                        rusqlite::params![scene_id, payload.project_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?
+                    .is_some();
+                anyhow::ensure!(
+                    owned_scene,
+                    "snippet scene is not in project '{}'",
+                    payload.project_id
+                );
+            }
+            if let Some(message_id) = payload.source_chat_message_id.as_deref() {
+                let owned_message = conn
+                    .query_row(
+                        "SELECT 1
+                           FROM chat_messages message
+                           JOIN chat_sessions session ON session.id = message.session_id
+                          WHERE message.id = ?1 AND session.project_id = ?2",
+                        rusqlite::params![message_id, payload.project_id],
+                        |row| row.get::<_, i64>(0),
+                    )
+                    .optional()?
+                    .is_some();
+                anyhow::ensure!(
+                    owned_message,
+                    "snippet source chat message is not in project '{}'",
+                    payload.project_id
+                );
+            }
             conn.execute(
                 "INSERT INTO snippets
                  (id, project_id, title, content, scene_id, content_source,
@@ -1724,20 +3312,26 @@ pub fn agent_snippet_create_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: payload.scene_id.clone(),
+                domain: "snippet".to_string(),
+                op_type: "snippet.create".to_string(),
+                entity_type: Some("snippet".to_string()),
+                entity_id: Some(snippet_id.clone()),
+                payload: change_payload.to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: payload.scene_id.clone(),
-                    domain: "snippet".to_string(),
-                    op_type: "snippet.create".to_string(),
-                    entity_type: Some("snippet".to_string()),
-                    entity_id: Some(snippet_id.clone()),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
+                Some("in-app-agent"),
+                request_id.as_deref(),
+                &undo_id,
+                &canonical_event,
+                None,
+                None,
             )?;
 
             Ok(AgentWriteResult {
@@ -1779,15 +3373,17 @@ pub struct AgentProposeSceneBodyPayload {
     pub replace_to: Option<i64>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProseStageIdPayload {
+    #[serde(default)]
+    pub request_id: Option<String>,
     pub project_id: String,
     pub session_id: String,
     pub staging_id: String,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ProseStageResult {
     staging_id: String,
@@ -1898,7 +3494,24 @@ pub fn agent_accept_prose_stage_impl(
     db: &Database,
     payload: AgentProseStageIdPayload,
 ) -> anyhow::Result<Value> {
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    if matches!(payload.request_id.as_deref(), Some(request_id) if request_id.trim().is_empty()) {
+        anyhow::bail!("requestId must not be empty");
+    }
+    let request_id = payload
+        .request_id
+        .clone()
+        .unwrap_or_else(|| format!("prose.accept:{}", payload.staging_id));
+    let mut normalized = payload.clone();
+    normalized.request_id = None;
+    normalized.session_id.clear();
+    let request_hash = idempotency_hash("agent_prose_accept", &normalized)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "agent_prose_accept",
+        request_id: Some(&request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "AGENT_PROSE_ACCEPT_IDEMPOTENCY_CONFLICT",
+    };
+    let event_uid = request_id.clone();
     let timestamp = chrono::Utc::now().timestamp_millis();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -1906,6 +3519,9 @@ pub fn agent_accept_prose_stage_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<ProseStageResult> {
+            if let Some(existing) = load_idempotent_response(conn, &idempotency_request)? {
+                return serde_json::from_value(existing).map_err(Into::into);
+            }
             let (scene_id, status): (String, String) = conn.query_row(
                 "SELECT scene_id, status FROM prose_staging
                  WHERE id = ?1 AND project_id = ?2",
@@ -1930,28 +3546,35 @@ pub fn agent_accept_prose_stage_impl(
                 "stagingId": payload.staging_id,
                 "sceneId": scene_id,
             });
-
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: Some(scene_id.clone()),
+                domain: "prose".to_string(),
+                op_type: "prose.accept".to_string(),
+                entity_type: Some("prose_staging".to_string()),
+                entity_id: Some(payload.staging_id.clone()),
+                payload: change_payload.to_string(),
+                timestamp,
+            };
             append_change_events_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: Some(scene_id.clone()),
-                    domain: "prose".to_string(),
-                    op_type: "prose.accept".to_string(),
-                    entity_type: Some("prose_staging".to_string()),
-                    entity_id: Some(payload.staging_id.clone()),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
+                std::slice::from_ref(&canonical_event),
             )?;
 
-            Ok(ProseStageResult {
+            let response = ProseStageResult {
                 staging_id: payload.staging_id.clone(),
                 scene_id,
                 status: "accepted".to_string(),
-            })
+            };
+            insert_idempotent_response(
+                conn,
+                &idempotency_request,
+                &payload.project_id,
+                &serde_json::to_value(&response)?,
+            )?;
+            Ok(response)
         })();
 
         match result {
@@ -2043,13 +3666,186 @@ pub fn agent_discard_prose_stage_impl(
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentUndoJournalPayload {
-    #[serde(default)]
-    pub request_id: Option<String>,
+    pub request_id: String,
     pub project_id: String,
     pub session_id: String,
     pub journal_id: String,
     /// "undo" | "redo"
     pub direction: String,
+}
+
+fn legacy_journal_forward_origin(surface: &str) -> NarrativeChangeOrigin {
+    match surface {
+        "import" => NarrativeChangeOrigin::Import,
+        "migration" | "legacy" => NarrativeChangeOrigin::Migration,
+        "in-app-agent" | "mcp" | "narrative-extraction" => NarrativeChangeOrigin::AiApply,
+        _ => NarrativeChangeOrigin::Human,
+    }
+}
+
+/// Establish the missing C0 Feed root for a journal created before SCHEMA 21.
+///
+/// The canonical Change Event remains the audit authority: this only attaches
+/// the typed freshness fact that the old writer could not have emitted. The
+/// deterministic request identity makes concurrent/retried modernization
+/// converge on the same root instead of creating a second history ledger.
+fn ensure_legacy_journal_forward_transaction_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    session_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<String> {
+    if let Some(transaction_id) = transaction_id_for_undo_journal(conn, project_id, &row.id)? {
+        return Ok(transaction_id);
+    }
+    let request_id = format!("legacy-undo-root:{}", row.id);
+    let mut events = if row.entity_kind == "chronicle_bulk" {
+        crate::chronicle_bulk::narrative_feed_events_from_journal(
+            row,
+            NarrativeChangeCauseKind::Forward,
+        )?
+    } else {
+        vec![event_from_undo_journal_row(
+            row,
+            NarrativeChangeCauseKind::Forward,
+        )?]
+    };
+    // Pre-C1 journals did not carry a canonical Feed state (and many of them
+    // omit the historical OCC version entirely).  Modernize the forward root
+    // against the row that is actually present before replay.  This keeps the
+    // first C1 event truthful and, importantly, gives the subsequent undo
+    // event an exact before-state to chain from.
+    if row.entity_kind != "chronicle_bulk" {
+        for event in &mut events {
+            let snapshot = if event.object_key.get("kind").and_then(Value::as_str)
+                == Some("chronicle-event")
+            {
+                let event_id = event
+                    .object_key
+                    .get("eventId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("legacy Chronicle object key has no eventId"))?;
+                crate::agent_writes::collect_event_snapshot_optional(conn, project_id, event_id)?
+            } else {
+                crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
+                    conn,
+                    project_id,
+                    &event.object_key,
+                )
+                .ok()
+                .flatten()
+            };
+            let Some(snapshot) = snapshot else {
+                continue;
+            };
+            event.after_version = snapshot.get("version").and_then(Value::as_i64).or_else(|| {
+                snapshot
+                    .get("eventData")
+                    .and_then(|data| data.get("version"))
+                    .and_then(Value::as_i64)
+            });
+            event.after_digest = Some(narrative_snapshot_digest(&snapshot)?);
+            if event.mutation_kind == "delete" {
+                // A deleted root is intentionally absent; only related
+                // surviving event roots receive a live after state.
+                event.after_version = None;
+                event.after_digest = None;
+            }
+            if event.mutation_kind == "update" || event.mutation_kind == "delete" {
+                let identity =
+                    crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
+                if let Some((version, digest)) =
+                    crate::narrative_extraction::change_feed::previous_event_after_state(
+                        conn, project_id, &identity,
+                    )?
+                {
+                    event.before_version = version;
+                    event.before_digest = digest;
+                }
+            }
+        }
+    }
+    if let Some(source_change_event_uid) = row.change_event_uid.as_deref() {
+        let (source_domain, timestamp): (String, i64) = conn
+            .query_row(
+                "SELECT op_type, timestamp
+                   FROM change_events
+                  WHERE project_id = ?1 AND event_uid = ?2",
+                rusqlite::params![project_id, source_change_event_uid],
+                |event| Ok((event.get(0)?, event.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "legacy Undo journal '{}' canonical Change Event is not in project '{}'",
+                    row.id,
+                    project_id
+                )
+            })?;
+        return Ok(append_narrative_change_transaction_in_tx(
+            conn,
+            &AppendNarrativeChangeTransactionInput {
+                project_id: project_id.to_string(),
+                request_id,
+                source_domain,
+                source_change_event_uid: source_change_event_uid.to_string(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: legacy_journal_forward_origin(&row.surface),
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: Some(row.id.clone()),
+                application_ids: vec![],
+                occurred_at: change_occurred_at(timestamp)?,
+                events,
+            },
+        )?
+        .transaction_id);
+    }
+
+    // Some public-floor journals predate canonical event correlation itself.
+    // Record an explicit migration/backfill event instead of pretending that
+    // a historical audit event existed. This still keeps Change Event as the
+    // sole audit authority and gives the replay a truthful root lineage.
+    let timestamp = chrono::Utc::now().timestamp_millis();
+    let canonical_event = AppendChangeEvent {
+        event_uid: format!("legacy-undo-backfill:{}", row.id),
+        scene_id: None,
+        domain: "history".to_string(),
+        op_type: "history.legacy-forward".to_string(),
+        entity_type: Some(row.entity_kind.clone()),
+        entity_id: Some(row.entity_id.clone()),
+        payload: json!({
+            "journalId": row.id,
+            "opKind": row.op_kind,
+            "surface": row.surface,
+        })
+        .to_string(),
+        timestamp,
+    };
+    Ok(append_canonical_and_narrative_change_in_tx(
+        conn,
+        project_id,
+        session_id,
+        &canonical_event,
+        &AppendNarrativeChangeTransactionInput {
+            project_id: project_id.to_string(),
+            request_id,
+            source_domain: canonical_event.op_type.clone(),
+            source_change_event_uid: canonical_event.event_uid.clone(),
+            cause_kind: NarrativeChangeCauseKind::Forward,
+            origin: NarrativeChangeOrigin::Migration,
+            original_transaction_id: None,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: Some(row.id.clone()),
+            application_ids: vec![],
+            occurred_at: change_occurred_at(timestamp)?,
+            events,
+        },
+    )?
+    .narrative
+    .transaction_id)
 }
 
 fn undo_journal_change_event(
@@ -2176,6 +3972,97 @@ fn event_snapshot_related_ids(snap: &Value) -> Vec<String> {
     related.into_iter().collect()
 }
 
+fn event_journal_feed_ids(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+) -> anyhow::Result<Vec<String>> {
+    anyhow::ensure!(
+        row.entity_kind == "event",
+        "event Feed identity requires an event Undo Journal"
+    );
+    let raw = row
+        .before_json
+        .as_deref()
+        .or(row.after_json.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("event Undo Journal has no snapshot"))?;
+    let snapshot: Value = serde_json::from_str(raw)?;
+    let mut ids = if let (Some(cause), Some(effect)) = (
+        snapshot["causeEventId"].as_str(),
+        snapshot["effectEventId"].as_str(),
+    ) {
+        vec![cause.to_string(), effect.to_string()]
+    } else {
+        vec![row.entity_id.clone()]
+    };
+    if row.op_kind == "delete" && snapshot.get("eventData").is_some() {
+        ids.extend(event_snapshot_related_ids(&snapshot));
+    }
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
+fn collect_event_feed_states(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_ids: &[String],
+) -> anyhow::Result<std::collections::BTreeMap<String, Option<Value>>> {
+    event_ids
+        .iter()
+        .map(|event_id| {
+            collect_event_snapshot_optional(conn, project_id, event_id)
+                .map(|snapshot| (event_id.clone(), snapshot))
+        })
+        .collect()
+}
+
+fn event_journal_feed_contract(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    event_id: &str,
+) -> anyhow::Result<(&'static str, Vec<String>)> {
+    let raw = row
+        .before_json
+        .as_deref()
+        .or(row.after_json.as_deref())
+        .ok_or_else(|| anyhow::anyhow!("event Undo Journal has no snapshot"))?;
+    let snapshot: Value = serde_json::from_str(raw)?;
+    if snapshot.get("causeEventId").is_some() && snapshot.get("effectEventId").is_some() {
+        return Ok(("association", vec!["/relations".to_string()]));
+    }
+    if is_scene_event_link_batch_snapshot(&snapshot)
+        || (snapshot.get("sceneId").is_some() && snapshot.get("linked").is_some())
+    {
+        return Ok(("association", vec!["/sceneIds".to_string()]));
+    }
+    if snapshot.get("participants").is_some() && snapshot.get("eventData").is_none() {
+        return Ok(("association", vec!["/participants".to_string()]));
+    }
+    if event_id != row.entity_id {
+        return Ok(("association", vec!["/relations".to_string()]));
+    }
+    Ok(("metadata", vec!["/".to_string()]))
+}
+
+fn event_replay_feed_events(
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    before: &std::collections::BTreeMap<String, Option<Value>>,
+    after: &std::collections::BTreeMap<String, Option<Value>>,
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    event_journal_feed_ids(row)?
+        .into_iter()
+        .map(|event_id| {
+            let (change_kind, paths) = event_journal_feed_contract(row, &event_id)?;
+            chronicle_event_transition_input(
+                &event_id,
+                before.get(&event_id).and_then(Option::as_ref),
+                after.get(&event_id).and_then(Option::as_ref),
+                change_kind,
+                paths,
+                true,
+            )
+        })
+        .collect()
+}
+
 fn enrich_event_replay_change_payload(
     row: &grimodex_core::undo_journal::UndoJournalRow,
     direction: &str,
@@ -2218,6 +4105,103 @@ fn enrich_event_replay_change_payload(
         }
     }
     Ok(())
+}
+
+/// Replay a C1 Codex delete journal whose snapshot owns the full FK cascade.
+///
+/// Older journals stored the root snapshot directly. Returning `None` keeps
+/// those rows on grimodex-core's legacy-compatible replay path.
+fn replay_codex_delete_cascade_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    row: &grimodex_core::undo_journal::UndoJournalRow,
+    direction: &str,
+) -> anyhow::Result<Option<Vec<NarrativeChangeEventInput>>> {
+    let raw = row
+        .before_json
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("Codex delete journal is missing before_json"))?;
+    let journal_snapshot: Value = serde_json::from_str(raw)?;
+    let Some(entry) = journal_snapshot.get("entry") else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        entry.get("id").and_then(Value::as_str) == Some(row.entity_id.as_str())
+            && entry.get("projectId").and_then(Value::as_str) == Some(project_id),
+        "Codex delete journal snapshot escaped its project"
+    );
+    let cascade: CodexDeleteCascadeSnapshot = serde_json::from_value(
+        journal_snapshot
+            .get("cascade")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Codex delete journal snapshot has no cascade"))?,
+    )?;
+
+    let events = match direction {
+        "undo" => {
+            // Child rows survive the root delete with parent_id cleared. Keep
+            // their current pre-restore state for truthful update digests.
+            let child_before = cascade
+                .children
+                .iter()
+                .map(|child| {
+                    let child_id = child
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow::anyhow!("Codex child restore snapshot has no id"))?;
+                    collect_codex_entry_snapshot(conn, child_id)
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let replay_version = row
+                .base_version
+                .checked_add(1)
+                .ok_or_else(|| anyhow::anyhow!("Codex delete restore version overflow"))?;
+            restore_deleted_codex_entry_from_snapshot(
+                conn,
+                project_id,
+                &row.entity_id,
+                &journal_snapshot,
+                replay_version,
+            )?;
+            grimodex_core::undo_journal::advance_codex_journal_state_token(
+                conn,
+                project_id,
+                &row.entity_id,
+                row.base_version,
+                replay_version,
+            )?;
+            let root_after = collect_codex_entry_snapshot(conn, &row.entity_id)?;
+            codex_delete_cascade_restore_feed_events(
+                conn,
+                project_id,
+                &row.entity_id,
+                &root_after,
+                &cascade,
+                &child_before,
+            )?
+        }
+        "redo" => {
+            let root_before = collect_codex_entry_snapshot(conn, &row.entity_id)?;
+            anyhow::ensure!(
+                root_before.get("projectId").and_then(Value::as_str) == Some(project_id),
+                "codex entry '{}' version conflict during journal restore",
+                row.entity_id
+            );
+            let cascade_before =
+                collect_codex_delete_cascade_snapshot(conn, project_id, &row.entity_id)?;
+            delete_codex_entry_cascade(conn, project_id, &row.entity_id, Some(row.result_version))?;
+            let mut events = vec![deleted_cascade_event(
+                json!({ "kind": "codex-entry", "entryId": row.entity_id }),
+                &root_before,
+                "metadata",
+                vec!["/".to_string()],
+            )?];
+            events.extend(codex_delete_cascade_feed_events(conn, &cascade_before)?);
+            events
+        }
+        other => anyhow::bail!("invalid undo direction: {other}"),
+    };
+    Ok(Some(events))
 }
 
 fn replay_foreshadow_delete_in_tx(
@@ -2266,50 +4250,97 @@ pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
 ) -> anyhow::Result<Value> {
-    if payload.request_id.as_deref() == Some("") {
-        anyhow::bail!("undo journal requestId must not be empty");
-    }
-    let request_hash = payload
-        .request_id
-        .as_ref()
-        .map(|_| {
-            idempotency_hash(
-                "agent_apply_undo_journal",
-                &json!({
-                    "projectId": payload.project_id,
-                    "journalId": payload.journal_id,
-                    "direction": payload.direction,
-                }),
-            )
-        })
-        .transpose()?;
+    anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "undo journal requestId must not be empty"
+    );
+    let request_hash = idempotency_hash(
+        "agent_apply_undo_journal",
+        &json!({
+            "projectId": payload.project_id,
+            "journalId": payload.journal_id,
+            "direction": payload.direction,
+        }),
+    )?;
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
-            if let (Some(request_id), Some(payload_hash)) =
-                (payload.request_id.as_deref(), request_hash.as_deref())
-            {
-                let request = IdempotencyRequest {
-                    domain: "agent_apply_undo_journal",
-                    request_id: Some(request_id),
-                    payload_hash,
-                    conflict_marker: "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT",
-                };
-                if let Some(existing) = load_idempotent_response(conn, &request)? {
-                    return Ok(existing);
-                }
+            let request = IdempotencyRequest {
+                domain: "agent_apply_undo_journal",
+                request_id: Some(&payload.request_id),
+                payload_hash: &request_hash,
+                conflict_marker: "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT",
+            };
+            if let Some(existing) = load_idempotent_response(conn, &request)? {
+                return Ok(existing);
             }
             let row = grimodex_core::undo_journal::load_undo_journal(
                 conn,
                 &payload.project_id,
                 &payload.journal_id,
             )?;
+            // Resolve or modernize the root before changing domain state. A
+            // missing/foreign canonical event therefore fails closed without
+            // applying an untracked Undo/Redo.
+            let original_transaction_id = ensure_legacy_journal_forward_transaction_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &row,
+            )?;
+            let event_feed_ids = (row.entity_kind == "event")
+                .then(|| event_journal_feed_ids(&row))
+                .transpose()?;
+            let event_feed_before = event_feed_ids
+                .as_deref()
+                .map(|event_ids| collect_event_feed_states(conn, &payload.project_id, event_ids))
+                .transpose()?;
+            let canonical_replay_before = match row.entity_kind.as_str() {
+                "codex_entry" if row.op_kind != "delete" => {
+                    crate::canonical_feed_snapshots::canonical_codex_entry_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &row.entity_id,
+                    )
+                    .ok()
+                }
+                "snippet" => crate::canonical_feed_snapshots::canonical_snippet_snapshot(
+                    conn,
+                    &payload.project_id,
+                    &row.entity_id,
+                )
+                .ok(),
+                _ => None,
+            };
+            let mut replay_narrative_events = None;
             // Chronicle events carry a composite snapshot (eventData +
             // participants + sceneLinks + relations) that the single-table
             // grimodex-core restorers don't understand, so they're handled by
             // the local event restorers; everything else delegates to core.
-            if row.entity_kind == "foreshadow" && row.op_kind == "delete" {
+            if row.entity_kind == "codex_entry" && row.op_kind == "delete" {
+                replay_narrative_events = replay_codex_delete_cascade_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &row,
+                    &payload.direction,
+                )?;
+                if replay_narrative_events.is_none() {
+                    match payload.direction.as_str() {
+                        "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &payload.journal_id,
+                        )?,
+                        "redo" => grimodex_core::undo_journal::apply_undo_journal_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &payload.journal_id,
+                        )?,
+                        other => anyhow::bail!("invalid undo direction: {other}"),
+                    }
+                }
+            } else if row.entity_kind == "foreshadow" && row.op_kind == "delete" {
                 replay_foreshadow_delete_in_tx(
                     conn,
                     &payload.project_id,
@@ -2322,13 +4353,21 @@ pub fn agent_undo_journal_impl(
                     "redo" => apply_event_redo_in_tx(conn, &payload.project_id, &row)?,
                     other => anyhow::bail!("invalid undo direction: {other}"),
                 }
+                let event_ids = event_feed_ids
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("event Feed identities disappeared"))?;
+                let before = event_feed_before
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("event Feed before states disappeared"))?;
+                let after = collect_event_feed_states(conn, &payload.project_id, event_ids)?;
+                replay_narrative_events = Some(event_replay_feed_events(&row, before, &after)?);
             } else if row.entity_kind == "chronicle_bulk" {
-                crate::chronicle_bulk::replay_chronicle_bulk_in_tx(
+                replay_narrative_events = Some(crate::chronicle_bulk::replay_chronicle_bulk_in_tx(
                     conn,
                     &payload.project_id,
                     &row,
                     &payload.direction,
-                )?;
+                )?);
             } else {
                 match payload.direction.as_str() {
                     "undo" => grimodex_core::undo_journal::revert_undo_journal_in_tx(
@@ -2354,37 +4393,122 @@ pub fn agent_undo_journal_impl(
                 "journalId": payload.journal_id,
             });
             enrich_event_replay_change_payload(&row, &payload.direction, &mut change_payload)?;
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid,
+                scene_id: None,
+                domain,
+                op_type,
+                entity_type: Some(entity_type),
+                entity_id: Some(entity_id),
+                payload: change_payload.to_string(),
+                timestamp,
+            };
+            // Replay can allocate a fresh OCC generation and rewrite the
+            // journal chain's state tokens. Reload after the domain mutation
+            // so the Feed reports committed versions rather than stale tokens.
+            let feed_row = grimodex_core::undo_journal::load_undo_journal(
+                conn,
+                &payload.project_id,
+                &payload.journal_id,
+            )?;
+            let (cause_kind, origin) = match payload.direction.as_str() {
+                "undo" => (NarrativeChangeCauseKind::Undo, NarrativeChangeOrigin::Undo),
+                "redo" => (NarrativeChangeCauseKind::Redo, NarrativeChangeOrigin::Redo),
+                other => anyhow::bail!("invalid undo direction: {other}"),
+            };
+            let mut narrative_events = if let Some(events) = replay_narrative_events {
+                events
+            } else if matches!(feed_row.entity_kind.as_str(), "codex_entry" | "snippet") {
+                let canonical_after = match feed_row.entity_kind.as_str() {
+                    "codex_entry" => {
+                        crate::canonical_feed_snapshots::canonical_codex_entry_snapshot(
+                            conn,
+                            &payload.project_id,
+                            &feed_row.entity_id,
+                        )
+                        .ok()
+                    }
+                    "snippet" => crate::canonical_feed_snapshots::canonical_snippet_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &feed_row.entity_id,
+                    )
+                    .ok(),
+                    _ => unreachable!(),
+                };
+                let before_version = canonical_replay_before
+                    .as_ref()
+                    .and_then(snapshot_version);
+                let after_version = canonical_after.as_ref().and_then(snapshot_version);
+                vec![NarrativeChangeEventInput {
+                    object_key: if feed_row.entity_kind == "codex_entry" {
+                        json!({ "kind": "codex-entry", "entryId": feed_row.entity_id })
+                    } else {
+                        json!({ "kind": "component", "componentId": format!("snippet:{}", feed_row.entity_id) })
+                    },
+                    change_kind: "metadata".to_string(),
+                    mutation_kind: match (
+                        canonical_replay_before.is_some(),
+                        canonical_after.is_some(),
+                    ) {
+                        (true, true) => "update",
+                        (true, false) => "delete",
+                        (false, true) => "restore",
+                        (false, false) => anyhow::bail!("Undo replay has no before or after state"),
+                    }
+                    .to_string(),
+                    before_version,
+                    before_digest: canonical_replay_before
+                        .as_ref()
+                        .map(narrative_snapshot_digest)
+                        .transpose()?,
+                    after_version,
+                    after_digest: canonical_after
+                        .as_ref()
+                        .map(narrative_snapshot_digest)
+                        .transpose()?,
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: Some(json!({ "changedPaths": ["/"] })),
+                }]
+            } else if feed_row.entity_kind == "chronicle_bulk" {
+                crate::chronicle_bulk::narrative_feed_events_from_journal(&feed_row, cause_kind)?
+            } else {
+                vec![event_from_undo_journal_row(&feed_row, cause_kind)?]
+            };
+            normalize_foreshadow_feed_events_in_tx(
+                conn,
+                &payload.project_id,
+                &mut narrative_events,
+            )?;
+            let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid,
-                    scene_id: None,
-                    domain,
-                    op_type,
-                    entity_type: Some(entity_type),
-                    entity_id: Some(entity_id),
-                    payload: change_payload.to_string(),
-                    timestamp,
-                }],
+                &canonical_event,
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: canonical_event.op_type.clone(),
+                    source_change_event_uid: canonical_event.event_uid.clone(),
+                    cause_kind,
+                    origin,
+                    original_transaction_id: Some(original_transaction_id),
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: Some(payload.journal_id.clone()),
+                    application_ids: vec![],
+                    occurred_at: change_occurred_at(canonical_event.timestamp)?,
+                    events: narrative_events,
+                },
             )?;
-            let response = json!({ "ok": true });
-            if let (Some(request_id), Some(payload_hash)) =
-                (payload.request_id.as_deref(), request_hash.as_deref())
-            {
-                insert_idempotent_response(
-                    conn,
-                    &IdempotencyRequest {
-                        domain: "agent_apply_undo_journal",
-                        request_id: Some(request_id),
-                        payload_hash,
-                        conflict_marker: "UNDO_JOURNAL_IDEMPOTENCY_CONFLICT",
-                    },
-                    &payload.project_id,
-                    &response,
-                )?;
-            }
+            let response = json!({
+                "ok": true,
+                "changeEventUid": canonical_event.event_uid,
+                "maintenanceTransactionId": append.narrative.transaction_id,
+                "undoJournalId": payload.journal_id,
+            });
+            insert_idempotent_response(conn, &request, &payload.project_id, &response)?;
             Ok(response)
         })();
         match result {
@@ -2408,33 +4532,33 @@ pub fn agent_undo_journal_impl(
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentForeshadowCreatePayload {
+    pub request_id: String,
     #[serde(default)]
-    request_id: Option<String>,
-    #[serde(default)]
-    foreshadow_id: Option<String>,
-    project_id: String,
-    session_id: String,
-    title: String,
-    intent: Option<String>,
-    notes: Option<String>,
-    load_bearing: Option<String>,
-    secret: bool,
+    pub foreshadow_id: Option<String>,
+    pub project_id: String,
+    pub session_id: String,
+    pub title: String,
+    pub intent: Option<String>,
+    pub notes: Option<String>,
+    pub load_bearing: Option<String>,
+    pub secret: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentForeshadowUpdatePayload {
-    project_id: String,
-    session_id: String,
-    foreshadow_id: String,
-    base_version: i64,
-    title: Option<String>,
-    intent: Option<String>,
-    notes: Option<String>,
-    load_bearing: Option<String>,
-    payoff_confirmed: Option<bool>,
-    abandoned: Option<bool>,
-    secret: Option<bool>,
+    pub request_id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub foreshadow_id: String,
+    pub base_version: i64,
+    pub title: Option<String>,
+    pub intent: Option<String>,
+    pub notes: Option<String>,
+    pub load_bearing: Option<String>,
+    pub payoff_confirmed: Option<bool>,
+    pub abandoned: Option<bool>,
+    pub secret: Option<bool>,
 }
 
 pub fn agent_write_result_json(res: grimodex_core::writes::WriteResult) -> anyhow::Result<Value> {
@@ -2446,30 +4570,72 @@ pub fn agent_write_result_json(res: grimodex_core::writes::WriteResult) -> anyho
     })?)
 }
 
+fn db_change_event_from_core(
+    event: &grimodex_core::change_events::AppendChangeEvent,
+) -> AppendChangeEvent {
+    AppendChangeEvent {
+        event_uid: event.event_uid.clone(),
+        scene_id: event.scene_id.clone(),
+        domain: event.domain.clone(),
+        op_type: event.op_type.clone(),
+        entity_type: event.entity_type.clone(),
+        entity_id: event.entity_id.clone(),
+        payload: event.payload.clone(),
+        timestamp: event.timestamp,
+    }
+}
+
 pub fn agent_foreshadow_create_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
 ) -> anyhow::Result<Value> {
+    agent_foreshadow_create_with_surface_impl(db, payload, "in-app-agent")
+}
+
+pub fn agent_foreshadow_create_with_surface_impl(
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
+    surface: &str,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
     let request_hash = foreshadow_create_request_hash(&payload)?;
     let foreshadow_id = payload
         .foreshadow_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     db.with_conn(|conn| {
-        let res = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
+        let res = grimodex_core::writes::foreshadow::tracked_foreshadow_create_with_in_tx_hook(
             conn,
             grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
                 project_id: &payload.project_id,
                 session_id: &payload.session_id,
-                surface: "in-app-agent",
+                surface,
                 foreshadow_id: &foreshadow_id,
                 title: &payload.title,
                 intent: payload.intent.as_deref(),
                 notes: payload.notes.as_deref(),
                 load_bearing: payload.load_bearing.as_deref(),
                 secret: payload.secret,
-                request_id: payload.request_id.as_deref(),
+                request_id: Some(&payload.request_id),
                 request_hash: Some(&request_hash),
+            },
+            |conn, event, undo_journal_id| {
+                let canonical_event = db_change_event_from_core(event);
+                append_agent_forward_change_in_tx(
+                    conn,
+                    &payload.project_id,
+                    &payload.session_id,
+                    Some(surface),
+                    Some(&payload.request_id),
+                    undo_journal_id,
+                    &canonical_event,
+                    None,
+                    None,
+                )
+                .map(|_| ())
             },
         )
         .map_err(|error| anyhow::anyhow!("agent_foreshadow_create: {error:#}"))?;
@@ -2481,28 +4647,70 @@ pub fn agent_foreshadow_update_impl(
     db: &Database,
     payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
+    let request_id = payload.request_id.clone();
+    agent_foreshadow_update_with_request_impl(db, payload, &request_id, "in-app-agent")
+}
+
+pub fn agent_foreshadow_update_with_request_impl(
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
+    request_id: &str,
+    surface: &str,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!request_id.trim().is_empty(), "requestId must not be empty");
+    anyhow::ensure!(
+        payload.request_id == request_id,
+        "agent foreshadow update requestId does not match the writer request"
+    );
+    let mut normalized = payload.clone();
+    normalized.request_id.clear();
+    normalized.session_id.clear();
+    let request_hash = idempotency_hash("agent_foreshadow_update", &normalized)?;
     db.with_conn(|conn| {
-        grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version(
-            conn,
-            grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
-                project_id: &payload.project_id,
-                session_id: &payload.session_id,
-                surface: "in-app-agent",
-                foreshadow_id: &payload.foreshadow_id,
-                patch: grimodex_core::writes::foreshadow::ForeshadowPatch {
-                    title: payload.title.as_deref(),
-                    intent: payload.intent.as_deref(),
-                    notes: payload.notes.as_deref(),
-                    load_bearing: payload.load_bearing.as_deref(),
-                    payoff_confirmed: payload.payoff_confirmed,
-                    abandoned: payload.abandoned,
-                    secret: payload.secret,
+        let append = |conn: &rusqlite::Connection,
+                      event: &grimodex_core::change_events::AppendChangeEvent,
+                      undo_journal_id: &str| {
+            let canonical_event = db_change_event_from_core(event);
+            append_agent_forward_change_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                Some(surface),
+                Some(request_id),
+                undo_journal_id,
+                &canonical_event,
+                None,
+                None,
+            )
+            .map(|_| ())
+        };
+        let result =
+            grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version_with_request_in_tx_hook(
+                conn,
+                grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
+                    project_id: &payload.project_id,
+                    session_id: &payload.session_id,
+                    surface,
+                    foreshadow_id: &payload.foreshadow_id,
+                    patch: grimodex_core::writes::foreshadow::ForeshadowPatch {
+                        title: payload.title.as_deref(),
+                        intent: payload.intent.as_deref(),
+                        notes: payload.notes.as_deref(),
+                        load_bearing: payload.load_bearing.as_deref(),
+                        payoff_confirmed: payload.payoff_confirmed,
+                        abandoned: payload.abandoned,
+                        secret: payload.secret,
+                    },
                 },
-            },
-            payload.base_version,
-        )?
-        .ok_or_else(|| anyhow::anyhow!("foreshadow not found in project"))
-        .and_then(agent_write_result_json)
+                payload.base_version,
+                request_id,
+                &request_hash,
+                append,
+            )
+            .map_err(|error| anyhow::anyhow!("agent_foreshadow_update: {error:#}"))?;
+        result
+            .ok_or_else(|| anyhow::anyhow!("foreshadow not found in project"))
+            .and_then(agent_write_result_json)
     })
 }
 
@@ -2517,100 +4725,105 @@ pub fn agent_foreshadow_update_impl(
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventCreatePayload {
     /// Stable identity of the logical request, independent of `event_id`.
-    #[serde(default)]
-    request_id: Option<String>,
+    pub request_id: String,
     /// Domain-owned idempotency key for create retries.
     #[serde(default)]
-    event_id: Option<String>,
-    project_id: String,
-    session_id: String,
+    pub event_id: Option<String>,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面: "in-app-agent"(AI) / "mcp" / "manual"(UI手動編集)。
     /// 省略時(既存JS経路)は in-app-agent 互換。undo_journal の provenance に使う。
-    surface: Option<String>,
-    title: Option<String>,
-    note: Option<String>,
+    pub surface: Option<String>,
+    pub title: Option<String>,
+    pub note: Option<String>,
     /// 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。
-    detail: Option<String>,
-    ordinal: Option<String>,
-    primary_codex_id: Option<String>,
+    pub detail: Option<String>,
+    pub ordinal: Option<String>,
+    pub primary_codex_id: Option<String>,
     /// 未割当の整理用サブレーン id。
-    lane_group: Option<String>,
-    location_codex_id: Option<String>,
-    start_time: Option<i64>,
-    end_time: Option<i64>,
-    start_minute: Option<i64>,
-    end_minute: Option<i64>,
-    start_granularity: Option<String>,
-    end_granularity: Option<String>,
-    precision: Option<String>,
-    kind: Option<String>,
+    pub lane_group: Option<String>,
+    pub location_codex_id: Option<String>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    pub start_granularity: Option<String>,
+    pub end_granularity: Option<String>,
+    pub precision: Option<String>,
+    pub kind: Option<String>,
     /// AI 秘匿（reveal アンカー方式）。省略時 false=表示。
-    secret: Option<bool>,
+    pub secret: Option<bool>,
     /// 読む順の開示アンカー（明示上書き・空/None=自動導出 or 恒久秘匿）。
-    reveal_scene_id: Option<String>,
-    participant_codex_ids: Option<Vec<String>>,
-    scene_ids: Option<Vec<String>>,
+    pub reveal_scene_id: Option<String>,
+    pub participant_codex_ids: Option<Vec<String>>,
+    pub scene_ids: Option<Vec<String>>,
 }
 
 /// Patch-style update. Each field is set-if-present (a missing field is left
 /// untouched). Clearing a nullable column to NULL is not expressible here —
 /// matches the codex update contract.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventUpdatePayload {
-    project_id: String,
-    session_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
-    surface: Option<String>,
-    event_id: String,
+    pub surface: Option<String>,
+    pub event_id: String,
     /// Version observed when the caller loaded this Event aggregate.
-    base_version: i64,
-    title: Option<String>,
-    note: Option<String>,
+    pub base_version: i64,
+    pub title: Option<String>,
+    pub note: Option<String>,
     /// 出来事の詳細（リッチテキスト = ProseMirror JSON 文字列）。set-if-present。
-    detail: Option<String>,
-    ordinal: Option<String>,
-    primary_codex_id: Option<String>,
+    pub detail: Option<String>,
+    pub ordinal: Option<String>,
+    pub primary_codex_id: Option<String>,
     /// 未割当の整理用サブレーン id（空文字は NULL=既定の未割当レーンへ）。
-    lane_group: Option<String>,
-    location_codex_id: Option<String>,
-    start_time: Option<i64>,
-    end_time: Option<i64>,
-    start_minute: Option<i64>,
-    end_minute: Option<i64>,
-    start_granularity: Option<String>,
-    end_granularity: Option<String>,
-    precision: Option<String>,
-    kind: Option<String>,
+    pub lane_group: Option<String>,
+    pub location_codex_id: Option<String>,
+    pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
+    pub start_minute: Option<i64>,
+    pub end_minute: Option<i64>,
+    pub start_granularity: Option<String>,
+    pub end_granularity: Option<String>,
+    pub precision: Option<String>,
+    pub kind: Option<String>,
     /// AI 秘匿（reveal アンカー方式）。set-if-present。
-    secret: Option<bool>,
+    pub secret: Option<bool>,
     /// 読む順の開示アンカー（set-if-present・空文字は NULL=自動導出へ戻す）。
-    reveal_scene_id: Option<String>,
+    pub reveal_scene_id: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventIdPayload {
-    project_id: String,
-    session_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
-    surface: Option<String>,
-    event_id: String,
+    pub surface: Option<String>,
+    pub event_id: String,
     /// Version observed when the caller loaded this Event aggregate.
-    base_version: i64,
+    pub base_version: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventParticipantsPayload {
-    project_id: String,
-    session_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
-    surface: Option<String>,
-    event_id: String,
+    pub surface: Option<String>,
+    pub event_id: String,
     /// Version observed when the caller loaded this Event aggregate.
-    base_version: i64,
-    codex_entry_ids: Vec<String>,
+    pub base_version: i64,
+    pub codex_entry_ids: Vec<String>,
+    /// Optional role values aligned with `codex_entry_ids`.  The legacy
+    /// surface only supplied IDs; keeping this optional preserves that wire
+    /// contract while allowing the canonical writer to update participant
+    /// roles without a generic SQL escape hatch.
+    #[serde(default)]
+    pub participant_roles: Option<Vec<Option<String>>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2618,14 +4831,13 @@ pub struct AgentEventParticipantsPayload {
 pub struct AgentSceneEventPayload {
     /// Request-owned idempotency key. The association has only a natural
     /// composite key, so this key also deduplicates journal/event side effects.
-    #[serde(default)]
-    request_id: Option<String>,
-    project_id: String,
-    session_id: String,
+    pub request_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
-    surface: Option<String>,
-    scene_id: String,
-    event_id: String,
+    pub surface: Option<String>,
+    pub scene_id: String,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -2643,14 +4855,13 @@ pub struct AgentSceneEventLinkBatchPayload {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentEventRelationPayload {
-    #[serde(default)]
-    request_id: Option<String>,
-    project_id: String,
-    session_id: String,
+    pub request_id: String,
+    pub project_id: String,
+    pub session_id: String,
     /// 書き込み元の表面。省略時は in-app-agent 互換（[`AgentEventCreatePayload`] 参照）。
-    surface: Option<String>,
-    cause_event_id: String,
-    effect_event_id: String,
+    pub surface: Option<String>,
+    pub cause_event_id: String,
+    pub effect_event_id: String,
 }
 
 /// Full self-contained snapshot of an event row + its participants, scene
@@ -2693,9 +4904,16 @@ pub(crate) fn collect_event_snapshot(
     };
 
     let scene_links = {
-        let mut stmt = conn
-            .prepare("SELECT scene_id FROM scene_events WHERE event_id = ?1 ORDER BY scene_id")?;
-        let rows = stmt.query_map(rusqlite::params![event_id], |row| row.get::<_, String>(0))?;
+        let mut stmt = conn.prepare(
+            "SELECT scene_id, incarnation_token
+               FROM scene_events WHERE event_id = ?1 ORDER BY scene_id",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![event_id], |row| {
+            Ok(json!({
+                "sceneId": row.get::<_, String>(0)?,
+                "incarnationToken": row.get::<_, String>(1)?,
+            }))
+        })?;
         rows.collect::<Result<Vec<_>, _>>()?
     };
 
@@ -2734,6 +4952,79 @@ pub(crate) fn collect_event_snapshot(
             "asEffect": relations_as_effect,
         },
     }))
+}
+
+fn collect_event_snapshot_optional(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+) -> anyhow::Result<Option<Value>> {
+    let owned = conn
+        .query_row(
+            "SELECT 1 FROM events WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![event_id, project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    owned
+        .then(|| collect_event_snapshot(conn, event_id))
+        .transpose()
+}
+
+pub(crate) fn chronicle_event_feed_input(
+    event_id: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    mutation_kind: &str,
+    change_kind: &str,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    let snapshot_version = |snapshot: Option<&Value>| {
+        snapshot.and_then(|value| value["eventData"]["version"].as_i64())
+    };
+    Ok(NarrativeChangeEventInput {
+        object_key: json!({
+            "kind": "chronicle-event",
+            "eventId": event_id,
+        }),
+        change_kind: change_kind.to_string(),
+        mutation_kind: mutation_kind.to_string(),
+        before_version: snapshot_version(before),
+        before_digest: before.map(narrative_snapshot_digest).transpose()?,
+        after_version: snapshot_version(after),
+        after_digest: after.map(narrative_snapshot_digest).transpose()?,
+        changed_paths: changed_paths.clone(),
+        text_impact: None,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+pub(crate) fn chronicle_event_transition_input(
+    event_id: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    change_kind: &str,
+    changed_paths: Vec<String>,
+    restore_when_created: bool,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    let mutation_kind = match (before.is_some(), after.is_some()) {
+        (true, true) => "update",
+        (true, false) => "delete",
+        (false, true) if restore_when_created => "restore",
+        (false, true) => "create",
+        (false, false) => anyhow::bail!(
+            "chronicle event '{event_id}' has no state on either side of its Feed transition"
+        ),
+    };
+    chronicle_event_feed_input(
+        event_id,
+        before,
+        after,
+        mutation_kind,
+        change_kind,
+        changed_paths,
+    )
 }
 
 fn collect_participants_json(conn: &rusqlite::Connection, event_id: &str) -> anyhow::Result<Value> {
@@ -2895,6 +5186,37 @@ fn batch_insert_scene_events(
         "scene-event association changed before insertion"
     );
     Ok(incarnations)
+}
+
+/// Restore the exact logical generation captured by an aggregate snapshot.
+/// A delete/restore round-trip represents the same association generation;
+/// only a new unlink/relink operation allocates a fresh incarnation token.
+fn batch_insert_scene_event_incarnations(
+    conn: &rusqlite::Connection,
+    event_id: &str,
+    incarnations: &SceneEventIncarnations,
+) -> anyhow::Result<()> {
+    let rows = incarnations.iter().collect::<Vec<_>>();
+    let mut inserted = 0usize;
+    for chunk in rows.chunks(INSERT_CHUNK_ROWS) {
+        let placeholders = vec!["(?, ?, ?)"; chunk.len()].join(", ");
+        let sql = format!(
+            "INSERT OR IGNORE INTO scene_events
+             (scene_id, event_id, incarnation_token) VALUES {placeholders}"
+        );
+        let mut params: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() * 3);
+        for (scene_id, token) in chunk {
+            params.push(scene_id);
+            params.push(&event_id);
+            params.push(token);
+        }
+        inserted += conn.execute(&sql, params.as_slice())?;
+    }
+    anyhow::ensure!(
+        inserted == incarnations.len(),
+        "scene-event aggregate association changed before restore"
+    );
+    Ok(())
 }
 
 /// CAS-delete only the exact scene-link incarnations owned by one journal.
@@ -3086,8 +5408,37 @@ pub(crate) fn apply_event_snapshot(
         rusqlite::params![id],
     )?;
     if let Some(arr) = snap["sceneLinks"].as_array() {
-        let scene_ids: Vec<&str> = arr.iter().filter_map(|s| s.as_str()).collect();
-        batch_insert_scene_events(conn, id, &scene_ids)?;
+        let mut captured = SceneEventIncarnations::new();
+        let mut legacy_scene_ids = Vec::new();
+        for raw in arr {
+            if let Some(scene_id) = raw.as_str() {
+                legacy_scene_ids.push(scene_id);
+                continue;
+            }
+            let scene_id = raw["sceneId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("event snapshot scene link is missing sceneId"))?;
+            let token = raw["incarnationToken"].as_str().ok_or_else(|| {
+                anyhow::anyhow!("event snapshot scene link is missing incarnationToken")
+            })?;
+            anyhow::ensure!(
+                captured
+                    .insert(scene_id.to_string(), token.to_string())
+                    .is_none(),
+                "event snapshot contains duplicate scene links"
+            );
+        }
+        if !captured.is_empty() {
+            anyhow::ensure!(
+                legacy_scene_ids.is_empty(),
+                "event snapshot mixes legacy and incarnation-aware scene links"
+            );
+            batch_insert_scene_event_incarnations(conn, id, &captured)?;
+        } else if !legacy_scene_ids.is_empty() {
+            // Public-floor journals predate incarnation tokens. Replaying one
+            // necessarily creates a fresh association generation.
+            batch_insert_scene_events(conn, id, &legacy_scene_ids)?;
+        }
     }
 
     conn.execute(
@@ -4028,6 +6379,32 @@ fn ensure_scene_in_project(
     Ok(())
 }
 
+/// MCP has no current-scene disclosure context. Its write-by-id tools must
+/// therefore treat secret Chronicle events exactly like missing or
+/// cross-project rows. Keep this check inside the Native transaction so a
+/// concurrent disclosure-state change cannot race the tool-layer preflight.
+fn ensure_event_writable_for_surface(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event_id: &str,
+    surface: Option<&str>,
+) -> anyhow::Result<()> {
+    if surface != Some("mcp") {
+        return Ok(());
+    }
+    let visible: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM events
+          WHERE id = ?1 AND project_id = ?2 AND secret = 0",
+        rusqlite::params![event_id, project_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        visible == 1,
+        "event '{event_id}' not found in project '{project_id}'"
+    );
+    Ok(())
+}
+
 /// Inputs for the shared in-transaction event create primitive.
 /// Used by both `agent_event_create_impl` and narrative commit apply.
 #[derive(Debug, Clone)]
@@ -4071,6 +6448,7 @@ pub(crate) struct EventCreateTxResult {
     pub change_event_uid: String,
     pub undo_journal_id: String,
     pub after_snapshot: Value,
+    pub canonical_event: AppendChangeEvent,
 }
 
 /// Shared event-create body that runs inside a caller-owned transaction.
@@ -4174,25 +6552,26 @@ pub(crate) fn apply_event_create_in_tx(
         )?;
     }
 
+    let mut change_payload = json!({ "title": input.title, "kind": input.kind });
+    if let Some(request_hash) = input.request_hash {
+        change_payload["requestHash"] = Value::String(request_hash.to_string());
+    }
+    let canonical_event = AppendChangeEvent {
+        event_uid: input.event_uid.to_string(),
+        scene_id: None,
+        domain: "event".to_string(),
+        op_type: "event.create".to_string(),
+        entity_type: Some("event".to_string()),
+        entity_id: Some(input.event_id.to_string()),
+        payload: change_payload.to_string(),
+        timestamp: input.timestamp,
+    };
     if input.write_change_event {
-        let mut change_payload = json!({ "title": input.title, "kind": input.kind });
-        if let Some(request_hash) = input.request_hash {
-            change_payload["requestHash"] = Value::String(request_hash.to_string());
-        }
         append_change_events_in_tx(
             conn,
             input.project_id,
             input.session_id,
-            &[AppendChangeEvent {
-                event_uid: input.event_uid.to_string(),
-                scene_id: None,
-                domain: "event".to_string(),
-                op_type: "event.create".to_string(),
-                entity_type: Some("event".to_string()),
-                entity_id: Some(input.event_id.to_string()),
-                payload: change_payload.to_string(),
-                timestamp: input.timestamp,
-            }],
+            std::slice::from_ref(&canonical_event),
         )?;
     }
 
@@ -4202,6 +6581,7 @@ pub(crate) fn apply_event_create_in_tx(
         change_event_uid: input.event_uid.to_string(),
         undo_journal_id: input.undo_id.to_string(),
         after_snapshot,
+        canonical_event,
     })
 }
 
@@ -4209,19 +6589,18 @@ pub fn agent_event_create_impl(
     db: &Database,
     payload: AgentEventCreatePayload,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
     let request_hash = event_create_request_hash(&payload)?;
-    let legacy_entity_request = payload.request_id.is_none() && payload.event_id.is_some();
-    let request_id = payload
-        .request_id
-        .clone()
-        .or_else(|| payload.event_id.clone());
+    let feed_request_id = payload.request_id.clone();
+    let request_id = payload.request_id.clone();
     let event_id = payload
         .event_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let undo_id = request_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = request_id.clone();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -4260,28 +6639,13 @@ pub fn agent_event_create_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            if let Some(request_id) = request_id.as_deref() {
-                if let Some(existing) = existing_request_result(
-                    conn,
-                    request_id,
-                    &request_hash,
-                    "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT",
-                )? {
-                    return Ok(existing);
-                }
-            }
-            if legacy_entity_request {
-                if let Some(existing) = existing_create_result(
-                    conn,
-                    "events",
-                    &payload.project_id,
-                    "event",
-                    &event_id,
-                    &request_hash,
-                    "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT",
-                )? {
-                    return Ok(existing);
-                }
+            if let Some(existing) = existing_request_result(
+                conn,
+                &request_id,
+                &request_hash,
+                "AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT",
+            )? {
+                return Ok(existing);
             }
 
             let created = apply_event_create_in_tx(
@@ -4312,12 +6676,24 @@ pub fn agent_event_create_impl(
                     reveal_scene_id: reveal_scene_id.as_deref(),
                     participants: &participants,
                     scene_ids: &scene_ids,
-                    request_hash: request_id.as_ref().map(|_| request_hash.as_str()),
+                    request_hash: Some(&request_hash),
                     now: &now,
                     timestamp,
                     write_undo_journal: true,
-                    write_change_event: true,
+                    write_change_event: false,
                 },
+            )?;
+
+            append_agent_forward_change_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                payload.surface.as_deref(),
+                Some(&feed_request_id),
+                &created.undo_journal_id,
+                &created.canonical_event,
+                None,
+                None,
             )?;
 
             record_manual_event_fields(
@@ -4354,6 +6730,14 @@ pub fn agent_event_update_impl(
     db: &Database,
     payload: AgentEventUpdatePayload,
 ) -> anyhow::Result<Value> {
+    agent_event_update_with_request_impl(db, payload, None)
+}
+
+pub fn agent_event_update_with_request_impl(
+    db: &Database,
+    payload: AgentEventUpdatePayload,
+    request_id: Option<&str>,
+) -> anyhow::Result<Value> {
     struct CurrentChronicleRange {
         version: i64,
         start_time: Option<i64>,
@@ -4364,7 +6748,20 @@ pub fn agent_event_update_impl(
         end_granularity: String,
     }
 
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    let request_hash = request_id
+        .map(|_| event_update_request_hash(&payload))
+        .transpose()?;
+    let request = request_hash
+        .as_deref()
+        .map(|payload_hash| IdempotencyRequest {
+            domain: "agent_event_update",
+            request_id,
+            payload_hash,
+            conflict_marker: "AGENT_EVENT_UPDATE_IDEMPOTENCY_CONFLICT",
+        });
+    let undo_id = request_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -4375,6 +6772,17 @@ pub fn agent_event_update_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request) = request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+            ensure_event_writable_for_surface(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+            )?;
             let current: Option<CurrentChronicleRange> = conn
                 .query_row(
                     "SELECT version, start_time, end_time, start_minute, end_minute,
@@ -4667,20 +7075,26 @@ pub fn agent_event_update_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.update".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({ "fields": fields }).to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: "event.update".to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.event_id.clone()),
-                    payload: json!({ "fields": fields }).to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                request_id,
+                &undo_id,
+                &canonical_event,
+                None,
+                None,
             )?;
 
             record_manual_event_fields(
@@ -4692,12 +7106,21 @@ pub fn agent_event_update_impl(
                 &now,
             )?;
 
-            Ok(AgentWriteResult {
+            let response = AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: result_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
-            })
+            };
+            if let Some(request) = request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
@@ -4717,7 +7140,28 @@ pub fn agent_event_delete_impl(
     db: &Database,
     payload: AgentEventIdPayload,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    agent_event_delete_with_request_impl(db, payload, None)
+}
+
+pub fn agent_event_delete_with_request_impl(
+    db: &Database,
+    payload: AgentEventIdPayload,
+    request_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    let request_hash = request_id
+        .map(|_| event_delete_request_hash(&payload))
+        .transpose()?;
+    let request = request_hash
+        .as_deref()
+        .map(|payload_hash| IdempotencyRequest {
+            domain: "agent_event_delete",
+            request_id,
+            payload_hash,
+            conflict_marker: "AGENT_EVENT_DELETE_IDEMPOTENCY_CONFLICT",
+        });
+    let undo_id = request_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -4726,6 +7170,17 @@ pub fn agent_event_delete_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
+            if let Some(request) = request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+            ensure_event_writable_for_surface(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+            )?;
             let current_version: i64 = conn
                 .query_row(
                     "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
@@ -4757,6 +7212,17 @@ pub fn agent_event_delete_impl(
                 .unwrap_or("")
                 .to_string();
             let related_event_ids = event_snapshot_related_ids(&before_value);
+            let mut feed_event_ids = related_event_ids.clone();
+            feed_event_ids.push(payload.event_id.clone());
+            feed_event_ids.sort();
+            feed_event_ids.dedup();
+            let before_feed = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    collect_event_snapshot(conn, event_id)
+                        .map(|snapshot| (event_id.clone(), snapshot))
+                })
+                .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
             let before = before_value.to_string();
 
             let deleted = conn.execute(
@@ -4770,6 +7236,36 @@ pub fn agent_event_delete_impl(
                     base_version
                 );
             }
+
+            let after_feed = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    collect_event_snapshot_optional(conn, &payload.project_id, event_id)
+                        .map(|snapshot| (event_id.clone(), snapshot))
+                })
+                .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+            let narrative_events = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    let is_deleted_root = event_id == &payload.event_id;
+                    chronicle_event_transition_input(
+                        event_id,
+                        before_feed.get(event_id),
+                        after_feed.get(event_id).and_then(Option::as_ref),
+                        if is_deleted_root {
+                            "metadata"
+                        } else {
+                            "association"
+                        },
+                        if is_deleted_root {
+                            vec!["/".to_string()]
+                        } else {
+                            vec!["/relations".to_string()]
+                        },
+                        false,
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
 
             insert_undo_journal_in_tx(
                 conn,
@@ -4788,24 +7284,30 @@ pub fn agent_event_delete_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.delete".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({
+                    "title": title,
+                    "relatedEventIds": related_event_ids,
+                })
+                .to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: "event.delete".to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.event_id.clone()),
-                    payload: json!({
-                        "title": title,
-                        "relatedEventIds": related_event_ids,
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                request_id,
+                &undo_id,
+                &canonical_event,
+                Some(narrative_events),
+                None,
             )?;
 
             record_manual_event_fields(
@@ -4817,12 +7319,21 @@ pub fn agent_event_delete_impl(
                 &now,
             )?;
 
-            Ok(AgentWriteResult {
+            let response = AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: 0,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
-            })
+            };
+            if let Some(request) = request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
@@ -4842,7 +7353,28 @@ pub fn agent_event_set_participants_impl(
     db: &Database,
     payload: AgentEventParticipantsPayload,
 ) -> anyhow::Result<Value> {
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    agent_event_set_participants_with_request_impl(db, payload, None)
+}
+
+pub fn agent_event_set_participants_with_request_impl(
+    db: &Database,
+    payload: AgentEventParticipantsPayload,
+    request_id: Option<&str>,
+) -> anyhow::Result<Value> {
+    let request_hash = request_id
+        .map(|_| event_participants_request_hash(&payload))
+        .transpose()?;
+    let request = request_hash
+        .as_deref()
+        .map(|payload_hash| IdempotencyRequest {
+            domain: "agent_event_participants",
+            request_id,
+            payload_hash,
+            conflict_marker: "AGENT_EVENT_PARTICIPANTS_IDEMPOTENCY_CONFLICT",
+        });
+    let undo_id = request_id
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -4853,6 +7385,18 @@ pub fn agent_event_set_participants_impl(
         let result = (|| -> anyhow::Result<AgentWriteResult> {
             use rusqlite::OptionalExtension;
 
+            if let Some(request) = request.as_ref() {
+                if let Some(existing) = load_idempotent_response(conn, request)? {
+                    return serde_json::from_value(existing).map_err(Into::into);
+                }
+            }
+
+            ensure_event_writable_for_surface(
+                conn,
+                &payload.project_id,
+                &payload.event_id,
+                payload.surface.as_deref(),
+            )?;
             let current_version: Option<i64> = conn
                 .query_row(
                     "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
@@ -4878,6 +7422,7 @@ pub fn agent_event_set_participants_impl(
             }
             let result_version = base_version + 1;
 
+            let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let before = collect_participants_json(conn, &payload.event_id)?.to_string();
 
             let bumped = conn.execute(
@@ -4902,6 +7447,12 @@ pub fn agent_event_set_participants_impl(
                 "DELETE FROM event_participants WHERE event_id = ?1",
                 rusqlite::params![payload.event_id],
             )?;
+            if let Some(roles) = payload.participant_roles.as_ref() {
+                anyhow::ensure!(
+                    roles.len() == payload.codex_entry_ids.len(),
+                    "participantRoles must align with codexEntryIds"
+                );
+            }
             for codex_id in &payload.codex_entry_ids {
                 // Scope guard: the event is already confirmed in this project
                 // above, but each participant must be too — otherwise a P1 event
@@ -4911,11 +7462,22 @@ pub fn agent_event_set_participants_impl(
             let participant_rows: Vec<(&str, Option<&str>)> = payload
                 .codex_entry_ids
                 .iter()
-                .map(|c| (c.as_str(), None))
+                .enumerate()
+                .map(|(index, codex_id)| {
+                    (
+                        codex_id.as_str(),
+                        payload
+                            .participant_roles
+                            .as_ref()
+                            .and_then(|roles| roles.get(index))
+                            .and_then(Option::as_deref),
+                    )
+                })
                 .collect();
             batch_insert_event_participants(conn, &payload.event_id, &participant_rows)?;
 
             let after = collect_participants_json(conn, &payload.event_id)?.to_string();
+            let after_feed = collect_event_snapshot(conn, &payload.event_id)?;
 
             insert_undo_journal_in_tx(
                 conn,
@@ -4934,24 +7496,37 @@ pub fn agent_event_set_participants_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.participants".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({
+                    "eventId": payload.event_id,
+                    "codexEntryIds": payload.codex_entry_ids,
+                })
+                .to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: "event.participants".to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.event_id.clone()),
-                    payload: json!({
-                        "eventId": payload.event_id,
-                        "codexEntryIds": payload.codex_entry_ids,
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                request_id,
+                &undo_id,
+                &canonical_event,
+                Some(vec![chronicle_event_feed_input(
+                    &payload.event_id,
+                    Some(&before_feed),
+                    Some(&after_feed),
+                    "update",
+                    "association",
+                    vec!["/participants".to_string()],
+                )?]),
+                None,
             )?;
 
             record_manual_event_fields(
@@ -4963,12 +7538,21 @@ pub fn agent_event_set_participants_impl(
                 &now,
             )?;
 
-            Ok(AgentWriteResult {
+            let response = AgentWriteResult {
                 entity_id: payload.event_id.clone(),
                 version: result_version,
                 change_event_uid: event_uid,
                 undo_journal_id: undo_id,
-            })
+            };
+            if let Some(request) = request.as_ref() {
+                insert_idempotent_response(
+                    conn,
+                    request,
+                    &payload.project_id,
+                    &serde_json::to_value(&response)?,
+                )?;
+            }
+            Ok(response)
         })();
 
         match result {
@@ -4989,11 +7573,12 @@ pub fn agent_scene_event_mutate_impl(
     payload: AgentSceneEventPayload,
     link: bool,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
     let request_hash = scene_event_request_hash(&payload, link)?;
-    let undo_id = payload
-        .request_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = payload.request_id.clone();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -5002,19 +7587,20 @@ pub fn agent_scene_event_mutate_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let existing_request = payload
-                .request_id
-                .as_deref()
-                .map(|request_id| {
-                    existing_request_result(
-                        conn,
-                        request_id,
-                        &request_hash,
-                        "AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT",
-                    )
-                })
-                .transpose()?
-                .flatten();
+            let existing_request = existing_request_result(
+                conn,
+                &payload.request_id,
+                &request_hash,
+                "AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT",
+            )?;
+            if existing_request.is_none() {
+                ensure_event_writable_for_surface(
+                    conn,
+                    &payload.project_id,
+                    &payload.event_id,
+                    payload.surface.as_deref(),
+                )?;
+            }
             let scene_ok: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
                 rusqlite::params![payload.scene_id, payload.project_id],
@@ -5081,6 +7667,8 @@ pub fn agent_scene_event_mutate_impl(
                 );
             }
 
+            let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
+
             let after_token = if link {
                 if let Some(token) = existing_token.as_ref() {
                     Some(token.clone())
@@ -5116,6 +7704,7 @@ pub fn agent_scene_event_mutate_impl(
                 after_token.as_deref(),
             )
             .to_string();
+            let after_feed = collect_event_snapshot(conn, &payload.event_id)?;
 
             let op_type = if link { "event.stamp" } else { "event.unstamp" };
 
@@ -5136,25 +7725,38 @@ pub fn agent_scene_event_mutate_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: Some(payload.scene_id.clone()),
+                domain: "event".to_string(),
+                op_type: op_type.to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({
+                    "sceneId": payload.scene_id,
+                    "eventId": payload.event_id,
+                    "requestHash": request_hash,
+                })
+                .to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: Some(payload.scene_id.clone()),
-                    domain: "event".to_string(),
-                    op_type: op_type.to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.event_id.clone()),
-                    payload: json!({
-                        "sceneId": payload.scene_id,
-                        "eventId": payload.event_id,
-                        "requestHash": request_hash,
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                Some(&payload.request_id),
+                &undo_id,
+                &canonical_event,
+                Some(vec![chronicle_event_feed_input(
+                    &payload.event_id,
+                    Some(&before_feed),
+                    Some(&after_feed),
+                    "update",
+                    "association",
+                    vec!["/sceneIds".to_string()],
+                )?]),
+                None,
             )?;
 
             record_manual_event_fields(
@@ -5229,6 +7831,14 @@ pub fn agent_scene_event_link_batch_impl(
                 &request_hash,
                 "AGENT_SCENE_EVENT_LINK_BATCH_IDEMPOTENCY_CONFLICT",
             )?;
+            if existing_request.is_none() {
+                ensure_event_writable_for_surface(
+                    conn,
+                    &payload.project_id,
+                    &payload.event_id,
+                    payload.surface.as_deref(),
+                )?;
+            }
 
             let event_version: i64 = conn
                 .query_row(
@@ -5292,10 +7902,12 @@ pub fn agent_scene_event_link_batch_impl(
                 .filter(|scene_id| !current_links.contains_key(*scene_id))
                 .cloned()
                 .collect();
+            let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let scene_id_refs: Vec<&str> =
                 added_scene_ids.iter().map(String::as_str).collect();
             let added_incarnations =
                 batch_insert_scene_events(conn, &payload.event_id, &scene_id_refs)?;
+            let after_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let before_snapshot = scene_event_link_batch_snapshot(
                 &payload.event_id,
                 &added_scene_ids,
@@ -5328,25 +7940,38 @@ pub fn agent_scene_event_link_batch_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: "event.stamp".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({
+                    "eventId": payload.event_id,
+                    "sceneIds": added_scene_ids,
+                    "requestHash": request_hash,
+                })
+                .to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: "event.stamp".to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.event_id.clone()),
-                    payload: json!({
-                        "eventId": payload.event_id,
-                        "sceneIds": added_scene_ids,
-                        "requestHash": request_hash,
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                Some(&payload.request_id),
+                &undo_id,
+                &canonical_event,
+                Some(vec![chronicle_event_feed_input(
+                    &payload.event_id,
+                    Some(&before_feed),
+                    Some(&after_feed),
+                    "update",
+                    "association",
+                    vec!["/sceneIds".to_string()],
+                )?]),
+                None,
             )?;
 
             record_manual_event_fields(
@@ -5384,11 +8009,12 @@ pub fn agent_event_relation_mutate_impl(
     payload: AgentEventRelationPayload,
     add: bool,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
     let request_hash = event_relation_request_hash(&payload, add)?;
-    let undo_id = payload
-        .request_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let undo_id = payload.request_id.clone();
     let event_uid = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -5397,21 +8023,28 @@ pub fn agent_event_relation_mutate_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            let existing_request = payload
-                .request_id
-                .as_deref()
-                .map(|request_id| {
-                    existing_request_result(
-                        conn,
-                        request_id,
-                        &request_hash,
-                        "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT",
-                    )
-                })
-                .transpose()?
-                .flatten();
+            let existing_request = existing_request_result(
+                conn,
+                &payload.request_id,
+                &request_hash,
+                "AGENT_EVENT_RELATION_IDEMPOTENCY_CONFLICT",
+            )?;
             if payload.cause_event_id == payload.effect_event_id {
                 anyhow::bail!("self-loop event relation forbidden");
+            }
+            if existing_request.is_none() {
+                ensure_event_writable_for_surface(
+                    conn,
+                    &payload.project_id,
+                    &payload.cause_event_id,
+                    payload.surface.as_deref(),
+                )?;
+                ensure_event_writable_for_surface(
+                    conn,
+                    &payload.project_id,
+                    &payload.effect_event_id,
+                    payload.surface.as_deref(),
+                )?;
             }
             let cause_version: i64 = conn
                 .query_row(
@@ -5461,6 +8094,19 @@ pub fn agent_event_relation_mutate_impl(
                 );
             }
 
+            let mut feed_event_ids = vec![
+                payload.cause_event_id.clone(),
+                payload.effect_event_id.clone(),
+            ];
+            feed_event_ids.sort();
+            let before_feed = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    collect_event_snapshot(conn, event_id)
+                        .map(|snapshot| (event_id.clone(), snapshot))
+                })
+                .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+
             if add {
                 conn.execute(
                     "INSERT OR IGNORE INTO event_relations
@@ -5486,6 +8132,26 @@ pub fn agent_event_relation_mutate_impl(
                 "linked": add,
             })
             .to_string();
+            let after_feed = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    collect_event_snapshot(conn, event_id)
+                        .map(|snapshot| (event_id.clone(), snapshot))
+                })
+                .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
+            let narrative_events = feed_event_ids
+                .iter()
+                .map(|event_id| {
+                    chronicle_event_feed_input(
+                        event_id,
+                        before_feed.get(event_id),
+                        after_feed.get(event_id),
+                        "update",
+                        "association",
+                        vec!["/relations".to_string()],
+                    )
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
 
             let op_type = if add {
                 "event.relation_add"
@@ -5510,25 +8176,31 @@ pub fn agent_event_relation_mutate_impl(
                 },
             )?;
 
-            append_change_events_in_tx(
+            let canonical_event = AppendChangeEvent {
+                event_uid: event_uid.clone(),
+                scene_id: None,
+                domain: "event".to_string(),
+                op_type: op_type.to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.cause_event_id.clone()),
+                payload: json!({
+                    "causeEventId": payload.cause_event_id,
+                    "effectEventId": payload.effect_event_id,
+                    "requestHash": request_hash,
+                })
+                .to_string(),
+                timestamp,
+            };
+            append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
-                    event_uid: event_uid.clone(),
-                    scene_id: None,
-                    domain: "event".to_string(),
-                    op_type: op_type.to_string(),
-                    entity_type: Some("event".to_string()),
-                    entity_id: Some(payload.cause_event_id.clone()),
-                    payload: json!({
-                        "causeEventId": payload.cause_event_id,
-                        "effectEventId": payload.effect_event_id,
-                        "requestHash": request_hash,
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
+                payload.surface.as_deref(),
+                Some(&payload.request_id),
+                &undo_id,
+                &canonical_event,
+                Some(narrative_events),
+                None,
             )?;
 
             record_manual_event_fields(
@@ -5647,7 +8319,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_bundle_cannot_bypass_maintenance_feed_writer_and_rolls_back_atomically() {
+    fn agent_bundle_is_fail_closed_and_cannot_mutate_domain_or_feed_tables() {
         let db = test_db();
         let project_id = insert_project(&db);
         let feed_table = "narrative_change_cursors";
@@ -5743,10 +8415,11 @@ mod tests {
                     },
                 },
             )
-            .expect_err("agent bundle must not bypass the feed writer or outer transaction");
+            .expect_err("generic SQL bundles must require a typed Native writer");
             assert!(
-                error.to_string().contains("PROTECTED_WRITER_SQL")
-                    && error.to_string().contains("narrative.maintenance-feed"),
+                error
+                    .to_string()
+                    .contains("AGENT_WRITE_BUNDLE_TYPED_WRITER_REQUIRED"),
                 "unexpected denial: {error}"
             );
             assert_eq!(table_count(&db, "snippets"), 0);
@@ -5774,8 +8447,8 @@ mod tests {
             assert_eq!(canonical_table, 1, "protected table must retain its name");
             assert_eq!(escaped_table, 0, "rename attempt must roll back");
 
-            // The scoped authorizer must be gone before typed Native work
-            // resumes on the shared connection.
+            // Fail-closed rejection must not leave any SQLite authorizer or
+            // transaction state behind on the shared connection.
             let trusted_update = format!(
                 "UPDATE \"{feed_table}\"
                  SET acknowledged_through_sequence = ?1
@@ -5816,7 +8489,7 @@ mod tests {
         agent_codex_create_impl(
             &db,
             AgentCodexCreatePayload {
-                request_id: None,
+                request_id: Some("agent-tool:codex-parity".to_string()),
                 entry_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
@@ -5862,10 +8535,26 @@ mod tests {
             assert_eq!(op_type, ce["opType"].as_str().unwrap());
             assert_eq!(entity_type, ce["entityType"].as_str().unwrap());
             let payload: serde_json::Value = serde_json::from_str(&payload)?;
-            assert_eq!(
-                json_keys(&payload),
-                fixture_keys(&ce["payloadKeys"]),
-                "in-app change_event payload keys drifted from the parity fixture"
+            let payload_keys = json_keys(&payload);
+            let required_payload_keys = fixture_keys(&ce["payloadKeys"]);
+            let audit_payload_keys = fixture_keys(&ce["auditPayloadKeys"]);
+            for key in &required_payload_keys {
+                assert!(
+                    payload_keys.contains(key),
+                    "in-app change_event payload is missing required parity key '{key}'"
+                );
+            }
+            for key in &payload_keys {
+                assert!(
+                    required_payload_keys.contains(key) || audit_payload_keys.contains(key),
+                    "in-app change_event payload key '{key}' is absent from the parity contract"
+                );
+            }
+            assert!(
+                payload["requestHash"]
+                    .as_str()
+                    .is_some_and(|hash| hash.len() == 64),
+                "request-aware in-app create must record its idempotency audit hash"
             );
 
             // undoJournal contract
@@ -5899,6 +8588,19 @@ mod tests {
             let source: String =
                 conn.query_row("SELECT source FROM authorship_spans", [], |r| r.get(0))?;
             assert_eq!(source, span_fixture["source"].as_str().unwrap());
+
+            // Canonical create writers keep the caller's stable logical
+            // request identity distinct from the generated audit event uid.
+            let (feed_request_id, source_event_uid, origin): (String, String, String) = conn
+                .query_row(
+                    "SELECT request_id, source_change_event_uid, origin
+                       FROM narrative_change_transactions",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+            assert_eq!(feed_request_id, "agent-tool:codex-parity");
+            assert_ne!(feed_request_id, source_event_uid);
+            assert_eq!(origin, "ai-apply");
             Ok(())
         })
         .unwrap();
@@ -5968,6 +8670,25 @@ mod tests {
         assert_eq!(table_count(&db, "codex_entries"), 1);
         assert_eq!(table_count(&db, "undo_journal"), 1);
         assert_eq!(table_count(&db, "change_events"), 1);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 1);
+        assert_eq!(table_count(&db, "narrative_change_events"), 1);
+        db.with_conn(|conn| {
+            let (request_id, origin, undo_journal_id): (String, String, Option<String>) = conn
+                .query_row(
+                    "SELECT request_id, origin, undo_journal_id
+                       FROM narrative_change_transactions",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(request_id, "agent-tool:codex-request-1");
+            assert_eq!(origin, "ai-apply");
+            assert_eq!(
+                undo_journal_id.as_deref(),
+                Some("agent-tool:codex-request-1")
+            );
+            Ok(())
+        })
+        .unwrap();
 
         db.with_conn(|conn| {
             conn.execute(
@@ -5989,6 +8710,650 @@ mod tests {
             .to_string()
             .contains("AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT"));
         assert_eq!(table_count(&db, "codex_entries"), 0);
+    }
+
+    #[test]
+    fn renderer_codex_create_retry_ignores_transport_session_and_event_identity() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let payload = AgentCodexCreatePayload {
+            request_id: None,
+            entry_id: Some("renderer-codex-entry".to_string()),
+            project_id: project_id.clone(),
+            session_id: "renderer-session".to_string(),
+            surface: Some("manual".to_string()),
+            type_slug: "character".to_string(),
+            name: "Alice".to_string(),
+            summary: None,
+            content: None,
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let context = RendererCanonicalWriteContext {
+            request_id: "renderer-create-request".to_string(),
+            event_uid: "renderer-create-event".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: Some("always".to_string()),
+            icon: Some("star".to_string()),
+            children_budget: Some("standard".to_string()),
+            notes: Some("private".to_string()),
+            canonical_payload: None,
+        };
+        let first = renderer_codex_create_impl(&db, payload.clone(), context.clone())
+            .expect("first renderer create");
+
+        let mut retry_payload = payload;
+        retry_payload.session_id = "renderer-session-after-restart".to_string();
+        let mut retry_context = context;
+        retry_context.event_uid = "renderer-event-after-restart".to_string();
+        let retry = renderer_codex_create_impl(&db, retry_payload, retry_context)
+            .expect("renderer durable request replay");
+
+        assert_eq!(retry, first);
+        assert_eq!(table_count(&db, "codex_entries"), 1);
+        assert_eq!(table_count(&db, "undo_journal"), 1);
+        assert_eq!(table_count(&db, "change_events"), 1);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 1);
+        assert_eq!(table_count(&db, "narrative_change_events"), 1);
+        db.with_conn(|conn| {
+            let row: (String, Option<String>, String, Option<String>) = conn.query_row(
+                "SELECT context_mode, icon, children_budget, notes
+                   FROM codex_entries WHERE id = 'renderer-codex-entry' AND project_id = ?1",
+                [&project_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(
+                row,
+                (
+                    "always".to_string(),
+                    Some("star".to_string()),
+                    "standard".to_string(),
+                    Some("private".to_string()),
+                )
+            );
+            Ok(())
+        })
+        .expect("inspect renderer create fields");
+    }
+
+    #[test]
+    fn renderer_codex_delete_emits_deterministic_cascade_facts_in_one_transaction() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "cascade-root", "Root", 4);
+        let mut child = tracked_codex_create_payload(&project_id, "cascade-child", "Child", 5);
+        child.parent_id = Some("cascade-root".to_string());
+        agent_codex_create_impl(&db, child).expect("create cascade child");
+        db.with_conn(|conn| {
+            conn.execute_batch(&format!(
+                "INSERT INTO codex_relations
+                   (id, project_id, from_codex_id, to_codex_id, semantic_key)
+                 VALUES ('cascade-relation', '{project_id}', 'cascade-root', 'cascade-child', 'cascade');
+                 INSERT INTO codex_entry_phases (id, entry_id, label)
+                 VALUES ('cascade-phase', 'cascade-root', 'Before');
+                 INSERT INTO codex_detail_definitions
+                   (id, project_id, type_slug, name)
+                 VALUES ('cascade-definition', '{project_id}', 'character', 'Fact');
+                 INSERT INTO codex_detail_values
+                   (id, entry_id, definition_id, value)
+                 VALUES ('cascade-detail', 'cascade-root', 'cascade-definition', 'value');
+                 INSERT INTO codex_tags (id, project_id, name)
+                 VALUES ('cascade-tag', '{project_id}', 'Tag');
+                 INSERT INTO codex_entry_tags (entry_id, tag_id)
+                 VALUES ('cascade-root', 'cascade-tag');"
+            ))?;
+            Ok(())
+        })
+        .expect("seed Codex cascade");
+
+        let result = renderer_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "cascade-session".to_string(),
+                surface: Some("manual".to_string()),
+                entry_id: "cascade-root".to_string(),
+                base_version: 1,
+            },
+            RendererCanonicalWriteContext {
+                request_id: "cascade-delete-request".to_string(),
+                event_uid: "cascade-delete-event".to_string(),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                canonical_payload: Some(json!({ "name": "Root", "type": "character" })),
+            },
+        )
+        .expect("delete Codex cascade");
+
+        let transaction_id = result["maintenanceTransactionId"]
+            .as_str()
+            .expect("maintenance transaction id");
+        let delete_journal_id = result["undoJournalId"]
+            .as_str()
+            .expect("delete Undo Journal id")
+            .to_string();
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT object_key_json, mutation_kind
+                   FROM narrative_change_events
+                  WHERE project_id = ?1 AND transaction_id = ?2
+                  ORDER BY event_ordinal",
+            )?;
+            let rows = statement
+                .query_map(rusqlite::params![project_id, transaction_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let object_keys = rows
+                .iter()
+                .map(|(raw, _)| serde_json::from_str::<Value>(raw))
+                .collect::<serde_json::Result<Vec<_>>>()?;
+            assert_eq!(
+                object_keys,
+                vec![
+                    json!({ "kind": "codex-entry", "entryId": "cascade-root" }),
+                    json!({ "kind": "codex-relation", "relationId": "cascade-relation" }),
+                    json!({ "kind": "codex-phase", "phaseId": "cascade-phase" }),
+                    json!({ "kind": "component", "componentId": "codex-detail-value:cascade-root:cascade-definition" }),
+                    json!({ "kind": "codex-entry", "entryId": "cascade-child" }),
+                ]
+            );
+            assert_eq!(
+                rows.iter().map(|(_, mutation)| mutation.as_str()).collect::<Vec<_>>(),
+                vec!["delete", "delete", "delete", "delete", "update"]
+            );
+            let canonical_payload: String = conn.query_row(
+                "SELECT payload FROM change_events
+                  WHERE project_id = ?1 AND event_uid = 'cascade-delete-event'",
+                [&project_id],
+                |row| row.get(0),
+            )?;
+            let canonical_payload: Value = serde_json::from_str(&canonical_payload)?;
+            assert_eq!(canonical_payload["cascade"]["relationIds"], json!(["cascade-relation"]));
+            assert_eq!(canonical_payload["cascade"]["phaseIds"], json!(["cascade-phase"]));
+            assert_eq!(canonical_payload["cascade"]["detailValueIds"], json!(["cascade-detail"]));
+            assert_eq!(canonical_payload["cascade"]["tagIds"], json!(["cascade-tag"]));
+            assert_eq!(canonical_payload["cascade"]["childEntryIds"], json!(["cascade-child"]));
+            let child_parent: Option<String> = conn.query_row(
+                "SELECT parent_id FROM codex_entries WHERE id = 'cascade-child'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(child_parent, None);
+            Ok(())
+        })
+        .expect("inspect deterministic cascade facts");
+
+        let mut restore_payload =
+            tracked_codex_create_payload(&project_id, "cascade-root", "stale renderer copy", 1);
+        restore_payload.request_id = None;
+        restore_payload.session_id = "cascade-restore-session".to_string();
+        restore_payload.surface = Some("manual".to_string());
+        let restore_context = RendererCanonicalWriteContext {
+            request_id: "cascade-restore-request".to_string(),
+            event_uid: "cascade-restore-event".to_string(),
+            origin: NarrativeChangeOrigin::Undo,
+            original_transaction_id: Some(transaction_id.to_string()),
+            undo_journal_id: Some(delete_journal_id.clone()),
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+        let restored =
+            renderer_codex_create_impl(&db, restore_payload.clone(), restore_context.clone())
+                .expect("restore complete Codex delete cascade");
+        let restore_transaction_id = restored["maintenanceTransactionId"]
+            .as_str()
+            .expect("restore maintenance transaction id");
+        db.with_conn(|conn| {
+            let restored_counts: (i64, i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM codex_entries WHERE id = 'cascade-root'),
+                   (SELECT COUNT(*) FROM codex_relations WHERE id = 'cascade-relation'),
+                   (SELECT COUNT(*) FROM codex_entry_phases WHERE id = 'cascade-phase'),
+                   (SELECT COUNT(*) FROM codex_detail_values WHERE id = 'cascade-detail'),
+                   (SELECT COUNT(*) FROM codex_entry_tags
+                     WHERE entry_id = 'cascade-root' AND tag_id = 'cascade-tag')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(restored_counts, (1, 1, 1, 1, 1));
+            let root: (String, i64) = conn.query_row(
+                "SELECT name, version FROM codex_entries WHERE id = 'cascade-root'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(root, ("Root".to_string(), 2));
+            let child: (Option<String>, i64) = conn.query_row(
+                "SELECT parent_id, version FROM codex_entries WHERE id = 'cascade-child'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(child, (Some("cascade-root".to_string()), 2));
+            let rows = conn
+                .prepare(
+                    "SELECT object_key_json, mutation_kind
+                       FROM narrative_change_events
+                      WHERE project_id = ?1 AND transaction_id = ?2
+                      ORDER BY event_ordinal",
+                )?
+                .query_map(
+                    rusqlite::params![project_id, restore_transaction_id],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows.iter().map(|row| row.1.as_str()).collect::<Vec<_>>(),
+                vec!["restore", "restore", "restore", "restore", "update"]
+            );
+            Ok(())
+        })
+        .expect("inspect complete cascade restore");
+
+        restore_payload.session_id = "cascade-restore-after-restart".to_string();
+        let mut retry_context = restore_context.clone();
+        retry_context.event_uid = "cascade-restore-event-after-restart".to_string();
+        let retry = renderer_codex_create_impl(&db, restore_payload, retry_context)
+            .expect("replay complete cascade restore");
+        assert_eq!(retry, restored);
+
+        renderer_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "cascade-redo-session".to_string(),
+                surface: Some("manual".to_string()),
+                entry_id: "cascade-root".to_string(),
+                base_version: 2,
+            },
+            RendererCanonicalWriteContext {
+                request_id: "cascade-redo-delete-request".to_string(),
+                event_uid: "cascade-redo-delete-event".to_string(),
+                origin: NarrativeChangeOrigin::Redo,
+                original_transaction_id: Some(transaction_id.to_string()),
+                undo_journal_id: Some(delete_journal_id.clone()),
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                canonical_payload: None,
+            },
+        )
+        .expect("redo cascade delete");
+        let baseline_change_events = table_count(&db, "change_events");
+        let baseline_transactions = table_count(&db, "narrative_change_transactions");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_codex_cascade_restore_feed
+                 BEFORE INSERT ON narrative_change_events
+                 WHEN NEW.canonical_change_event_uid = 'cascade-restore-fail-event'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced Codex cascade restore Feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install cascade restore Feed failure trigger");
+        let mut failed_restore_payload =
+            tracked_codex_create_payload(&project_id, "cascade-root", "ignored", 1);
+        failed_restore_payload.request_id = None;
+        failed_restore_payload.session_id = "cascade-restore-fail-session".to_string();
+        failed_restore_payload.surface = Some("manual".to_string());
+        let error = renderer_codex_create_impl(
+            &db,
+            failed_restore_payload,
+            RendererCanonicalWriteContext {
+                request_id: "cascade-restore-fail-request".to_string(),
+                event_uid: "cascade-restore-fail-event".to_string(),
+                origin: NarrativeChangeOrigin::Undo,
+                original_transaction_id: Some(transaction_id.to_string()),
+                undo_journal_id: Some(delete_journal_id),
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                canonical_payload: None,
+            },
+        )
+        .expect_err("Feed failure must roll back the complete Codex restore");
+        assert!(
+            error
+                .to_string()
+                .contains("forced Codex cascade restore Feed failure"),
+            "{error:#}"
+        );
+        db.with_conn(|conn| {
+            let state: (i64, i64, i64, i64, i64, Option<String>) = conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM codex_entries WHERE id = 'cascade-root'),
+                   (SELECT COUNT(*) FROM codex_relations WHERE id = 'cascade-relation'),
+                   (SELECT COUNT(*) FROM codex_entry_phases WHERE id = 'cascade-phase'),
+                   (SELECT COUNT(*) FROM codex_detail_values WHERE id = 'cascade-detail'),
+                   (SELECT COUNT(*) FROM codex_entry_tags
+                     WHERE entry_id = 'cascade-root' AND tag_id = 'cascade-tag'),
+                   (SELECT parent_id FROM codex_entries WHERE id = 'cascade-child')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+            assert_eq!(state, (0, 0, 0, 0, 0, None));
+            let idempotency_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM idempotency_requests
+                  WHERE request_id = 'cascade-restore-fail-request'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(idempotency_rows, 0);
+            Ok(())
+        })
+        .expect("inspect rolled back cascade restore");
+        assert_eq!(table_count(&db, "change_events"), baseline_change_events);
+        assert_eq!(
+            table_count(&db, "narrative_change_transactions"),
+            baseline_transactions
+        );
+    }
+
+    fn link_foreshadow_fixture(
+        db: &Database,
+        project_id: &str,
+        entry_id: &str,
+        foreshadow_id: &str,
+    ) {
+        let now = chrono::Utc::now().timestamp_millis();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO foreshadows
+                   (id, project_id, title, payoff_confirmed, abandoned, secret,
+                    version, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 0, 0, 0, 0, ?4, ?4)",
+                rusqlite::params![foreshadow_id, project_id, foreshadow_id, now],
+            )?;
+            conn.execute(
+                "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+                 VALUES (?1, ?2)",
+                rusqlite::params![foreshadow_id, entry_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed linked Foreshadow");
+    }
+
+    fn renderer_update_context(request_id: &str, event_uid: &str) -> RendererCanonicalWriteContext {
+        RendererCanonicalWriteContext {
+            request_id: request_id.to_string(),
+            event_uid: event_uid.to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: Some(json!({
+                "fields": ["name"],
+                "before": { "name": "Before" },
+                "after": { "name": "After" },
+            })),
+        }
+    }
+
+    #[test]
+    fn renderer_codex_update_invalidates_linked_foreshadows_atomically_in_id_order() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "linked-codex", "Before", 6);
+        link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-z");
+        link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-a");
+        let payload = AgentCodexUpdatePayload {
+            project_id: project_id.clone(),
+            session_id: "renderer-update-session".to_string(),
+            surface: Some("manual".to_string()),
+            entry_id: "linked-codex".to_string(),
+            base_version: 1,
+            type_slug: None,
+            name: Some("After".to_string()),
+            summary: None,
+            content: None,
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: None,
+            authorship_span_lanes: None,
+        };
+        let context = renderer_update_context("linked-update-request", "linked-update-event");
+        let first = renderer_codex_update_impl(&db, payload.clone(), context.clone())
+            .expect("update Codex and linked Foreshadows");
+        let transaction_id = first["maintenanceTransactionId"]
+            .as_str()
+            .expect("maintenance transaction id");
+        assert_eq!(
+            first["relatedForeshadows"]
+                .as_array()
+                .expect("related Foreshadow rows")
+                .iter()
+                .map(|row| row["id"].as_str().expect("Foreshadow id"))
+                .collect::<Vec<_>>(),
+            vec!["foreshadow-a", "foreshadow-z"]
+        );
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT object_key_json
+                   FROM narrative_change_events
+                  WHERE project_id = ?1 AND transaction_id = ?2
+                  ORDER BY event_ordinal",
+            )?;
+            let keys = statement
+                .query_map(rusqlite::params![project_id, transaction_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .map(|row| serde_json::from_str::<Value>(&row?).map_err(Into::into))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            assert_eq!(
+                keys,
+                vec![
+                    json!({ "kind": "codex-entry", "entryId": "linked-codex" }),
+                    json!({ "kind": "foreshadow", "foreshadowId": "foreshadow-a" }),
+                    json!({ "kind": "foreshadow", "foreshadowId": "foreshadow-z" }),
+                ]
+            );
+            let versions = conn
+                .prepare(
+                    "SELECT id, version, codex_link_dirty_at
+                       FROM foreshadows
+                      WHERE project_id = ?1 ORDER BY id",
+                )?
+                .query_map([&project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(versions.len(), 2);
+            assert!(versions
+                .iter()
+                .all(|(_, version, dirty)| *version == 1 && dirty.is_some()));
+            Ok(())
+        })
+        .expect("inspect linked Foreshadow events");
+
+        let mut retry_payload = payload;
+        retry_payload.session_id = "renderer-update-after-restart".to_string();
+        let mut retry_context = context;
+        retry_context.event_uid = "linked-update-event-after-restart".to_string();
+        let retry = renderer_codex_update_impl(&db, retry_payload, retry_context)
+            .expect("durable linked invalidation replay");
+        assert_eq!(retry, first);
+        db.with_conn(|conn| {
+            let max_version: i64 = conn.query_row(
+                "SELECT MAX(version) FROM foreshadows WHERE project_id = ?1",
+                [&project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(max_version, 1, "retry must not invalidate twice");
+            Ok(())
+        })
+        .expect("inspect retry state");
+    }
+
+    #[test]
+    fn linked_foreshadow_feed_failure_rolls_back_codex_and_dirty_markers() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "rollback-codex", "Before", 6);
+        link_foreshadow_fixture(&db, &project_id, "rollback-codex", "rollback-foreshadow");
+        let baseline_journals = table_count(&db, "undo_journal");
+        let baseline_change_events = table_count(&db, "change_events");
+        let baseline_transactions = table_count(&db, "narrative_change_transactions");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_linked_foreshadow_feed
+                 BEFORE INSERT ON narrative_change_events
+                 WHEN NEW.event_ordinal = 1
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced linked Foreshadow Feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install Feed failure trigger");
+        let payload = AgentCodexUpdatePayload {
+            project_id: project_id.clone(),
+            session_id: "rollback-session".to_string(),
+            surface: Some("manual".to_string()),
+            entry_id: "rollback-codex".to_string(),
+            base_version: 1,
+            type_slug: None,
+            name: Some("After".to_string()),
+            summary: None,
+            content: None,
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: None,
+            authorship_span_lanes: None,
+        };
+        let error = renderer_codex_update_impl(
+            &db,
+            payload,
+            renderer_update_context("rollback-update-request", "rollback-update-event"),
+        )
+        .expect_err("linked Feed append must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("forced linked Foreshadow Feed failure"),
+            "{error:#}"
+        );
+        db.with_conn(|conn| {
+            let codex: (String, i64) = conn.query_row(
+                "SELECT name, version FROM codex_entries WHERE id = 'rollback-codex'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(codex, ("Before".to_string(), 1));
+            let foreshadow: (i64, Option<i64>) = conn.query_row(
+                "SELECT version, codex_link_dirty_at
+                   FROM foreshadows WHERE id = 'rollback-foreshadow'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(foreshadow, (0, None));
+            Ok(())
+        })
+        .expect("inspect rolled back domain state");
+        assert_eq!(table_count(&db, "undo_journal"), baseline_journals);
+        assert_eq!(table_count(&db, "change_events"), baseline_change_events);
+        assert_eq!(
+            table_count(&db, "narrative_change_transactions"),
+            baseline_transactions
+        );
+    }
+
+    #[test]
+    fn codex_create_feed_failure_rolls_back_domain_journal_and_canonical_event() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER force_agent_feed_failure
+                 BEFORE INSERT ON narrative_change_transactions
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced agent Change Feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+        let error = agent_codex_create_impl(
+            &db,
+            tracked_codex_create_payload(&project_id, "codex-feed-rollback", "Must roll back", 8),
+        )
+        .expect_err("Feed append failure must abort the full tracked write");
+        assert!(error
+            .to_string()
+            .contains("forced agent Change Feed failure"));
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+        assert_eq!(table_count(&db, "authorship_spans"), 0);
+        assert_eq!(table_count(&db, "undo_journal"), 0);
+        assert_eq!(table_count(&db, "change_events"), 0);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 0);
+        assert_eq!(table_count(&db, "narrative_change_events"), 0);
     }
 
     fn tracked_codex_create_payload(
@@ -6039,6 +9404,238 @@ mod tests {
             tracked_codex_create_payload(project_id, entry_id, name, span_to),
         )
         .expect("tracked codex create")
+    }
+
+    #[test]
+    fn codex_undo_and_redo_feed_transactions_keep_forward_lineage() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let created = tracked_codex_create(&db, &project_id, "codex-feed-lineage", "Lineage", 7);
+        let journal_id = created["undoJournalId"]
+            .as_str()
+            .expect("create journal")
+            .to_string();
+
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
+            .expect("undo tracked create");
+        agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "redo"))
+            .expect("redo tracked create");
+
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id, cause_kind, origin, original_transaction_id, undo_journal_id
+                   FROM narrative_change_transactions
+                  WHERE project_id = ?1
+                  ORDER BY source_change_event_sequence",
+            )?;
+            let rows = statement
+                .query_map(rusqlite::params![project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 3);
+            let forward_id = &rows[0].0;
+            assert_eq!(
+                (&rows[0].1, &rows[0].2),
+                (&"forward".to_string(), &"ai-apply".to_string())
+            );
+            assert_eq!(
+                (&rows[1].1, &rows[1].2),
+                (&"undo".to_string(), &"undo".to_string())
+            );
+            assert_eq!(
+                (&rows[2].1, &rows[2].2),
+                (&"redo".to_string(), &"redo".to_string())
+            );
+            assert_eq!(rows[1].3.as_deref(), Some(forward_id.as_str()));
+            assert_eq!(rows[2].3.as_deref(), Some(forward_id.as_str()));
+            assert!(rows
+                .iter()
+                .all(|row| row.4.as_deref() == Some(journal_id.as_str())));
+
+            let mutations = conn
+                .prepare(
+                    "SELECT mutation_kind, before_version, after_version
+                       FROM narrative_change_events
+                      WHERE project_id = ?1
+                      ORDER BY canonical_sequence",
+                )?
+                .query_map(rusqlite::params![project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                mutations,
+                vec![
+                    ("create".to_string(), None, Some(1)),
+                    ("delete".to_string(), Some(1), None),
+                    ("restore".to_string(), None, Some(2)),
+                ]
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn undo_feed_failure_rolls_back_the_domain_replay_and_all_history() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = "codex-undo-feed-rollback";
+        let created = tracked_codex_create(&db, &project_id, entry_id, "Rollback", 8);
+        let journal_id = created["undoJournalId"]
+            .as_str()
+            .expect("create journal")
+            .to_string();
+        let baseline = (
+            table_count(&db, "codex_entries"),
+            table_count(&db, "change_events"),
+            table_count(&db, "narrative_change_transactions"),
+            table_count(&db, "narrative_change_events"),
+        );
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER force_agent_undo_feed_failure
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced agent Undo Feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install failure trigger");
+
+        let error = agent_undo_journal_impl(
+            &db,
+            AgentUndoJournalPayload {
+                request_id: "undo-feed-rollback".to_string(),
+                project_id: project_id.clone(),
+                session_id: "undo-session".to_string(),
+                journal_id,
+                direction: "undo".to_string(),
+            },
+        )
+        .expect_err("Feed failure must abort the Undo domain replay");
+        assert!(
+            error.to_string().contains("forced agent Undo Feed failure"),
+            "{error:#}"
+        );
+        assert_eq!(
+            (
+                table_count(&db, "codex_entries"),
+                table_count(&db, "change_events"),
+                table_count(&db, "narrative_change_transactions"),
+                table_count(&db, "narrative_change_events"),
+            ),
+            baseline
+        );
+        db.with_conn(|conn| {
+            let version: i64 = conn.query_row(
+                "SELECT version FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![entry_id, project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(version, 1);
+            let receipt_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM idempotency_requests
+                  WHERE domain = 'agent_apply_undo_journal'
+                    AND request_id = 'undo-feed-rollback'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(receipt_count, 0);
+            Ok(())
+        })
+        .expect("inspect rolled back Undo replay");
+    }
+
+    #[test]
+    fn pre_feed_journal_reuses_its_existing_canonical_event_as_the_root() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let created =
+            tracked_codex_create(&db, &project_id, "codex-pre-feed-journal", "Pre Feed", 8);
+        let journal_id = created["undoJournalId"]
+            .as_str()
+            .expect("create journal")
+            .to_string();
+        let forward_event_uid = created["changeEventUid"]
+            .as_str()
+            .expect("forward canonical event")
+            .to_string();
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND source_change_event_uid = ?2",
+                rusqlite::params![project_id, forward_event_uid],
+            )?;
+            Ok(())
+        })
+        .expect("simulate a canonical pre-Feed journal");
+        let canonical_before = table_count(&db, "change_events");
+
+        agent_undo_journal_impl(
+            &db,
+            AgentUndoJournalPayload {
+                request_id: "pre-feed-journal-undo".to_string(),
+                project_id: project_id.clone(),
+                session_id: "history-session".to_string(),
+                journal_id: journal_id.clone(),
+                direction: "undo".to_string(),
+            },
+        )
+        .expect("modernize and undo pre-Feed journal");
+
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT source_change_event_uid, cause_kind, origin,
+                            original_transaction_id, undo_journal_id
+                       FROM narrative_change_transactions
+                      WHERE project_id = ?1
+                      ORDER BY source_change_event_sequence",
+                )?
+                .query_map(rusqlite::params![project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].0, forward_event_uid);
+            assert_eq!(
+                (rows[0].1.as_str(), rows[0].2.as_str()),
+                ("forward", "ai-apply")
+            );
+            assert_eq!((rows[1].1.as_str(), rows[1].2.as_str()), ("undo", "undo"));
+            let root_id: String = conn.query_row(
+                "SELECT id FROM narrative_change_transactions
+                  WHERE project_id = ?1 AND source_change_event_uid = ?2",
+                rusqlite::params![project_id, rows[0].0],
+                |row| row.get(0),
+            )?;
+            assert_eq!(rows[1].3.as_deref(), Some(root_id.as_str()));
+            assert!(rows
+                .iter()
+                .all(|row| row.4.as_deref() == Some(journal_id.as_str())));
+            Ok(())
+        })
+        .expect("inspect canonical-root modernization");
+        assert_eq!(table_count(&db, "change_events"), canonical_before + 1);
     }
 
     fn tracked_codex_update_payload(
@@ -6356,6 +9953,52 @@ mod tests {
         let redone = codex_root_and_spans(&db, entry_id);
         assert_eq!(redone["name"], "after");
         assert_eq!(redone["version"], 4);
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT id, cause_kind, origin, original_transaction_id,
+                            undo_journal_id
+                       FROM narrative_change_transactions
+                      WHERE project_id = ?1
+                      ORDER BY source_change_event_sequence",
+                )?
+                .query_map(rusqlite::params![project_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 3);
+            assert_eq!(
+                (rows[0].1.as_str(), rows[0].2.as_str()),
+                ("forward", "migration")
+            );
+            assert_eq!((rows[1].1.as_str(), rows[1].2.as_str()), ("undo", "undo"));
+            assert_eq!((rows[2].1.as_str(), rows[2].2.as_str()), ("redo", "redo"));
+            assert_eq!(rows[1].3.as_deref(), Some(rows[0].0.as_str()));
+            assert_eq!(rows[2].3.as_deref(), Some(rows[0].0.as_str()));
+            assert!(rows
+                .iter()
+                .all(|row| row.4.as_deref() == Some("legacy-codex-update")));
+            Ok(())
+        })
+        .expect("inspect modernized legacy lineage");
+    }
+
+    #[test]
+    fn undo_payload_requires_request_identity() {
+        let error = serde_json::from_value::<AgentUndoJournalPayload>(json!({
+            "projectId": "project-1",
+            "sessionId": "session-1",
+            "journalId": "journal-1",
+            "direction": "undo"
+        }))
+        .expect_err("Native Undo payload without requestId must be rejected");
+        assert!(error.to_string().contains("requestId"), "{error}");
     }
 
     #[test]
@@ -6546,6 +10189,26 @@ mod tests {
         assert_eq!(table_count(&db, "snippets"), 1);
         assert_eq!(table_count(&db, "undo_journal"), 1);
         assert_eq!(table_count(&db, "change_events"), 1);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 1);
+        assert_eq!(table_count(&db, "narrative_change_events"), 1);
+        db.with_conn(|conn| {
+            let transaction: (String, String, String) = conn.query_row(
+                "SELECT request_id, source_domain, origin
+                   FROM narrative_change_transactions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                transaction,
+                (
+                    "agent-tool:snippet-request-1".to_string(),
+                    "snippet.create".to_string(),
+                    "ai-apply".to_string(),
+                )
+            );
+            Ok(())
+        })
+        .expect("verify snippet Feed");
 
         let mut conflicting = payload;
         conflicting.title = "Changed".to_string();
@@ -6554,6 +10217,112 @@ mod tests {
             .to_string()
             .contains("AGENT_SNIPPET_CREATE_IDEMPOTENCY_CONFLICT"));
         assert_eq!(table_count(&db, "snippets"), 1);
+    }
+
+    #[test]
+    fn direct_agent_create_writers_reject_missing_request_identity() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let codex_error = agent_codex_create_impl(
+            &db,
+            AgentCodexCreatePayload {
+                request_id: None,
+                entry_id: Some("codex-without-request".to_string()),
+                project_id: project_id.clone(),
+                session_id: "session".to_string(),
+                surface: None,
+                type_slug: "character".to_string(),
+                name: "No request".to_string(),
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: vec![],
+            },
+        )
+        .expect_err("Codex create must fail closed without requestId");
+        assert!(codex_error.to_string().contains("requestId is required"));
+
+        let snippet_error = agent_snippet_create_impl(
+            &db,
+            AgentSnippetCreatePayload {
+                request_id: None,
+                snippet_id: Some("snippet-without-request".to_string()),
+                project_id,
+                session_id: "session".to_string(),
+                title: "No request".to_string(),
+                content: None,
+                scene_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: vec![],
+            },
+        )
+        .expect_err("Snippet create must fail closed without requestId");
+        assert!(snippet_error.to_string().contains("requestId is required"));
+        assert_eq!(table_count(&db, "codex_entries"), 0);
+        assert_eq!(table_count(&db, "snippets"), 0);
+        assert_eq!(table_count(&db, "change_events"), 0);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 0);
+    }
+
+    #[test]
+    fn snippet_create_rejects_cross_project_scene_and_feed_failure_rolls_back() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreign_project_id = insert_project(&db);
+        let foreign_scene_id = insert_scene(&db, &foreign_project_id);
+        let base_payload = AgentSnippetCreatePayload {
+            request_id: Some("snippet-xproj".to_string()),
+            snippet_id: None,
+            project_id: project_id.clone(),
+            session_id: "snippet-session".to_string(),
+            title: "Excerpt".to_string(),
+            content: None,
+            scene_id: Some(foreign_scene_id),
+            source_chat_message_id: None,
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: vec![],
+        };
+        let error = agent_snippet_create_impl(&db, base_payload.clone())
+            .expect_err("cross-project scene must be rejected");
+        assert!(error
+            .to_string()
+            .contains("snippet scene is not in project"));
+        assert_eq!(table_count(&db, "snippets"), 0);
+        assert_eq!(table_count(&db, "undo_journal"), 0);
+        assert_eq!(table_count(&db, "change_events"), 0);
+
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_snippet_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced snippet feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install Feed failure trigger");
+        let mut rollback_payload = base_payload;
+        rollback_payload.request_id = Some("snippet-feed-failure".to_string());
+        rollback_payload.scene_id = None;
+        let error = agent_snippet_create_impl(&db, rollback_payload)
+            .expect_err("Feed failure must abort the snippet mutation");
+        assert!(error.to_string().contains("forced snippet feed failure"));
+        assert_eq!(table_count(&db, "snippets"), 0);
+        assert_eq!(table_count(&db, "undo_journal"), 0);
+        assert_eq!(table_count(&db, "change_events"), 0);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 0);
     }
 
     #[test]
@@ -6631,6 +10400,112 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn prose_accept_stays_out_of_the_feed_and_rolls_back_on_audit_failure() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_id = insert_scene(&db, &project_id);
+        let proposed = agent_propose_scene_body_impl(
+            &db,
+            AgentProposeSceneBodyPayload {
+                project_id: project_id.clone(),
+                session_id: "prose-session".to_string(),
+                scene_id: scene_id.clone(),
+                proposed_content: "new prose".to_string(),
+                mode: "append".to_string(),
+                source_surface: "in-app-agent".to_string(),
+                replace_from: None,
+                replace_to: None,
+            },
+        )
+        .expect("propose prose");
+        let staging_id = proposed["stagingId"].as_str().expect("staging id");
+        let payload = AgentProseStageIdPayload {
+            request_id: Some("prose-accept-request".to_string()),
+            project_id: project_id.clone(),
+            session_id: "prose-session".to_string(),
+            staging_id: staging_id.to_string(),
+        };
+        let accepted = agent_accept_prose_stage_impl(&db, payload.clone()).expect("accept prose");
+        let mut retry = payload.clone();
+        retry.session_id = "prose-session-after-restart".to_string();
+        assert_eq!(
+            agent_accept_prose_stage_impl(&db, retry).expect("idempotent accept retry"),
+            accepted
+        );
+        db.with_conn(|conn| {
+            let status: String = conn.query_row(
+                "SELECT status FROM prose_staging WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![staging_id, project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(status, "accepted");
+            let counts: (i64, i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM change_events WHERE op_type = 'prose.accept'),
+                    (SELECT COUNT(*) FROM narrative_change_transactions),
+                    (SELECT COUNT(*) FROM idempotency_requests
+                      WHERE domain = 'agent_prose_accept')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(counts, (1, 0, 1));
+            Ok(())
+        })
+        .expect("verify accepted staging audit");
+
+        let second_proposed = agent_propose_scene_body_impl(
+            &db,
+            AgentProposeSceneBodyPayload {
+                project_id: project_id.clone(),
+                session_id: "prose-session".to_string(),
+                scene_id,
+                proposed_content: "another".to_string(),
+                mode: "append".to_string(),
+                source_surface: "in-app-agent".to_string(),
+                replace_from: None,
+                replace_to: None,
+            },
+        )
+        .expect("propose rollback fixture");
+        let second_staging_id = second_proposed["stagingId"]
+            .as_str()
+            .expect("second staging id")
+            .to_string();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_prose_accept_audit
+                   BEFORE INSERT ON change_events
+                   BEGIN SELECT RAISE(ABORT, 'forced prose accept audit failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install audit failure trigger");
+        let error = agent_accept_prose_stage_impl(
+            &db,
+            AgentProseStageIdPayload {
+                request_id: Some("prose-accept-failure".to_string()),
+                project_id: project_id.clone(),
+                session_id: "prose-session".to_string(),
+                staging_id: second_staging_id.clone(),
+            },
+        )
+        .expect_err("audit failure must roll back staging acceptance");
+        assert!(error
+            .to_string()
+            .contains("forced prose accept audit failure"));
+        db.with_conn(|conn| {
+            let status: String = conn.query_row(
+                "SELECT status FROM prose_staging WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![second_staging_id, project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(status, "proposed");
+            Ok(())
+        })
+        .expect("verify staging rollback");
+    }
+
     fn journal_row(
         entity_kind: &str,
         op_kind: &str,
@@ -6638,6 +10513,7 @@ mod tests {
         grimodex_core::undo_journal::UndoJournalRow {
             id: "j1".to_string(),
             project_id: "p1".to_string(),
+            surface: "test".to_string(),
             entity_kind: entity_kind.to_string(),
             entity_id: "f1".to_string(),
             op_kind: op_kind.to_string(),
@@ -6645,6 +10521,7 @@ mod tests {
             after_json: None,
             base_version: 0,
             result_version: 1,
+            change_event_uid: None,
         }
     }
 
@@ -6716,7 +10593,7 @@ mod tests {
         let res = agent_foreshadow_create_impl(
             &db,
             AgentForeshadowCreatePayload {
-                request_id: None,
+                request_id: "foreshadow-create-roundtrip".to_string(),
                 foreshadow_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
@@ -6762,7 +10639,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         let payload = AgentForeshadowCreatePayload {
-            request_id: Some("agent-tool:foreshadow-request-1".to_string()),
+            request_id: "agent-tool:foreshadow-request-1".to_string(),
             foreshadow_id: None,
             project_id,
             session_id: "sess".to_string(),
@@ -6783,6 +10660,8 @@ mod tests {
         assert_eq!(table_count(&db, "foreshadows"), 1);
         assert_eq!(table_count(&db, "undo_journal"), 1);
         assert_eq!(table_count(&db, "change_events"), 1);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 1);
+        assert_eq!(table_count(&db, "narrative_change_events"), 1);
 
         db.with_conn(|conn| {
             conn.execute(
@@ -6807,6 +10686,19 @@ mod tests {
     }
 
     #[test]
+    fn foreshadow_create_payload_requires_request_identity() {
+        let error = serde_json::from_value::<AgentForeshadowCreatePayload>(serde_json::json!({
+            "foreshadowId": "f1",
+            "projectId": "p1",
+            "sessionId": "session",
+            "title": "Created",
+            "secret": true
+        }))
+        .expect_err("Native payload without requestId must be rejected");
+        assert!(error.to_string().contains("requestId"), "{error}");
+    }
+
+    #[test]
     fn foreshadow_update_in_app_patches_and_tracks() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -6815,6 +10707,7 @@ mod tests {
         let result = agent_foreshadow_update_impl(
             &db,
             AgentForeshadowUpdatePayload {
+                request_id: "foreshadow-update-roundtrip".to_string(),
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
                 foreshadow_id: foreshadow_id.clone(),
@@ -6891,6 +10784,7 @@ mod tests {
         let res = agent_foreshadow_update_impl(
             &db,
             AgentForeshadowUpdatePayload {
+                request_id: "foreshadow-update-missing".to_string(),
                 project_id,
                 session_id: "sess".to_string(),
                 foreshadow_id: "ghost".to_string(),
@@ -6911,6 +10805,82 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn foreshadow_update_request_replays_exact_receipt_and_rejects_payload_conflict() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+        let payload = AgentForeshadowUpdatePayload {
+            request_id: "foreshadow-update-retry".to_string(),
+            project_id,
+            session_id: "session-before-restart".to_string(),
+            foreshadow_id,
+            base_version: 0,
+            title: Some("Updated once".to_string()),
+            intent: None,
+            notes: None,
+            load_bearing: None,
+            payoff_confirmed: None,
+            abandoned: None,
+            secret: None,
+        };
+
+        let first = agent_foreshadow_update_impl(&db, payload.clone()).expect("first update");
+        let counts_after_first = (
+            table_count(&db, "undo_journal"),
+            table_count(&db, "change_events"),
+            table_count(&db, "narrative_change_transactions"),
+            table_count(&db, "narrative_change_events"),
+        );
+
+        let mut retry = payload.clone();
+        retry.session_id = "session-after-restart".to_string();
+        let replay = agent_foreshadow_update_impl(&db, retry).expect("exact retry replay");
+        assert_eq!(replay, first);
+        assert_eq!(
+            (
+                table_count(&db, "undo_journal"),
+                table_count(&db, "change_events"),
+                table_count(&db, "narrative_change_transactions"),
+                table_count(&db, "narrative_change_events"),
+            ),
+            counts_after_first
+        );
+
+        let mut conflicting = payload;
+        conflicting.title = Some("Different payload".to_string());
+        let error = agent_foreshadow_update_impl(&db, conflicting)
+            .expect_err("request id payload conflict");
+        assert!(
+            error
+                .to_string()
+                .contains("AGENT_FORESHADOW_UPDATE_IDEMPOTENCY_CONFLICT"),
+            "{error:#}"
+        );
+        assert_eq!(
+            (
+                table_count(&db, "undo_journal"),
+                table_count(&db, "change_events"),
+                table_count(&db, "narrative_change_transactions"),
+                table_count(&db, "narrative_change_events"),
+            ),
+            counts_after_first
+        );
+    }
+
+    #[test]
+    fn foreshadow_update_payload_requires_request_identity() {
+        let error = serde_json::from_value::<AgentForeshadowUpdatePayload>(serde_json::json!({
+            "projectId": "p1",
+            "sessionId": "session",
+            "foreshadowId": "f1",
+            "baseVersion": 0,
+            "title": "Updated"
+        }))
+        .expect_err("Native payload without requestId must be rejected");
+        assert!(error.to_string().contains("requestId"), "{error}");
     }
 
     fn insert_foreshadow_row(db: &Database, project_id: &str) -> String {
@@ -6956,7 +10926,7 @@ mod tests {
         direction: &str,
     ) -> AgentUndoJournalPayload {
         AgentUndoJournalPayload {
-            request_id: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             journal_id: journal_id.to_string(),
@@ -6966,7 +10936,7 @@ mod tests {
 
     fn relation_payload(project_id: &str, cause: &str, effect: &str) -> AgentEventRelationPayload {
         AgentEventRelationPayload {
-            request_id: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             surface: None,
@@ -6977,7 +10947,7 @@ mod tests {
 
     fn scene_payload(project_id: &str, scene_id: &str, event_id: &str) -> AgentSceneEventPayload {
         AgentSceneEventPayload {
-            request_id: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
             surface: None,
@@ -7031,7 +11001,7 @@ mod tests {
 
     fn empty_create(project_id: &str, title: &str) -> AgentEventCreatePayload {
         AgentEventCreatePayload {
-            request_id: None,
+            request_id: uuid::Uuid::new_v4().to_string(),
             event_id: None,
             project_id: project_id.to_string(),
             session_id: "sess".to_string(),
@@ -7069,7 +11039,7 @@ mod tests {
         let res = agent_event_create_impl(
             db,
             AgentEventCreatePayload {
-                request_id: None,
+                request_id: uuid::Uuid::new_v4().to_string(),
                 event_id: None,
                 project_id: project_id.to_string(),
                 session_id: "sess".to_string(),
@@ -7106,6 +11076,52 @@ mod tests {
     }
 
     #[test]
+    fn event_and_association_payloads_require_request_identity() {
+        assert!(serde_json::from_value::<AgentEventCreatePayload>(json!({
+            "projectId": "project",
+            "sessionId": "session"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AgentSceneEventPayload>(json!({
+            "projectId": "project",
+            "sessionId": "session",
+            "sceneId": "scene",
+            "eventId": "event"
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<AgentEventRelationPayload>(json!({
+            "projectId": "project",
+            "sessionId": "session",
+            "causeEventId": "cause",
+            "effectEventId": "effect"
+        }))
+        .is_err());
+
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let mut create = empty_create(&project_id, "missing request");
+        create.request_id.clear();
+        assert!(agent_event_create_impl(&db, create)
+            .expect_err("empty create request id")
+            .to_string()
+            .contains("requestId"));
+
+        let mut link = scene_payload(&project_id, "scene", "event");
+        link.request_id.clear();
+        assert!(agent_scene_event_mutate_impl(&db, link, true)
+            .expect_err("empty scene link request id")
+            .to_string()
+            .contains("requestId"));
+
+        let mut relation = relation_payload(&project_id, "cause", "effect");
+        relation.request_id.clear();
+        assert!(agent_event_relation_mutate_impl(&db, relation, true)
+            .expect_err("empty relation request id")
+            .to_string()
+            .contains("requestId"));
+    }
+
+    #[test]
     fn event_create_retries_return_original_result_and_conflict_on_payload_change() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -7114,7 +11130,7 @@ mod tests {
         let scene_a = insert_scene(&db, &project_id);
         let scene_b = insert_scene(&db, &project_id);
         let mut payload = empty_create(&project_id, "Arrival");
-        payload.request_id = Some("agent-tool:event-request-1".to_string());
+        payload.request_id = "agent-tool:event-request-1".to_string();
         payload.participant_codex_ids = Some(vec![
             participant_b.clone(),
             participant_a.clone(),
@@ -7143,6 +11159,8 @@ mod tests {
         assert_eq!(table_count(&db, "events"), 1);
         assert_eq!(table_count(&db, "undo_journal"), 1);
         assert_eq!(table_count(&db, "change_events"), 1);
+        assert_eq!(table_count(&db, "narrative_change_transactions"), 1);
+        assert_eq!(table_count(&db, "narrative_change_events"), 1);
 
         let mut conflicting = payload;
         conflicting.title = Some("Departure".to_string());
@@ -7151,6 +11169,121 @@ mod tests {
             .to_string()
             .contains("AGENT_EVENT_CREATE_IDEMPOTENCY_CONFLICT"));
         assert_eq!(table_count(&db, "events"), 1);
+    }
+
+    #[test]
+    fn mcp_event_writer_rechecks_secret_visibility_inside_native_transaction() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "secret", vec![], vec![]);
+        db.execute(
+            "UPDATE events SET secret = 1 WHERE id = ? AND project_id = ?",
+            &[
+                Value::String(event_id.clone()),
+                Value::String(project_id.clone()),
+            ],
+            "run",
+        )
+        .expect("hide event");
+        let change_count = table_count(&db, "change_events");
+        let feed_count = table_count(&db, "narrative_change_transactions");
+        let journal_count = table_count(&db, "undo_journal");
+
+        let mut update = empty_update(&project_id, &event_id);
+        update.surface = Some("mcp".to_string());
+        update.title = Some("must not apply".to_string());
+        let error =
+            agent_event_update_with_request_impl(&db, update, Some("mcp-secret-event-update"))
+                .expect_err("MCP cannot mutate a secret event");
+
+        assert!(error.to_string().contains("not found in project"));
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("secret"));
+        assert_eq!(table_count(&db, "change_events"), change_count);
+        assert_eq!(
+            table_count(&db, "narrative_change_transactions"),
+            feed_count
+        );
+        assert_eq!(table_count(&db, "undo_journal"), journal_count);
+    }
+
+    #[test]
+    fn event_non_create_request_ids_replay_before_entity_and_occ_checks() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant = insert_codex(&db, &project_id, "Participant");
+        let (update_event_id, _) = create_event(&db, &project_id, "Before", vec![], vec![]);
+        let mut update = empty_update(&project_id, &update_event_id);
+        update.title = Some("After".to_string());
+        let first_update =
+            agent_event_update_with_request_impl(&db, update.clone(), Some("event-update-retry"))
+                .expect("update");
+        let mut update_retry = update;
+        update_retry.session_id = "session-after-restart".to_string();
+        let replay_update =
+            agent_event_update_with_request_impl(&db, update_retry, Some("event-update-retry"))
+                .expect("stale update retry");
+        assert_eq!(replay_update, first_update);
+
+        let participants = AgentEventParticipantsPayload {
+            project_id: project_id.clone(),
+            session_id: "session-before-restart".to_string(),
+            surface: None,
+            event_id: update_event_id.clone(),
+            base_version: 2,
+            codex_entry_ids: vec![participant],
+            participant_roles: None,
+        };
+        let first_participants = agent_event_set_participants_with_request_impl(
+            &db,
+            participants.clone(),
+            Some("event-participants-retry"),
+        )
+        .expect("participants");
+        let mut participants_retry = participants;
+        participants_retry.session_id = "session-after-restart".to_string();
+        let replay_participants = agent_event_set_participants_with_request_impl(
+            &db,
+            participants_retry,
+            Some("event-participants-retry"),
+        )
+        .expect("stale participant retry");
+        assert_eq!(replay_participants, first_participants);
+
+        let (delete_event_id, _) = create_event(&db, &project_id, "Delete", vec![], vec![]);
+        let delete = AgentEventIdPayload {
+            project_id: project_id.clone(),
+            session_id: "session-before-restart".to_string(),
+            surface: None,
+            event_id: delete_event_id,
+            base_version: 1,
+        };
+        let first_delete =
+            agent_event_delete_with_request_impl(&db, delete.clone(), Some("event-delete-retry"))
+                .expect("delete");
+        let mut delete_retry = delete;
+        delete_retry.session_id = "session-after-restart".to_string();
+        let replay_delete =
+            agent_event_delete_with_request_impl(&db, delete_retry, Some("event-delete-retry"))
+                .expect("retry after entity deletion");
+        assert_eq!(replay_delete, first_delete);
+
+        db.with_conn(|conn| {
+            for (domain, request_id) in [
+                ("agent_event_update", "event-update-retry"),
+                ("agent_event_participants", "event-participants-retry"),
+                ("agent_event_delete", "event-delete-retry"),
+            ] {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM idempotency_requests
+                      WHERE domain = ?1 AND request_id = ?2",
+                    rusqlite::params![domain, request_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "duplicate receipt for {domain}");
+            }
+            Ok(())
+        })
+        .expect("inspect event retry receipts");
     }
 
     #[test]
@@ -7164,7 +11297,7 @@ mod tests {
         let (event_c, _) = create_event(&db, &project_id, "C", vec![], vec![]);
 
         let mut link = scene_payload(&project_id, &scene_a, &event_a);
-        link.request_id = Some("scene-link-request-1".to_string());
+        link.request_id = "scene-link-request-1".to_string();
         let journal_before = table_count(&db, "undo_journal");
         let events_before = table_count(&db, "change_events");
         let first_link =
@@ -7187,7 +11320,7 @@ mod tests {
             .contains("AGENT_SCENE_EVENT_IDEMPOTENCY_CONFLICT"));
 
         let mut relation = relation_payload(&project_id, &event_a, &event_b);
-        relation.request_id = Some("event-relation-request-1".to_string());
+        relation.request_id = "event-relation-request-1".to_string();
         let journal_before = table_count(&db, "undo_journal");
         let events_before = table_count(&db, "change_events");
         let first_relation =
@@ -7316,15 +11449,9 @@ mod tests {
         let scene_existing = insert_scene(&db, &project_id);
         let scene_new = insert_scene(&db, &project_id);
         let (event_id, _) = create_event(&db, &project_id, "Mixed", vec![], vec![]);
-        db.execute(
-            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
-            &[
-                Value::String(scene_existing.clone()),
-                Value::String(event_id.clone()),
-            ],
-            "run",
-        )
-        .expect("seed existing scene link");
+        let mut seed_existing = scene_payload(&project_id, &scene_existing, &event_id);
+        seed_existing.request_id = "scene-link-batch-mixed-existing".to_string();
+        agent_scene_event_mutate_impl(&db, seed_existing, true).expect("seed existing scene link");
         let event_version_before = event_version(&db, &event_id);
         let journals_before = table_count(&db, "undo_journal");
         let changes_before = table_count(&db, "change_events");
@@ -7411,15 +11538,9 @@ mod tests {
         let scene_batch = insert_scene(&db, &project_id);
         let scene_later = insert_scene(&db, &project_id);
         let (event_id, _) = create_event(&db, &project_id, "Interleaved", vec![], vec![]);
-        db.execute(
-            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
-            &[
-                Value::String(scene_existing.clone()),
-                Value::String(event_id.clone()),
-            ],
-            "run",
-        )
-        .expect("seed existing scene link");
+        let mut seed_existing = scene_payload(&project_id, &scene_existing, &event_id);
+        seed_existing.request_id = "scene-link-batch-interleaved-existing".to_string();
+        agent_scene_event_mutate_impl(&db, seed_existing, true).expect("seed existing scene link");
 
         let result = agent_scene_event_link_batch_impl(
             &db,
@@ -7436,24 +11557,14 @@ mod tests {
             .expect("undoJournalId")
             .to_string();
 
-        db.execute(
-            "DELETE FROM scene_events WHERE scene_id = ? AND event_id = ?",
-            &[
-                Value::String(scene_existing.clone()),
-                Value::String(event_id.clone()),
-            ],
-            "run",
-        )
-        .expect("interleave unrelated unlink");
-        db.execute(
-            "INSERT INTO scene_events (scene_id, event_id) VALUES (?, ?)",
-            &[
-                Value::String(scene_later.clone()),
-                Value::String(event_id.clone()),
-            ],
-            "run",
-        )
-        .expect("interleave unrelated link");
+        let mut interleave_unlink = scene_payload(&project_id, &scene_existing, &event_id);
+        interleave_unlink.request_id = "scene-link-batch-interleaved-unlink".to_string();
+        agent_scene_event_mutate_impl(&db, interleave_unlink, false)
+            .expect("interleave unrelated unlink");
+        let mut interleave_link = scene_payload(&project_id, &scene_later, &event_id);
+        interleave_link.request_id = "scene-link-batch-interleaved-later".to_string();
+        agent_scene_event_mutate_impl(&db, interleave_link, true)
+            .expect("interleave unrelated link");
 
         agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
             .expect("undo batch delta");
@@ -7749,7 +11860,7 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
-                request_id: None,
+                request_id: "event-manual-create".to_string(),
                 event_id: None,
                 project_id: project_id.clone(),
                 session_id: "sess".to_string(),
@@ -7778,6 +11889,52 @@ mod tests {
         .expect("create with manual surface");
         let journal_manual = res["undoJournalId"].as_str().unwrap().to_string();
         assert_eq!(journal_surface(&db, &journal_manual), "manual");
+
+        let imported = agent_event_create_impl(
+            &db,
+            AgentEventCreatePayload {
+                request_id: "event-import-create".to_string(),
+                event_id: None,
+                project_id: project_id.clone(),
+                session_id: "sess".to_string(),
+                surface: Some("import".to_string()),
+                title: Some("Imported event".to_string()),
+                note: None,
+                detail: None,
+                ordinal: None,
+                primary_codex_id: None,
+                lane_group: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                precision: None,
+                kind: None,
+                secret: None,
+                reveal_scene_id: None,
+                participant_codex_ids: None,
+                scene_ids: None,
+            },
+        )
+        .expect("create with import surface");
+        let journal_import = imported["undoJournalId"].as_str().unwrap().to_string();
+        assert_eq!(journal_surface(&db, &journal_import), "import");
+        db.with_conn(|conn| {
+            let origins = conn
+                .prepare(
+                    "SELECT origin FROM narrative_change_transactions
+                      WHERE project_id = ?1
+                      ORDER BY source_change_event_sequence",
+                )?
+                .query_map(rusqlite::params![project_id], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(origins, vec!["ai-apply", "human", "import"]);
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn scalar_count(db: &Database, sql: &str, a: &str, b: Option<&str>) -> i64 {
@@ -8320,6 +12477,7 @@ mod tests {
                 event_id: event_id.clone(),
                 base_version: 1,
                 codex_entry_ids: vec![codex_a.clone()],
+                participant_roles: None,
             },
         )
         .expect("fresh participants");
@@ -8334,6 +12492,7 @@ mod tests {
                 event_id: event_id.clone(),
                 base_version: 1,
                 codex_entry_ids: vec![codex_b.clone()],
+                participant_roles: None,
             },
         )
         .expect_err("stale participants");
@@ -8581,14 +12740,28 @@ mod tests {
     }
 
     fn set_role(db: &Database, event_id: &str, codex_id: &str, role: &str) {
-        db.execute(
-            "UPDATE event_participants SET role = ? WHERE event_id = ? AND codex_entry_id = ?",
-            &[
-                Value::String(role.to_string()),
-                Value::String(event_id.to_string()),
-                Value::String(codex_id.to_string()),
-            ],
-            "run",
+        let project_id: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT project_id FROM events WHERE id = ?1",
+                    rusqlite::params![event_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("event project");
+        let base_version = event_version(db, event_id);
+        agent_event_set_participants_impl(
+            db,
+            AgentEventParticipantsPayload {
+                project_id,
+                session_id: "role-test".to_string(),
+                surface: None,
+                event_id: event_id.to_string(),
+                base_version,
+                codex_entry_ids: vec![codex_id.to_string()],
+                participant_roles: Some(vec![Some(role.to_string())]),
+            },
         )
         .expect("set role");
     }
@@ -8693,7 +12866,7 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: main_id.clone(),
-                base_version: 1,
+                base_version: event_version(&db, &main_id),
             },
         )
         .unwrap();
@@ -9002,6 +13175,7 @@ mod tests {
                 event_id: event_id.clone(),
                 base_version: 2,
                 codex_entry_ids: vec![codex_b.clone()],
+                participant_roles: None,
             },
         )
         .expect("participant update succeeds");
@@ -9363,7 +13537,7 @@ mod tests {
 
         let error = agent_undo_journal_impl(&db, undo_payload(&project_id, &journal_id, "undo"))
             .expect_err("legacy delete undo must not overwrite reused id");
-        assert!(error.to_string().contains("version conflict"));
+        assert!(error.to_string().contains("another project"), "{error:#}");
         assert_eq!(event_title(&db, &event_id).as_deref(), Some("external"));
     }
 
@@ -9384,8 +13558,9 @@ mod tests {
                 session_id: "sess".to_string(),
                 surface: None,
                 event_id: event_id.clone(),
-                base_version: 1,
+                base_version: event_version(&db, &event_id),
                 codex_entry_ids: vec![codex_b.clone(), codex_c.clone()],
+                participant_roles: None,
             },
         )
         .unwrap();
@@ -9450,6 +13625,7 @@ mod tests {
                 event_id: event_id.clone(),
                 base_version: 2,
                 codex_entry_ids: codex_ids[..3].to_vec(),
+                participant_roles: None,
             },
         )
         .unwrap();
@@ -9475,7 +13651,7 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
-                request_id: None,
+                request_id: "event-xproj-participant".to_string(),
                 event_id: None,
                 project_id: p1.clone(),
                 session_id: "sess".to_string(),
@@ -9544,7 +13720,7 @@ mod tests {
         let res = agent_event_create_impl(
             &db,
             AgentEventCreatePayload {
-                request_id: None,
+                request_id: "event-xproj-scene".to_string(),
                 event_id: None,
                 project_id: p1.clone(),
                 session_id: "sess".to_string(),
@@ -9613,6 +13789,7 @@ mod tests {
                 event_id: event_id.clone(),
                 base_version: 1,
                 codex_entry_ids: vec![foreign.clone()],
+                participant_roles: None,
             },
         );
 

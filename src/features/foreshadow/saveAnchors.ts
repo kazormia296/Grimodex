@@ -5,6 +5,8 @@ import { eq } from "drizzle-orm";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 import type { ForeshadowRow } from "./types";
+import { foreshadowMutationIdentity } from "./api";
+import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 
 // Shape returned by extract helpers (subset of NewForeshadowSetup)
 export interface SetupAnchorExtract {
@@ -201,24 +203,27 @@ export async function saveForeshadowAnchors(
   }
 
   const rows = await invoke<unknown[]>("foreshadow_save_anchors_for_scene", {
-    sceneId,
-    setups: setups.map((s) => ({
-      id: s.id,
-      foreshadowId: s.foreshadowId,
-      baseVersion: s.baseVersion,
-      sceneId: s.sceneId,
-      fromPos: s.fromPos,
-      toPos: s.toPos,
-    })),
-    payoffs: payoffs.map((p) => ({
-      foreshadowId: p.foreshadowId,
-      baseVersion: p.baseVersion,
-      sceneId: p.sceneId,
-      fromPos: p.fromPos,
-      toPos: p.toPos,
-    })),
-    baseVersions,
-    docContentSize: doc.content.size,
+    payload: {
+      ...foreshadowMutationIdentity(getCurrentProjectId()),
+      sceneId,
+      setups: setups.map((s) => ({
+        id: s.id,
+        foreshadowId: s.foreshadowId,
+        baseVersion: s.baseVersion,
+        sceneId: s.sceneId,
+        fromPos: s.fromPos,
+        toPos: s.toPos,
+      })),
+      payoffs: payoffs.map((p) => ({
+        foreshadowId: p.foreshadowId,
+        baseVersion: p.baseVersion,
+        sceneId: p.sceneId,
+        fromPos: p.fromPos,
+        toPos: p.toPos,
+      })),
+      baseVersions,
+      docContentSize: doc.content.size,
+    },
   });
   const normalized = rows.map(normalizeForeshadowRow);
   const cached = new Map(sceneForeshadowBaseVersions.get(sceneId) ?? []);

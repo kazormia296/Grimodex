@@ -81,22 +81,19 @@
     "enforcement": "active"
   },
   {
-    "aggregate": "temporal-scene",
+    "aggregate": "tree-node",
     "table": "tree_nodes",
-    "protection": "columns",
-    "columns": [
-      "story_time_order",
-      "story_time_label",
-      "chronicle_start_time",
-      "chronicle_start_minute",
-      "chronicle_start_granularity",
-      "chronicle_end_time",
-      "chronicle_end_minute",
-      "chronicle_end_granularity",
-      "chronicle_precision"
-    ],
+    "protection": "table",
     "versionColumn": "version",
-    "writer": "temporal.scene",
+    "writer": "tree.node",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "project-lifecycle",
+    "table": "projects",
+    "protection": "columns",
+    "columns": [],
+    "writer": "project.lifecycle",
     "enforcement": "active"
   },
   {
@@ -112,6 +109,55 @@
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-catalog",
+    "table": "codex_types",
+    "protection": "table",
+    "writer": "codex.catalog",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-catalog",
+    "table": "codex_tags",
+    "protection": "table",
+    "writer": "codex.catalog",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "codex-tags",
+    "table": "codex_entry_tags",
+    "protection": "table",
+    "writer": "codex.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "snippet",
+    "table": "snippets",
+    "protection": "columns",
+    "columns": [
+      "id",
+      "project_id",
+      "title",
+      "content",
+      "tags_cache",
+      "content_source",
+      "scene_id",
+      "source_chat_message_id",
+      "created_at",
+      "updated_at",
+      "version"
+    ],
+    "versionColumn": "version",
+    "writer": "snippet.entry",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "snippet-tags",
+    "table": "snippet_entry_tags",
+    "protection": "table",
+    "writer": "snippet.entry",
     "enforcement": "active"
   },
   {
@@ -131,6 +177,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "phase",
+    "table": "codex_phase_detail_overrides",
+    "protection": "table",
+    "writer": "codex.phase",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "detail-definition",
     "table": "codex_detail_definitions",
     "protection": "table",
@@ -141,6 +194,14 @@
   {
     "aggregate": "detail-value",
     "table": "codex_detail_values",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "codex.detail",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "detail-semantic-binding",
+    "table": "codex_detail_semantic_bindings",
     "protection": "table",
     "versionColumn": "version",
     "writer": "codex.detail",

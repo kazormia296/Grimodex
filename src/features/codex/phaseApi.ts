@@ -15,7 +15,10 @@ import {
   markImpactBaselinePhaseVisibleDeleted,
 } from "./impactBaselineVisibility";
 import { PhaseVersionConflictError } from "./phaseOcc";
-import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 
 export type { CodexEntryPhase, CodexPhaseDetailOverride };
 
@@ -89,6 +92,7 @@ type CreatePhaseData = {
 
 export async function createPhase(
   data: CreatePhaseData,
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<CodexEntryPhase> {
   const contextMode = data.contextModeOverride ?? null;
   if (contextMode !== null && !isAiVisibleMode(contextMode)) {
@@ -109,7 +113,7 @@ export async function createPhase(
             .where(eq(codexEntries.id, data.entryId))
             .limit(1)
         )[0]?.projectId,
-        sessionId: getRecorderSessionId(),
+        ...(options.writeContext ?? createCanonicalWriteContext()),
         surface: "manual",
         phaseId: data.id,
         entryId: data.entryId,
@@ -185,7 +189,7 @@ export async function updatePhase(
             .where(eq(codexEntries.id, current.entryId))
             .limit(1)
         )[0]?.projectId,
-        sessionId: getRecorderSessionId(),
+        ...createCanonicalWriteContext(),
         surface: "manual",
         phaseId: id,
         baseVersion: opts.baseVersion,
@@ -256,7 +260,7 @@ export async function deletePhase(
             .where(eq(codexEntries.id, phase.entryId))
             .limit(1)
         )[0]?.projectId,
-        sessionId: getRecorderSessionId(),
+        ...createCanonicalWriteContext(),
         surface: "manual",
         phaseId: id,
         expectedVersion: opts?.expectedVersion ?? null,
@@ -355,7 +359,7 @@ export async function patchPhaseAggregate(
             .where(eq(codexEntries.id, current.entryId))
             .limit(1)
         )[0]?.projectId,
-        sessionId: getRecorderSessionId(),
+        ...createCanonicalWriteContext(),
         surface: "manual",
         phaseId: input.phaseId,
         baseVersion: input.baseVersion,

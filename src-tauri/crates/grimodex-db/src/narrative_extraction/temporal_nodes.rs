@@ -43,7 +43,9 @@ fn default_shape() -> String {
     "unknown".to_string()
 }
 
-pub(crate) fn parse_node_ensure_payload(payload: &Value) -> anyhow::Result<TemporalNodeEnsurePayload> {
+pub(crate) fn parse_node_ensure_payload(
+    payload: &Value,
+) -> anyhow::Result<TemporalNodeEnsurePayload> {
     serde_json::from_value(payload.clone())
         .map_err(|err| anyhow::anyhow!("invalid temporal.node.ensure payload: {err}"))
 }
@@ -325,7 +327,10 @@ pub(crate) fn reapply_node_ensure_snapshot(
         .get("semanticKey")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("temporal node snapshot missing semanticKey"))?;
-    let shape = snapshot.get("shape").and_then(Value::as_str).unwrap_or("unknown");
+    let shape = snapshot
+        .get("shape")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
     let fingerprint = snapshot
         .get("fingerprint")
         .and_then(Value::as_str)

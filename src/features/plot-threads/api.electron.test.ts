@@ -18,6 +18,9 @@ vi.mock("@/lib/tauri", async (importOriginal) => {
     isTauri: () => false,
   };
 });
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "plot-test-session",
+}));
 
 import { IpcInvokeError } from "@/lib/tauri";
 import {
@@ -67,6 +70,11 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         id: "pt1",
         projectId: "p1",
+        requestId: "pt1",
+        sessionId: "plot-test-session",
+        eventUid: "pt1",
+        origin: "human",
+        originalTransactionId: null,
         name: "糸",
         color: null,
         description: null,
@@ -86,6 +94,7 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
     });
     await createPlotThreadLink({
       id: "pl1",
+      projectId: "p1",
       threadId: "t1",
       nodeId: "s1",
       phaseType: "introduce",
@@ -93,6 +102,12 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
     expect(invoke).toHaveBeenCalledWith("plot_thread_link_create", {
       payload: {
         id: "pl1",
+        projectId: "p1",
+        requestId: "pl1",
+        sessionId: "plot-test-session",
+        eventUid: "pl1",
+        origin: "human",
+        originalTransactionId: null,
         threadId: "t1",
         nodeId: "s1",
         phaseType: "introduce",
@@ -126,6 +141,11 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         id: "pb1",
         projectId: "p1",
+        requestId: "pb1",
+        sessionId: "plot-test-session",
+        eventUid: "pb1",
+        origin: "human",
+        originalTransactionId: null,
         fromThreadId: "t1",
         toThreadId: "t2",
         atNodeId: "s1",
@@ -167,37 +187,74 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       })
       .mockResolvedValueOnce(null);
 
-    await updatePlotThread("pt1", { name: "renamed", baseVersion: 7 });
+    await updatePlotThread("pt1", {
+      projectId: "p1",
+      name: "renamed",
+      baseVersion: 7,
+    });
     await updatePlotThreadLink("pl1", {
+      projectId: "p1",
       note: "updated",
       baseVersion: 11,
     });
-    await deletePlotThreadLink("pl1", { baseVersion: 12 });
+    await deletePlotThreadLink("pl1", { projectId: "p1", baseVersion: 12 });
     await updatePlotThreadBranch("pb1", {
+      projectId: "p1",
       atNodeId: "scene-2",
       baseVersion: 3,
     });
-    await deletePlotThreadBranch("pb1", { baseVersion: 4 });
+    await deletePlotThreadBranch("pb1", {
+      projectId: "p1",
+      baseVersion: 4,
+    });
 
     expect(invoke).toHaveBeenNthCalledWith(1, "plot_thread_update", {
       id: "pt1",
-      patch: { name: "renamed", baseVersion: 7 },
+      patch: expect.objectContaining({
+        projectId: "p1",
+        name: "renamed",
+        baseVersion: 7,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "plot_thread_link_update", {
       id: "pl1",
-      patch: { note: "updated", baseVersion: 11 },
+      patch: expect.objectContaining({
+        projectId: "p1",
+        note: "updated",
+        baseVersion: 11,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
     expect(invoke).toHaveBeenNthCalledWith(3, "plot_thread_link_delete", {
-      id: "pl1",
-      baseVersion: 12,
+      payload: expect.objectContaining({
+        id: "pl1",
+        projectId: "p1",
+        baseVersion: 12,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
     expect(invoke).toHaveBeenNthCalledWith(4, "plot_thread_branch_update", {
       id: "pb1",
-      patch: { atNodeId: "scene-2", baseVersion: 3 },
+      patch: expect.objectContaining({
+        projectId: "p1",
+        atNodeId: "scene-2",
+        baseVersion: 3,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
     expect(invoke).toHaveBeenNthCalledWith(5, "plot_thread_branch_delete", {
-      id: "pb1",
-      baseVersion: 4,
+      payload: expect.objectContaining({
+        id: "pb1",
+        projectId: "p1",
+        baseVersion: 4,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
   });
 
@@ -223,11 +280,13 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       });
 
     await updatePlotThread("pt1", {
+      projectId: "p1",
       color: null,
       description: null,
       baseVersion: 3,
     });
     await updatePlotThreadLink("pl1", {
+      projectId: "p1",
       note: null,
       sortOrder: null,
       baseVersion: 6,
@@ -235,11 +294,21 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
 
     expect(invoke).toHaveBeenNthCalledWith(1, "plot_thread_update", {
       id: "pt1",
-      patch: { color: null, description: null, baseVersion: 3 },
+      patch: expect.objectContaining({
+        projectId: "p1",
+        color: null,
+        description: null,
+        baseVersion: 3,
+      }),
     });
     expect(invoke).toHaveBeenNthCalledWith(2, "plot_thread_link_update", {
       id: "pl1",
-      patch: { note: null, sortOrder: null, baseVersion: 6 },
+      patch: expect.objectContaining({
+        projectId: "p1",
+        note: null,
+        sortOrder: null,
+        baseVersion: 6,
+      }),
     });
   });
 
@@ -324,6 +393,10 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         requestId: "move-1",
         projectId: "p1",
+        sessionId: "plot-test-session",
+        eventUid: "move-1",
+        origin: "human",
+        originalTransactionId: null,
         markerBefore,
         markerAfter,
         branchTransitions: [{ before: null, after: branch }],
@@ -365,6 +438,7 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
     invoke
       .mockResolvedValueOnce({
         id: "restore-1",
+        maintenanceTransactionId: "maintenance-restore-1",
         thread: {
           id: "pt1",
           project_id: "p1",
@@ -382,11 +456,13 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       .mockResolvedValueOnce({
         id: "delete-1",
         deleted: true,
+        maintenanceTransactionId: "maintenance-delete-1",
         __idempotency: { replayed: false, entityPresent: true },
       })
       .mockResolvedValueOnce({
         id: "delete-thread-1",
         deleted: true,
+        maintenanceTransactionId: "maintenance-delete-thread-1",
         __idempotency: { replayed: false, entityPresent: true },
       });
     const thread = {
@@ -451,6 +527,10 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         requestId: "restore-1",
         projectId: "p1",
+        sessionId: "plot-test-session",
+        eventUid: "restore-1",
+        origin: "restore",
+        originalTransactionId: null,
         thread,
         links: [],
         branches: [],
@@ -460,6 +540,10 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         requestId: "delete-1",
         projectId: "p1",
+        sessionId: "plot-test-session",
+        eventUid: "delete-1",
+        origin: "human",
+        originalTransactionId: null,
         link,
         branches: [branch],
       },
@@ -468,6 +552,10 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
       payload: {
         requestId: "delete-thread-1",
         projectId: "p1",
+        sessionId: "plot-test-session",
+        eventUid: "delete-thread-1",
+        origin: "human",
+        originalTransactionId: null,
         thread,
         links: [link],
         branches: [branch],
@@ -532,10 +620,15 @@ describe("plot-threads api は Electron でネイティブ backend (napi) へ in
 
   it("deletePlotThread は plot_thread_delete を invoke する", async () => {
     invoke.mockResolvedValue(null);
-    await deletePlotThread("pt1", { baseVersion: 9 });
+    await deletePlotThread("pt1", { projectId: "p1", baseVersion: 9 });
     expect(invoke).toHaveBeenCalledWith("plot_thread_delete", {
-      id: "pt1",
-      baseVersion: 9,
+      payload: expect.objectContaining({
+        id: "pt1",
+        projectId: "p1",
+        baseVersion: 9,
+        sessionId: "plot-test-session",
+        origin: "human",
+      }),
     });
   });
 });

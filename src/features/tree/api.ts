@@ -18,6 +18,31 @@ import {
 } from "@/lib/treeNodeMutationRegistry";
 import type { ProjectNarrativeSourceRow } from "@/features/narrative-extraction/source/types";
 import type { WorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import {
+  createCanonicalHistoryWriteLease,
+  createCanonicalWriteContext,
+  type CanonicalHistoryWriteLease,
+  type CanonicalWriteContext,
+  type CanonicalWriteLineage,
+  type CanonicalWriteOrigin,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
+
+const historyWriteLeases = new WeakMap<
+  CanonicalWriteReceipt,
+  Partial<Record<"undo" | "redo", CanonicalHistoryWriteLease>>
+>();
+const activeHistoryWriteContexts = new WeakMap<
+  CanonicalWriteContext,
+  CanonicalHistoryWriteLease
+>();
+
+function commitHistoryWriteContext(context: CanonicalWriteContext): void {
+  const lease = activeHistoryWriteContexts.get(context);
+  if (!lease) return;
+  lease.committed();
+  activeHistoryWriteContexts.delete(context);
+}
 
 function publishPersistedTreeNodeMutation(
   persisted:
@@ -62,6 +87,85 @@ function derivePlacedPreview(contentJsonStr: string): string | null {
 export type TreeNode = typeof treeNodes.$inferSelect;
 export type NewTreeNode = typeof treeNodes.$inferInsert;
 export type NodeType = "folder" | "scene" | "note";
+
+export type TreeNodeWriteResult = TreeNode & {
+  __writeReceipt?: CanonicalWriteReceipt;
+};
+
+function hideTreeWriteReceipt(
+  result: TreeNodeWriteResult,
+): TreeNodeWriteResult {
+  const receipt = result.__writeReceipt;
+  if (!receipt) return result;
+  delete result.__writeReceipt;
+  Object.defineProperty(result, "__writeReceipt", {
+    value: receipt,
+    configurable: false,
+    enumerable: false,
+    writable: false,
+  });
+  return result;
+}
+
+type LegacyTreeRestoreWriteContext = {
+  requestId: string;
+  sessionId: string;
+  eventUid: string;
+  timestamp: number;
+  origin: "restore";
+  sourceDomain: "revision";
+  opType: "content.restore";
+};
+
+function isLegacyTreeRestoreWriteContext(
+  value: CanonicalWriteContext | LegacyTreeRestoreWriteContext,
+): value is LegacyTreeRestoreWriteContext {
+  return "sourceDomain" in value;
+}
+
+export function treeWriteReceipt(
+  result: TreeNodeWriteResult | CanonicalWriteReceipt | null | undefined,
+): CanonicalWriteReceipt | undefined {
+  if (!result) return undefined;
+  const candidate: CanonicalWriteReceipt | undefined =
+    "__writeReceipt" in result
+      ? result.__writeReceipt
+      : "changeEventUid" in result && "maintenanceTransactionId" in result
+        ? result
+        : undefined;
+  if (
+    typeof candidate?.changeEventUid !== "string" ||
+    typeof candidate.maintenanceTransactionId !== "string"
+  ) {
+    return undefined;
+  }
+  return candidate;
+}
+
+export function historyWriteContext(
+  origin: Extract<CanonicalWriteOrigin, "undo" | "redo">,
+  receipt: CanonicalWriteReceipt | undefined,
+): CanonicalWriteContext {
+  const undoJournalId = receipt?.undoJournalId;
+  if (!receipt || typeof undoJournalId !== "string" || !undoJournalId) {
+    throw new Error("Tree history write is missing its Undo Journal lineage");
+  }
+  const lineage: CanonicalWriteLineage = {
+    originalTransactionId: receipt.maintenanceTransactionId,
+    undoJournalId,
+  };
+  let leases = historyWriteLeases.get(receipt);
+  if (!leases) {
+    leases = {};
+    historyWriteLeases.set(receipt, leases);
+  }
+  const lease =
+    leases[origin] ??
+    (leases[origin] = createCanonicalHistoryWriteLease(origin, lineage));
+  const context = lease.acquire();
+  activeHistoryWriteContexts.set(context, lease);
+  return context;
+}
 
 /**
  * list 系 (listNodes / listAllNodes) の軽量行 (H4 projection)。
@@ -295,12 +399,24 @@ export async function createNode(
         | "content"
       >
     >,
-): Promise<TreeNode> {
-  return invoke<TreeNode>("tree_node_create", {
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<TreeNodeWriteResult> {
+  const writeContext = options.writeContext ?? createCanonicalWriteContext();
+  const result = await invoke<TreeNodeWriteResult>("tree_node_create", {
     payload: Object.fromEntries(
-      Object.entries(data).filter(([, value]) => value !== undefined),
+      Object.entries({
+        ...data,
+        ...writeContext,
+        canonicalPayload: {
+          parentId: data.parentId ?? null,
+          sortOrder: data.sortOrder,
+          title: data.title,
+        },
+      }).filter(([, value]) => value !== undefined),
     ),
   });
+  commitHistoryWriteContext(writeContext);
+  return hideTreeWriteReceipt(result);
 }
 
 async function patchTreeNodeNative(
@@ -311,11 +427,46 @@ async function patchTreeNodeNative(
     baseVersion?: number;
     bumpVersion: boolean;
     updatedAt?: string;
+    writeContext?: LegacyTreeRestoreWriteContext | CanonicalWriteContext;
   },
-): Promise<TreeNode> {
+): Promise<TreeNodeWriteResult> {
+  const auditBefore = await getNode(id);
+  const legacyRestoreContext =
+    options.writeContext &&
+    isLegacyTreeRestoreWriteContext(options.writeContext)
+      ? options.writeContext
+      : undefined;
+  let canonicalContext: CanonicalWriteContext;
+  if (legacyRestoreContext) {
+    canonicalContext = {
+      requestId: legacyRestoreContext.requestId,
+      sessionId: legacyRestoreContext.sessionId,
+      eventUid: legacyRestoreContext.eventUid,
+      origin: legacyRestoreContext.origin,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+  } else if (options.writeContext) {
+    canonicalContext = options.writeContext as CanonicalWriteContext;
+  } else {
+    canonicalContext = createCanonicalWriteContext();
+  }
   const payload = {
+    ...canonicalContext,
     projectId,
     nodeId: id,
+    canonicalPayload: {
+      fields: Object.keys(patch).sort(),
+      before: Object.fromEntries(
+        Object.keys(patch).map((key) => [
+          key,
+          (auditBefore as unknown as Record<string, unknown> | undefined)?.[
+            key
+          ] ?? null,
+        ]),
+      ),
+      after: patch,
+    },
     patch: Object.fromEntries(
       Object.entries(patch).filter(([, value]) => value !== undefined),
     ),
@@ -324,10 +475,24 @@ async function patchTreeNodeNative(
     ...(options.baseVersion === undefined
       ? {}
       : { baseVersion: options.baseVersion }),
+    ...(legacyRestoreContext
+      ? {
+          origin: legacyRestoreContext.origin,
+          sourceDomain: legacyRestoreContext.sourceDomain,
+          opType: legacyRestoreContext.opType,
+          changeEvent: {
+            eventUid: legacyRestoreContext.eventUid,
+            sessionId: legacyRestoreContext.sessionId,
+            timestamp: legacyRestoreContext.timestamp,
+          },
+        }
+      : {}),
   };
-  return invoke<TreeNode>("tree_node_patch", {
+  const result = await invoke<TreeNodeWriteResult>("tree_node_patch", {
     payload,
   });
+  commitHistoryWriteContext(canonicalContext);
+  return hideTreeWriteReceipt(result);
 }
 
 export function updateNode(
@@ -361,7 +526,8 @@ export function updateNode(
       | "excludedAliases"
     >
   >,
-): Promise<TreeNode | undefined> {
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<TreeNodeWriteResult | undefined> {
   const workspaceIdentity = getCurrentWorkspaceIdentity();
   // Metadata, Chronicle, preview, and content all share one tree_nodes row.
   // Keep generic metadata writes on the same per-scene issue-order chain as
@@ -384,50 +550,67 @@ export function updateNode(
     if (Object.keys(data).some((key) => temporalKeys.has(key))) {
       const value = <K extends keyof typeof data, T>(key: K, fallback: T): T =>
         data[key] === undefined ? fallback : (data[key] as T);
-      const temporalResult = await updateTemporalScene(current.projectId, id, {
-        storyTimeOrder: value("storyTimeOrder", current.storyTimeOrder ?? null),
-        storyTimeLabel: value("storyTimeLabel", current.storyTimeLabel ?? null),
-        chronicleStartTime: value(
-          "chronicleStartTime",
-          current.chronicleStartTime ?? null,
-        ),
-        chronicleStartMinute: value(
-          "chronicleStartMinute",
-          current.chronicleStartMinute ?? null,
-        ),
-        chronicleStartGranularity: value(
-          "chronicleStartGranularity",
-          current.chronicleStartGranularity ?? "none",
-        ),
-        chronicleEndTime: value(
-          "chronicleEndTime",
-          current.chronicleEndTime ?? null,
-        ),
-        chronicleEndMinute: value(
-          "chronicleEndMinute",
-          current.chronicleEndMinute ?? null,
-        ),
-        chronicleEndGranularity: value(
-          "chronicleEndGranularity",
-          current.chronicleEndGranularity ?? "none",
-        ),
-        chroniclePrecision: value(
-          "chroniclePrecision",
-          current.chroniclePrecision ?? "exact",
-        ),
-        baseVersion: current.version,
-      });
-      const persisted = {
+      const temporalResult = await updateTemporalScene(
+        current.projectId,
+        id,
+        {
+          storyTimeOrder: value(
+            "storyTimeOrder",
+            current.storyTimeOrder ?? null,
+          ),
+          storyTimeLabel: value(
+            "storyTimeLabel",
+            current.storyTimeLabel ?? null,
+          ),
+          chronicleStartTime: value(
+            "chronicleStartTime",
+            current.chronicleStartTime ?? null,
+          ),
+          chronicleStartMinute: value(
+            "chronicleStartMinute",
+            current.chronicleStartMinute ?? null,
+          ),
+          chronicleStartGranularity: value(
+            "chronicleStartGranularity",
+            current.chronicleStartGranularity ?? "none",
+          ),
+          chronicleEndTime: value(
+            "chronicleEndTime",
+            current.chronicleEndTime ?? null,
+          ),
+          chronicleEndMinute: value(
+            "chronicleEndMinute",
+            current.chronicleEndMinute ?? null,
+          ),
+          chronicleEndGranularity: value(
+            "chronicleEndGranularity",
+            current.chronicleEndGranularity ?? "none",
+          ),
+          chroniclePrecision: value(
+            "chroniclePrecision",
+            current.chroniclePrecision ?? "exact",
+          ),
+          baseVersion: current.version,
+        },
+        { writeContext: options.writeContext },
+      );
+      const persisted = hideTreeWriteReceipt({
         ...current,
         ...data,
         version: temporalResult.version,
         updatedAt: temporalResult.updatedAt,
-      };
+        __writeReceipt: {
+          changeEventUid: temporalResult.changeEventUid,
+          maintenanceTransactionId: temporalResult.maintenanceTransactionId,
+          undoJournalId: temporalResult.undoJournalId,
+        },
+      });
       publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
       return persisted;
     }
     const persisted = await patchTreeNodeNative(id, current.projectId, data, {
       bumpVersion: false,
+      writeContext: options.writeContext,
     });
     publishPersistedTreeNodeMutation(persisted, workspaceIdentity);
     return persisted;
@@ -437,12 +620,22 @@ export function updateNode(
 export async function deleteNode(
   id: string,
   projectId?: string,
-): Promise<void> {
-  const scopedProjectId = projectId ?? (await getNode(id))?.projectId;
+  options: { writeContext?: CanonicalWriteContext } = {},
+): Promise<CanonicalWriteReceipt | undefined> {
+  const current = await getNode(id);
+  const scopedProjectId = projectId ?? current?.projectId;
   if (!scopedProjectId) return;
-  await invoke("tree_node_delete", {
-    payload: { projectId: scopedProjectId, nodeId: id },
+  const writeContext = options.writeContext ?? createCanonicalWriteContext();
+  const result = await invoke<CanonicalWriteReceipt>("tree_node_delete", {
+    payload: {
+      projectId: scopedProjectId,
+      nodeId: id,
+      ...writeContext,
+      canonicalPayload: { id },
+    },
   });
+  commitHistoryWriteContext(writeContext);
+  return treeWriteReceipt(result);
 }
 
 export interface TemporalScenePatch {
@@ -462,29 +655,40 @@ export interface TemporalScenePatchResult {
   sceneId: string;
   version: number;
   updatedAt: string;
+  changeEventUid: string;
+  maintenanceTransactionId: string;
+  undoJournalId: string;
 }
 
 export async function updateTemporalScene(
   projectId: string,
   sceneId: string,
   patch: TemporalScenePatch,
+  options: { writeContext?: CanonicalWriteContext } = {},
 ): Promise<TemporalScenePatchResult> {
-  return invoke<TemporalScenePatchResult>("temporal_scene_patch", {
-    payload: {
-      projectId,
-      targetId: sceneId,
-      baseVersion: patch.baseVersion,
-      storyTimeOrder: patch.storyTimeOrder,
-      storyTimeLabel: patch.storyTimeLabel,
-      startTime: patch.chronicleStartTime,
-      startMinute: patch.chronicleStartMinute,
-      startGranularity: patch.chronicleStartGranularity,
-      endTime: patch.chronicleEndTime,
-      endMinute: patch.chronicleEndMinute,
-      endGranularity: patch.chronicleEndGranularity,
-      precision: patch.chroniclePrecision,
+  const writeContext = options.writeContext ?? createCanonicalWriteContext();
+  const result = await invoke<TemporalScenePatchResult>(
+    "temporal_scene_patch",
+    {
+      payload: {
+        ...writeContext,
+        projectId,
+        targetId: sceneId,
+        baseVersion: patch.baseVersion,
+        storyTimeOrder: patch.storyTimeOrder,
+        storyTimeLabel: patch.storyTimeLabel,
+        startTime: patch.chronicleStartTime,
+        startMinute: patch.chronicleStartMinute,
+        startGranularity: patch.chronicleStartGranularity,
+        endTime: patch.chronicleEndTime,
+        endMinute: patch.chronicleEndMinute,
+        endGranularity: patch.chronicleEndGranularity,
+        precision: patch.chroniclePrecision,
+      },
     },
-  });
+  );
+  commitHistoryWriteContext(writeContext);
+  return result;
 }
 
 // --- Scene content operations ---
@@ -497,6 +701,7 @@ export interface SaveScenePayload {
   baseVersion?: number;
   /** Renderer-wide monotonic tree token shared with the native bundle. */
   updatedAt?: string;
+  writeContext?: CanonicalWriteContext | LegacyTreeRestoreWriteContext;
 }
 
 export class SceneContentConflictError extends Error {
@@ -595,9 +800,12 @@ export async function saveSceneContentInner(
         placedBeatPreview,
       },
       {
-        baseVersion: payload.baseVersion,
+        baseVersion:
+          payload.baseVersion ??
+          (payload.writeContext ? current.version : undefined),
         bumpVersion: true,
         updatedAt: contentUpdatedAt,
+        writeContext: payload.writeContext,
       },
     );
     return [

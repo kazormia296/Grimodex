@@ -1,10 +1,11 @@
 use grimodex_db::narrative_extraction::{
     self, AppendDecisionPayload, ApplyCommitPayload, CommitApplicationRef, CommitOperation,
-    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload, UndoCommitPayload,
+    CreateRunPayload, CreateTaskSeed, PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
+    UndoCommitPayload,
 };
 use grimodex_db::{
-    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
-    SetNarrativeRuntimePolicyInput, Database,
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
 };
 use serde_json::{json, Value};
 
@@ -171,12 +172,14 @@ fn build_prepare(
 ) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
-        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-            kind: kind.clone(),
-            payload: payload.clone(),
-            proposal_id: proposal_id.clone(),
-            revision_id: revision_id.clone(),
-        })
+        .map(
+            |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            },
+        )
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
         .iter()
@@ -201,14 +204,10 @@ fn build_prepare(
     }
 }
 
-fn prepare_and_apply(
-    db: &Database,
-    prepare: PrepareCommitPayload,
-) -> Value {
+fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
     enable_manual_apply(db);
-    let prepared =
-        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
-            .expect("prepare");
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
     narrative_extraction::narrative_extraction_apply_commit(
         db,
         ApplyCommitPayload {
@@ -339,7 +338,9 @@ fn constraint_scene_time_and_event_time_atomic_commit() {
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
@@ -446,11 +447,15 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
         ),
     )
     .expect_err("should fail on the event OCC mismatch");
-    assert!(err.to_string().contains("NEX_TEMPORAL_EVENT_VERSION_MISMATCH"));
+    assert!(err
+        .to_string()
+        .contains("NEX_TEMPORAL_EVENT_VERSION_MISMATCH"));
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
@@ -461,11 +466,10 @@ fn one_occ_failure_rolls_back_the_whole_temporal_commit() {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        let event_version: i64 = conn.query_row(
-            "SELECT version FROM events WHERE id = 'event-2'",
-            [],
-            |r| r.get(0),
-        )?;
+        let event_version: i64 =
+            conn.query_row("SELECT version FROM events WHERE id = 'event-2'", [], |r| {
+                r.get(0)
+            })?;
         assert_eq!(node_count, 0, "node.ensure must roll back with the rest");
         assert_eq!(constraint_count, 0);
         assert_eq!(scene_start, None, "scene patch must roll back");
@@ -570,14 +574,19 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
 
     db.with_conn(|conn| {
         let node_count: i64 =
-            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| r.get(0))?;
+            conn.query_row("SELECT COUNT(*) FROM narrative_temporal_nodes", [], |r| {
+                r.get(0)
+            })?;
         let constraint_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_temporal_constraints",
             [],
             |r| r.get(0),
         )?;
         assert_eq!(node_count, 1, "only the first node must survive");
-        assert_eq!(constraint_count, 1, "only the first constraint must survive");
+        assert_eq!(
+            constraint_count, 1,
+            "only the first constraint must survive"
+        );
         Ok(())
     })
     .unwrap();
@@ -608,8 +617,7 @@ fn ensuring_an_existing_node_commits_without_a_false_feed_mutation() {
     );
     assert!(first["maintenanceTransactionId"].is_string());
 
-    let second_pairs =
-        seed_approved_proposals(&db, "run-existing-b", "set-existing-b", &node);
+    let second_pairs = seed_approved_proposals(&db, "run-existing-b", "set-existing-b", &node);
     let second = prepare_and_apply(
         &db,
         build_prepare(
@@ -699,21 +707,23 @@ fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
             session_id: "sess-temporal".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("temporal-constraint-undo".to_string()),
         },
     )
     .expect("undo");
     assert_eq!(undone["status"], "undone");
 
     db.with_conn(|conn| {
-        let (start_time, start_granularity, version): (Option<i64>, String, i64) = conn
-            .query_row(
-                "SELECT chronicle_start_time, chronicle_start_granularity, version
+        let (start_time, start_granularity, version): (Option<i64>, String, i64) = conn.query_row(
+            "SELECT chronicle_start_time, chronicle_start_granularity, version
                    FROM tree_nodes WHERE id = 'scene-4'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )?;
-        assert_eq!(start_time, None, "chronicle fields are restored to pre-patch state");
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        assert_eq!(
+            start_time, None,
+            "chronicle fields are restored to pre-patch state"
+        );
         assert_eq!(start_granularity, "none");
         assert_eq!(
             version, 2,
@@ -772,7 +782,7 @@ fn human_edited_scene_after_commit_blocks_undo() {
             session_id: "sess-temporal".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("temporal-edited-undo".to_string()),
         },
     )
     .expect_err("human edit should block undo");

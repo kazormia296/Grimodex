@@ -20,7 +20,7 @@ describe("BrowserMock onboarding", () => {
   });
 
   it("returns native-equivalent empty settings on a normal first launch", async () => {
-    mock = await createBrowserMock();
+    mock = await createBrowserMock({ allowProtectedWriterTestFixtures: true });
 
     await expect(mock.invoke("get_global_settings")).resolves.toMatchObject({
       recentWorkspaces: [],
@@ -46,7 +46,7 @@ describe("BrowserMock onboarding", () => {
         hasSeenWelcome: true,
       }),
     );
-    mock = await createBrowserMock();
+    mock = await createBrowserMock({ allowProtectedWriterTestFixtures: true });
 
     await expect(mock.invoke("get_global_settings")).resolves.toMatchObject({
       recentWorkspaces: [],
@@ -60,7 +60,7 @@ describe("BrowserMock onboarding", () => {
 
   it("retains automatic workspace bootstrap for screenshot staging", async () => {
     localStorage.setItem(SCREENSHOT_MODE_KEY, "true");
-    mock = await createBrowserMock();
+    mock = await createBrowserMock({ allowProtectedWriterTestFixtures: true });
 
     await expect(mock.invoke("get_global_settings")).resolves.toMatchObject({
       recentWorkspaces: [
@@ -73,7 +73,7 @@ describe("BrowserMock onboarding", () => {
   });
 
   it("seeds an isolated tutorial project without replacing browser manuscripts", async () => {
-    mock = await createBrowserMock();
+    mock = await createBrowserMock({ allowProtectedWriterTestFixtures: true });
     await mock.invoke("db_execute", {
       sql: "UPDATE projects SET title = ? WHERE id = 'default-project'",
       params: ["My browser manuscript"],

@@ -55,6 +55,7 @@ const EXCLUDED_PATH_FRAGMENTS = [
  * Domain cutovers should keep this map in sync when adding tables.
  */
 const TABLE_TO_DRIZZLE_IDENTIFIERS = {
+  projects: ["projects"],
   foreshadows: ["foreshadows"],
   foreshadow_setups: ["foreshadowSetups"],
   foreshadow_payoffs: ["foreshadowPayoffs"],
@@ -67,11 +68,18 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   scene_events: ["sceneEvents"],
   event_relations: ["eventRelations"],
   tree_nodes: ["treeNodes"],
+  codex_types: ["codexTypes"],
   codex_entries: ["codexEntries"],
+  codex_tags: ["codexTags"],
+  codex_entry_tags: ["codexEntryTags"],
+  snippets: ["snippets"],
+  snippet_entry_tags: ["snippetEntryTags"],
   codex_relations: ["codexRelations"],
   codex_entry_phases: ["codexEntryPhases"],
+  codex_phase_detail_overrides: ["codexPhaseDetailOverrides"],
   codex_detail_definitions: ["codexDetailDefinitions"],
   codex_detail_values: ["codexDetailValues"],
+  codex_detail_semantic_bindings: ["codexDetailSemanticBindings"],
   narrative_runtime_policy: ["narrativeRuntimePolicy"],
   project_calendar: ["projectCalendar"],
   narrative_protected_fixture: ["narrativeProtectedFixture"],
@@ -322,13 +330,16 @@ function findDrizzleMutations(
           if (!isNativeSqlBuilderMutation(node)) violations.add(table);
         } else {
           const columns = collectObjectLiteralKeys(updateSetArgument(node));
+          const hasNoProtectedColumns =
+            entry.columns.length === 0 && !entry.versionColumn;
           if (
-            columns === null ||
-            [...columns].some(
-              (column) =>
-                entry.columns.includes(column) ||
-                column === entry.versionColumn,
-            )
+            !hasNoProtectedColumns &&
+            (columns === null ||
+              [...columns].some(
+                (column) =>
+                  entry.columns.includes(column) ||
+                  column === entry.versionColumn,
+              ))
           ) {
             violations.add(table);
           }

@@ -49,6 +49,11 @@ const ALLOWED_PATH_FRAGMENTS = [
  * Cutover PRs must register domain_writers/* here when flipping enforcement.
  */
 const WRITER_TO_MODULES = {
+  "project.lifecycle": [
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/import/commit.rs",
+    "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+  ],
   "narrative.runtime_policy": [
     "src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs",
   ],
@@ -76,6 +81,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
   "narrative.maintenance-feed": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
   ],
   "chronicle.event": [
@@ -92,6 +98,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/foreshadow_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/foreshadow_undo.rs",
     "src-tauri/crates/grimodex-db/src/scene_body.rs",
+    "src-tauri/crates/grimodex-db/src/trash_bin.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
     "src-tauri/crates/grimodex-db/src/fts.rs",
@@ -99,7 +106,7 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
     "src-tauri/crates/grimodex-core/src/undo_journal.rs",
   ],
-  "temporal.scene": [
+  "tree.node": [
     "src-tauri/crates/grimodex-db/src/change_events.rs",
     "src-tauri/crates/grimodex-db/src/chronicle_bulk.rs",
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
@@ -110,8 +117,10 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_operations.rs",
     "src-tauri/crates/grimodex-db/src/plot_threads.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/revision_restore.rs",
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
     "src-tauri/crates/grimodex-db/src/scene_body.rs",
+    "src-tauri/crates/grimodex-db/src/trash_bin.rs",
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-core/src/change_events.rs",
     "src-tauri/crates/grimodex-core/src/undo_journal.rs",
@@ -120,6 +129,16 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/chronicle.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/temporal_operations.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+  ],
+  "codex.catalog": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+    "src-tauri/crates/grimodex-db/src/chronicle.rs",
+    "src-tauri/crates/grimodex-db/src/codex_writes.rs",
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/foreshadow.rs",
+    "src-tauri/crates/grimodex-db/src/map_writes.rs",
+    "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+    "src-tauri/crates/grimodex-core/src/writes/codex.rs",
   ],
   "plot_threads.aggregate": [
     "src-tauri/crates/grimodex-db/src/plot_threads.rs",
@@ -147,32 +166,52 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/sample_seed.rs",
     "src-tauri/crates/grimodex-db/src/fts.rs",
     "src-tauri/crates/grimodex-db/src/tests.rs",
+    "src-tauri/crates/grimodex-db/src/trash_bin.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
     "src-tauri/crates/grimodex-core/src/undo_journal.rs",
     "src-tauri/crates/grimodex-core/src/writes/codex.rs",
   ],
+  "snippet.entry": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+    "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/fts.rs",
+    "src-tauri/crates/grimodex-db/src/integrity.rs",
+    "src-tauri/crates/grimodex-db/src/map_writes.rs",
+    "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/sample_seed.rs",
+    "src-tauri/crates/grimodex-db/src/snippet_writes.rs",
+    "src-tauri/crates/grimodex-db/src/trash_bin.rs",
+    "src-tauri/crates/grimodex-core/src/undo_journal.rs",
+  ],
   "codex.relation": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+    "src-tauri/crates/grimodex-db/src/map_writes.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
   "codex.phase": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
     "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
   "codex.detail": [
+    "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/codex_writes.rs",
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/project_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/detail_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_operations.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/phase_snapshots.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/semantic_bindings.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
     "src-tauri/crates/grimodex-db/src/tests.rs",
   ],
@@ -220,6 +259,20 @@ function isAllowedForWriter(relativePath, writer) {
   );
 }
 
+function productionRustSource(source) {
+  // This validator scans string literals rather than the expanded Rust AST.
+  // Unit-test modules commonly seed protected roots directly; exclude the
+  // first inline `#[cfg(test)] mod ... {}` tail so fixtures are not mistaken
+  // for production writer ownership. External tests are already outside the
+  // scan roots, and production modules conventionally precede their test tail.
+  const testModule = source.match(
+    /#\[\s*cfg\s*\(\s*test\s*\)\s*\]\s*(?:#\[[^\]]+\]\s*)*(?:pub(?:\([^)]*\))?\s+)?mod\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/u,
+  );
+  return testModule?.index === undefined
+    ? source
+    : source.slice(0, testModule.index);
+}
+
 export function validateNativeWriterOwnership({
   repoRoot = REPO_ROOT,
   registryPath = REGISTRY_PATH,
@@ -235,7 +288,7 @@ export function validateNativeWriterOwnership({
   for (const file of files) {
     const relative = path.relative(repoRoot, file).replaceAll("\\", "/");
     if (shouldSkip(relative)) continue;
-    const source = readFileSync(file, "utf8");
+    const source = productionRustSource(readFileSync(file, "utf8"));
     DML_RE.lastIndex = 0;
     let match;
     while ((match = DML_RE.exec(source)) !== null) {

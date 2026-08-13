@@ -7,6 +7,9 @@ vi.mock("@/lib/tauri", async (importOriginal) => ({
   invoke: invokeMock,
   isTauri: () => false,
 }));
+vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "plot-browser-test-session",
+}));
 
 import { createBrowserMock } from "@/lib/browser-mock";
 import { getCreateResultMetadata } from "@/lib/createResultMetadata";
@@ -29,12 +32,25 @@ async function sha256Hex(value: string): Promise<string> {
     .join("");
 }
 
+function plotIdentity(requestId: string, projectId = "p1") {
+  return {
+    projectId,
+    requestId,
+    sessionId: "plot-browser-test-session",
+    eventUid: `${requestId}-event`,
+    origin: "human" as const,
+    originalTransactionId: null,
+  };
+}
+
 describe("plot branch browser durable create", () => {
   let browser: Awaited<ReturnType<typeof createBrowserMock>>;
 
   beforeEach(async () => {
     delete (window as unknown as Record<string, unknown>).grimodex;
-    browser = await createBrowserMock();
+    browser = await createBrowserMock({
+      allowProtectedWriterTestFixtures: true,
+    });
     invokeMock.mockReset();
     invokeMock.mockImplementation(
       (command: string, args?: Record<string, unknown>) =>
@@ -90,6 +106,8 @@ describe("plot branch browser durable create", () => {
               fromThreadId: "t1",
               id: payload.id,
               kind: "branch",
+              origin: "human",
+              originalTransactionId: null,
               projectId: "p1",
               toThreadId: "t2",
             },
@@ -124,9 +142,10 @@ describe("plot branch browser durable create", () => {
       params: ["plot_thread_branch_create", payload.id],
       method: "get",
     });
-    expect(ledger.rows).toEqual([
-      { tombstone_json: JSON.stringify({ id: payload.id }) },
-    ]);
+    expect(JSON.parse(String(ledger.rows[0].tombstone_json))).toMatchObject({
+      id: payload.id,
+      maintenanceTransactionId: expect.any(String),
+    });
   });
 
   it("cross-project references fail without leaving a ledger tombstone", async () => {
@@ -232,6 +251,7 @@ describe("plot branch browser durable create", () => {
 
     const linkPayload = {
       id: "browser-link-request",
+      projectId: "p1",
       threadId: "t1",
       nodeId: "s1",
       phaseType: "develop" as const,
@@ -437,8 +457,16 @@ describe("plot branch browser durable create", () => {
     expect(first.links).toEqual([{ ...link, version: 8 }]);
 
     await invokeMock("plot_thread_link_delete", {
-      id: link.id,
-      baseVersion: 8,
+      payload: {
+        id: link.id,
+        projectId: "p1",
+        requestId: "generation-link-delete",
+        sessionId: "plot-browser-test-session",
+        eventUid: "generation-link-delete-event",
+        origin: "human",
+        originalTransactionId: null,
+        baseVersion: 8,
+      },
     });
     const second = await restorePlotThreadSnapshot({
       requestId: "browser-restore-generation-2",
@@ -452,13 +480,30 @@ describe("plot branch browser durable create", () => {
     await expect(
       invokeMock("plot_thread_link_update", {
         id: link.id,
-        patch: { note: "stale", baseVersion: link.version },
+        patch: {
+          projectId: "p1",
+          requestId: "generation-link-stale-update",
+          sessionId: "plot-browser-test-session",
+          eventUid: "generation-link-stale-update-event",
+          origin: "human",
+          originalTransactionId: null,
+          note: "stale",
+          baseVersion: link.version,
+        },
       }),
     ).rejects.toThrow("VERSION_MISMATCH");
     await expect(
       invokeMock("plot_thread_link_delete", {
-        id: link.id,
-        baseVersion: first.links[0].version,
+        payload: {
+          id: link.id,
+          projectId: "p1",
+          requestId: "generation-link-stale-delete",
+          sessionId: "plot-browser-test-session",
+          eventUid: "generation-link-stale-delete-event",
+          origin: "human",
+          originalTransactionId: null,
+          baseVersion: first.links[0].version,
+        },
       }),
     ).rejects.toThrow("VERSION_MISMATCH");
     const persisted = await invokeMock("db_execute", {
@@ -602,8 +647,8 @@ describe("plot branch browser durable create", () => {
     await expect(
       invokeMock("plot_thread_delete_snapshot", {
         payload: {
+          ...plotIdentity("browser-thread-delete-no-target"),
           requestId: "browser-thread-delete-no-target",
-          projectId: "p1",
           links: [],
           branches: [],
         },
@@ -612,6 +657,7 @@ describe("plot branch browser durable create", () => {
     await expect(
       invokeMock("plot_thread_delete_snapshot", {
         payload: {
+          ...plotIdentity("browser-thread-delete-both-targets"),
           requestId: "browser-thread-delete-both-targets",
           ...basePayload,
           link: links[0],
@@ -621,6 +667,7 @@ describe("plot branch browser durable create", () => {
     await expect(
       invokeMock("plot_thread_delete_snapshot", {
         payload: {
+          ...plotIdentity("browser-thread-delete-incomplete"),
           requestId: "browser-thread-delete-incomplete",
           ...basePayload,
           links: [links[0]],
@@ -630,6 +677,7 @@ describe("plot branch browser durable create", () => {
     await expect(
       invokeMock("plot_thread_delete_snapshot", {
         payload: {
+          ...plotIdentity("browser-thread-delete-stale"),
           requestId: "browser-thread-delete-stale",
           ...basePayload,
           branches: [branches[0], { ...branches[1], version: 4 }],
@@ -1432,9 +1480,8 @@ describe("plot branch browser durable create", () => {
 
   it("BrowserMock の foreshadow typed create も durable tombstone を使う", async () => {
     const payload = {
+      ...plotIdentity("browser-foreshadow-request"),
       id: "browser-foreshadow-request",
-      requestId: "browser-foreshadow-request",
-      projectId: "p1",
       title: "伏線",
       intent: "意図",
       notes: "全フィールド",
@@ -1494,8 +1541,8 @@ describe("plot branch browser durable create", () => {
 
   it("foreshadow requestId-only と id/requestId 欠落を native と同じに扱う", async () => {
     const requestOnly = {
+      ...plotIdentity("browser-foreshadow-request-only"),
       requestId: "browser-foreshadow-request-only",
-      projectId: "p1",
       title: "request only",
       intent: null,
       loadBearing: null,
@@ -1515,25 +1562,16 @@ describe("plot branch browser durable create", () => {
       __idempotency: { replayed: true, entityPresent: true },
     });
 
-    const noIdentityPayload = {
-      projectId: "p1",
-      title: "no request ledger",
-      intent: null,
-      loadBearing: null,
-    };
-    const generatedA = await invokeMock("foreshadow_create", {
-      payload: noIdentityPayload,
-    });
-    const generatedB = await invokeMock("foreshadow_create", {
-      payload: noIdentityPayload,
-    });
-    expect(generatedA.id).not.toBe(generatedB.id);
-    const ledgers = await invokeMock("db_execute", {
-      sql: "SELECT request_id FROM idempotency_requests WHERE domain = 'foreshadow_create' AND request_id IN (?, ?)",
-      params: [generatedA.id, generatedB.id],
-      method: "all",
-    });
-    expect(ledgers.rows).toEqual([]);
+    await expect(
+      invokeMock("foreshadow_create", {
+        payload: {
+          projectId: "p1",
+          title: "missing canonical identity",
+          intent: null,
+          loadBearing: null,
+        },
+      }),
+    ).rejects.toThrow("requestId");
   });
 
   it("foreshadow payoff の不正 range / cross-project scene を ledger ごと拒否する", async () => {
@@ -1548,9 +1586,8 @@ describe("plot branch browser durable create", () => {
       method: "run",
     });
     const base = {
+      ...plotIdentity("browser-foreshadow-xproj"),
       id: "browser-foreshadow-xproj",
-      requestId: "browser-foreshadow-xproj",
-      projectId: "p1",
       title: "invalid payoff",
       intent: null,
       notes: null,
@@ -1570,8 +1607,8 @@ describe("plot branch browser durable create", () => {
       invokeMock("foreshadow_create", {
         payload: {
           ...base,
+          ...plotIdentity("browser-foreshadow-range"),
           id: "browser-foreshadow-range",
-          requestId: "browser-foreshadow-range",
           payoffSceneId: "s1",
           payoffFromPos: 9,
           payoffToPos: 3,
@@ -1588,9 +1625,8 @@ describe("plot branch browser durable create", () => {
 
   it("変更済み legacy foreshadow を create replay として採用しない", async () => {
     const payload = {
+      ...plotIdentity("modified-legacy-foreshadow"),
       id: "modified-legacy-foreshadow",
-      requestId: "modified-legacy-foreshadow",
-      projectId: "p1",
       title: "伏線",
       intent: null,
       loadBearing: "supporting",

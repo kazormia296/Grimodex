@@ -29,6 +29,22 @@ process.on("exit", () => {
 const backend = new Backend(join(root, "app-data"));
 const workspace = join(root, "workspace");
 
+function mutationIdentity(
+  requestId,
+  projectId = "default-project",
+  origin = "human",
+) {
+  return {
+    requestId,
+    projectId,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin,
+    originalTransactionId: null,
+    undoJournalId: null,
+  };
+}
+
 async function exec(sql, params = [], method = "run") {
   return JSON.parse(await backend.dbExecute(sql, params, method)).rows;
 }
@@ -166,6 +182,7 @@ test("entity seed DTO は unknown field と lone surrogate を native 境界で�
 test("既知名を除外し、未知固有名詞を count/初出/context 付きで返す", async () => {
   await backend.openWorkspace(workspace);
   await backend.agentCodexCreate({
+    ...mutationIdentity("fixture:known-tokyo", "default-project", "ai-apply"),
     requestId: "fixture:known-tokyo",
     entryId: "known-tokyo",
     projectId: "default-project",
@@ -177,6 +194,7 @@ test("既知名を除外し、未知固有名詞を count/初出/context 付き�
     authorshipSpans: [],
   });
   await backend.treeNodeCreate({
+    ...mutationIdentity("fixture:scene-1"),
     id: "scene-1",
     projectId: "default-project",
     parentId: null,

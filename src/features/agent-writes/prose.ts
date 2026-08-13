@@ -109,6 +109,7 @@ export async function agentAcceptProseStage(
   const projectId = getCurrentProjectId();
   return invoke<ProseStageResult>("agent_accept_prose_stage", {
     payload: {
+      requestId: crypto.randomUUID(),
       projectId,
       sessionId: getRecorderSessionId(),
       stagingId,

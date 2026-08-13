@@ -38,15 +38,17 @@ use grimodex_db::backup_restore::{list_backups, restore_backup_core};
 use grimodex_db::change_events::AppendChangeEvent;
 use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendarPayload};
 use grimodex_db::domain_writes::{
-    self, CodexRenameApplyPayload, CodexRenameUndoPayload, CreateScanStagingProjectPayload,
-    ProjectDeletePayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
-    TreeNodeDeletePayload, TreeNodePatchPayload, UndoTreePlanPayload,
+    self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
+    CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
+    ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
+    TreeNodeDeletePayload, TreeNodePatchPayload, UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
-    self, ForeshadowCreatePayload, ForeshadowPatch, ForeshadowSetupPatch, OrphanResolvePayload,
-    PayoffAnchorInput, SetupAnchorInput, SetupCreateAiInput,
+    self, ForeshadowAnchorSavePayload, ForeshadowCodexLinkPayload, ForeshadowCreatePayload,
+    ForeshadowDeletePayload, ForeshadowPatch, ForeshadowSetupPatch, ForeshadowSetupStrengthPayload,
+    OrphanResolvePayload, SetupCreateAiInput,
 };
 use grimodex_db::ime_export::{
     clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
@@ -67,9 +69,10 @@ use grimodex_db::open::{
     NativeWorkspaceOpenTrace,
 };
 use grimodex_db::plot_threads::{
-    self, PlotThreadBranchCreatePayload, PlotThreadBranchPatch, PlotThreadCreatePayload,
-    PlotThreadDeleteSnapshotPayload, PlotThreadLinkCreatePayload, PlotThreadLinkPatch,
-    PlotThreadMoveMarkerBundlePayload, PlotThreadPatch, PlotThreadRestoreSnapshotPayload,
+    self, PlotDeletePayload, PlotThreadBranchCreatePayload, PlotThreadBranchPatch,
+    PlotThreadCreatePayload, PlotThreadDeleteSnapshotPayload, PlotThreadLinkCreatePayload,
+    PlotThreadLinkPatch, PlotThreadMoveMarkerBundlePayload, PlotThreadPatch,
+    PlotThreadRestoreSnapshotPayload,
 };
 use grimodex_db::post_effect::{self, ReplyToAnnotationArgs};
 use grimodex_db::project_snapshots::{
@@ -79,16 +82,19 @@ use grimodex_db::recovery::{
     export_safe_mode_diagnostics, list_safe_mode_candidates, quarantine_live_database,
     restore_safe_mode_candidate, verify_safe_mode_candidate,
 };
+use grimodex_db::revision_restore::{self, RestoreSceneRevisionPayload};
 use grimodex_db::runtime_performance_seed::{self, RuntimePerformanceSeedPayload};
 use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
 };
-use grimodex_db::trash_bin::{self, TrashBinCreatePayload};
+use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
 use grimodex_db::workspace::{self, GlobalSettings};
-use grimodex_db::{with_db_state, AppError, BatchStatement, Database, QueryResult};
+use grimodex_db::{
+    with_db_state, AppError, BatchStatement, Database, QueryResult, RepairIntegrityPayload,
+};
 
 use convert::{app_err_to_napi, from_wire, join_err_to_napi, lint_err_to_napi, params_array};
 use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
@@ -725,11 +731,56 @@ where
     .await
 }
 
+/// Strict renderer mutation variant. The same flat JSON object is decoded as
+/// both the long-lived domain DTO and its Gate C1 canonical identity context.
+/// Standalone MCP callers continue to use the shared domain functions directly.
+async fn canonical_agent_write_cmd<T, F>(
+    state: Arc<AppState>,
+    label: &'static str,
+    payload: serde_json::Value,
+    f: F,
+) -> Result<String>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    F: FnOnce(
+            &grimodex_db::Database,
+            T,
+            grimodex_db::agent_writes::RendererCanonicalWriteContext,
+        ) -> anyhow::Result<serde_json::Value>
+        + Send
+        + 'static,
+{
+    run_blocking(move || {
+        let dto: T = from_wire(label, payload.clone())?;
+        let context = from_wire(label, payload)?;
+        with_db_state(&state.ws, |db| {
+            Ok(serde_json::to_string(&f(db, dto, context)?)?)
+        })
+    })
+    .await
+}
+
 /// チャット送信の 1 メッセージ (Tauri の `commands::ai::ChatMessagePayload` 相当)。
 #[derive(serde::Deserialize)]
 struct ChatMsgDto {
     role: String,
     content: String,
+}
+
+/// Renderer-owned non-create mutations must carry a stable logical request
+/// identity. Decode it independently from the shared domain DTO so MCP can
+/// keep supplying the same identity through its explicit `with_request` API.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RendererRequestIdentity {
+    request_id: String,
+}
+
+impl RendererRequestIdentity {
+    fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.request_id.trim().is_empty(), "requestId is required");
+        Ok(())
+    }
 }
 
 /// Renderer が request.prepared を durable append した実行との相関だけを渡す。
@@ -1618,14 +1669,10 @@ impl Backend {
 
     /// CAS update for Native-owned Narrative runtime policy.
     #[napi]
-    pub async fn narrative_runtime_policy_set(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn narrative_runtime_policy_set(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let input: grimodex_db::SetNarrativeRuntimePolicyInput =
-                from_wire("payload", payload)?;
+            let input: grimodex_db::SetNarrativeRuntimePolicyInput = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 let policy = grimodex_db::set_narrative_runtime_policy(db, input)?;
                 Ok(serde_json::to_string(&serde_json::json!({
@@ -1949,6 +1996,20 @@ impl Backend {
     }
 
     #[napi]
+    pub async fn project_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ProjectCreatePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::project_create(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
     pub async fn project_delete(&self, payload: serde_json::Value) -> Result<()> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
@@ -1959,11 +2020,29 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn tree_plan_undo(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn ai_tree_plan_apply(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let payload: UndoTreePlanPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| domain_writes::undo_tree_plan(db, payload))
+            let payload: ApplyAiTreePlanPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::apply_ai_tree_plan(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn ai_tree_plan_undo(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: UndoAiTreePlanPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::undo_ai_tree_plan(
+                    db, payload,
+                )?)?)
+            })
         })
         .await
     }
@@ -1983,11 +2062,15 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn tree_node_delete(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn tree_node_delete(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: TreeNodeDeletePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| domain_writes::tree_node_delete(db, payload))
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::tree_node_delete(
+                    db, payload,
+                )?)?)
+            })
         })
         .await
     }
@@ -2012,21 +2095,24 @@ impl Backend {
         run_blocking(move || {
             let temporal_payload: TemporalScenePatchPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&narrative_extraction::temporal_scene_patch(
-                    db,
-                    temporal_payload,
-                )?)?)
+                Ok(serde_json::to_string(
+                    &narrative_extraction::temporal_scene_patch(db, temporal_payload)?,
+                )?)
             })
         })
         .await
     }
 
     #[napi]
-    pub async fn map_write_bundle(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn map_write_bundle(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: MapWritePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| map_writes::apply_map_write(db, payload))
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&map_writes::apply_map_write(
+                    db, payload,
+                )?)?)
+            })
         })
         .await
     }
@@ -2071,12 +2157,33 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn project_snapshot_apply_restore(&self, payload: serde_json::Value) -> Result<()> {
+    pub async fn project_snapshot_apply_restore(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                project_snapshots::apply_project_snapshot_restore(db, payload)
+                Ok(serde_json::to_string(
+                    &project_snapshots::apply_project_snapshot_restore(db, payload)?,
+                )?)
+            })
+        })
+        .await
+    }
+
+    /// Restore one persisted Scene revision. Safety revision, OCC body write,
+    /// canonical audit event, Narrative Change Feed, and retry receipt share
+    /// one Native transaction.
+    #[napi]
+    pub async fn revision_scene_restore(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: RestoreSceneRevisionPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = revision_restore::restore_scene_revision(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
             })
         })
         .await
@@ -2816,6 +2923,22 @@ impl Backend {
         .await
     }
 
+    /// Structural Trash restore. Domain rows, canonical Change Event,
+    /// Narrative Change Feed, Trash consumption, and retry receipt commit as
+    /// one Native-owned transaction.
+    #[napi]
+    pub async fn trash_bin_restore(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: TrashBinRestorePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let result = trash_bin::restore(db, payload)?;
+                Ok(serde_json::to_string(&result)?)
+            })
+        })
+        .await
+    }
+
     /// 文字屑ゴミ箱: 一覧 (deleted_at 降順、`limit` 省略時 50 件)。
     /// 返り値: 行オブジェクト配列の JSON 文字列。
     #[napi]
@@ -2910,11 +3033,11 @@ impl Backend {
     /// 整合性チェック (IntegrityCheckDialog)。
     /// 返り値: レポート object の JSON 文字列。
     #[napi]
-    pub async fn integrity_check(&self) -> Result<String> {
+    pub async fn integrity_check(&self, project_id: String) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             with_db_state(&state.ws, |db| {
-                let report = db.integrity_check()?;
+                let report = db.integrity_check(&project_id)?;
                 Ok(serde_json::to_string(&report)?)
             })
         })
@@ -2925,11 +3048,12 @@ impl Backend {
     /// なので Node main thread は塞がない)。
     /// 返り値: レポート object の JSON 文字列。
     #[napi]
-    pub async fn repair_integrity(&self) -> Result<String> {
+    pub async fn repair_integrity(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: RepairIntegrityPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let report = db.repair_integrity()?;
+                let report = db.repair_integrity(payload)?;
                 Ok(serde_json::to_string(&report)?)
             })
         })
@@ -3636,10 +3760,13 @@ impl Backend {
 
     /// プロットスレッド削除。
     #[napi]
-    pub async fn plot_thread_delete(&self, id: String, base_version: i64) -> Result<()> {
+    pub async fn plot_thread_delete(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            with_db_state(&state.ws, |db| plot_threads::delete(db, id, base_version))
+            let payload: PlotDeletePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&plot_threads::delete(db, payload)?)?)
+            })
         })
         .await
     }
@@ -3709,14 +3836,15 @@ impl Backend {
 
     /// プロットスレッド分岐/合流削除 (OCC baseVersion 任意)。
     #[napi]
-    pub async fn plot_thread_branch_delete(
-        &self,
-        id: String,
-        base_version: i64,
-    ) -> Result<()> {
+    pub async fn plot_thread_branch_delete(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            with_db_state(&state.ws, |db| plot_threads::branch_delete(db, id, base_version))
+            let payload: PlotDeletePayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&plot_threads::branch_delete(
+                    db, payload,
+                )?)?)
+            })
         })
         .await
     }
@@ -3791,11 +3919,14 @@ impl Backend {
 
     /// リンク削除。
     #[napi]
-    pub async fn plot_thread_link_delete(&self, id: String, base_version: i64) -> Result<()> {
+    pub async fn plot_thread_link_delete(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: PlotDeletePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                plot_threads::link_delete(db, id, base_version)
+                Ok(serde_json::to_string(&plot_threads::link_delete(
+                    db, payload,
+                )?)?)
             })
         })
         .await
@@ -3857,18 +3988,12 @@ impl Backend {
     /// 伏線削除。呼び出し元が観測した version と一致するときだけ削除し、
     /// 削除した aggregate の receipt を返す。
     #[napi]
-    pub async fn foreshadow_delete(
-        &self,
-        id: String,
-        project_id: String,
-        base_version: i64,
-        session_id: String,
-    ) -> Result<String> {
+    pub async fn foreshadow_delete(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: ForeshadowDeletePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let receipt =
-                    foreshadow::delete(db, id, project_id, base_version, session_id)?;
+                let receipt = foreshadow::delete(db, payload)?;
                 Ok(serde_json::to_string(&receipt)?)
             })
         })
@@ -4006,16 +4131,12 @@ impl Backend {
 
     /// 伏線↔codex リンク作成 (INSERT OR IGNORE)。
     #[napi]
-    pub async fn foreshadow_link_codex(
-        &self,
-        foreshadow_id: String,
-        codex_id: String,
-        base_version: i64,
-    ) -> Result<String> {
+    pub async fn foreshadow_link_codex(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let row = foreshadow::link_codex(db, foreshadow_id, codex_id, base_version)?;
+                let row = foreshadow::link_codex(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
             })
         })
@@ -4024,34 +4145,13 @@ impl Backend {
 
     /// 伏線↔codex リンク削除。
     #[napi]
-    pub async fn foreshadow_unlink_codex(
-        &self,
-        foreshadow_id: String,
-        codex_id: String,
-        base_version: i64,
-    ) -> Result<String> {
+    pub async fn foreshadow_unlink_codex(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let row = foreshadow::unlink_codex(db, foreshadow_id, codex_id, base_version)?;
+                let row = foreshadow::unlink_codex(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
-            })
-        })
-        .await
-    }
-
-    /// Codex 更新に連動してリンク伏線へ codex_link_dirty_at を付与する。
-    #[napi]
-    pub async fn foreshadow_mark_linked_codex_dirty(
-        &self,
-        project_id: String,
-        codex_entry_id: String,
-    ) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            with_db_state(&state.ws, |db| {
-                let rows = foreshadow::mark_linked_codex_dirty(db, project_id, codex_entry_id)?;
-                Ok(serde_json::to_string(&rows)?)
             })
         })
         .await
@@ -4075,15 +4175,13 @@ impl Backend {
     #[napi]
     pub async fn foreshadow_set_setup_strength(
         &self,
-        setup_id: String,
-        strength: Option<String>,
-        base_version: i64,
+        payload: serde_json::Value,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let payload: ForeshadowSetupStrengthPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let row =
-                    foreshadow::set_setup_strength(db, setup_id, strength, base_version)?;
+                let row = foreshadow::set_setup_strength(db, payload)?;
                 Ok(serde_json::to_string(&row)?)
             })
         })
@@ -4127,27 +4225,13 @@ impl Backend {
     #[napi]
     pub async fn foreshadow_save_anchors_for_scene(
         &self,
-        scene_id: String,
-        setups: serde_json::Value,
-        payoffs: serde_json::Value,
-        base_versions: serde_json::Value,
-        doc_content_size: i64,
+        payload: serde_json::Value,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            let setups: Vec<SetupAnchorInput> = from_wire("setups", setups)?;
-            let payoffs: Vec<PayoffAnchorInput> = from_wire("payoffs", payoffs)?;
-            let base_versions: std::collections::HashMap<String, i64> =
-                from_wire("baseVersions", base_versions)?;
+            let payload: ForeshadowAnchorSavePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                let rows = foreshadow::save_anchors_for_scene(
-                    db,
-                    scene_id,
-                    setups,
-                    payoffs,
-                    base_versions,
-                    doc_content_size,
-                )?;
+                let rows = foreshadow::save_anchors_for_scene(db, payload)?;
                 Ok(serde_json::to_string(&rows)?)
             })
         })
@@ -4179,33 +4263,33 @@ impl Backend {
 
     #[napi]
     pub async fn agent_codex_create(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_codex_create_impl,
+            agent_writes::renderer_codex_create_impl,
         )
         .await
     }
 
     #[napi]
     pub async fn agent_codex_update(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_codex_update_impl,
+            agent_writes::renderer_codex_update_impl,
         )
         .await
     }
 
     #[napi]
     pub async fn agent_codex_delete(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            grimodex_db::agent_writes::agent_codex_delete_impl,
+            grimodex_db::agent_writes::renderer_codex_delete_impl,
         )
         .await
     }
@@ -4239,6 +4323,44 @@ impl Backend {
             "payload",
             payload,
             agent_writes::agent_snippet_create_impl,
+        )
+        .await
+    }
+
+    /// Human/import/restore Snippet create. The shared writer commits the
+    /// domain row, Undo Journal, canonical Change Event, Narrative Change
+    /// Feed, and idempotency receipt in one SQLite transaction.
+    #[napi]
+    pub async fn snippet_create(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::snippet_writes::create,
+        )
+        .await
+    }
+
+    /// OCC-guarded canonical Snippet update.
+    #[napi]
+    pub async fn snippet_update(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::snippet_writes::update,
+        )
+        .await
+    }
+
+    /// OCC-guarded canonical Snippet delete.
+    #[napi]
+    pub async fn snippet_delete(&self, payload: serde_json::Value) -> Result<String> {
+        agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::snippet_writes::delete,
         )
         .await
     }
@@ -4322,23 +4444,41 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_update(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
-            Arc::clone(&self.state),
-            "payload",
-            payload,
-            agent_writes::agent_event_update_impl,
-        )
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+            request.validate()?;
+            let payload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &agent_writes::agent_event_update_with_request_impl(
+                        db,
+                        payload,
+                        Some(&request.request_id),
+                    )?,
+                )?)
+            })
+        })
         .await
     }
 
     #[napi]
     pub async fn agent_event_delete(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
-            Arc::clone(&self.state),
-            "payload",
-            payload,
-            agent_writes::agent_event_delete_impl,
-        )
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+            request.validate()?;
+            let payload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &agent_writes::agent_event_delete_with_request_impl(
+                        db,
+                        payload,
+                        Some(&request.request_id),
+                    )?,
+                )?)
+            })
+        })
         .await
     }
 
@@ -4355,12 +4495,21 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
-            Arc::clone(&self.state),
-            "payload",
-            payload,
-            agent_writes::agent_event_set_participants_impl,
-        )
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+            request.validate()?;
+            let payload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(
+                    &agent_writes::agent_event_set_participants_with_request_impl(
+                        db,
+                        payload,
+                        Some(&request.request_id),
+                    )?,
+                )?)
+            })
+        })
         .await
     }
 
@@ -4378,10 +4527,7 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn agent_scene_event_link_batch(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn agent_scene_event_link_batch(&self, payload: serde_json::Value) -> Result<String> {
         agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4448,19 +4594,18 @@ impl Backend {
     }
 
     #[napi]
-    pub async fn narrative_extraction_get_run(
-        &self,
-        payload: serde_json::Value,
-    ) -> Result<String> {
+    pub async fn narrative_extraction_get_run(&self, payload: serde_json::Value) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let dto: RunRefPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&narrative_extraction::narrative_extraction_get_run(
-                    db,
-                    dto.run_id,
-                    dto.project_id,
-                )?)?)
+                Ok(serde_json::to_string(
+                    &narrative_extraction::narrative_extraction_get_run(
+                        db,
+                        dto.run_id,
+                        dto.project_id,
+                    )?,
+                )?)
             })
         })
         .await

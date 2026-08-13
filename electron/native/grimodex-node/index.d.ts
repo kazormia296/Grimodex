@@ -107,13 +107,15 @@ export declare class Backend {
   codexRenameUndo(payload: any): Promise<string>
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
+  projectCreate(payload: any): Promise<string>
   projectDelete(payload: any): Promise<void>
-  treePlanUndo(payload: any): Promise<void>
+  aiTreePlanApply(payload: any): Promise<string>
+  aiTreePlanUndo(payload: any): Promise<string>
   treeNodeCreate(payload: any): Promise<string>
-  treeNodeDelete(payload: any): Promise<void>
+  treeNodeDelete(payload: any): Promise<string>
   treeNodePatch(payload: any): Promise<string>
   temporalScenePatch(payload: any): Promise<string>
-  mapWriteBundle(payload: any): Promise<void>
+  mapWriteBundle(payload: any): Promise<string>
   /**
    * Project snapshots are a typed aggregate: renderer computes the
    * dependency-safe row plan while shared Rust owns all SQL, project
@@ -121,7 +123,13 @@ export declare class Backend {
    */
   projectSnapshotCreate(payload: any): Promise<void>
   projectSnapshotRestoreContext(projectId: string, snapshotId: string, scopes: any): Promise<string>
-  projectSnapshotApplyRestore(payload: any): Promise<void>
+  projectSnapshotApplyRestore(payload: any): Promise<string>
+  /**
+   * Restore one persisted Scene revision. Safety revision, OCC body write,
+   * canonical audit event, Narrative Change Feed, and retry receipt share
+   * one Native transaction.
+   */
+  revisionSceneRestore(payload: any): Promise<string>
   /**
    * Scene content and every document-derived sidecar are committed in one
    * SQLite transaction. The renderer performs one PM traversal and passes
@@ -288,6 +296,12 @@ export declare class Backend {
    */
   trashBinCreate(payload: any): Promise<string>
   /**
+   * Structural Trash restore. Domain rows, canonical Change Event,
+   * Narrative Change Feed, Trash consumption, and retry receipt commit as
+   * one Native-owned transaction.
+   */
+  trashBinRestore(payload: any): Promise<string>
+  /**
    * 文字屑ゴミ箱: 一覧 (deleted_at 降順、`limit` 省略時 50 件)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
    */
@@ -320,13 +334,13 @@ export declare class Backend {
    * 整合性チェック (IntegrityCheckDialog)。
    * 返り値: レポート object の JSON 文字列。
    */
-  integrityCheck(): Promise<string>
+  integrityCheck(projectId: string): Promise<string>
   /**
    * 整合性修復 (IntegrityCheckDialog — 長時間になりうるが spawn_blocking
    * なので Node main thread は塞がない)。
    * 返り値: レポート object の JSON 文字列。
    */
-  repairIntegrity(): Promise<string>
+  repairIntegrity(payload: any): Promise<string>
   /**
    * Linter 本体 (commands/lint.rs の写像 — grimodex-lint を Tauri と共用)。
    * State 非依存だが、UniDic コールドロード (初回 >数秒) + CPU バウンドなので
@@ -432,7 +446,7 @@ export declare class Backend {
    */
   plotThreadUpdate(id: string, patch: any): Promise<string>
   /** プロットスレッド削除。 */
-  plotThreadDelete(id: string, baseVersion: number): Promise<void>
+  plotThreadDelete(payload: any): Promise<string>
   /**
    * プロジェクトのスレッド一覧 (sort_order 昇順)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
@@ -452,7 +466,7 @@ export declare class Backend {
   /** プロットスレッド分岐/合流更新 (OCC baseVersion 任意)。 */
   plotThreadBranchUpdate(id: string, patch: any): Promise<string>
   /** プロットスレッド分岐/合流削除 (OCC baseVersion 任意)。 */
-  plotThreadBranchDelete(id: string, baseVersion: number): Promise<void>
+  plotThreadBranchDelete(payload: any): Promise<string>
   /**
    * Marker move + branch create/update/delete. Full before/after snapshots,
    * durable replay identity, and all writes share one Rust transaction.
@@ -473,7 +487,7 @@ export declare class Backend {
    */
   plotThreadLinkUpdate(id: string, patch: any): Promise<string>
   /** リンク削除。 */
-  plotThreadLinkDelete(id: string, baseVersion: number): Promise<void>
+  plotThreadLinkDelete(payload: any): Promise<string>
   /**
    * プロジェクトの全リンク (thread の project で JOIN 絞り込み)。
    * 返り値: 行オブジェクト配列の JSON 文字列。
@@ -493,7 +507,7 @@ export declare class Backend {
    * 伏線削除。呼び出し元が観測した version と一致するときだけ削除し、
    * 削除した aggregate の receipt を返す。
    */
-  foreshadowDelete(id: string, projectId: string, baseVersion: number, sessionId: string): Promise<string>
+  foreshadowDelete(payload: any): Promise<string>
   /**
    * 伏線 + setup ラベル行を 1 ロックで取得。返り値: ForeshadowListWithLabels
    * Response (camelCase struct、内部行は snake_case) の JSON 文字列。
@@ -534,18 +548,16 @@ export declare class Backend {
    */
   foreshadowGet(id: string): Promise<string>
   /** 伏線↔codex リンク作成 (INSERT OR IGNORE)。 */
-  foreshadowLinkCodex(foreshadowId: string, codexId: string, baseVersion: number): Promise<string>
+  foreshadowLinkCodex(payload: any): Promise<string>
   /** 伏線↔codex リンク削除。 */
-  foreshadowUnlinkCodex(foreshadowId: string, codexId: string, baseVersion: number): Promise<string>
-  /** Codex 更新に連動してリンク伏線へ codex_link_dirty_at を付与する。 */
-  foreshadowMarkLinkedCodexDirty(projectId: string, codexEntryId: string): Promise<string>
+  foreshadowUnlinkCodex(payload: any): Promise<string>
   /**
    * 伏線に紐づく codex エントリ一覧。返り値: codex_entries.* 行 (snake_case)
    * の JSON 文字列。
    */
   foreshadowListLinkedCodex(foreshadowId: string): Promise<string>
   /** setup の強度を直接更新 (`strength` は null で列クリア)。 */
-  foreshadowSetSetupStrength(setupId: string, strength: string | undefined | null, baseVersion: number): Promise<string>
+  foreshadowSetSetupStrength(payload: any): Promise<string>
   /**
    * AI 由来 setup の upsert。`input` は camelCase の SetupCreateAiInput
    * (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
@@ -562,7 +574,7 @@ export declare class Backend {
    * の配列 (from/to_pos は i64)。`doc_content_size` は空 doc 判定の i64 ガード
    * (<=2 で bulk-orphan)。
    */
-  foreshadowSaveAnchorsForScene(sceneId: string, setups: any, payoffs: any, baseVersions: any, docContentSize: number): Promise<string>
+  foreshadowSaveAnchorsForScene(payload: any): Promise<string>
   /**
    * シーンのアンカー mark を取得 (0 座標・orphan を除外)。返り値:
    * AnchorMarkOutput 配列 (camelCase: from/to/markName/attrs) の JSON 文字列。
@@ -574,6 +586,16 @@ export declare class Backend {
   agentCodexMutate(payload: any): Promise<string>
   agentWriteBundle(payload: any): Promise<string>
   agentSnippetCreate(payload: any): Promise<string>
+  /**
+   * Human/import/restore Snippet create. The shared writer commits the
+   * domain row, Undo Journal, canonical Change Event, Narrative Change
+   * Feed, and idempotency receipt in one SQLite transaction.
+   */
+  snippetCreate(payload: any): Promise<string>
+  /** OCC-guarded canonical Snippet update. */
+  snippetUpdate(payload: any): Promise<string>
+  /** OCC-guarded canonical Snippet delete. */
+  snippetDelete(payload: any): Promise<string>
   agentProposeSceneBody(payload: any): Promise<string>
   agentAcceptProseStage(payload: any): Promise<string>
   agentDiscardProseStage(payload: any): Promise<string>
@@ -601,6 +623,10 @@ export declare class Backend {
   narrativeExtractionGetRunReviewBundle(payload: any): Promise<string>
   narrativeExtractionAppendRevision(payload: any): Promise<string>
   narrativeExtractionAppendDecision(payload: any): Promise<string>
+  /**
+   * Human review has a separate Native endpoint so an AI/automation
+   * caller cannot turn `createdBy` into a human authority grant.
+   */
   narrativeExtractionAppendHumanDecision(payload: any): Promise<string>
   narrativeExtractionReviseAndDecide(payload: any): Promise<string>
   narrativeExtractionReviseAndDecideAsHuman(payload: any): Promise<string>

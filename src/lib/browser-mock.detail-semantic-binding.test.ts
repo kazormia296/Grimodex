@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+import { withCanonicalWriterTestContext } from "./browser-mock.canonical-test-context";
 
 async function rows(
   mock: PersistentBrowserMock,
@@ -21,7 +22,9 @@ describe("browser mock Detail semantic binding writer", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({ onDatabaseDirty }),
+    );
     onDatabaseDirty.mockClear();
   });
 

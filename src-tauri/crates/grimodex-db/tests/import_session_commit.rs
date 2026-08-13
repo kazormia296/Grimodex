@@ -76,9 +76,11 @@ fn apply_creates_project_and_commits_session() {
     let db = migrated_db();
     create_ready_session(&db, "session-1", "imported-project");
 
-    let receipt =
-        apply_commit(&db, apply_payload("session-1", "request-1", "imported-project"))
-            .expect("apply import commit");
+    let receipt = apply_commit(
+        &db,
+        apply_payload("session-1", "request-1", "imported-project"),
+    )
+    .expect("apply import commit");
 
     assert_eq!(receipt["status"], "committed");
     assert_eq!(receipt["projectId"], "imported-project");
@@ -98,9 +100,65 @@ fn apply_creates_project_and_commits_session() {
             [],
             |row| row.get(0),
         )?;
+        let feed: (String, String, i64) = conn.query_row(
+            "SELECT origin, source_domain,
+                    (SELECT COUNT(*) FROM narrative_change_events
+                      WHERE project_id = 'imported-project')
+               FROM narrative_change_transactions
+              WHERE project_id = 'imported-project'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
         assert_eq!(state, "committed");
         assert_eq!(project, ("Imported novel".to_string(), "en".to_string()));
         assert_eq!(commits, 1);
+        assert_eq!(
+            feed,
+            ("import".to_string(), "import.session.apply".to_string(), 5)
+        );
+        let feed_order = conn
+            .prepare(
+                "SELECT event.event_ordinal,
+                        json_extract(event.object_key_json, '$.kind'),
+                        coalesce(json_extract(event.object_key_json, '$.componentId'), '')
+                   FROM narrative_change_events event
+                  WHERE event.project_id = 'imported-project'
+                  ORDER BY event.event_ordinal",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            feed_order,
+            vec![
+                (0, "import-source".to_string(), "".to_string()),
+                (
+                    1,
+                    "component".to_string(),
+                    "codex-type:imported-project-character".to_string(),
+                ),
+                (
+                    2,
+                    "component".to_string(),
+                    "codex-type:imported-project-location".to_string(),
+                ),
+                (
+                    3,
+                    "component".to_string(),
+                    "codex-type:imported-project-item".to_string(),
+                ),
+                (
+                    4,
+                    "component".to_string(),
+                    "codex-type:imported-project-lore".to_string(),
+                ),
+            ]
+        );
         Ok(())
     })
     .expect("inspect committed import");
@@ -118,14 +176,132 @@ fn request_id_replay_does_not_duplicate_project() {
     assert_eq!(first["projectId"], replay["projectId"]);
     assert_eq!(replay["idempotentReplay"], true);
     db.with_conn(|conn| {
-        let projects: i64 =
-            conn.query_row("SELECT COUNT(*) FROM projects WHERE id = 'imported-project'", [], |row| {
-                row.get(0)
-            })?;
+        let projects: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM projects WHERE id = 'imported-project'",
+            [],
+            |row| row.get(0),
+        )?;
         assert_eq!(projects, 1);
+        let canonical: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM change_events
+              WHERE project_id = 'imported-project' AND op_type = 'import.session.apply'",
+            [],
+            |row| row.get(0),
+        )?;
+        let feed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE project_id = 'imported-project' AND source_domain = 'import.session.apply'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!((canonical, feed), (1, 1));
         Ok(())
     })
     .expect("inspect replay");
+}
+
+#[test]
+fn request_id_replay_is_bound_to_session_digest_and_reserved_project() {
+    let db = migrated_db();
+    create_ready_session(&db, "session-1", "imported-project-1");
+    create_ready_session(&db, "session-2", "imported-project-2");
+
+    apply_commit(
+        &db,
+        apply_payload("session-1", "shared-request", "imported-project-1"),
+    )
+    .expect("first apply");
+
+    let error = apply_commit(
+        &db,
+        apply_payload("session-2", "shared-request", "imported-project-2"),
+    )
+    .expect_err("request identity must not replay another import authority");
+    assert!(error
+        .to_string()
+        .contains("IMPORT_COMMIT_IDEMPOTENCY_CONFLICT"));
+
+    db.with_conn(|conn| {
+        let second_project: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM projects WHERE id = 'imported-project-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        let second_state: String = conn.query_row(
+            "SELECT state FROM import_sessions WHERE id = 'session-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(second_project, 0);
+        assert_eq!(second_state, "source-saved");
+        Ok(())
+    })
+    .expect("inspect request authority conflict");
+}
+
+#[test]
+fn feed_failure_rolls_back_import_project_session_and_receipt() {
+    let db = migrated_db();
+    create_ready_session(&db, "session-feed-failure", "failed-import-project");
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "CREATE TRIGGER fail_import_feed
+               BEFORE INSERT ON narrative_change_transactions
+               WHEN NEW.source_domain = 'import.session.apply'
+             BEGIN
+               SELECT RAISE(ABORT, 'forced import feed failure');
+             END;",
+        )?;
+        Ok(())
+    })
+    .expect("install Feed failure");
+
+    let error = apply_commit(
+        &db,
+        apply_payload(
+            "session-feed-failure",
+            "request-feed-failure",
+            "failed-import-project",
+        ),
+    )
+    .expect_err("Feed failure must abort import apply");
+    assert!(error.to_string().contains("forced import feed failure"));
+
+    db.with_conn(|conn| {
+        let state: String = conn.query_row(
+            "SELECT state FROM import_sessions WHERE id = 'session-feed-failure'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(state, "source-saved");
+        for (label, sql) in [
+            (
+                "import project",
+                "SELECT COUNT(*) FROM projects WHERE id = 'failed-import-project'",
+            ),
+            (
+                "import receipt",
+                "SELECT COUNT(*) FROM import_commits WHERE request_id = 'request-feed-failure'",
+            ),
+            (
+                "canonical event",
+                "SELECT COUNT(*) FROM change_events WHERE op_type = 'import.session.apply'",
+            ),
+            (
+                "Feed transaction",
+                "SELECT COUNT(*) FROM narrative_change_transactions WHERE source_domain = 'import.session.apply'",
+            ),
+            (
+                "Feed event",
+                "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = 'failed-import-project'",
+            ),
+        ] {
+            let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+            assert_eq!(count, 0, "{label} must roll back");
+        }
+        Ok(())
+    })
+    .expect("verify import rollback");
 }
 
 #[test]

@@ -12,14 +12,12 @@ import { eq, and, desc, sql, inArray } from "drizzle-orm";
 import { createRevision } from "./api";
 import type { EntityType } from "./api";
 import { getCurrentProjectId } from "@/features/project/projectStore";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   rebaselineEntitiesAtTail,
   type EntityBaselineRef,
 } from "@/features/timelapse/toggle";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
-import { invoke } from "@/lib/tauri";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 import {
   emptySkipReport,
@@ -313,84 +311,13 @@ export async function deleteProjectSnapshot(snapshotId: string): Promise<void> {
 
 export interface RestoreOptions {
   scopes?: ReadonlySet<RestoreScope>;
+  /** Reuse this operation id only when retrying the exact same restore. */
+  requestId?: string;
 }
 
-/**
- * Legacy path: only UPDATEs `content` for entities whose ID is still present.
- * Used for snapshots predating the structural-snapshot schema, and for the
- * regression test fixtures that pre-date this change.
- */
-async function restoreLegacyContentOnly(snapshotId: string): Promise<number> {
-  const entries = await db
-    .select({ versionId: projectSnapshotEntries.versionId })
-    .from(projectSnapshotEntries)
-    .where(eq(projectSnapshotEntries.snapshotId, snapshotId));
-  const versionIds = entries.map((e) => e.versionId);
-  if (versionIds.length === 0) return 0;
-
-  const versions = await db
-    .select()
-    .from(contentVersions)
-    .where(inArray(contentVersions.id, versionIds));
-
-  const now = new Date().toISOString();
-  let restored = 0;
-  for (const v of versions) {
-    if (v.entityType === "scene" || v.entityType === "note") {
-      const [live] = await db
-        .select({
-          projectId: treeNodes.projectId,
-          version: treeNodes.version,
-        })
-        .from(treeNodes)
-        .where(eq(treeNodes.id, v.entityId));
-      if (live) {
-        await invoke("tree_node_patch", {
-          payload: {
-            projectId: live.projectId,
-            nodeId: v.entityId,
-            patch: { content: v.content },
-            baseVersion: live.version,
-            bumpVersion: true,
-            updatedAt: now,
-          },
-        });
-      }
-    } else if (v.entityType === "codex_entry") {
-      const live = await db
-        .select({
-          projectId: codexEntries.projectId,
-          version: codexEntries.version,
-        })
-        .from(codexEntries)
-        .where(eq(codexEntries.id, v.entityId))
-        .limit(1);
-      if (live[0]) {
-        await invoke("agent_codex_update", {
-          payload: {
-            projectId: live[0].projectId,
-            sessionId: getRecorderSessionId(),
-            surface: "manual",
-            entryId: v.entityId,
-            baseVersion: live[0].version,
-            content: v.content,
-            model: null,
-            chatMessageId: null,
-            traceId: null,
-            authorshipSpans: null,
-            authorshipSpanLanes: null,
-          },
-        });
-      }
-    } else if (v.entityType === "snippet") {
-      await db
-        .update(snippets)
-        .set({ content: v.content, updatedAt: now })
-        .where(eq(snippets.id, v.entityId));
-    }
-    restored++;
-  }
-  return restored;
+interface RestoreAuthority {
+  requestId: string;
+  sessionId: string;
 }
 
 /** Build the dependency-safe insert plan; Rust owns wipe + transaction SQL. */
@@ -398,7 +325,12 @@ async function restoreStructural(
   snapshotId: string,
   scopes: ReadonlySet<RestoreScope>,
   context: ProjectSnapshotRestoreContext,
-): Promise<{ restoredCount: number; skipped: SkipReport }> {
+  authority: RestoreAuthority,
+): Promise<{
+  restoredCount: number;
+  skipped: SkipReport;
+  canonicalSequence: number;
+}> {
   const PROJECT_ID = getCurrentProjectId();
   const skipped = emptySkipReport();
   const inserts: SnapshotInsertPlan[] = [];
@@ -504,6 +436,9 @@ async function restoreStructural(
     }
     for (const row of auxByScope.get("codex_dismissed_relations") ?? []) {
       pushStmt(buildInsert("codex_dismissed_relations", row));
+    }
+    for (const row of auxByScope.get("codex_relations") ?? []) {
+      pushStmt(buildInsert("codex_relations", row));
     }
   }
 
@@ -773,6 +708,8 @@ async function restoreStructural(
 
   // foreshadow
   if (scopes.has("foreshadow")) {
+    const restoredSetupIds = new Set<string>();
+    const restoredPayoffIds = new Set<string>();
     for (const row of auxByScope.get("foreshadows") ?? []) {
       let payoffSceneId = (row.payoff_scene_id as string | null) ?? null;
       if (
@@ -798,6 +735,30 @@ async function restoreStructural(
         continue;
       }
       pushStmt(buildInsert("foreshadow_setups", row));
+      if (typeof row.id === "string") restoredSetupIds.add(row.id);
+    }
+    for (const row of auxByScope.get("foreshadow_payoffs") ?? []) {
+      if (
+        !scopes.has("body") &&
+        typeof row.scene_id === "string" &&
+        !liveTreeNodeIds.has(row.scene_id)
+      ) {
+        skipped.foreshadowPayoffs++;
+        continue;
+      }
+      pushStmt(buildInsert("foreshadow_payoffs", row));
+      if (typeof row.id === "string") restoredPayoffIds.add(row.id);
+    }
+    for (const row of auxByScope.get("foreshadow_setup_payoff_links") ?? []) {
+      if (
+        typeof row.setup_id !== "string" ||
+        typeof row.payoff_id !== "string" ||
+        !restoredSetupIds.has(row.setup_id) ||
+        !restoredPayoffIds.has(row.payoff_id)
+      ) {
+        continue;
+      }
+      pushStmt(buildInsert("foreshadow_setup_payoff_links", row));
     }
     for (const row of auxByScope.get("foreshadow_codex_links") ?? []) {
       // codex_entry_id is NOT NULL FK. Codex unselected and missing → skip.
@@ -909,51 +870,50 @@ async function restoreStructural(
     }
   }
 
-  await applyNativeProjectSnapshotRestore({
+  const applyResult = await applyNativeProjectSnapshotRestore({
+    requestId: authority.requestId,
+    sessionId: authority.sessionId,
     projectId: PROJECT_ID,
     snapshotId,
     scopes: [...scopes],
     inserts,
   });
-  return { restoredCount, skipped };
+  return {
+    restoredCount,
+    skipped,
+    canonicalSequence: applyResult.canonicalSequence,
+  };
 }
 
 /**
  * Restore a project snapshot. Saves a safety snapshot first so the user can
  * always undo. New (structural) snapshots restore tree structure + content
- * + ancillary tables; legacy snapshots fall back to content-only UPDATE.
+ * + ancillary tables through one Native aggregate. Legacy content-only
+ * snapshots are read-only until they gain the same atomic authority.
  *
  * `options.scopes` selects which scopes to restore (default: all). For
- * legacy snapshots `options.scopes` is ignored because legacy snapshots
- * only capture content.
+ * Legacy snapshots are listed and retained, but restore fails closed before
+ * creating a safety snapshot or dispatching any domain write.
  */
 /**
  * A project-snapshot restore rewrites tree_nodes/codex_entries/snippets content
  * directly in the DB — the editor never issues the corresponding doc.steps, so
- * the timelapse chain has NO record of the jump and the genesis baseline goes
- * stale (a subsequent doc.step then replays on the pre-restore doc and throws
- * `RangeError: Position out of range`). Fix: record the restore as a
- * `revision`/`snapshot.restore` event and re-anchor every scene's editor
- * baseline at the new chain tail so post-restore edits replay on the restored
- * doc. Runs BEFORE the caller's `window.location.reload()` while the recorder
- * is still bound to this project. Only touches editor baselines when body was
- * actually restored.
+ * the timelapse genesis baseline goes stale (a subsequent doc.step then
+ * replays on the pre-restore doc and throws `RangeError: Position out of
+ * range`). The Native restore now appends the canonical
+ * `project.snapshot.restore` event in the same transaction as the domain
+ * rewrite and Narrative Change Feed. Renderer only re-anchors editor
+ * baselines at that committed chain tail. Runs BEFORE the caller's
+ * `window.location.reload()` while the recorder is still bound to this
+ * project.
  */
-async function recordRestoreAndRebaseline(
-  snapshotId: string,
+async function rebaselineAfterRestore(
   format: "legacy" | "structural",
-  restoredCount: number,
   scopes: Set<RestoreScope>,
+  committedSequence: number,
 ): Promise<void> {
   const projectId = getCurrentProjectId();
   if (!projectId) return;
-  recordChangeEvent({
-    domain: "revision",
-    opType: "snapshot.restore",
-    entityType: "project_snapshot",
-    entityId: snapshotId,
-    payload: { snapshotId, format, restoredCount, scopes: [...scopes] },
-  });
   // Re-anchor the baseline of every entity whose body this restore rewrote.
   // A LEGACY restore replays content_versions for ALL entity types
   // (restoreLegacyContentOnly writes scene/note/codex_entry/snippet bodies), so
@@ -990,7 +950,7 @@ async function recordRestoreAndRebaseline(
       ...snippetRows.map((r) => ({ kind: "snippet" as const, id: r.id })),
     );
   }
-  await rebaselineEntitiesAtTail(projectId, refs);
+  await rebaselineEntitiesAtTail(projectId, refs, committedSequence);
 }
 
 export async function restoreProjectSnapshot(
@@ -998,27 +958,34 @@ export async function restoreProjectSnapshot(
   snapshotName: string,
   options: RestoreOptions = {},
 ): Promise<RestoreResult> {
+  // Capture the authority tuple before the first await. Every dispatch made
+  // by this operation (including an exact retry supplied via options) uses
+  // one immutable request/session identity.
+  const authority: RestoreAuthority = {
+    requestId: options.requestId ?? crypto.randomUUID(),
+    sessionId: getRecorderSessionId(),
+  };
   return runTreeTopologyMutation(() =>
-    restoreProjectSnapshotWithAuthority(snapshotId, snapshotName, options),
+    restoreProjectSnapshotWithAuthority(
+      snapshotId,
+      snapshotName,
+      options,
+      authority,
+    ),
   );
 }
 
 async function restoreProjectSnapshotWithAuthority(
   snapshotId: string,
   snapshotName: string,
-  options: RestoreOptions = {},
+  options: RestoreOptions,
+  authority: RestoreAuthority,
 ): Promise<RestoreResult> {
   const scopes = options.scopes
     ? new Set<RestoreScope>(options.scopes)
     : fullRestoreScopeSet();
 
-  // 1. Safety snapshot (always full). The ISO timestamp suffix keeps the
-  // name unique per UNIQUE(project_id, name).
-  const safety = await createProjectSnapshot({
-    name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
-  });
-
-  // 2. Load the project-scoped restore context through the typed native
+  // 1. Load the project-scoped restore context through the typed native
   // repository. The backend rejects snapshots owned by another project.
   const context = await loadNativeProjectSnapshotRestoreContext(
     getCurrentProjectId(),
@@ -1027,35 +994,28 @@ async function restoreProjectSnapshotWithAuthority(
   );
 
   if (!context.structural) {
-    const restoredCount = await restoreLegacyContentOnly(snapshotId);
-    await recordRestoreAndRebaseline(
-      snapshotId,
-      "legacy",
-      restoredCount,
-      scopes,
+    throw new Error(
+      "PROJECT_SNAPSHOT_LEGACY_RESTORE_REQUIRES_NATIVE_AGGREGATE",
     );
-    return {
-      restoredCount,
-      safetySnapshotId: safety.id,
-      format: "legacy",
-      skipped: emptySkipReport(),
-    };
   }
 
-  const { restoredCount, skipped } = await restoreStructural(
+  // 2. Safety snapshot (always full). The ISO timestamp suffix keeps the
+  // name unique per UNIQUE(project_id, name). This happens only after the
+  // target has proven eligible for the atomic Native restore path.
+  const safety = await createProjectSnapshot({
+    name: `Before restore to '${snapshotName}' (${new Date().toISOString()})`,
+  });
+
+  const { restoredCount, skipped, canonicalSequence } = await restoreStructural(
     snapshotId,
     scopes,
     context,
+    authority,
   );
   if (scopes.has("codex")) {
     scheduleImeExportRefresh(getCurrentProjectId());
   }
-  await recordRestoreAndRebaseline(
-    snapshotId,
-    "structural",
-    restoredCount,
-    scopes,
-  );
+  await rebaselineAfterRestore("structural", scopes, canonicalSequence);
   return {
     restoredCount,
     safetySnapshotId: safety.id,

@@ -5,23 +5,362 @@
 //! not SQL, so the renderer cannot bypass the writer boundary.
 
 use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::change_events::AppendChangeEvent;
 use crate::codex_relation_keys::{build_codex_relation_semantic_key, normalize_relation_label};
+use crate::idempotency::{
+    canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
+    IdempotencyRequest,
+};
+use crate::narrative_extraction::change_feed::{
+    append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
+    require_replay_lineage_in_project, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+};
 use crate::Database;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCodexMutationPayload {
     pub operation: String,
     pub project_id: String,
+    pub request_id: String,
     pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
     #[serde(default)]
     pub surface: Option<String>,
     #[serde(flatten)]
     pub fields: Map<String, Value>,
+}
+
+struct CodexFeedTarget {
+    object_key: Value,
+    change_kind: &'static str,
+    mutation_kind: &'static str,
+    changed_paths: Vec<String>,
+}
+
+fn codex_feed_target(
+    payload: &AgentCodexMutationPayload,
+    operation: &str,
+) -> anyhow::Result<CodexFeedTarget> {
+    let (object_key, change_kind, mutation_kind, mut changed_paths) = match operation {
+        "relation.create" | "relation.delete" => (
+            json!({
+                "kind": "codex-relation",
+                "relationId": required_string(&payload.fields, "relationId")?,
+            }),
+            "association",
+            if operation.ends_with("create") {
+                "create"
+            } else {
+                "delete"
+            },
+            vec!["/".to_string()],
+        ),
+        "phase.create" | "phase.delete" => (
+            json!({
+                "kind": "codex-phase",
+                "phaseId": required_string(&payload.fields, "phaseId")?,
+            }),
+            "metadata",
+            if operation.ends_with("create") {
+                "create"
+            } else {
+                "delete"
+            },
+            vec!["/".to_string()],
+        ),
+        "phase.update" => (
+            json!({
+                "kind": "codex-phase",
+                "phaseId": required_string(&payload.fields, "phaseId")?,
+            }),
+            "metadata",
+            "update",
+            [
+                ("anchorNodeId", "/anchorNodeId"),
+                ("contentOverride", "/contentOverride"),
+                ("contextModeOverride", "/contextModeOverride"),
+                ("detailOverrides", "/detailOverrides"),
+                ("label", "/label"),
+                ("summaryOverride", "/summaryOverride"),
+            ]
+            .into_iter()
+            .filter(|(field, _)| payload.fields.contains_key(*field))
+            .map(|(_, path)| path.to_string())
+            .collect(),
+        ),
+        "detail.definition.create" | "detail.definition.delete" => {
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            (
+                json!({
+                    "kind": "component",
+                    "componentId": format!("codex-detail-definition:{definition_id}"),
+                }),
+                "catalog",
+                if operation.ends_with("create") {
+                    "create"
+                } else {
+                    "delete"
+                },
+                vec!["/".to_string()],
+            )
+        }
+        "detail.definition.update" => {
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            (
+                json!({
+                    "kind": "component",
+                    "componentId": format!("codex-detail-definition:{definition_id}"),
+                }),
+                "catalog",
+                "update",
+                [
+                    ("fieldConfig", "/fieldConfig"),
+                    ("fieldType", "/fieldType"),
+                    ("includeInContext", "/includeInContext"),
+                    ("name", "/name"),
+                    ("sortOrder", "/sortOrder"),
+                ]
+                .into_iter()
+                .filter(|(field, _)| payload.fields.contains_key(*field))
+                .map(|(_, path)| path.to_string())
+                .collect(),
+            )
+        }
+        "detail.value.upsert" => {
+            let entry_id = required_string(&payload.fields, "entryId")?;
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            (
+                json!({
+                    "kind": "component",
+                    "componentId": format!(
+                        "codex-detail-value:{entry_id}:{definition_id}"
+                    ),
+                }),
+                "metadata",
+                "update",
+                vec![format!("/details/{definition_id}")],
+            )
+        }
+        "tag.create" | "tag.update" | "tag.delete" => {
+            let tag_id = required_string(&payload.fields, "tagId")?;
+            (
+                json!({
+                    "kind": "component",
+                    "componentId": format!("codex-tag:{tag_id}"),
+                }),
+                "catalog",
+                if operation.ends_with("create") {
+                    "create"
+                } else if operation.ends_with("delete") {
+                    "delete"
+                } else {
+                    "update"
+                },
+                if operation == "tag.update" {
+                    [
+                        ("name", "/name"),
+                        ("color", "/color"),
+                        ("typeFilter", "/typeFilter"),
+                    ]
+                    .into_iter()
+                    .filter(|(field, _)| payload.fields.contains_key(*field))
+                    .map(|(_, path)| path.to_string())
+                    .collect()
+                } else {
+                    vec!["/".to_string()]
+                },
+            )
+        }
+        "type.create" | "type.update" | "type.delete" => {
+            let type_id = required_string(&payload.fields, "typeId")?;
+            (
+                json!({
+                    "kind": "component",
+                    "componentId": format!("codex-type:{type_id}"),
+                }),
+                "catalog",
+                if operation.ends_with("create") {
+                    "create"
+                } else if operation.ends_with("delete") {
+                    "delete"
+                } else {
+                    "update"
+                },
+                if operation == "type.update" {
+                    [
+                        ("label", "/label"),
+                        ("color", "/color"),
+                        ("paletteIndex", "/paletteIndex"),
+                        ("icon", "/icon"),
+                        ("sortOrder", "/sortOrder"),
+                    ]
+                    .into_iter()
+                    .filter(|(field, _)| payload.fields.contains_key(*field))
+                    .map(|(_, path)| path.to_string())
+                    .collect()
+                } else {
+                    vec!["/".to_string()]
+                },
+            )
+        }
+        other => anyhow::bail!("unsupported Codex feed operation '{other}'"),
+    };
+    changed_paths.sort();
+    if changed_paths.is_empty() {
+        changed_paths.push("/".to_string());
+    }
+    Ok(CodexFeedTarget {
+        object_key,
+        change_kind,
+        mutation_kind,
+        changed_paths,
+    })
+}
+
+fn codex_feed_snapshot(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    operation: &str,
+) -> anyhow::Result<Option<Value>> {
+    match operation {
+        "relation.create" | "relation.delete" => {
+            let relation_id = required_string(&payload.fields, "relationId")?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_relations WHERE id = ?1 AND project_id = ?2",
+                    params![relation_id, payload.project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| {
+                    crate::canonical_feed_snapshots::canonical_codex_relation_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &relation_id,
+                    )
+                })
+                .transpose()
+        }
+        "phase.create" | "phase.update" | "phase.delete" => {
+            let phase_id = required_string(&payload.fields, "phaseId")?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_entry_phases phase
+                      JOIN codex_entries entry ON entry.id = phase.entry_id
+                     WHERE phase.id = ?1 AND entry.project_id = ?2",
+                    params![phase_id, payload.project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| crate::narrative_extraction::collect_phase_snapshot(conn, &phase_id))
+                .transpose()
+        }
+        "detail.definition.create" | "detail.definition.update" | "detail.definition.delete" => {
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_detail_definitions WHERE id = ?1 AND project_id = ?2",
+                    params![definition_id, payload.project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| {
+                    crate::canonical_feed_snapshots::canonical_codex_detail_definition_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &definition_id,
+                    )
+                })
+                .transpose()
+        }
+        "detail.value.upsert" => {
+            let entry_id = required_string(&payload.fields, "entryId")?;
+            let definition_id = required_string(&payload.fields, "definitionId")?;
+            ensure_entry_in_project(conn, &entry_id, &payload.project_id)?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_detail_values
+                      WHERE entry_id = ?1 AND definition_id = ?2",
+                    params![entry_id, definition_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| {
+                    crate::canonical_feed_snapshots::canonical_codex_detail_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &entry_id,
+                        &definition_id,
+                    )
+                })
+                .transpose()
+        }
+        "tag.create" | "tag.update" | "tag.delete" => {
+            let tag_id = required_string(&payload.fields, "tagId")?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_tags WHERE id = ?1 AND project_id = ?2",
+                    params![tag_id, payload.project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| {
+                    crate::canonical_feed_snapshots::canonical_codex_tag_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &tag_id,
+                    )
+                })
+                .transpose()
+        }
+        "type.create" | "type.update" | "type.delete" => {
+            let type_id = required_string(&payload.fields, "typeId")?;
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM codex_types WHERE id = ?1 AND project_id = ?2",
+                    params![type_id, payload.project_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            exists
+                .then(|| {
+                    crate::canonical_feed_snapshots::canonical_codex_type_snapshot(
+                        conn,
+                        &payload.project_id,
+                        &type_id,
+                    )
+                })
+                .transpose()
+        }
+        other => anyhow::bail!("unsupported Codex feed operation '{other}'"),
+    }
+}
+
+fn snapshot_version(snapshot: Option<&Value>) -> Option<i64> {
+    snapshot
+        .and_then(|value| value.get("version"))
+        .and_then(Value::as_i64)
 }
 
 fn required_string(fields: &Map<String, Value>, key: &str) -> anyhow::Result<String> {
@@ -196,11 +535,17 @@ fn ensure_phase_in_project(
     Ok(())
 }
 
-fn write_result(entity_id: String, version: i64, change_event_uid: String) -> Value {
+fn write_result(
+    entity_id: String,
+    version: i64,
+    change_event_uid: String,
+    maintenance_transaction_id: String,
+) -> Value {
     json!({
         "entityId": entity_id,
         "version": version,
         "changeEventUid": change_event_uid,
+        "maintenanceTransactionId": maintenance_transaction_id,
     })
 }
 
@@ -218,22 +563,24 @@ fn record_manual_mutation_fields(
         return Ok(());
     }
     match operation {
-        "relation.create" | "relation.delete" => crate::narrative_extraction::record_human_field_write(
-            conn,
-            &payload.project_id,
-            "codex-relation",
-            entity_id,
-            &[
-                "/fromCodexId",
-                "/toCodexId",
-                "/relationType",
-                "/directionality",
-                "/forwardLabel",
-                "/inverseLabel",
-                "/semanticKey",
-            ],
-            updated_at,
-        ),
+        "relation.create" | "relation.delete" => {
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-relation",
+                entity_id,
+                &[
+                    "/fromCodexId",
+                    "/toCodexId",
+                    "/relationType",
+                    "/directionality",
+                    "/forwardLabel",
+                    "/inverseLabel",
+                    "/semanticKey",
+                ],
+                updated_at,
+            )
+        }
         "phase.create" | "phase.update" | "phase.aggregate" | "phase.delete" => {
             crate::narrative_extraction::record_human_field_write(
                 conn,
@@ -267,7 +614,10 @@ fn record_manual_mutation_fields(
                 ],
                 updated_at,
             )?;
-            if let Some(binding) = payload.fields.get("semanticBinding").and_then(Value::as_object)
+            if let Some(binding) = payload
+                .fields
+                .get("semanticBinding")
+                .and_then(Value::as_object)
             {
                 if let Some(binding_id) = binding.get("id").and_then(Value::as_str) {
                     crate::narrative_extraction::record_human_field_write(
@@ -301,6 +651,26 @@ fn record_manual_mutation_fields(
                 updated_at,
             )
         }
+        "tag.create" | "tag.update" | "tag.delete" => {
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-tag",
+                entity_id,
+                &["/name", "/color", "/typeFilter"],
+                updated_at,
+            )
+        }
+        "type.create" | "type.update" | "type.delete" => {
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                &payload.project_id,
+                "codex-type",
+                entity_id,
+                &["/label", "/color", "/paletteIndex", "/icon", "/sortOrder"],
+                updated_at,
+            )
+        }
         other => anyhow::bail!("unsupported manual Codex authority operation '{other}'"),
     }
 }
@@ -319,10 +689,36 @@ where
         "projectId is required"
     );
     anyhow::ensure!(
+        !payload.request_id.trim().is_empty(),
+        "requestId is required"
+    );
+    anyhow::ensure!(
         !payload.session_id.trim().is_empty(),
         "sessionId is required"
     );
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    anyhow::ensure!(!payload.event_uid.trim().is_empty(), "eventUid is required");
+    let is_replay = matches!(
+        payload.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = payload
+        .original_transaction_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && payload
+            .undo_journal_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        is_replay == complete_lineage
+            && (is_replay
+                || (payload.original_transaction_id.is_none()
+                    && payload.undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
+    let event_uid = payload.event_uid.clone();
+    let request_id = payload.request_id.clone();
+    let payload_hash = canonical_write_payload_fingerprint("agent_codex_mutate", &payload)?;
     let timestamp = chrono::Utc::now().timestamp_millis();
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -330,13 +726,46 @@ where
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
+            let idempotency_request = IdempotencyRequest {
+                domain: "agent_codex_mutate",
+                request_id: Some(&request_id),
+                payload_hash: &payload_hash,
+                conflict_marker: "CODEX_MUTATION_REQUEST_CONFLICT",
+            };
+            if let Some(response) = load_idempotent_response(conn, &idempotency_request)? {
+                return Ok(response);
+            }
+            if is_replay {
+                require_replay_lineage_in_project(
+                    conn,
+                    &payload.project_id,
+                    payload
+                        .original_transaction_id
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("originalTransactionId is required"))?,
+                    payload
+                        .undo_journal_id
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("undoJournalId is required"))?,
+                )?;
+            }
+            let target = codex_feed_target(&payload, operation)?;
+            let before = codex_feed_snapshot(conn, &payload, operation)?;
             let (entity_id, version) = mutate(conn, &payload, &event_uid)?;
-            record_manual_mutation_fields(conn, &payload, operation, &entity_id, &now)?;
-            append_change_events_in_tx(
+            let after = codex_feed_snapshot(conn, &payload, operation)?;
+            let mutation_kind = if operation == "detail.value.upsert" && before.is_none() {
+                "create"
+            } else {
+                target.mutation_kind
+            };
+            if payload.origin == NarrativeChangeOrigin::Human {
+                record_manual_mutation_fields(conn, &payload, operation, &entity_id, &now)?;
+            }
+            let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[AppendChangeEvent {
+                &AppendChangeEvent {
                     event_uid: event_uid.clone(),
                     scene_id: None,
                     domain: "codex".to_string(),
@@ -349,9 +778,51 @@ where
                     })
                     .to_string(),
                     timestamp,
-                }],
+                },
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: request_id.clone(),
+                    source_domain: operation.to_string(),
+                    source_change_event_uid: event_uid.clone(),
+                    cause_kind: match payload.origin {
+                        NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+                        NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+                        _ => NarrativeChangeCauseKind::Forward,
+                    },
+                    origin: payload.origin,
+                    original_transaction_id: payload.original_transaction_id.clone(),
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: payload.undo_journal_id.clone(),
+                    application_ids: Vec::new(),
+                    occurred_at: now.clone(),
+                    events: vec![NarrativeChangeEventInput {
+                        object_key: target.object_key,
+                        change_kind: target.change_kind.to_string(),
+                        mutation_kind: mutation_kind.to_string(),
+                        before_version: snapshot_version(before.as_ref()),
+                        before_digest: before
+                            .as_ref()
+                            .map(narrative_snapshot_digest)
+                            .transpose()?,
+                        after_version: snapshot_version(after.as_ref()),
+                        after_digest: after.as_ref().map(narrative_snapshot_digest).transpose()?,
+                        changed_paths: target.changed_paths.clone(),
+                        text_impact: None,
+                        structural_impact: Some(json!({
+                            "changedPaths": target.changed_paths,
+                        })),
+                    }],
+                },
             )?;
-            Ok(write_result(entity_id, version, event_uid.clone()))
+            let response = write_result(
+                entity_id,
+                version,
+                event_uid.clone(),
+                append.narrative.transaction_id,
+            );
+            insert_idempotent_response(conn, &idempotency_request, &payload.project_id, &response)?;
+            Ok(response)
         })();
         match result {
             Ok(value) => {
@@ -804,6 +1275,215 @@ fn value_upsert(
     Ok((id, version))
 }
 
+fn tag_create(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let tag_id = required_string(&payload.fields, "tagId")?;
+    conn.execute(
+        "INSERT INTO codex_tags (id, project_id, name, color, type_filter, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            tag_id,
+            payload.project_id,
+            required_string(&payload.fields, "name")?,
+            optional_string(&payload.fields, "color")?,
+            optional_string(&payload.fields, "typeFilter")?,
+            optional_string(&payload.fields, "createdAt")?
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        ],
+    )?;
+    Ok((tag_id, 0))
+}
+
+fn tag_update(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let tag_id = required_string(&payload.fields, "tagId")?;
+    let current = conn
+        .query_row(
+            "SELECT name, color, type_filter FROM codex_tags
+              WHERE id = ?1 AND project_id = ?2",
+            params![tag_id, payload.project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("codex tag '{tag_id}' not found in project"))?;
+    anyhow::ensure!(
+        payload.fields.contains_key("name")
+            || payload.fields.contains_key("color")
+            || payload.fields.contains_key("typeFilter"),
+        "tag update has no fields"
+    );
+    let name = if payload.fields.contains_key("name") {
+        required_string(&payload.fields, "name")?
+    } else {
+        current.0
+    };
+    let color = if payload.fields.contains_key("color") {
+        optional_string(&payload.fields, "color")?
+    } else {
+        current.1
+    };
+    let type_filter = if payload.fields.contains_key("typeFilter") {
+        optional_string(&payload.fields, "typeFilter")?
+    } else {
+        current.2
+    };
+    conn.execute(
+        "UPDATE codex_tags SET name = ?1, color = ?2, type_filter = ?3
+          WHERE id = ?4 AND project_id = ?5",
+        params![name, color, type_filter, tag_id, payload.project_id],
+    )?;
+    Ok((tag_id, 0))
+}
+
+fn tag_delete(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let tag_id = required_string(&payload.fields, "tagId")?;
+    let deleted = conn.execute(
+        "DELETE FROM codex_tags WHERE id = ?1 AND project_id = ?2",
+        params![tag_id, payload.project_id],
+    )?;
+    anyhow::ensure!(deleted == 1, "codex tag '{tag_id}' not found in project");
+    Ok((tag_id, 0))
+}
+
+fn type_create(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let type_id = required_string(&payload.fields, "typeId")?;
+    conn.execute(
+        "INSERT INTO codex_types
+            (id, project_id, slug, label, color, palette_index, icon,
+             is_builtin, sort_order, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            type_id,
+            payload.project_id,
+            required_string(&payload.fields, "slug")?,
+            required_string(&payload.fields, "label")?,
+            optional_string(&payload.fields, "color")?.unwrap_or_else(|| "#888888".to_string()),
+            optional_i64(&payload.fields, "paletteIndex")?,
+            optional_string(&payload.fields, "icon")?,
+            optional_bool_int(&payload.fields, "isBuiltin")?.unwrap_or(0),
+            optional_f64(&payload.fields, "sortOrder")?.unwrap_or(0.0),
+            optional_string(&payload.fields, "createdAt")?
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+        ],
+    )?;
+    Ok((type_id, 0))
+}
+
+fn type_update(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let type_id = required_string(&payload.fields, "typeId")?;
+    let current = conn
+        .query_row(
+            "SELECT label, color, palette_index, icon, sort_order FROM codex_types
+              WHERE id = ?1 AND project_id = ?2",
+            params![type_id, payload.project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, f64>(4)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("codex type '{type_id}' not found in project"))?;
+    anyhow::ensure!(
+        ["label", "color", "paletteIndex", "icon", "sortOrder"]
+            .iter()
+            .any(|field| payload.fields.contains_key(*field)),
+        "type update has no fields"
+    );
+    let label = if payload.fields.contains_key("label") {
+        required_string(&payload.fields, "label")?
+    } else {
+        current.0
+    };
+    let color = if payload.fields.contains_key("color") {
+        required_string(&payload.fields, "color")?
+    } else {
+        current.1
+    };
+    let palette_index = if payload.fields.contains_key("paletteIndex") {
+        optional_i64(&payload.fields, "paletteIndex")?
+    } else {
+        current.2
+    };
+    let sort_order = if payload.fields.contains_key("sortOrder") {
+        optional_f64(&payload.fields, "sortOrder")?
+            .ok_or_else(|| anyhow::anyhow!("sortOrder is required"))?
+    } else {
+        current.4
+    };
+    let icon = if payload.fields.contains_key("icon") {
+        optional_string(&payload.fields, "icon")?
+    } else {
+        current.3
+    };
+    conn.execute(
+        "UPDATE codex_types
+            SET label = ?1, color = ?2, palette_index = ?3, icon = ?4,
+                sort_order = ?5
+          WHERE id = ?6 AND project_id = ?7",
+        params![
+            label,
+            color,
+            palette_index,
+            icon,
+            sort_order,
+            type_id,
+            payload.project_id
+        ],
+    )?;
+    Ok((type_id, 0))
+}
+
+fn type_delete(
+    conn: &Connection,
+    payload: &AgentCodexMutationPayload,
+    _event_uid: &str,
+) -> anyhow::Result<(String, i64)> {
+    let type_id = required_string(&payload.fields, "typeId")?;
+    let is_builtin = conn
+        .query_row(
+            "SELECT is_builtin FROM codex_types WHERE id = ?1 AND project_id = ?2",
+            params![type_id, payload.project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow::anyhow!("codex type '{type_id}' not found in project"))?;
+    anyhow::ensure!(is_builtin == 0, "cannot delete a builtin codex type");
+    conn.execute(
+        "DELETE FROM codex_types WHERE id = ?1 AND project_id = ?2",
+        params![type_id, payload.project_id],
+    )?;
+    Ok((type_id, 0))
+}
+
 pub fn agent_codex_mutate_impl(
     db: &Database,
     payload: AgentCodexMutationPayload,
@@ -827,6 +1507,12 @@ pub fn agent_codex_mutate_impl(
             run_mutation(db, payload, "detail.definition.delete", definition_delete)
         }
         "detail.value.upsert" => run_mutation(db, payload, "detail.value.upsert", value_upsert),
+        "tag.create" => run_mutation(db, payload, "tag.create", tag_create),
+        "tag.update" => run_mutation(db, payload, "tag.update", tag_update),
+        "tag.delete" => run_mutation(db, payload, "tag.delete", tag_delete),
+        "type.create" => run_mutation(db, payload, "type.create", type_create),
+        "type.update" => run_mutation(db, payload, "type.update", type_update),
+        "type.delete" => run_mutation(db, payload, "type.delete", type_delete),
         other => anyhow::bail!("unsupported Codex mutation '{other}'"),
     }
 }
@@ -872,10 +1558,66 @@ mod tests {
         AgentCodexMutationPayload {
             operation: operation.to_string(),
             project_id: project_id.to_string(),
+            request_id: uuid::Uuid::new_v4().to_string(),
             session_id: "session".to_string(),
+            event_uid: uuid::Uuid::new_v4().to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
             surface: Some("manual".to_string()),
             fields: fields.as_object().expect("object fields").clone(),
         }
+    }
+
+    #[test]
+    fn codex_mutation_retry_ignores_transport_session_and_event_identity() {
+        let db = test_db();
+        let payload = mutation(
+            "p1",
+            "tag.create",
+            json!({
+                "tagId": "tag-retry",
+                "name": "Retry tag",
+                "color": "#123456",
+            }),
+        );
+        let first = agent_codex_mutate_impl(&db, payload.clone()).expect("first tag create");
+
+        let mut retry = payload.clone();
+        retry.session_id = "session-after-restart".to_string();
+        retry.event_uid = "event-after-restart".to_string();
+        let replayed = agent_codex_mutate_impl(&db, retry).expect("durable tag replay");
+        assert_eq!(replayed, first);
+
+        let mut conflict = payload;
+        conflict.fields.insert(
+            "name".to_string(),
+            Value::String("Different tag".to_string()),
+        );
+        let error = agent_codex_mutate_impl(&db, conflict).expect_err("payload conflict");
+        assert!(error
+            .to_string()
+            .contains("CODEX_MUTATION_REQUEST_CONFLICT"));
+        db.with_conn(|conn| {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM codex_tags WHERE id = 'tag-retry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                1
+            );
+            assert_eq!(
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_transactions",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?,
+                1
+            );
+            Ok(())
+        })
+        .expect("inspect tag retry");
     }
 
     #[test]
@@ -1216,5 +1958,61 @@ mod tests {
             .expect("count values"),
             0
         );
+    }
+
+    #[test]
+    fn detail_value_feed_targets_the_project_scoped_entry_root() {
+        let db = test_db();
+        let mut input = mutation(
+            "p1",
+            "detail.value.upsert",
+            json!({
+                "entryId": "e1",
+                "definitionId": "d1",
+                "valueId": "value-1",
+                "value": "Protagonist",
+            }),
+        );
+        input.request_id = "detail-value-request".to_string();
+
+        agent_codex_mutate_impl(&db, input).expect("upsert tracked detail value");
+
+        db.with_conn(|conn| {
+            let row: (String, String, String, String, Option<i64>, Option<i64>) = conn.query_row(
+                "SELECT feed_tx.request_id, feed_tx.source_domain,
+                        event.object_key_json, event.changed_paths_json,
+                        event.before_version, event.after_version
+                   FROM narrative_change_transactions feed_tx
+                   JOIN narrative_change_events event
+                     ON event.transaction_id = feed_tx.id",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+            assert_eq!(row.0, "detail-value-request");
+            assert_eq!(row.1, "detail.value.upsert");
+            assert_eq!(
+                serde_json::from_str::<Value>(&row.2)?,
+                json!({
+                    "kind": "component",
+                    "componentId": "codex-detail-value:e1:d1"
+                })
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&row.3)?,
+                json!(["/details/d1"])
+            );
+            assert_eq!((row.4, row.5), (None, Some(1)));
+            Ok(())
+        })
+        .expect("inspect detail value feed");
     }
 }

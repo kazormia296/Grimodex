@@ -2243,7 +2243,9 @@ fn test_delete_codex_entry_and_snippet_preserve_snapshot_versions() {
 #[test]
 fn test_integrity_check_clean_db() {
     let db = test_db();
-    let report = db.integrity_check().expect("integrity check");
+    let report = db
+        .integrity_check("default-project")
+        .expect("integrity check");
     assert_eq!(report["orphanedCodexSources"], Value::Number(0.into()));
     assert_eq!(report["orphanedSnippetSources"], Value::Number(0.into()));
     assert_eq!(report["orphanedSnippetScenes"], Value::Number(0.into()));
@@ -2265,13 +2267,21 @@ fn test_integrity_check_detects_and_repairs_orphans() {
     db.execute("PRAGMA foreign_keys=ON", &[], "run")
         .expect("enable fk");
 
-    let report = db.integrity_check().expect("check");
+    let report = db.integrity_check("default-project").expect("check");
     assert_eq!(report["orphanedCodexSources"], Value::Number(1.into()));
 
-    let repair = db.repair_integrity().expect("repair");
-    assert_eq!(repair["codexSourcesFixed"], Value::Number(1.into()));
+    let repair = db
+        .repair_integrity(RepairIntegrityPayload {
+            project_id: "default-project".to_string(),
+            request_id: "integrity-test-repair".to_string(),
+            session_id: "integrity-test-session".to_string(),
+            event_uid: "integrity-test-event".to_string(),
+            occurred_at: "2026-08-13T10:00:00.000Z".to_string(),
+        })
+        .expect("repair");
+    assert_eq!(repair.codex_sources_fixed, 1);
 
-    let report2 = db.integrity_check().expect("check2");
+    let report2 = db.integrity_check("default-project").expect("check2");
     assert_eq!(report2["orphanedCodexSources"], Value::Number(0.into()));
 }
 

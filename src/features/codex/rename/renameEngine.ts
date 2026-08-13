@@ -429,8 +429,9 @@ export async function applyRenamePropagation(
     void enqueueRescan(entryId);
   };
 
-  const eventUid = crypto.randomUUID();
   const summary = JSON.stringify({ entryId, oldName, newName, applied });
+  let originalMaintenanceTransactionId: string | null = null;
+  let originalUndoJournalId: string | null = null;
 
   const renameAggregateKey = (update: RenameUndoUpdate): string =>
     update.kind === "codex-detail"
@@ -501,8 +502,11 @@ export async function applyRenamePropagation(
   };
 
   const runForward = async () => {
+    const requestId = crypto.randomUUID();
+    const redo = originalMaintenanceTransactionId !== null;
     const result = await invoke("codex_rename_apply", {
       payload: {
+        requestId,
         projectId,
         sessionId: getRecorderSessionId(),
         surface: "codex-rename-propagation",
@@ -510,17 +514,45 @@ export async function applyRenamePropagation(
         updatedAt: now,
         updates: forward,
         eventSummary: summary,
-        eventUid,
+        eventUid: requestId,
         timestamp: Date.now(),
+        redo,
+        originalTransactionId: redo ? originalMaintenanceTransactionId : null,
+        undoJournalId: redo ? originalUndoJournalId : null,
       },
     });
+    if (!redo && result && typeof result === "object") {
+      const maintenanceTransactionId = (
+        result as { maintenanceTransactionId?: unknown }
+      ).maintenanceTransactionId;
+      const undoJournalId = (result as { undoJournalId?: unknown })
+        .undoJournalId;
+      if (
+        typeof maintenanceTransactionId !== "string" ||
+        maintenanceTransactionId.length === 0 ||
+        typeof undoJournalId !== "string" ||
+        undoJournalId.length === 0
+      ) {
+        throw new Error("Codex rename Native receipt is incomplete");
+      }
+      originalMaintenanceTransactionId = maintenanceTransactionId;
+      originalUndoJournalId = undoJournalId;
+    }
     setInverseVersions(forward, undoUpdates, result);
     await resync(liveNew);
   };
 
   const runUndo = async () => {
+    if (!originalMaintenanceTransactionId || !originalUndoJournalId) {
+      throw new Error("Codex rename Native lineage is unavailable");
+    }
+    const requestId = crypto.randomUUID();
     const result = await invoke("codex_rename_undo", {
       payload: {
+        requestId,
+        eventUid: requestId,
+        originalTransactionId: originalMaintenanceTransactionId,
+        undoJournalId: originalUndoJournalId,
         projectId,
         sessionId: getRecorderSessionId(),
         updatedAt: now,

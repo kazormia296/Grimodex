@@ -1370,6 +1370,9 @@ async function createCodexEntryTool(
     };
   }
   try {
+    if (!requestId) {
+      throw new Error("create_codex_entry request identity is missing");
+    }
     const entry = await agentCreateCodexEntry({
       requestId,
       type,
@@ -1404,6 +1407,7 @@ async function createCodexEntryTool(
 
 async function updateCodexEntryTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1417,6 +1421,7 @@ async function updateCodexEntryTool(
   }
   try {
     const entry = await agentUpdateCodexEntry({
+      requestId,
       entryId: id,
       name: params["name"] !== undefined ? String(params["name"]) : undefined,
       summary:
@@ -1748,6 +1753,9 @@ async function createSnippetTool(
     };
   }
   try {
+    if (!requestId) {
+      throw new Error("create_snippet request identity is missing");
+    }
     const snippet = await agentCreateSnippet({
       requestId,
       title,
@@ -1886,6 +1894,9 @@ async function createForeshadowTool(
     };
   }
   try {
+    if (!requestId) {
+      throw new Error("create_foreshadow request identity is missing");
+    }
     const item = await agentCreateForeshadow({
       requestId,
       title,
@@ -1919,6 +1930,7 @@ async function createForeshadowTool(
 
 async function updateForeshadowTool(
   params: Record<string, unknown>,
+  requestId?: string,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1945,7 +1957,11 @@ async function updateForeshadowTool(
     };
   }
   try {
+    if (!requestId) {
+      throw new Error("update_foreshadow request identity is missing");
+    }
     const item = await agentUpdateForeshadow({
+      requestId,
       foreshadowId: id,
       baseVersion,
       title:
@@ -2021,14 +2037,23 @@ export const EXECUTORS: Record<string, Executor> = {
 // 実行時の mutation を封じる（read-only 不変条件の defense-in-depth）。
 Object.freeze(EXECUTORS);
 
-const IDEMPOTENT_CREATE_TOOLS: ReadonlySet<string> = new Set([
+const DURABLE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
   "create_codex_entry",
+  "update_codex_entry",
   "create_snippet",
   "create_foreshadow",
+  "update_foreshadow",
   "create_event",
+  "update_event",
+  "delete_event",
+  "stamp_scene_event",
+  "unstamp_scene_event",
+  "set_event_participants",
+  "add_event_relation",
+  "remove_event_relation",
 ]);
 
-async function toolCreateRequestId(
+async function toolMutationRequestId(
   toolName: string,
   toolCallId: string,
   projectId: string,
@@ -2062,16 +2087,20 @@ export async function executeTool(
     };
   }
   try {
-    const createAuthority = IDEMPOTENT_CREATE_TOOLS.has(name)
+    const mutationAuthority = DURABLE_MUTATION_TOOLS.has(name)
       ? captureMutationAuthority(getCurrentProjectId(), getCurrentProjectId)
       : null;
-    const requestId = createAuthority
-      ? await toolCreateRequestId(name, toolCallId, createAuthority.projectId)
+    const requestId = mutationAuthority
+      ? await toolMutationRequestId(
+          name,
+          toolCallId,
+          mutationAuthority.projectId,
+        )
       : undefined;
     // SHA-256 yields before the domain writer captures its own Project. Do not
     // let a pre-switch tool call resume against a replacement Project/Workspace.
-    if (createAuthority && !isCurrentMutationAuthority(createAuthority)) {
-      throw new Error("agent tool create authority changed");
+    if (mutationAuthority && !isCurrentMutationAuthority(mutationAuthority)) {
+      throw new Error("agent tool mutation authority changed");
     }
     const result = await executor(params, requestId);
     return { toolCallId, ...result };

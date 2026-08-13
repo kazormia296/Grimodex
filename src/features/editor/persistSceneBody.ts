@@ -53,6 +53,10 @@ import {
 import { registerQuiescenceProvider } from "@/lib/quiescenceProviders";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { scheduleEditorAnalysisTask } from "@/lib/editorAnalysisScheduler";
+import {
+  getRecorderSessionId,
+  recordChangeEvent,
+} from "@/features/timelapse/recorder";
 
 export interface BodyMentionScanRequest {
   projectId: string;
@@ -72,6 +76,13 @@ export interface PersistedSceneBody {
 export interface PersistSceneBodyOptions {
   /** Loaded scene version for editor OCC; omit for authoritative headless writes. */
   baseVersion?: number;
+  /** Maintenance provenance for the Native Change Feed transaction. */
+  origin?: "human" | "ai-apply";
+  /**
+   * Replayable steps for an off-screen mutation. Electron commits these as
+   * the canonical Change Event in the same transaction as the scene body.
+   */
+  timelapseSteps?: readonly unknown[];
 }
 
 interface ScheduledBodyMentionScan extends BodyMentionScanRequest {
@@ -395,6 +406,7 @@ export async function persistSceneBody(
     let foreshadowRows: ForeshadowRow[] = [];
     if (nativeSnapshot) {
       recordCounter("editor.coreSave.domainIpc");
+      const requestId = crypto.randomUUID();
       const bundledPreviews = await saveSceneBodyBundle({
         ...nativeSnapshot,
         foreshadowBaseVersions: {
@@ -403,6 +415,13 @@ export async function persistSceneBody(
         },
         sceneId: id,
         projectId,
+        requestId,
+        sessionId: getRecorderSessionId(),
+        eventUid: requestId,
+        origin: options.origin ?? "human",
+        ...(options.timelapseSteps !== undefined && {
+          timelapseSteps: options.timelapseSteps,
+        }),
         includeSidecars: !isFileBacked,
         updatedAt: contentUpdatedAt,
         ...(options.baseVersion !== undefined && {
@@ -425,6 +444,20 @@ export async function persistSceneBody(
           baseVersion: options.baseVersion,
         }),
       });
+      // The Web Editor compatibility path has no Native transaction that can
+      // adopt replay steps. Preserve its existing replay behavior after the
+      // fallback domain write; Electron never takes this non-atomic branch.
+      if (options.timelapseSteps !== undefined) {
+        recordChangeEvent({
+          domain: "editor",
+          opType: "doc.step",
+          projectId,
+          sceneId: id,
+          entityType: "scene",
+          entityId: id,
+          payload: { steps: options.timelapseSteps },
+        });
+      }
     }
     markEnd("editor.coreSave.invokeSave");
     // Publish immediately after the authoritative content commit, before

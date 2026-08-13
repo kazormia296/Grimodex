@@ -31,6 +31,17 @@ process.on("exit", () => rmSync(root, { recursive: true, force: true }));
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed
 
+function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  return {
+    requestId,
+    projectId,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin,
+    originalTransactionId: null,
+  };
+}
+
 /** WHERE で一意に絞った SELECT の 1 行（無ければ undefined）を返す。 */
 async function row(sql, params = []) {
   const res = JSON.parse(await backend.dbExecute(sql, params, "all"));
@@ -42,8 +53,11 @@ async function firstForeshadow() {
 }
 
 async function createScene(id, projectId = PROJECT) {
+  const requestId = `foreshadow-scene-create:${projectId}:${id}`;
   return JSON.parse(
     await backend.treeNodeCreate({
+      ...mutationIdentity(requestId, projectId),
+      undoJournalId: null,
       id,
       projectId,
       parentId: null,
@@ -71,6 +85,7 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
 
   await assert.rejects(
     backend.foreshadowCreate({
+      ...mutationIdentity("foreshadow-invalid-load-bearing"),
       projectId: PROJECT,
       title: "不正",
       intent: null,
@@ -86,6 +101,7 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
 test("foreshadowCreate → update は nullable field の null と欠落を区別する", async () => {
   await createScene("foreshadow-payoff-scene");
   const createPayload = {
+    ...mutationIdentity("foreshadow-napi-request-1"),
     id: "foreshadow-napi-request-1",
     projectId: PROJECT,
     title: "刹那の伏線",
@@ -132,6 +148,7 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
   // Some(Some) — 値セットは効く（到達可能な唯一の書き込み経路）。
   const setted = JSON.parse(
     await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-intent"),
       baseVersion: created.version,
       intent: "改訂した意図",
     }),
@@ -142,6 +159,7 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
   // Nullable fields omitted from a patch stay unchanged at the N-API boundary.
   const omitted = JSON.parse(
     await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-title"),
       baseVersion: setted.version,
       title: "刹那の伏線（改題）",
     }),
@@ -154,6 +172,7 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
   // Explicit JSON null clears every nullable Foreshadow patch field.
   const nulled = JSON.parse(
     await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-nullable"),
       baseVersion: omitted.version,
       intent: null,
       notes: null,
@@ -172,7 +191,10 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
 
   // 空 patch は現行行をそのまま返す。
   const noop = JSON.parse(
-    await backend.foreshadowUpdate(fid, { baseVersion: nulled.version }),
+    await backend.foreshadowUpdate(fid, {
+      ...mutationIdentity("foreshadow-napi-update-noop"),
+      baseVersion: nulled.version,
+    }),
   );
   assert.equal(noop.id, fid);
   assert.equal(noop.version, nulled.version);
@@ -180,8 +202,7 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
 
 test("foreshadowCreate requestId-only は同じ entity と ledger を replay する", async () => {
   const payload = {
-    requestId: "foreshadow-napi-request-only",
-    projectId: PROJECT,
+    ...mutationIdentity("foreshadow-napi-request-only"),
     title: "request only",
     intent: null,
     loadBearing: null,
@@ -198,21 +219,19 @@ test("foreshadowCreate requestId-only は同じ entity と ledger を replay す
 
 test("foreshadowCreate は delete 後も request tombstone を replay し deliberate restore を区別する", async () => {
   const payload = {
+    ...mutationIdentity("foreshadow-napi-request-deleted"),
     id: "foreshadow-napi-entity-deleted",
-    requestId: "foreshadow-napi-request-deleted",
-    projectId: PROJECT,
     title: "削除後に復活しない伏線",
     intent: "SECRET_NAPI_FORESHADOW_SENTINEL",
     loadBearing: null,
   };
   const created = JSON.parse(await backend.foreshadowCreate(payload));
   const deleted = JSON.parse(
-    await backend.foreshadowDelete(
-      payload.id,
-      PROJECT,
-      created.version,
-      "foreshadow-napi-delete-session",
-    ),
+    await backend.foreshadowDelete({
+      ...mutationIdentity("foreshadow-napi-delete"),
+      id: payload.id,
+      baseVersion: created.version,
+    }),
   );
   assert.equal(typeof deleted.undoJournalId, "string");
 
@@ -230,7 +249,11 @@ test("foreshadowCreate は delete 後も request tombstone を replay し delibe
   const restored = JSON.parse(
     await backend.foreshadowCreate({
       ...payload,
-      requestId: "foreshadow-napi-history-restore",
+      ...mutationIdentity(
+        "foreshadow-napi-history-restore",
+        PROJECT,
+        "restore",
+      ),
     }),
   );
   assert.equal(restored.id, payload.id);
@@ -246,6 +269,11 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
 
   const setupCreated = JSON.parse(
     await backend.foreshadowSetupCreateAi({
+      ...mutationIdentity(
+        "foreshadow-napi-setup-create-ai",
+        PROJECT,
+        "ai-apply",
+      ),
       id: "setup-ai-1",
       foreshadowId: fs.id,
       baseVersion: fs.version,
@@ -281,6 +309,7 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
 
   const setupOmitted = JSON.parse(
     await backend.foreshadowUpdateSetup("setup-ai-1", {
+      ...mutationIdentity("foreshadow-napi-setup-update-orphan"),
       baseVersion: setupCreated.version,
       isOrphan: false,
     }),
@@ -296,6 +325,7 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
 
   const setupCleared = JSON.parse(
     await backend.foreshadowUpdateSetup("setup-ai-1", {
+      ...mutationIdentity("foreshadow-napi-setup-update-clear"),
       baseVersion: setupOmitted.version,
       strength: null,
       aiStrength: null,
@@ -317,7 +347,14 @@ test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50�
   // 現状 sc1 には非 orphan setup が 1 件（setup-ai-1）ある。
 
   // docContentSize=50（本文あり）+ setups 空 → bulk-orphan スキップ。
-  await backend.foreshadowSaveAnchorsForScene("sc1", [], [], {}, 50);
+  await backend.foreshadowSaveAnchorsForScene({
+    ...mutationIdentity("foreshadow-napi-anchor-save-nonempty"),
+    sceneId: "sc1",
+    setups: [],
+    payoffs: [],
+    baseVersions: {},
+    docContentSize: 50,
+  });
   const a = await row(
     "SELECT is_orphan FROM foreshadow_setups WHERE id = 'setup-ai-1'",
   );
@@ -331,13 +368,14 @@ test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50�
       WHERE setup.id = 'setup-ai-1'`,
   );
   const orphaned = JSON.parse(
-    await backend.foreshadowSaveAnchorsForScene(
-      "sc1",
-      [],
-      [],
-      { [beforeOrphan.id]: beforeOrphan.version },
-      2,
-    ),
+    await backend.foreshadowSaveAnchorsForScene({
+      ...mutationIdentity("foreshadow-napi-anchor-save-empty"),
+      sceneId: "sc1",
+      setups: [],
+      payoffs: [],
+      baseVersions: { [beforeOrphan.id]: beforeOrphan.version },
+      docContentSize: 2,
+    }),
   );
   assert.equal(orphaned[0].version, beforeOrphan.version + 1);
   const b = await row(
@@ -364,6 +402,7 @@ test("resolve_orphan reinsert/delete は authoritative Foreshadow receipt を返
   );
   const reinsert = JSON.parse(
     await backend.foreshadowResolveOrphan({
+      ...mutationIdentity("foreshadow-napi-orphan-reinsert"),
       setupId: "setup-ai-1",
       baseVersion: beforeResolve.version,
       action: "reinsert",
@@ -386,6 +425,7 @@ test("resolve_orphan reinsert/delete は authoritative Foreshadow receipt を返
   // action=delete は None → null。
   const deleted = JSON.parse(
     await backend.foreshadowResolveOrphan({
+      ...mutationIdentity("foreshadow-napi-orphan-delete"),
       setupId: newId,
       baseVersion: reinsert.foreshadow.version,
       action: "delete",
@@ -399,7 +439,8 @@ test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => 
   // type は DEFAULT 'character'（migrate トリガが default-project に seed 済み）。
   const codex = JSON.parse(
     await backend.agentCodexCreate({
-      requestId: "foreshadow-napi-codex-create",
+      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "human"),
+      undoJournalId: null,
       entryId: "cx1",
       projectId: PROJECT,
       sessionId: "foreshadow-napi-session",
@@ -415,7 +456,12 @@ test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => 
   const fs = await firstForeshadow();
 
   const linkedRoot = JSON.parse(
-    await backend.foreshadowLinkCodex(fs.id, "cx1", fs.version),
+    await backend.foreshadowLinkCodex({
+      ...mutationIdentity("foreshadow-napi-codex-link"),
+      foreshadowId: fs.id,
+      codexId: "cx1",
+      baseVersion: fs.version,
+    }),
   );
   assert.equal(linkedRoot.version, fs.version + 1);
   let linked = JSON.parse(await backend.foreshadowListLinkedCodex(fs.id));
@@ -424,7 +470,12 @@ test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => 
   assert.equal(linked[0].name, "主人公");
 
   const unlinkedRoot = JSON.parse(
-    await backend.foreshadowUnlinkCodex(fs.id, "cx1", linkedRoot.version),
+    await backend.foreshadowUnlinkCodex({
+      ...mutationIdentity("foreshadow-napi-codex-unlink"),
+      foreshadowId: fs.id,
+      codexId: "cx1",
+      baseVersion: linkedRoot.version,
+    }),
   );
   assert.equal(unlinkedRoot.version, linkedRoot.version + 1);
   linked = JSON.parse(await backend.foreshadowListLinkedCodex(fs.id));

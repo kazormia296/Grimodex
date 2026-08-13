@@ -228,10 +228,7 @@ pub(crate) fn validate_reconciliation_envelope(
         );
         let expected_kind = read_set_kind_for_source_kind(&source.source_kind)?;
         anyhow::ensure!(
-            read_kinds
-                .get(&source.source_key)
-                .map(String::as_str)
-                == Some(expected_kind),
+            read_kinds.get(&source.source_key).map(String::as_str) == Some(expected_kind),
             "NEX_ENVELOPE_SOURCE_BASIS_KIND_MISMATCH: sourceKey '{}' requires read-set kind '{}'",
             source.source_key,
             expected_kind
@@ -370,13 +367,7 @@ pub(crate) fn validate_envelope_source_tokens(
             _ => kind,
         });
         let expected = required_string(object, "revisionToken")?;
-        let current = resolve_source_revision(
-            conn,
-            project_id,
-            run_id,
-            source_kind,
-            input_ref,
-        )?;
+        let current = resolve_source_revision(conn, project_id, run_id, source_kind, input_ref)?;
         anyhow::ensure!(
             current.revision_token == expected,
             "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",

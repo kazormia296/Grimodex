@@ -2008,10 +2008,7 @@ mod tests {
     }
 
     fn database(project_id: &str) -> PinnedWorkspaceDb {
-        let path = std::env::temp_dir().join(format!(
-            "grimodex-semantic-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("grimodex-semantic-{}", uuid::Uuid::new_v4()));
         let db = Database::new(Path::new(":memory:")).unwrap();
         db.migrate().unwrap();
         db.with_conn(|connection| {

@@ -5,7 +5,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use uuid::Uuid;
 
 use super::models::ClaimTaskPayload;
-use super::repository::{ensure_run_project, insert_attempt, insert_artifacts_for_attempt, row_to_task_value};
+use super::repository::{
+    ensure_run_project, insert_artifacts_for_attempt, insert_attempt, row_to_task_value,
+};
 
 const DEFAULT_LEASE_SECS: i64 = 300;
 
@@ -56,8 +58,7 @@ pub(crate) fn claim_next_task(
               ORDER BY priority DESC, created_at ASC
               LIMIT 1"
         );
-        let mut query_params: Vec<rusqlite::types::Value> =
-            vec![payload.run_id.clone().into()];
+        let mut query_params: Vec<rusqlite::types::Value> = vec![payload.run_id.clone().into()];
         query_params.extend(kinds.iter().cloned().map(Into::into));
         conn.query_row(
             &sql,

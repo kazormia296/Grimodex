@@ -40,6 +40,15 @@ import { computeDocDiff, type BodyDiff } from "@/features/timelapse/bodyDiff";
 import { invoke } from "@/lib/tauri";
 import i18next from "@/lib/i18n";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
+import { notifyCodexRelationsChanged } from "@/features/codex/codexRelationEvents";
+import {
+  createCanonicalHistoryWriteLease,
+  createCanonicalWriteContext,
+  type CanonicalHistoryWriteLease,
+  type CanonicalWriteContext,
+  type CanonicalWriteOrigin,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
 
 /**
  * 執筆タイムラプス: Map 系操作を統一窓口で capture する。drag 中の
@@ -62,6 +71,46 @@ function recordMapEvent(
 }
 
 export { DEFAULT_SHOW } from "./types";
+
+export function createMapWriteContext(
+  origin: CanonicalWriteOrigin = "human",
+  receipt?: CanonicalWriteReceipt,
+): CanonicalWriteContext {
+  const undoJournalId = receipt?.undoJournalId;
+  if (
+    (origin === "undo" || origin === "redo") &&
+    (!receipt?.maintenanceTransactionId ||
+      typeof undoJournalId !== "string" ||
+      !undoJournalId)
+  ) {
+    throw new Error(
+      `${origin} Map write requires canonical transaction lineage`,
+    );
+  }
+  return createCanonicalWriteContext(
+    origin,
+    origin === "undo" || origin === "redo"
+      ? {
+          originalTransactionId: receipt!.maintenanceTransactionId,
+          undoJournalId: undoJournalId as string,
+        }
+      : undefined,
+  );
+}
+
+export function createMapHistoryWriteLease(
+  origin: "undo" | "redo",
+  receipt: CanonicalWriteReceipt,
+): CanonicalHistoryWriteLease {
+  const undoJournalId = receipt.undoJournalId;
+  if (typeof undoJournalId !== "string" || !undoJournalId) {
+    throw new Error("Map history write is missing its Undo Journal lineage");
+  }
+  return createCanonicalHistoryWriteLease(origin, {
+    originalTransactionId: receipt.maintenanceTransactionId,
+    undoJournalId,
+  });
+}
 
 export function parseShowConfig(json: string): ShowFlags {
   try {
@@ -348,6 +397,7 @@ export async function duplicateBoard(
   await invoke("map_write_bundle", {
     payload: {
       kind: "create-board",
+      ...createMapWriteContext(),
       projectId,
       board: boardRow,
       stickies: stickyRows,
@@ -865,6 +915,7 @@ export async function promoteSticky(
   await invoke("map_write_bundle", {
     payload: {
       kind: "promote-sticky",
+      ...createMapWriteContext(),
       projectId: options.projectId,
       boardId: sticky.boardId,
       targetType,
@@ -940,6 +991,7 @@ export async function createAiBranch(
   stickies: MapSticky[];
   positions: MapNodePosition[];
   edges: MapEdge[];
+  writeReceipt: CanonicalWriteReceipt;
 }> {
   const board = await getMapBoard(boardId);
   if (!board) throw new Error(`Board ${boardId} not found`);
@@ -1085,9 +1137,10 @@ export async function createAiBranch(
     });
   }
 
-  await invoke("map_write_bundle", {
+  const writeReceipt = await invoke<CanonicalWriteReceipt>("map_write_bundle", {
     payload: {
       kind: "create-ai-branch",
+      ...createMapWriteContext(),
       projectId: board.projectId,
       branch: branchRow,
       branchPosition: branchPositionRow,
@@ -1103,11 +1156,36 @@ export async function createAiBranch(
     stickies: stickyRows,
     positions: [branchPositionRow, ...stickyPosRows],
     edges: edgeRows,
+    writeReceipt,
   };
 }
 
-export async function deleteAiBranch(id: string): Promise<void> {
-  await db.delete(mapAiBranches).where(eq(mapAiBranches.id, id));
+export async function deleteAiBranch(
+  id: string,
+  context: CanonicalWriteContext = createMapWriteContext(),
+): Promise<CanonicalWriteReceipt> {
+  const [branch] = await db
+    .select()
+    .from(mapAiBranches)
+    .where(eq(mapAiBranches.id, id))
+    .limit(1);
+  if (!branch) throw new Error(`AI branch ${id} not found`);
+  const board = await getMapBoard(branch.boardId);
+  if (!board) throw new Error(`Board ${branch.boardId} not found`);
+  return invoke<CanonicalWriteReceipt>("map_write_bundle", {
+    payload: {
+      kind: "erase-ai-branch",
+      ...context,
+      projectId: board.projectId,
+      branchId: id,
+      // The simple delete intentionally leaves derived Stickies behind as
+      // orphaned canvas notes. Branch/position/edge cleanup is still owned by
+      // the Native aggregate transaction through FK actions.
+      spanIds: [],
+      stickyPositionIds: [],
+      stickyIds: [],
+    },
+  });
 }
 
 export interface AiBranchSnapshot {
@@ -1193,12 +1271,14 @@ export async function getAiBranchSnapshot(
  */
 export async function restoreAiBranchSnapshot(
   snapshot: AiBranchSnapshot,
-): Promise<void> {
+  context: CanonicalWriteContext = createMapWriteContext(),
+): Promise<CanonicalWriteReceipt> {
   const board = await getMapBoard(snapshot.branch.boardId);
   if (!board) throw new Error(`Board ${snapshot.branch.boardId} not found`);
-  await invoke("map_write_bundle", {
+  return invoke<CanonicalWriteReceipt>("map_write_bundle", {
     payload: {
       kind: "restore-ai-branch",
+      ...context,
       projectId: board.projectId,
       branch: snapshot.branch,
       branchPosition: snapshot.branchPosition,
@@ -1216,7 +1296,8 @@ export async function restoreAiBranchSnapshot(
  */
 export async function eraseAiBranchSnapshot(
   snapshot: AiBranchSnapshot,
-): Promise<void> {
+  context: CanonicalWriteContext = createMapWriteContext(),
+): Promise<CanonicalWriteReceipt> {
   // mapAiBranches deletion cascades to: branch position (ai_branch_id cascade),
   // and edges from that position (position cascade). Stickies' aiBranchId is
   // set null. So we still need to explicitly delete the derived stickies and
@@ -1226,9 +1307,10 @@ export async function eraseAiBranchSnapshot(
   const stickyIds = snapshot.stickies.map((s) => s.id);
   const board = await getMapBoard(snapshot.branch.boardId);
   if (!board) throw new Error(`Board ${snapshot.branch.boardId} not found`);
-  await invoke("map_write_bundle", {
+  return invoke<CanonicalWriteReceipt>("map_write_bundle", {
     payload: {
       kind: "erase-ai-branch",
+      ...context,
       projectId: board.projectId,
       branchId: snapshot.branch.id,
       spanIds,
@@ -1326,7 +1408,7 @@ export async function promoteUserEdgeToCodexRelation(
   const toCodexId = toPos?.nodeRefType === "codex" ? toPos.codexEntryId : null;
   if (!fromCodexId || !toCodexId) return null;
 
-  const { createCodexRelation, findCodexRelationByEdgeEndpoints } =
+  const { findCodexRelationByEdgeEndpoints } =
     await import("@/features/codex/codexRelationApi");
   const { slugifyRelationType } =
     await import("@/features/codex/relationExpansion");
@@ -1337,21 +1419,33 @@ export async function promoteUserEdgeToCodexRelation(
     toCodexId,
     relationType,
   );
-  if (existing) {
-    await deleteUserEdge(edgeId);
-    return { relationId: existing.id };
+  const label = edge.forwardLabel?.trim();
+  if (!label) {
+    throw new Error("A labeled user edge is required for Codex promotion");
   }
-
-  const relation = await createCodexRelation({
-    projectId,
-    fromCodexId,
-    toCodexId,
-    relationType,
-    label: edge.forwardLabel?.trim() || null,
-    sourceMapEdgeId: edgeId,
+  const relationId = existing?.id ?? crypto.randomUUID();
+  const now = new Date().toISOString();
+  await invoke("map_write_bundle", {
+    payload: {
+      kind: "promote-user-edge-to-codex-relation",
+      ...createMapWriteContext(),
+      projectId,
+      boardId: edge.boardId,
+      edgeId,
+      relationId,
+      fromCodexId,
+      toCodexId,
+      relationType,
+      label,
+      reuseExistingRelation: existing !== undefined,
+      createdAt: now,
+      updatedAt: now,
+    },
   });
-  await deleteUserEdge(edgeId);
-  return { relationId: relation.id };
+  if (!existing) {
+    notifyCodexRelationsChanged(projectId);
+  }
+  return { relationId };
 }
 
 // ── Frames ─────────────────────────────────────────────────────────────────
@@ -1493,11 +1587,13 @@ export async function promoteFrame(
 
   const now = new Date().toISOString();
   const codexId = crypto.randomUUID();
+  const positionId = crypto.randomUUID();
   const codexType = options.codexType ?? "lore";
 
   await invoke("map_write_bundle", {
     payload: {
       kind: "extract-frame-to-codex",
+      ...createMapWriteContext(),
       projectId: options.projectId,
       boardId,
       codexId,
@@ -1506,21 +1602,29 @@ export async function promoteFrame(
       content: JSON.stringify({ type: "doc", content: mergedContent }),
       frameId,
       stickyIds: insideStickyIds,
+      positions: [
+        {
+          id: positionId,
+          boardId,
+          nodeRefType: "codex",
+          treeNodeId: null,
+          codexEntryId: codexId,
+          snippetId: null,
+          stickyId: null,
+          aiBranchId: null,
+          x: frame.x + frame.width / 2,
+          y: frame.y + frame.height / 2,
+          pinned: 0,
+          zIndex: 0,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ],
       createdAt: now,
       updatedAt: now,
     },
   });
   scheduleImeExportRefresh(options.projectId);
-
-  // Create position for the new Codex entry at frame center (records a
-  // position.create timelapse event; kept out of the batch to preserve it).
-  await upsertNodePosition({
-    boardId,
-    nodeRefType: "codex",
-    codexEntryId: codexId,
-    x: frame.x + frame.width / 2,
-    y: frame.y + frame.height / 2,
-  });
 
   return { newEntityId: codexId };
 }

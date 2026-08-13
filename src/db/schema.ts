@@ -2729,7 +2729,8 @@ export const genericExtractionSchemas = sqliteTable(
 );
 
 // =========================================================================
-// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21).
+// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21), with the
+// mandatory writer-origin contract added in SCHEMA_VERSION 22.
 //
 // This is a freshness / dependency-invalidation feed, not a second audit
 // ledger. Every transaction is correlated to the canonical change_events hash
@@ -2752,9 +2753,21 @@ export const narrativeChangeTransactions = sqliteTable(
     causeKind: text("cause_kind", {
       enum: ["forward", "undo", "redo"],
     }).notNull(),
+    origin: text("origin", {
+      enum: [
+        "human",
+        "ai-apply",
+        "import",
+        "undo",
+        "redo",
+        "restore",
+        "migration",
+      ],
+    }).notNull(),
     originalTransactionId: text("original_transaction_id"),
     commitId: text("commit_id"),
     journalId: text("journal_id"),
+    undoJournalId: text("undo_journal_id"),
     applicationIdsJson: text("application_ids_json").notNull().default("[]"),
     payloadDigest: text("payload_digest").notNull(),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),

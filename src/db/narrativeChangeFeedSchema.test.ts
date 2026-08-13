@@ -8,7 +8,7 @@ import {
   narrativeChangeTransactions,
 } from "./schema";
 
-describe("narrative maintenance Change Feed schema (SCHEMA 21)", () => {
+describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
   it("models project-scoped canonical correlation and mutation semantics", () => {
     const transactions = getTableColumns(narrativeChangeTransactions);
     const events = getTableColumns(narrativeChangeEvents);
@@ -17,6 +17,8 @@ describe("narrative maintenance Change Feed schema (SCHEMA 21)", () => {
     expect(transactions.sourceChangeEventUid).toBeDefined();
     expect(transactions.sourceChangeEventSequence).toBeDefined();
     expect(transactions.causeKind).toBeDefined();
+    expect(transactions.origin).toBeDefined();
+    expect(transactions.undoJournalId).toBeDefined();
     expect(events.canonicalChangeEventUid).toBeDefined();
     expect(events.canonicalSequence).toBeDefined();
     expect(events.eventOrdinal).toBeDefined();
@@ -34,12 +36,31 @@ describe("narrative maintenance Change Feed schema (SCHEMA 21)", () => {
     ).toBeDefined();
   });
 
-  it("is emitted by the SCHEMA 21 Native migration contract", () => {
-    expect(contractJson.schemaVersion).toBe(21);
+  it("is emitted by the SCHEMA 22 Native migration contract", () => {
+    expect(contractJson.schemaVersion).toBe(22);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,
     ).toBeDefined();
+    expect(
+      contractJson.tables.narrative_change_transactions.columns.origin,
+    ).toMatchObject({
+      declaredType: "TEXT",
+      notNull: true,
+      default: null,
+    });
+    expect(
+      contractJson.tables.narrative_change_transactions.columns.undo_journal_id,
+    ).toMatchObject({
+      declaredType: "TEXT",
+      notNull: false,
+      default: null,
+    });
+    expect(
+      contractJson.tables.narrative_change_transactions.createSql,
+    ).toContain(
+      "CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration'))",
+    );
     expect(
       contractJson.tables.narrative_change_events.columns.mutation_kind,
     ).toBeDefined();

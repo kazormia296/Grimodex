@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.hoisted(() => vi.fn());
+const recordChangeEventMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/lib/tauri", () => ({
   invoke: (...args: unknown[]) => invokeMock(...args),
@@ -13,7 +14,8 @@ vi.mock("./chronicleStore", () => ({
 }));
 
 vi.mock("@/features/timelapse/recorder", () => ({
-  recordChangeEvent: vi.fn(),
+  getRecorderSessionId: () => "calendar-session",
+  recordChangeEvent: recordChangeEventMock,
 }));
 
 import { upsertProjectCalendar } from "./api";
@@ -61,6 +63,7 @@ function row(version: number) {
 describe("upsertProjectCalendar OCC adapter", () => {
   beforeEach(() => {
     invokeMock.mockReset();
+    recordChangeEventMock.mockReset();
   });
 
   it("invokes Native typed command and returns the persisted row", async () => {
@@ -71,10 +74,18 @@ describe("upsertProjectCalendar OCC adapter", () => {
     expect(invokeMock).toHaveBeenCalledWith("project_calendar_upsert", {
       payload: expect.objectContaining({
         projectId: PROJECT_ID,
+        requestId: expect.any(String),
+        sessionId: "calendar-session",
+        eventUid: expect.any(String),
         baseVersion: null,
         daysPerYear: 360,
       }),
     });
+    const payload = invokeMock.mock.calls[0]?.[1]?.payload as
+      | { requestId?: string; eventUid?: string }
+      | undefined;
+    expect(payload?.eventUid).toBe(payload?.requestId);
+    expect(recordChangeEventMock).not.toHaveBeenCalled();
     expect(created.version).toBe(0);
   });
 

@@ -3205,6 +3205,12 @@ impl Database {
         // shape, so keep the shadow migrator able to converge it safely.
         Self::add_column_if_missing(&conn, "narrative_change_transactions", "journal_id", "TEXT")?;
 
+        // SCHEMA_VERSION 22: every feed transaction identifies the authority
+        // that originated it. SQLite cannot add a NOT NULL column without a
+        // default to a populated table, so rebuild the SCHEMA 21 parent while
+        // preserving its child events and deterministic transaction identity.
+        Self::migrate_narrative_change_transactions_v22(&conn)?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
@@ -3215,6 +3221,197 @@ impl Database {
         );
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
+        Ok(())
+    }
+
+    fn migrate_narrative_change_transactions_v22(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_transactions'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+
+        let origin_shape = conn
+            .prepare(
+                "SELECT type, \"notnull\", dflt_value
+                   FROM pragma_table_info('narrative_change_transactions')
+                  WHERE name = 'origin'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let undo_journal_shape = conn
+            .prepare(
+                "SELECT type, \"notnull\", dflt_value
+                   FROM pragma_table_info('narrative_change_transactions')
+                  WHERE name = 'undo_journal_id'",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, bool>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        let table_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'narrative_change_transactions'",
+            [],
+            |row| row.get(0),
+        )?;
+        let compact_table_sql = table_sql
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect::<String>();
+        let schema_ready = origin_shape.as_slice() == [("TEXT".to_string(), true, None)]
+            && undo_journal_shape.as_slice() == [("TEXT".to_string(), false, None)]
+            && compact_table_sql.contains(
+                "check(originin('human','ai-apply','import','undo','redo','restore','migration'))",
+            );
+        if schema_ready {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 22 Change Feed origin migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions",
+            [],
+            |row| row.get(0),
+        )?;
+        let had_origin = !origin_shape.is_empty();
+        let origin_expression = if had_origin {
+            "CASE
+                WHEN origin IN ('human','ai-apply','import','undo','redo','restore','migration')
+                    THEN origin
+                WHEN cause_kind = 'undo' THEN 'undo'
+                WHEN cause_kind = 'redo' THEN 'redo'
+                ELSE 'migration'
+             END"
+        } else {
+            "CASE cause_kind
+                WHEN 'undo' THEN 'undo'
+                WHEN 'redo' THEN 'redo'
+                ELSE 'migration'
+             END"
+        };
+        let undo_journal_expression = if undo_journal_shape.is_empty() {
+            "NULL"
+        } else {
+            "undo_journal_id"
+        };
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_change_transactions_v22;
+                     CREATE TABLE narrative_change_transactions_v22 (
+                        id                           TEXT NOT NULL,
+                        project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        request_id                   TEXT NOT NULL CHECK(length(request_id) > 0),
+                        source_domain                TEXT NOT NULL CHECK(length(source_domain) > 0),
+                        source_change_event_uid      TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                        source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                        cause_kind                   TEXT NOT NULL
+                            CHECK(cause_kind IN ('forward','undo','redo')),
+                        origin                       TEXT NOT NULL
+                            CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')),
+                        original_transaction_id      TEXT,
+                        commit_id                    TEXT,
+                        journal_id                   TEXT,
+                        undo_journal_id              TEXT,
+                        application_ids_json         TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(application_ids_json)
+                              AND json_type(application_ids_json) = 'array'),
+                        payload_digest               TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                        created_at                   TEXT NOT NULL,
+                        PRIMARY KEY(id),
+                        UNIQUE(project_id, id),
+                        UNIQUE(project_id, source_domain, request_id),
+                        UNIQUE(project_id, source_change_event_uid),
+                        FOREIGN KEY(project_id, source_change_event_uid)
+                            REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                        FOREIGN KEY(project_id, original_transaction_id)
+                            REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+                     );",
+                )?;
+                conn.execute_batch(&format!(
+                    "INSERT INTO narrative_change_transactions_v22
+                        (id, project_id, request_id, source_domain,
+                         source_change_event_uid, source_change_event_sequence,
+                         cause_kind, origin, original_transaction_id, commit_id,
+                         journal_id, undo_journal_id, application_ids_json,
+                         payload_digest, created_at)
+                     SELECT id, project_id, request_id, source_domain,
+                            source_change_event_uid, source_change_event_sequence,
+                            cause_kind, {origin_expression}, original_transaction_id,
+                            commit_id, journal_id, {undo_journal_expression}, application_ids_json,
+                            payload_digest, created_at
+                       FROM narrative_change_transactions;"
+                ))?;
+                conn.execute_batch(
+                    "DROP TABLE narrative_change_transactions;
+                     ALTER TABLE narrative_change_transactions_v22
+                        RENAME TO narrative_change_transactions;
+                     CREATE INDEX idx_narrative_change_transactions_project_sequence
+                        ON narrative_change_transactions(project_id, source_change_event_sequence);",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 22 Change Feed origin migration changed transaction row count"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" IN ('narrative_change_transactions','narrative_change_events')",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 22 Change Feed origin migration left foreign key violations"
+        );
         Ok(())
     }
 

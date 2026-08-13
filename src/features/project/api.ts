@@ -14,6 +14,10 @@ import {
 import { removeImeProjectExportWithRetry } from "@/features/ime/api";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteReceipt,
+} from "@/features/native-writes/writeContext";
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
@@ -56,11 +60,27 @@ export async function createProject(
     >,
 ): Promise<Project> {
   const now = new Date().toISOString();
-  const rows = await db
-    .insert(projects)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
-  return rows[0];
+  const result = await invoke<
+    Project & { __writeReceipt: CanonicalWriteReceipt }
+  >("project_create", {
+    payload: {
+      ...createCanonicalWriteContext("human"),
+      projectId: data.id,
+      title: data.title,
+      genre: data.genre ?? null,
+      pov: data.pov ?? null,
+      tense: data.tense ?? null,
+      language: data.language ?? null,
+      styleGuide: data.styleGuide ?? null,
+      aiInstructions: data.aiInstructions ?? null,
+      outline: data.outline ?? null,
+      targetReaders: data.targetReaders ?? null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  const { __writeReceipt: _receipt, ...project } = result;
+  return project as Project;
 }
 
 export async function updateProject(

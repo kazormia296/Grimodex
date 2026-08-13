@@ -330,7 +330,15 @@ function getBrowserMock(): Promise<BrowserMock> {
   if (browserMock) return Promise.resolve(browserMock);
   if (!browserMockReady) {
     browserMockReady = import("./browser-mock").then(async (m) => {
-      browserMock = await m.createBrowserMock();
+      // Node-side integration tests seed protected domain rows through the
+      // Drizzle fixture surface. Keep that fixture-only escape hatch scoped to
+      // Vitest's lazy BrowserMock; production BrowserRuntime instances still
+      // create their mock with the default fail-closed Writer Authority.
+      const allowProtectedWriterTestFixtures =
+        typeof process !== "undefined" && process.env?.NODE_ENV === "test";
+      browserMock = await m.createBrowserMock({
+        allowProtectedWriterTestFixtures,
+      });
       return browserMock;
     });
   }

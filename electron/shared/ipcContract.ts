@@ -435,16 +435,19 @@ export interface NapiBackendLike {
   codexRenameUndo?(payload: unknown): Promise<string>;
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
+  projectCreate?(payload: unknown): Promise<string>;
   projectDelete?(payload: unknown): Promise<void>;
-  treePlanUndo?(payload: unknown): Promise<void>;
-  mapWriteBundle?(payload: unknown): Promise<void>;
+  aiTreePlanApply?(payload: unknown): Promise<string>;
+  aiTreePlanUndo?(payload: unknown): Promise<string>;
+  mapWriteBundle?(payload: unknown): Promise<string>;
   projectSnapshotCreate?(payload: unknown): Promise<void>;
   projectSnapshotRestoreContext?(
     projectId: string,
     snapshotId: string,
     scopes: unknown,
   ): Promise<string>;
-  projectSnapshotApplyRestore?(payload: unknown): Promise<void>;
+  projectSnapshotApplyRestore?(payload: unknown): Promise<string>;
+  revisionSceneRestore?(payload: unknown): Promise<string>;
   saveSceneBodyBundle?(payload: unknown): Promise<string>;
   runtimePerformanceSeed?(
     ownerToken: string,
@@ -550,6 +553,7 @@ export interface NapiBackendLike {
     expectedWorkspacePath: string,
   ): Promise<void>;
   trashBinCreate(payload: unknown): Promise<string>;
+  trashBinRestore(payload: unknown): Promise<string>;
   trashBinList(projectId: string, limit?: number | null): Promise<string>;
   trashBinDelete(id: string): Promise<void>;
   trashBinClearAll(projectId: string): Promise<void>;
@@ -567,8 +571,8 @@ export interface NapiBackendLike {
     scope: string,
     limit: number,
   ): Promise<string>;
-  integrityCheck(): Promise<string>;
-  repairIntegrity(): Promise<string>;
+  integrityCheck(projectId: string): Promise<string>;
+  repairIntegrity(payload: unknown): Promise<string>;
   lintText(
     blocks: unknown,
     language: string,
@@ -673,26 +677,21 @@ export interface NapiBackendLike {
   ): Promise<string>;
   plotThreadCreate(payload: unknown): Promise<string>;
   plotThreadUpdate(id: string, patch: unknown): Promise<string>;
-  plotThreadDelete(id: string, baseVersion: number): Promise<void>;
+  plotThreadDelete(payload: unknown): Promise<string>;
   plotThreadList(projectId: string): Promise<string>;
   plotThreadLinkCreate(payload: unknown): Promise<string>;
   plotThreadBranchCreate?(payload: unknown): Promise<string>;
   plotThreadBranchUpdate?(id: string, patch: unknown): Promise<string>;
-  plotThreadBranchDelete?(id: string, baseVersion: number): Promise<void>;
+  plotThreadBranchDelete?(payload: unknown): Promise<string>;
   plotThreadMoveMarkerBundle?(payload: unknown): Promise<string>;
   plotThreadRestoreSnapshot?(payload: unknown): Promise<string>;
   plotThreadDeleteSnapshot?(payload: unknown): Promise<string>;
   plotThreadLinkUpdate(id: string, patch: unknown): Promise<string>;
-  plotThreadLinkDelete(id: string, baseVersion: number): Promise<void>;
+  plotThreadLinkDelete(payload: unknown): Promise<string>;
   plotThreadListLinks(projectId: string): Promise<string>;
   foreshadowCreate(payload: unknown): Promise<string>;
   foreshadowUpdate(id: string, patch: unknown): Promise<string>;
-  foreshadowDelete(
-    id: string,
-    projectId: string,
-    baseVersion: number,
-    sessionId: string,
-  ): Promise<string>;
+  foreshadowDelete(payload: unknown): Promise<string>;
   foreshadowListWithLabels(projectId: string): Promise<string>;
   foreshadowListOpenForContext(projectId: string): Promise<string>;
   foreshadowGetSceneInfo(sceneId: string): Promise<string>;
@@ -702,35 +701,13 @@ export interface NapiBackendLike {
   foreshadowGetSetup(setupId: string): Promise<string>;
   foreshadowUpdateSetup(id: string, patch: unknown): Promise<string>;
   foreshadowGet(id: string): Promise<string>;
-  foreshadowLinkCodex(
-    foreshadowId: string,
-    codexId: string,
-    baseVersion: number,
-  ): Promise<string>;
-  foreshadowUnlinkCodex(
-    foreshadowId: string,
-    codexId: string,
-    baseVersion: number,
-  ): Promise<string>;
-  foreshadowMarkLinkedCodexDirty?(
-    projectId: string,
-    codexEntryId: string,
-  ): Promise<string>;
+  foreshadowLinkCodex(payload: unknown): Promise<string>;
+  foreshadowUnlinkCodex(payload: unknown): Promise<string>;
   foreshadowListLinkedCodex(foreshadowId: string): Promise<string>;
-  foreshadowSetSetupStrength(
-    setupId: string,
-    strength: string | null | undefined,
-    baseVersion: number,
-  ): Promise<string>;
+  foreshadowSetSetupStrength(payload: unknown): Promise<string>;
   foreshadowSetupCreateAi(input: unknown): Promise<string>;
   foreshadowResolveOrphan(payload: unknown): Promise<string>;
-  foreshadowSaveAnchorsForScene(
-    sceneId: string,
-    setups: unknown,
-    payoffs: unknown,
-    baseVersions: unknown,
-    docContentSize: number,
-  ): Promise<string>;
+  foreshadowSaveAnchorsForScene(payload: unknown): Promise<string>;
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
   // agent_writes 20 コマンド（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
@@ -739,6 +716,9 @@ export interface NapiBackendLike {
   agentCodexMutate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
   agentSnippetCreate(payload: unknown): Promise<string>;
+  snippetCreate(payload: unknown): Promise<string>;
+  snippetUpdate(payload: unknown): Promise<string>;
+  snippetDelete(payload: unknown): Promise<string>;
   agentProposeSceneBody(payload: unknown): Promise<string>;
   agentAcceptProseStage(payload: unknown): Promise<string>;
   agentDiscardProseStage(payload: unknown): Promise<string>;
@@ -756,7 +736,7 @@ export interface NapiBackendLike {
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
   treeNodeCreate(payload: unknown): Promise<string>;
-  treeNodeDelete(payload: unknown): Promise<void>;
+  treeNodeDelete(payload: unknown): Promise<string>;
   treeNodePatch(payload: unknown): Promise<string>;
   temporalScenePatch(payload: unknown): Promise<string>;
   narrativeExtractionCreateRun(payload: unknown): Promise<string>;
@@ -982,6 +962,34 @@ function requireRecord(
   return value as CommandArgs;
 }
 
+function requireTrashBinRestorePayload(args: CommandArgs): CommandArgs {
+  const command = "trash_bin_restore";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "requestId",
+    "sessionId",
+    "projectId",
+    "itemId",
+    "boardIdOverride",
+    "dropX",
+    "dropY",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of ["requestId", "sessionId", "projectId", "itemId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  optionalString(payload, "boardIdOverride", command);
+  optionalNumber(payload, "dropX", command);
+  optionalNumber(payload, "dropY", command);
+  return payload;
+}
+
 const NARRATIVE_RUNTIME_MODES = new Set([
   "disabled",
   "review-only",
@@ -1046,6 +1054,7 @@ function requireNarrativeRuntimePolicySetPayload(
 function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
   const command = "plot_thread_branch_create";
   const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
   const requiredStringKeys = [
     "projectId",
     "fromThreadId",
@@ -1075,11 +1084,65 @@ function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+const PLOT_MUTATION_ORIGINS = new Set([
+  "human",
+  "ai-apply",
+  "import",
+  "undo",
+  "redo",
+  "restore",
+]);
+
+function requirePlotMutationIdentity(
+  payload: CommandArgs,
+  command: string,
+): void {
+  for (const key of [
+    "projectId",
+    "requestId",
+    "sessionId",
+    "eventUid",
+  ] as const) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const origin = requireString(payload, "origin", command);
+  if (!PLOT_MUTATION_ORIGINS.has(origin)) {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: expected a supported Change Feed origin`,
+    );
+  }
+  const originalTransactionId = optionalString(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  if ((origin === "undo" || origin === "redo") && !originalTransactionId) {
+    throw new Error(
+      `invalid args \`originalTransactionId\` for command \`${command}\`: undo/redo requires lineage`,
+    );
+  }
+  if (origin !== "undo" && origin !== "redo" && originalTransactionId) {
+    throw new Error(
+      `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
+    );
+  }
+}
+
+function requirePlotCreatePayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
+  return payload;
+}
+
 function requirePlotVersionedPatch(
   args: CommandArgs,
   command: string,
 ): CommandArgs {
   const patch = requireRecord(args, "patch", command);
+  requirePlotMutationIdentity(patch, command);
   const baseVersion = requireSafeInteger(patch, "baseVersion", command);
   if (baseVersion < 0) {
     throw new Error(
@@ -1089,14 +1152,20 @@ function requirePlotVersionedPatch(
   return patch;
 }
 
-function requirePlotBaseVersion(args: CommandArgs, command: string): number {
-  const baseVersion = requireSafeInteger(args, "baseVersion", command);
+function requirePlotDeletePayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
+  requireNonEmptyString(payload, "id", command);
+  const baseVersion = requireSafeInteger(payload, "baseVersion", command);
   if (baseVersion < 0) {
     throw new Error(
       `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
     );
   }
-  return baseVersion;
+  return payload;
 }
 
 function requireForeshadowVersionedPatch(
@@ -1104,6 +1173,7 @@ function requireForeshadowVersionedPatch(
   command: string,
 ): CommandArgs {
   const patch = requireRecord(args, "patch", command);
+  requireForeshadowMutationIdentity(patch, command);
   const baseVersion = requireSafeInteger(patch, "baseVersion", command);
   if (baseVersion < 0) {
     throw new Error(
@@ -1111,6 +1181,87 @@ function requireForeshadowVersionedPatch(
     );
   }
   return patch;
+}
+
+function requireForeshadowMutationIdentity(
+  payload: CommandArgs,
+  command: string,
+): void {
+  for (const key of [
+    "projectId",
+    "requestId",
+    "sessionId",
+    "eventUid",
+  ] as const) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const origin = requireString(payload, "origin", command);
+  if (!PLOT_MUTATION_ORIGINS.has(origin)) {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: expected a supported Change Feed origin`,
+    );
+  }
+  const originalTransactionId = optionalString(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  if ((origin === "undo" || origin === "redo") && !originalTransactionId) {
+    throw new Error(
+      `invalid args \`originalTransactionId\` for command \`${command}\`: undo/redo requires lineage`,
+    );
+  }
+  if (origin !== "undo" && origin !== "redo" && originalTransactionId) {
+    throw new Error(
+      `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
+    );
+  }
+}
+
+function requireForeshadowPayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  requireForeshadowMutationIdentity(payload, command);
+  return payload;
+}
+
+function requireForeshadowDeletePayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireForeshadowPayload(args, command);
+  requireNonEmptyString(payload, "id", command);
+  requireForeshadowBaseVersion(payload, command);
+  return payload;
+}
+
+function requireForeshadowAssociationPayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireForeshadowPayload(args, command);
+  requireNonEmptyString(payload, "foreshadowId", command);
+  requireNonEmptyString(payload, "codexId", command);
+  requireForeshadowBaseVersion(payload, command);
+  return payload;
+}
+
+function requireForeshadowSetupStrengthPayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireForeshadowPayload(args, command);
+  requireNonEmptyString(payload, "setupId", command);
+  requirePresent(payload, "strength", command);
+  if (payload.strength !== null && typeof payload.strength !== "string") {
+    throw new Error(
+      `invalid args \`strength\` for command \`${command}\`: expected a string or null`,
+    );
+  }
+  requireForeshadowBaseVersion(payload, command);
+  return payload;
 }
 
 function requireForeshadowBaseVersion(
@@ -1129,10 +1280,33 @@ function requireForeshadowBaseVersion(
 function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_update";
   const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireForeshadowBaseVersion(payload, command);
+  return payload;
+}
+
+function requireAgentForeshadowCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "agent_foreshadow_create";
+  const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "sessionId", command);
+  requireNonEmptyString(payload, "foreshadowId", command);
+  requireNonEmptyString(payload, "title", command);
+  return payload;
+}
+
+function requireCanonicalAgentCreatePayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["projectId", "requestId", "sessionId"]) {
+    requireNonEmptyString(payload, key, command);
+  }
   return payload;
 }
 
@@ -1784,6 +1958,9 @@ function requireLintTermDictionaryPayload(
 function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
   const command = "event_set_participants";
   const payload = requireRecord(args, "payload", command);
+  for (const key of ["requestId", "sessionId", "eventUid"] as const) {
+    requireNonEmptyString(payload, key, command);
+  }
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "eventId", command);
   requireNonEmptyString(payload, "updatedAt", command);
@@ -1806,6 +1983,9 @@ function requireEventSetParticipantsPayload(args: CommandArgs): CommandArgs {
 function requireProjectCalendarUpsertPayload(args: CommandArgs): CommandArgs {
   const command = "project_calendar_upsert";
   const payload = requireRecord(args, "payload", command);
+  for (const key of ["requestId", "sessionId", "eventUid"] as const) {
+    requireNonEmptyString(payload, key, command);
+  }
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "updatedAt", command);
   for (const key of [
@@ -1855,6 +2035,112 @@ function requireNullableStringField(
     );
   }
   return value;
+}
+
+function requireCanonicalWriterIdentity(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", command);
+  for (const key of ["projectId", "requestId", "sessionId", "eventUid"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const origin = requireString(payload, "origin", command);
+  if (
+    ![
+      "human",
+      "ai-apply",
+      "import",
+      "undo",
+      "redo",
+      "restore",
+      "migration",
+    ].includes(origin)
+  ) {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: expected a supported Change Feed origin`,
+    );
+  }
+  const originalTransactionId = requireNullableStringField(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  const undoJournalId = requireNullableStringField(
+    payload,
+    "undoJournalId",
+    command,
+  );
+  const replay = origin === "undo" || origin === "redo";
+  if (
+    replay !==
+      (Boolean(originalTransactionId?.length) &&
+        Boolean(undoJournalId?.length)) ||
+    (!replay && (originalTransactionId !== null || undoJournalId !== null))
+  ) {
+    throw new Error(
+      `invalid canonical lineage for command \`${command}\`: undo/redo requires originalTransactionId and undoJournalId`,
+    );
+  }
+  return payload;
+}
+
+function requireSnippetWriterPayload(
+  args: CommandArgs,
+  command: "snippet_create" | "snippet_update" | "snippet_delete",
+): CommandArgs {
+  const payload = requireCanonicalWriterIdentity(args, command);
+  requireNonEmptyString(payload, "snippetId", command);
+  if (payload.origin === "undo" || payload.origin === "redo") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: Snippet history must replay its Native Undo Journal`,
+    );
+  }
+
+  if (command === "snippet_create") {
+    requireString(payload, "title", command);
+    requireString(payload, "content", command);
+    for (const key of [
+      "tagsCache",
+      "contentSource",
+      "sceneId",
+      "sourceChatMessageId",
+    ] as const) {
+      if (Object.hasOwn(payload, key)) {
+        requireNullableStringField(payload, key, command);
+      }
+    }
+    if (
+      payload.contentSource !== undefined &&
+      payload.contentSource !== null &&
+      payload.contentSource !== "human" &&
+      payload.contentSource !== "ai"
+    ) {
+      throw new Error(
+        `invalid args \`contentSource\` for command \`${command}\`: expected human, ai, or null`,
+      );
+    }
+    return payload;
+  }
+
+  const baseVersion = requireSafeInteger(payload, "baseVersion", command);
+  if (baseVersion < 0) {
+    throw new Error(
+      `invalid args \`baseVersion\` for command \`${command}\`: expected a non-negative safe integer`,
+    );
+  }
+  if (command === "snippet_update") {
+    const fields = ["title", "content", "tagsCache", "sceneId"] as const;
+    if (!fields.some((key) => Object.hasOwn(payload, key))) {
+      throw new Error(
+        `invalid args for command \`${command}\`: expected at least one changed field`,
+      );
+    }
+    for (const key of fields) {
+      if (Object.hasOwn(payload, key)) requireString(payload, key, command);
+    }
+  }
+  return payload;
 }
 
 function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
@@ -1915,7 +2201,7 @@ function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
 
 function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {
     throw new Error(
@@ -1950,8 +2236,10 @@ const CODEX_RENAME_UNDO_KINDS = new Set([
   "codex-relation-label",
 ]);
 
-function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
-  const command = "codex_rename_undo";
+function requireCodexRenameUpdatesPayload(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "updatedAt", command);
@@ -2011,9 +2299,25 @@ function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
+function requireCodexRenameUndoPayload(args: CommandArgs): CommandArgs {
+  const command = "codex_rename_undo";
+  const payload = requireCodexRenameUpdatesPayload(args, command);
+  for (const key of [
+    "requestId",
+    "eventUid",
+    "sessionId",
+    "originalTransactionId",
+    "undoJournalId",
+  ]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  return payload;
+}
+
 function requireCodexRenameApplyPayload(args: CommandArgs): CommandArgs {
-  const payload = requireCodexRenameUndoPayload(args);
   const command = "codex_rename_apply";
+  const payload = requireCodexRenameUpdatesPayload(args, command);
+  requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "sessionId", command);
   requireNonEmptyString(payload, "entryId", command);
   requireNonEmptyString(payload, "eventSummary", command);
@@ -2022,6 +2326,30 @@ function requireCodexRenameApplyPayload(args: CommandArgs): CommandArgs {
   if (typeof timestamp !== "number" || !Number.isSafeInteger(timestamp)) {
     throw new Error(
       `invalid args \`timestamp\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  const redo = requirePresent(payload, "redo", command);
+  if (typeof redo !== "boolean") {
+    throw new Error(
+      `invalid args \`redo\` for command \`${command}\`: expected a boolean`,
+    );
+  }
+  const originalTransactionId = requireNullableStringField(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  const undoJournalId = requireNullableStringField(
+    payload,
+    "undoJournalId",
+    command,
+  );
+  if (
+    (redo && (!originalTransactionId || !undoJournalId)) ||
+    (!redo && (originalTransactionId || undoJournalId))
+  ) {
+    throw new Error(
+      `invalid redo lineage for command \`${command}\`: expected originalTransactionId and undoJournalId only for redo`,
     );
   }
   return payload;
@@ -2044,6 +2372,32 @@ function requireScanStagingProjectCreatePayload(
   return payload;
 }
 
+function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "project_create";
+  const payload = requireCanonicalWriterIdentity(args, command);
+  if (payload.origin === "undo" || payload.origin === "redo") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: project creation is forward-only`,
+    );
+  }
+  for (const key of ["title", "createdAt", "updatedAt"]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  for (const key of [
+    "genre",
+    "pov",
+    "tense",
+    "language",
+    "styleGuide",
+    "aiInstructions",
+    "outline",
+    "targetReaders",
+  ]) {
+    requireNullableStringField(payload, key, command);
+  }
+  return payload;
+}
+
 function requireProjectDeletePayload(args: CommandArgs): CommandArgs {
   const command = "project_delete";
   const payload = requireRecord(args, "payload", command);
@@ -2051,27 +2405,144 @@ function requireProjectDeletePayload(args: CommandArgs): CommandArgs {
   return payload;
 }
 
-function requireTreePlanUndoPayload(args: CommandArgs): CommandArgs {
-  const command = "tree_plan_undo";
+function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
+  const command = "ai_tree_plan_apply";
   const payload = requireRecord(args, "payload", command);
-  requireNonEmptyString(payload, "projectId", command);
-  requireNonEmptyString(payload, "updatedAt", command);
-  requireArray(payload, "beforeStates", command).forEach((value, index) => {
+  for (const key of [
+    "requestId",
+    "projectId",
+    "sessionId",
+    "surface",
+    "updatedAt",
+  ]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  const kind = requireString(payload, "kind", command);
+  if (kind !== "scaffold" && kind !== "reorganize") {
+    throw new Error(
+      `invalid args \`kind\` for command \`${command}\`: expected scaffold or reorganize`,
+    );
+  }
+  requireNullableStringField(payload, "model", command);
+  requireNullableStringField(payload, "traceId", command);
+  const creates = requireArray(payload, "creates", command);
+  creates.forEach((value, index) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(
-        `invalid args \`beforeStates[${index}]\` for command \`${command}\`: expected an object`,
+        `invalid args \`creates[${index}]\` for command \`${command}\`: expected an object`,
       );
     }
-    const state = value as CommandArgs;
-    requireNonEmptyString(state, "id", command);
-    requireNonEmptyString(state, "sortOrder", command);
-    requireString(state, "title", command);
-    requireNullableStringField(state, "parentId", command);
-  });
-  requireArray(payload, "createdIds", command).forEach((value, index) => {
-    if (typeof value !== "string" || value.length === 0) {
+    const create = value as CommandArgs;
+    for (const key of ["id", "nodeType", "title", "sortOrder"]) {
+      requireNonEmptyString(create, key, command);
+    }
+    if (!["folder", "scene", "note"].includes(String(create.nodeType))) {
       throw new Error(
-        `invalid args \`createdIds[${index}]\` for command \`${command}\`: expected a non-empty string`,
+        `invalid args \`creates[${index}].nodeType\` for command \`${command}\``,
+      );
+    }
+    requireNullableStringField(create, "parentId", command);
+    requireNullableStringField(create, "synopsis", command);
+  });
+  const updates = requireArray(payload, "updates", command);
+  updates.forEach((value, index) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`updates[${index}]\` for command \`${command}\`: expected an object`,
+      );
+    }
+    const update = value as CommandArgs;
+    requireNonEmptyString(update, "id", command);
+    const baseVersion = requirePresent(update, "baseVersion", command);
+    if (
+      typeof baseVersion !== "number" ||
+      !Number.isSafeInteger(baseVersion) ||
+      baseVersion < 0
+    ) {
+      throw new Error(
+        `invalid args \`updates[${index}].baseVersion\` for command \`${command}\``,
+      );
+    }
+    const placement = requirePresent(update, "placement", command);
+    if (placement !== null) {
+      if (typeof placement !== "object" || Array.isArray(placement)) {
+        throw new Error(
+          `invalid args \`updates[${index}].placement\` for command \`${command}\``,
+        );
+      }
+      const placementRecord = placement as CommandArgs;
+      requireNullableStringField(placementRecord, "parentId", command);
+      requireNonEmptyString(placementRecord, "sortOrder", command);
+    }
+    const title = requirePresent(update, "title", command);
+    if (title !== null && (typeof title !== "string" || title.length === 0)) {
+      throw new Error(
+        `invalid args \`updates[${index}].title\` for command \`${command}\``,
+      );
+    }
+    if (placement === null && title === null) {
+      throw new Error(
+        `invalid args \`updates[${index}]\` for command \`${command}\`: empty update`,
+      );
+    }
+  });
+  if (creates.length === 0 && updates.length === 0) {
+    throw new Error(`invalid args for command \`${command}\`: empty plan`);
+  }
+  const redo = requirePresent(payload, "redo", command);
+  if (typeof redo !== "boolean") {
+    throw new Error(
+      `invalid args \`redo\` for command \`${command}\`: expected a boolean`,
+    );
+  }
+  const originalTransactionId = requireNullableStringField(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  const undoJournalId = requireNullableStringField(
+    payload,
+    "undoJournalId",
+    command,
+  );
+  if (
+    (redo && (!originalTransactionId || !undoJournalId)) ||
+    (!redo && (originalTransactionId || undoJournalId))
+  ) {
+    throw new Error(`invalid redo lineage for command \`${command}\``);
+  }
+  return payload;
+}
+
+function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
+  const command = "ai_tree_plan_undo";
+  const payload = requireRecord(args, "payload", command);
+  for (const key of [
+    "requestId",
+    "projectId",
+    "sessionId",
+    "updatedAt",
+    "originalTransactionId",
+    "undoJournalId",
+  ]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  requireArray(payload, "expectedVersions", command).forEach((value, index) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error(
+        `invalid args \`expectedVersions[${index}]\` for command \`${command}\``,
+      );
+    }
+    const expected = value as CommandArgs;
+    requireNonEmptyString(expected, "id", command);
+    const version = requirePresent(expected, "version", command);
+    if (
+      typeof version !== "number" ||
+      !Number.isSafeInteger(version) ||
+      version < 0
+    ) {
+      throw new Error(
+        `invalid args \`expectedVersions[${index}].version\` for command \`${command}\``,
       );
     }
   });
@@ -2080,7 +2551,7 @@ function requireTreePlanUndoPayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_create";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   for (const key of ["id", "projectId", "nodeType", "title", "sortOrder"]) {
     requireNonEmptyString(payload, key, command);
   }
@@ -2106,7 +2577,7 @@ function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_delete";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   return payload;
@@ -2114,7 +2585,7 @@ function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_patch";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);
@@ -2132,6 +2603,14 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
     const event = requireRecord(payload, "changeEvent", command);
     requireNonEmptyString(event, "eventUid", command);
     requireNonEmptyString(event, "sessionId", command);
+    if (
+      event.eventUid !== payload.eventUid ||
+      event.sessionId !== payload.sessionId
+    ) {
+      throw new Error(
+        `invalid args \`changeEvent\` for command \`${command}\`: identity must match writer identity`,
+      );
+    }
     const timestamp = requireSafeInteger(event, "timestamp", command);
     if (timestamp < 0) {
       throw new Error(
@@ -2156,13 +2635,33 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
       );
     }
   }
+  const hasTrackedOverride = ["sourceDomain", "opType"].some((key) =>
+    Object.hasOwn(payload, key),
+  );
+  if (hasTrackedOverride) {
+    requireNonEmptyString(payload, "requestId", command);
+    requireNonEmptyString(payload, "sessionId", command);
+    if (
+      payload.origin !== "restore" ||
+      payload.sourceDomain !== "revision" ||
+      payload.opType !== "content.restore"
+    ) {
+      throw new Error(
+        `invalid tracked override for command \`${command}\`: expected revision content.restore with restore origin`,
+      );
+    }
+    if (!Object.hasOwn(payload, "changeEvent")) {
+      throw new Error(
+        `invalid tracked override for command \`${command}\`: expected changeEvent`,
+      );
+    }
+  }
   return payload;
 }
 
 function requireTemporalScenePatchPayload(args: CommandArgs): CommandArgs {
   const command = "temporal_scene_patch";
-  const payload = requireRecord(args, "payload", command);
-  requireNonEmptyString(payload, "projectId", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   requireNonEmptyString(payload, "targetId", command);
   const baseVersion = requireSafeInteger(payload, "baseVersion", command);
   if (baseVersion < 0) {
@@ -2201,8 +2700,43 @@ function requireMapWriteStringArray(
 function requireMapWritePayload(args: CommandArgs): CommandArgs {
   const command = "map_write_bundle";
   const payload = requireRecord(args, "payload", command);
+  for (const key of ["requestId", "sessionId", "eventUid"]) {
+    requireNonEmptyString(payload, key, command);
+  }
   const kind = requireString(payload, "kind", command);
   requireNonEmptyString(payload, "projectId", command);
+  if (!Object.hasOwn(payload, "origin")) payload.origin = "human";
+  if (!Object.hasOwn(payload, "originalTransactionId")) {
+    payload.originalTransactionId = null;
+  }
+  if (!Object.hasOwn(payload, "undoJournalId")) payload.undoJournalId = null;
+  const origin = requireString(payload, "origin", command);
+  if (origin !== "human" && origin !== "undo" && origin !== "redo") {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: expected human, undo, or redo`,
+    );
+  }
+  const originalTransactionId = requireNullableStringField(
+    payload,
+    "originalTransactionId",
+    command,
+  );
+  const undoJournalId = requireNullableStringField(
+    payload,
+    "undoJournalId",
+    command,
+  );
+  const replay = origin === "undo" || origin === "redo";
+  if (
+    replay !==
+      (Boolean(originalTransactionId?.length) &&
+        Boolean(undoJournalId?.length)) ||
+    (!replay && (originalTransactionId !== null || undoJournalId !== null))
+  ) {
+    throw new Error(
+      `invalid canonical lineage for command \`${command}\`: undo/redo requires originalTransactionId and undoJournalId`,
+    );
+  }
 
   switch (kind) {
     case "create-board":
@@ -2299,6 +2833,32 @@ function requireMapWritePayload(args: CommandArgs): CommandArgs {
         requireNonEmptyString(payload, key, command);
       }
       requireMapWriteStringArray(payload, "stickyIds", command);
+      requireSnapshotRows(payload, "positions", command);
+      if (requireArray(payload, "positions", command).length !== 1) {
+        throw new Error(
+          `invalid args \`positions\` for command \`${command}\`: expected exactly one Codex position`,
+        );
+      }
+      break;
+    case "promote-user-edge-to-codex-relation":
+      for (const key of [
+        "boardId",
+        "edgeId",
+        "relationId",
+        "fromCodexId",
+        "toCodexId",
+        "relationType",
+        "label",
+        "createdAt",
+        "updatedAt",
+      ]) {
+        requireNonEmptyString(payload, key, command);
+      }
+      if (typeof payload.reuseExistingRelation !== "boolean") {
+        throw new Error(
+          `invalid args \`reuseExistingRelation\` for command \`${command}\`: expected a boolean`,
+        );
+      }
       break;
     default:
       throw new Error(
@@ -2353,6 +2913,8 @@ const PROJECT_SNAPSHOT_RESTORE_TABLES = new Set([
   "tree_node_labels",
   "foreshadows",
   "foreshadow_setups",
+  "foreshadow_payoffs",
+  "foreshadow_setup_payoff_links",
   "foreshadow_codex_links",
   "map_boards",
   "map_ai_branches",
@@ -2454,6 +3016,8 @@ function requireProjectSnapshotCreatePayload(args: CommandArgs): CommandArgs {
 function requireProjectSnapshotApplyPayload(args: CommandArgs): CommandArgs {
   const command = "project_snapshot_apply_restore";
   const payload = requireRecord(args, "payload", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "sessionId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "snapshotId", command);
   requireProjectSnapshotScopes(payload, "scopes", command);
@@ -2485,6 +3049,57 @@ function requireProjectSnapshotApplyPayload(args: CommandArgs): CommandArgs {
       command,
     );
   });
+  return payload;
+}
+
+function requireRevisionSceneRestorePayload(args: CommandArgs): CommandArgs {
+  const command = "revision_scene_restore";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "requestId",
+    "sessionId",
+    "projectId",
+    "entityType",
+    "entityId",
+    "revisionId",
+    "content",
+    "currentContent",
+    "expectedVersion",
+    "charCount",
+    "placedBeatPreview",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of [
+    "requestId",
+    "sessionId",
+    "projectId",
+    "entityId",
+    "revisionId",
+  ]) {
+    requireNonEmptyString(payload, key, command);
+  }
+  if (requireString(payload, "entityType", command) !== "scene") {
+    throw new Error(
+      `invalid args \`entityType\` for command \`${command}\`: only scene is supported`,
+    );
+  }
+  requireString(payload, "content", command);
+  requireString(payload, "currentContent", command);
+  for (const key of ["expectedVersion", "charCount"]) {
+    const value = requireSafeInteger(payload, key, command);
+    if (value < 0) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected a non-negative safe integer`,
+      );
+    }
+  }
+  requireNullableStringField(payload, "placedBeatPreview", command);
   return payload;
 }
 
@@ -2532,6 +3147,7 @@ function requirePlotThreadRestoreSnapshotPayload(
 ): CommandArgs {
   const command = "plot_thread_restore_snapshot";
   const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
   const requestId = requireNonEmptyString(payload, "requestId", command);
   const projectId = requireNonEmptyString(payload, "projectId", command);
   void requestId;
@@ -2653,6 +3269,7 @@ function requirePlotThreadDeleteSnapshotPayload(
 ): CommandArgs {
   const command = "plot_thread_delete_snapshot";
   const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
   requireNonEmptyString(payload, "requestId", command);
   const projectId = requireNonEmptyString(payload, "projectId", command);
   const hasThread = payload.thread !== undefined && payload.thread !== null;
@@ -2849,6 +3466,7 @@ function requirePlotThreadMoveMarkerBundlePayload(
 ): CommandArgs {
   const command = "plot_thread_move_marker_bundle";
   const payload = requireRecord(args, "payload", command);
+  requirePlotMutationIdentity(payload, command);
   requireNonEmptyString(payload, "requestId", command);
   const projectId = requireNonEmptyString(payload, "projectId", command);
   const markerBefore = requirePlotMoveLinkSnapshot(
@@ -3111,12 +3729,38 @@ function requireNullableSceneBundleString(
 function requireSceneBodyBundlePayload(args: CommandArgs): CommandArgs {
   const command = "save_scene_body_bundle";
   const payload = requireRecord(args, "payload", command);
-  for (const key of ["sceneId", "projectId"] as const) {
+  for (const key of [
+    "sceneId",
+    "projectId",
+    "requestId",
+    "sessionId",
+    "eventUid",
+  ] as const) {
     if (requireString(payload, key, command).length === 0) {
       throw new Error(
         `invalid args \`${key}\` for command \`${command}\`: expected a non-empty string`,
       );
     }
+  }
+  if (
+    !new Set(["human", "ai-apply"]).has(
+      requireString(payload, "origin", command),
+    )
+  ) {
+    throw new Error(
+      `invalid args \`origin\` for command \`${command}\`: expected human or ai-apply`,
+    );
+  }
+  if (payload.timelapseSteps !== undefined) {
+    const steps = requireArray(payload, "timelapseSteps", command);
+    if (steps.length === 0) {
+      throw new Error(
+        `invalid args \`timelapseSteps\` for command \`${command}\`: expected a non-empty array`,
+      );
+    }
+    steps.forEach((step, index) => {
+      requireSceneBundleRecord(step, `timelapseSteps[${index}]`, command);
+    });
   }
   requireBoolean(payload, "includeSidecars", command);
   requireNonEmptyString(payload, "updatedAt", command);
@@ -3287,18 +3931,42 @@ function requireRuntimePerformanceSeedArgs(args: CommandArgs): {
   return { ownerToken, payload };
 }
 
-/** Event aggregate mutations must carry the renderer's loaded OCC token. */
-function requireEventMutationPayload(
+/** Agent Chronicle writers must carry project, session, and durable retry identity. */
+function requireAgentChroniclePayload(
   args: CommandArgs,
   cmd: string,
 ): CommandArgs {
   const payload = requireRecord(args, "payload", cmd);
+  requireNonEmptyString(payload, "requestId", cmd);
+  requireNonEmptyString(payload, "projectId", cmd);
+  requireNonEmptyString(payload, "sessionId", cmd);
+  return payload;
+}
+
+/** Event aggregate mutations also carry the loaded OCC token. */
+function requireEventMutationPayload(
+  args: CommandArgs,
+  cmd: string,
+): CommandArgs {
+  const payload = requireAgentChroniclePayload(args, cmd);
   const baseVersion = requireNumber(payload, "baseVersion", cmd);
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
     throw new Error(
       `invalid args \`baseVersion\` for command \`${cmd}\`: expected a non-negative safe integer`,
     );
   }
+  return payload;
+}
+
+function requireNarrativeCommitReplayPayload(
+  args: CommandArgs,
+  cmd: string,
+): CommandArgs {
+  const payload = requireRecord(args, "payload", cmd);
+  requireNonEmptyString(payload, "projectId", cmd);
+  requireNonEmptyString(payload, "sessionId", cmd);
+  requireNonEmptyString(payload, "commitId", cmd);
+  requireNonEmptyString(payload, "requestId", cmd);
   return payload;
 }
 
@@ -4517,6 +5185,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
+  project_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectCreate,
+          "projectCreate",
+        )(requireProjectCreatePayload(a)),
+      ),
+  },
   project_delete: {
     run: async (b, a) => {
       await requireNapiMethod(
@@ -4527,15 +5205,25 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
-  tree_plan_undo: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.treePlanUndo,
-        "treePlanUndo",
-      )(requireTreePlanUndoPayload(a));
-      return null;
-    },
+  ai_tree_plan_apply: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.aiTreePlanApply,
+          "aiTreePlanApply",
+        )(requireAiTreePlanApplyPayload(a)),
+      ),
+  },
+  ai_tree_plan_undo: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.aiTreePlanUndo,
+          "aiTreePlanUndo",
+        )(requireAiTreePlanUndoPayload(a)),
+      ),
   },
   tree_node_create: {
     run: async (b, a) =>
@@ -4548,14 +5236,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   tree_node_delete: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.treeNodeDelete,
-        "treeNodeDelete",
-      )(requireTreeNodeDeletePayload(a));
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.treeNodeDelete,
+          "treeNodeDelete",
+        )(requireTreeNodeDeletePayload(a)),
+      ),
   },
   tree_node_patch: {
     run: async (b, a) =>
@@ -4578,14 +5266,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   map_write_bundle: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.mapWriteBundle,
-        "mapWriteBundle",
-      )(requireMapWritePayload(a));
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.mapWriteBundle,
+          "mapWriteBundle",
+        )(requireMapWritePayload(a)),
+      ),
   },
   project_snapshot_create: {
     run: async (b, a) => {
@@ -4624,14 +5312,24 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   project_snapshot_apply_restore: {
-    run: async (b, a) => {
-      await requireNapiMethod(
-        b,
-        b.projectSnapshotApplyRestore,
-        "projectSnapshotApplyRestore",
-      )(requireProjectSnapshotApplyPayload(a));
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectSnapshotApplyRestore,
+          "projectSnapshotApplyRestore",
+        )(requireProjectSnapshotApplyPayload(a)),
+      ),
+  },
+  revision_scene_restore: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.revisionSceneRestore,
+          "revisionSceneRestore",
+        )(requireRevisionSceneRestorePayload(a)),
+      ),
   },
   save_scene_body_bundle: {
     run: async (b, a) =>
@@ -4885,7 +5583,8 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       return null;
     },
   },
-  // trash_bin 5 コマンド（起動時の trash_bin_list IPC_UNIMPLEMENTED 修正）。
+  // trash_bin commands（起動時の trash_bin_list IPC_UNIMPLEMENTED 修正 +
+  // structural restore の Native atomic aggregate）。
   // Tauri 側 fn 署名（src-tauri/src/commands/trash_bin.rs）との対応:
   //   create(payload: TrashBinCreatePayload) — struct 内は serde rename_all の
   //   camelCase なので {payload} をそのまま素通しする
@@ -4898,6 +5597,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requirePresent(a, "payload", "trash_bin_create"),
         ),
       ),
+  },
+  trash_bin_restore: {
+    run: async (b, a) =>
+      parseWire(await b.trashBinRestore(requireTrashBinRestorePayload(a))),
   },
   trash_bin_list: {
     run: async (b, a) =>
@@ -4938,7 +5641,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   // Tauri 側 fn 署名（src-tauri/src/commands/integrity.rs）:
   //   fts_optimize() / fts_rebuild() / fts_rebuild_en() /
   //   fts_search(project_id, query, scope, limit: u32) /
-  //   integrity_check() / repair_integrity()
+  //   integrity_check(project_id) / repair_integrity(payload)
   fts_optimize: {
     run: async (b) => {
       await b.ftsOptimize();
@@ -4969,10 +5672,28 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   integrity_check: {
-    run: async (b) => parseWire(await b.integrityCheck()),
+    run: async (b, a) =>
+      parseWire(
+        await b.integrityCheck(
+          requireString(a, "projectId", "integrity_check"),
+        ),
+      ),
   },
   repair_integrity: {
-    run: async (b) => parseWire(await b.repairIntegrity()),
+    run: async (b, a) => {
+      const command = "repair_integrity";
+      const payload = requireRecord(a, "payload", command);
+      for (const key of [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "eventUid",
+        "occurredAt",
+      ]) {
+        requireNonEmptyString(payload, key, command);
+      }
+      return parseWire(await b.repairIntegrity(payload));
+    },
   },
   // lint / reorder / fonts（Phase 3 バッチ1b — grimodex-lint / grimodex-fonts
   // を Tauri と共用）。Tauri 側 fn 署名:
@@ -5346,7 +6067,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.plotThreadCreate(
-          requirePresent(a, "payload", "plot_thread_create"),
+          requirePlotCreatePayload(a, "plot_thread_create"),
         ),
       ),
   },
@@ -5360,14 +6081,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   plot_thread_delete: {
-    // unit 返りコマンドは null を resolve（ワイヤ同形）
-    run: async (b, a) => {
-      await b.plotThreadDelete(
-        requireString(a, "id", "plot_thread_delete"),
-        requirePlotBaseVersion(a, "plot_thread_delete"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadDelete(
+          requirePlotDeletePayload(a, "plot_thread_delete"),
+        ),
+      ),
   },
   plot_thread_list: {
     run: async (b, a) =>
@@ -5381,7 +6100,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.plotThreadLinkCreate(
-          requirePresent(a, "payload", "plot_thread_link_create"),
+          requirePlotCreatePayload(a, "plot_thread_link_create"),
         ),
       ),
   },
@@ -5409,19 +6128,14 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     },
   },
   plot_thread_branch_delete: {
-    run: async (b, a) => {
-      const id = requireString(a, "id", "plot_thread_branch_delete");
-      const baseVersion = requirePlotBaseVersion(
-        a,
-        "plot_thread_branch_delete",
-      );
-      await requireNapiMethod(
-        b,
-        b.plotThreadBranchDelete,
-        "plotThreadBranchDelete",
-      )(id, baseVersion);
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.plotThreadBranchDelete,
+          "plotThreadBranchDelete",
+        )(requirePlotDeletePayload(a, "plot_thread_branch_delete")),
+      ),
   },
   plot_thread_move_marker_bundle: {
     run: async (b, a) =>
@@ -5463,13 +6177,12 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   plot_thread_link_delete: {
-    run: async (b, a) => {
-      await b.plotThreadLinkDelete(
-        requireString(a, "id", "plot_thread_link_delete"),
-        requirePlotBaseVersion(a, "plot_thread_link_delete"),
-      );
-      return null;
-    },
+    run: async (b, a) =>
+      parseWire(
+        await b.plotThreadLinkDelete(
+          requirePlotDeletePayload(a, "plot_thread_link_delete"),
+        ),
+      ),
   },
   plot_thread_list_links: {
     run: async (b, a) =>
@@ -5488,7 +6201,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.foreshadowCreate(
-          requirePresent(a, "payload", "foreshadow_create"),
+          requireForeshadowPayload(a, "foreshadow_create"),
         ),
       ),
   },
@@ -5505,10 +6218,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.foreshadowDelete(
-          requireString(a, "id", "foreshadow_delete"),
-          requireString(a, "projectId", "foreshadow_delete"),
-          requireForeshadowBaseVersion(a, "foreshadow_delete"),
-          requireString(a, "sessionId", "foreshadow_delete"),
+          requireForeshadowDeletePayload(a, "foreshadow_delete"),
         ),
       ),
   },
@@ -5588,9 +6298,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.foreshadowLinkCodex(
-          requireString(a, "foreshadowId", "foreshadow_link_codex"),
-          requireString(a, "codexId", "foreshadow_link_codex"),
-          requireForeshadowBaseVersion(a, "foreshadow_link_codex"),
+          requireForeshadowAssociationPayload(a, "foreshadow_link_codex"),
         ),
       ),
   },
@@ -5598,26 +6306,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.foreshadowUnlinkCodex(
-          requireString(a, "foreshadowId", "foreshadow_unlink_codex"),
-          requireString(a, "codexId", "foreshadow_unlink_codex"),
-          requireForeshadowBaseVersion(a, "foreshadow_unlink_codex"),
-        ),
-      ),
-  },
-  foreshadow_mark_linked_codex_dirty: {
-    run: async (b, a) =>
-      parseWire(
-        await requireNapiMethod(
-          b,
-          b.foreshadowMarkLinkedCodexDirty,
-          "foreshadowMarkLinkedCodexDirty",
-        )(
-          requireString(a, "projectId", "foreshadow_mark_linked_codex_dirty"),
-          requireString(
-            a,
-            "codexEntryId",
-            "foreshadow_mark_linked_codex_dirty",
-          ),
+          requireForeshadowAssociationPayload(a, "foreshadow_unlink_codex"),
         ),
       ),
   },
@@ -5630,23 +6319,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       ),
   },
   foreshadow_set_setup_strength: {
-    // strength は Option<String>: 文字列以外（null / 省略）は None（列クリア）。
-    run: async (b, a) => {
-      const strength = typeof a.strength === "string" ? a.strength : undefined;
-      return parseWire(
+    run: async (b, a) =>
+      parseWire(
         await b.foreshadowSetSetupStrength(
-          requireString(a, "setupId", "foreshadow_set_setup_strength"),
-          strength,
-          requireForeshadowBaseVersion(a, "foreshadow_set_setup_strength"),
+          requireForeshadowSetupStrengthPayload(
+            a,
+            "foreshadow_set_setup_strength",
+          ),
         ),
-      );
-    },
+      ),
   },
   foreshadow_setup_create_ai: {
     // FE は 12 個の flat な camelCase キーを送る（payload ラップ無し）。args
     // オブジェクトをそのまま渡し、napi 側 from_wire が SetupCreateAiInput に落とす。
     run: async (b, a) => {
       requireForeshadowBaseVersion(a, "foreshadow_setup_create_ai");
+      requireForeshadowMutationIdentity(a, "foreshadow_setup_create_ai");
       return parseWire(await b.foreshadowSetupCreateAi(a));
     },
   },
@@ -5655,28 +6343,27 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       const payload = requireRecord(a, "payload", "foreshadow_resolve_orphan");
       requireForeshadowBaseVersion(payload, "foreshadow_resolve_orphan");
+      requireForeshadowMutationIdentity(payload, "foreshadow_resolve_orphan");
       return parseWire(await b.foreshadowResolveOrphan(payload));
     },
   },
   foreshadow_save_anchors_for_scene: {
     run: async (b, a) => {
-      const { setups, payoffs, baseVersions } = requireForeshadowAnchorPayloads(
+      const payload = requireForeshadowPayload(
         a,
         "foreshadow_save_anchors_for_scene",
       );
-      return parseWire(
-        await b.foreshadowSaveAnchorsForScene(
-          requireString(a, "sceneId", "foreshadow_save_anchors_for_scene"),
-          setups,
-          payoffs,
-          baseVersions,
-          requireNumber(
-            a,
-            "docContentSize",
-            "foreshadow_save_anchors_for_scene",
-          ),
-        ),
+      requireForeshadowAnchorPayloads(
+        payload,
+        "foreshadow_save_anchors_for_scene",
       );
+      requireString(payload, "sceneId", "foreshadow_save_anchors_for_scene");
+      requireNumber(
+        payload,
+        "docContentSize",
+        "foreshadow_save_anchors_for_scene",
+      );
+      return parseWire(await b.foreshadowSaveAnchorsForScene(payload));
     },
   },
   foreshadow_load_anchors_for_scene: {
@@ -5695,7 +6382,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexCreate(
-          requirePresent(a, "payload", "agent_codex_create"),
+          requireCanonicalWriterIdentity(a, "agent_codex_create"),
         ),
       ),
   },
@@ -5703,7 +6390,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexUpdate(
-          requirePresent(a, "payload", "agent_codex_update"),
+          requireCanonicalWriterIdentity(a, "agent_codex_update"),
         ),
       ),
   },
@@ -5711,7 +6398,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexDelete(
-          requirePresent(a, "payload", "agent_codex_delete"),
+          requireCanonicalWriterIdentity(a, "agent_codex_delete"),
         ),
       ),
   },
@@ -5719,7 +6406,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexMutate(
-          requirePresent(a, "payload", "agent_codex_mutate"),
+          requireCanonicalWriterIdentity(a, "agent_codex_mutate"),
         ),
       ),
   },
@@ -5735,8 +6422,26 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentSnippetCreate(
-          requirePresent(a, "payload", "agent_snippet_create"),
+          requireCanonicalAgentCreatePayload(a, "agent_snippet_create"),
         ),
+      ),
+  },
+  snippet_create: {
+    run: async (b, a) =>
+      parseWire(
+        await b.snippetCreate(requireSnippetWriterPayload(a, "snippet_create")),
+      ),
+  },
+  snippet_update: {
+    run: async (b, a) =>
+      parseWire(
+        await b.snippetUpdate(requireSnippetWriterPayload(a, "snippet_update")),
+      ),
+  },
+  snippet_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await b.snippetDelete(requireSnippetWriterPayload(a, "snippet_delete")),
       ),
   },
   agent_propose_scene_body: {
@@ -5770,9 +6475,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   agent_foreshadow_create: {
     run: async (b, a) =>
       parseWire(
-        await b.agentForeshadowCreate(
-          requirePresent(a, "payload", "agent_foreshadow_create"),
-        ),
+        await b.agentForeshadowCreate(requireAgentForeshadowCreatePayload(a)),
       ),
   },
   agent_foreshadow_update: {
@@ -5785,7 +6488,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventCreate(
-          requirePresent(a, "payload", "agent_event_create"),
+          requireAgentChroniclePayload(a, "agent_event_create"),
         ),
       ),
   },
@@ -5827,7 +6530,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventLink(
-          requirePresent(a, "payload", "agent_scene_event_link"),
+          requireAgentChroniclePayload(a, "agent_scene_event_link"),
         ),
       ),
   },
@@ -5845,7 +6548,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventUnlink(
-          requirePresent(a, "payload", "agent_scene_event_unlink"),
+          requireAgentChroniclePayload(a, "agent_scene_event_unlink"),
         ),
       ),
   },
@@ -5853,7 +6556,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventRelationAdd(
-          requirePresent(a, "payload", "agent_event_relation_add"),
+          requireAgentChroniclePayload(a, "agent_event_relation_add"),
         ),
       ),
   },
@@ -5861,7 +6564,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentEventRelationRemove(
-          requirePresent(a, "payload", "agent_event_relation_remove"),
+          requireAgentChroniclePayload(a, "agent_event_relation_remove"),
         ),
       ),
   },
@@ -6045,7 +6748,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionUndoCommit(
-          requirePresent(a, "payload", "narrative_extraction_undo_commit"),
+          requireNarrativeCommitReplayPayload(
+            a,
+            "narrative_extraction_undo_commit",
+          ),
         ),
       ),
   },
@@ -6053,7 +6759,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.narrativeExtractionRedoCommit(
-          requirePresent(a, "payload", "narrative_extraction_redo_commit"),
+          requireNarrativeCommitReplayPayload(
+            a,
+            "narrative_extraction_redo_commit",
+          ),
         ),
       ),
   },

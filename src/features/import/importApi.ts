@@ -8,6 +8,7 @@ import {
   deleteCodexEntry,
 } from "@/features/codex/api";
 import { createSnippet } from "@/features/snippets/api";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import { resizeAndConvertToWebP } from "@/features/codex/iconUtils";
 import {
   listCodexTags,
@@ -34,7 +35,6 @@ import {
   getCurrentProjectId,
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
-import { recordChangeEvent } from "@/features/timelapse/recorder";
 import {
   rebaselineEntitiesAtTail,
   rebaselineScenesAtTail,
@@ -255,15 +255,22 @@ export async function importMemoNote(
     1,
   )[0]!;
 
-  const node = await createNode({
-    id: crypto.randomUUID(),
-    projectId: getCurrentProjectId(),
-    nodeType: "note",
-    title,
-    sortOrder,
-    content: fieldValueToProseMirror(body),
-  });
-  await updateNode(node.id, { contextMode: "suppress" });
+  const node = await createNode(
+    {
+      id: crypto.randomUUID(),
+      projectId: getCurrentProjectId(),
+      nodeType: "note",
+      title,
+      sortOrder,
+      content: fieldValueToProseMirror(body),
+    },
+    { writeContext: createCanonicalWriteContext("import") },
+  );
+  await updateNode(
+    node.id,
+    { contextMode: "suppress" },
+    { writeContext: createCanonicalWriteContext("import") },
+  );
 }
 
 /**
@@ -283,7 +290,9 @@ export async function importCodexEntries(
   const sorted = topoSortEntries(entries);
 
   // ── Phase 0: ensure builtin types exist ───────────────────────────────────
-  await ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage());
+  await ensureBuiltinTypes(getCurrentProjectId(), getCurrentProjectLanguage(), {
+    origin: "import",
+  });
 
   // ── Phase 0.5: resolve tag→type mappings ─────────────────────────────────
   const tagNameToTypeSlug = new Map<string, string>();
@@ -302,11 +311,14 @@ export async function importCodexEntries(
         if (createdSlugs.has(slug)) {
           tagNameToTypeSlug.set(tagName, slug);
         } else {
-          const newType = await createCodexType({
-            projectId: getCurrentProjectId(),
-            slug,
-            label: tagName,
-          });
+          const newType = await createCodexType(
+            {
+              projectId: getCurrentProjectId(),
+              slug,
+              label: tagName,
+            },
+            { writeContext: createCanonicalWriteContext("import") },
+          );
           tagNameToTypeSlug.set(tagName, newType.slug);
           createdSlugs.add(slug);
         }
@@ -342,11 +354,14 @@ export async function importCodexEntries(
   const tagNameToId = new Map(existingTags.map((t) => [t.name, t.id]));
   for (const name of allTagNames) {
     if (!tagNameToId.has(name)) {
-      const tag = await createCodexTag({
-        id: crypto.randomUUID(),
-        projectId: getCurrentProjectId(),
-        name,
-      });
+      const tag = await createCodexTag(
+        {
+          id: crypto.randomUUID(),
+          projectId: getCurrentProjectId(),
+          name,
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
       tagNameToId.set(name, tag.id);
     }
   }
@@ -374,15 +389,18 @@ export async function importCodexEntries(
     for (const fieldName of Object.keys(entry.fields)) {
       if (!defMap.has(fieldName)) {
         const sortOrder = typeNextSortOrder.get(effectiveType) ?? 0;
-        const def = await createDefinition({
-          id: crypto.randomUUID(),
-          projectId: getCurrentProjectId(),
-          typeSlug: effectiveType,
-          name: fieldName,
-          fieldType: "text",
-          sortOrder,
-          includeInContext: 1,
-        });
+        const def = await createDefinition(
+          {
+            id: crypto.randomUUID(),
+            projectId: getCurrentProjectId(),
+            typeSlug: effectiveType,
+            name: fieldName,
+            fieldType: "text",
+            sortOrder,
+            includeInContext: 1,
+          },
+          { writeContext: createCanonicalWriteContext("import") },
+        );
         defMap.set(fieldName, def.id);
         typeNextSortOrder.set(effectiveType, sortOrder + 1);
       }
@@ -412,22 +430,30 @@ export async function importCodexEntries(
 
       const effectiveType = resolvedTypeMap.get(e.id) ?? e.type;
 
-      await createCodexEntry({
-        id: e.id,
-        projectId: getCurrentProjectId(),
-        type: effectiveType,
-        name: e.name,
-        aliases: JSON.stringify(e.aliases),
-        parentId: e.parentId,
-      });
+      await createCodexEntry(
+        {
+          id: e.id,
+          projectId: getCurrentProjectId(),
+          type: effectiveType,
+          name: e.name,
+          aliases: JSON.stringify(e.aliases),
+          parentId: e.parentId,
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
 
       try {
-        await updateCodexEntry(getCurrentProjectId(), e.id, {
-          content: fieldValueToProseMirror(e.summary),
-          icon: icon ?? null,
-          contextMode: e.contextMode,
-          // tagsCache is set authoritatively by setEntryTags below
-        });
+        await updateCodexEntry(
+          getCurrentProjectId(),
+          e.id,
+          {
+            content: fieldValueToProseMirror(e.summary),
+            icon: icon ?? null,
+            contextMode: e.contextMode,
+            // tagsCache is set authoritatively by setEntryTags below
+          },
+          { writeContext: createCanonicalWriteContext("import") },
+        );
 
         // Set real tag associations (also updates tagsCache on the entry)
         const tagNames = (
@@ -438,7 +464,10 @@ export async function importCodexEntries(
         const tagIds = tagNames
           .map((name) => tagNameToId.get(name))
           .filter((id): id is string => id !== undefined);
-        await setEntryTags(e.id, tagIds);
+        await setEntryTags(e.id, tagIds, {
+          projectId: getCurrentProjectId(),
+          writeContext: createCanonicalWriteContext("import"),
+        });
 
         // Upsert custom detail values
         if (e.fields) {
@@ -446,7 +475,9 @@ export async function importCodexEntries(
           for (const [fieldName, value] of Object.entries(e.fields)) {
             const defId = defMap.get(fieldName);
             if (defId) {
-              await upsertValue(e.id, defId, fieldValueToProseMirror(value));
+              await upsertValue(e.id, defId, fieldValueToProseMirror(value), {
+                writeContext: createCanonicalWriteContext("import"),
+              });
             }
           }
         }
@@ -454,7 +485,9 @@ export async function importCodexEntries(
         // Roll back the created entry to avoid leaving partial data in the DB.
         // ON DELETE CASCADE removes codex_entry_tags and codex_detail_values.
         try {
-          await deleteCodexEntry(getCurrentProjectId(), e.id);
+          await deleteCodexEntry(getCurrentProjectId(), e.id, {
+            writeContext: createCanonicalWriteContext("import"),
+          });
         } catch {
           // best-effort rollback
         }
@@ -479,11 +512,6 @@ export async function importCodexEntries(
   // each imported entry's baseline at the current chain tail (no-op when
   // recording is off). Import is past-genesis, so a tail anchor is correct.
   if (createdCodexIds.length > 0) {
-    recordChangeEvent({
-      domain: "import",
-      opType: "codex",
-      payload: { codex: createdCodexIds.length },
-    });
     await rebaselineEntitiesAtTail(
       getCurrentProjectId(),
       createdCodexIds.map((id) => ({ kind: "codex" as const, id })),
@@ -509,13 +537,16 @@ export async function importSnippets(
     onProgress?.({ total: snippets.length, done: i, currentName: s.title });
 
     try {
-      await createSnippet({
-        id: s.id,
-        projectId: getCurrentProjectId(),
-        title: s.title,
-        content: s.content,
-        contentSource: "human",
-      });
+      await createSnippet(
+        {
+          id: s.id,
+          projectId: getCurrentProjectId(),
+          title: s.title,
+          content: s.content,
+          contentSource: "human",
+        },
+        { writeContext: createCanonicalWriteContext("import") },
+      );
       createdSnippetIds.push(s.id);
       imported++;
     } catch (err) {
@@ -532,11 +563,6 @@ export async function importSnippets(
   // Timelapse: same out-of-band body concern as imported codex — anchor each
   // imported snippet's baseline at the tail so a later center-tab edit replays.
   if (createdSnippetIds.length > 0) {
-    recordChangeEvent({
-      domain: "import",
-      opType: "snippet",
-      payload: { snippet: createdSnippetIds.length },
-    });
     await rebaselineEntitiesAtTail(
       getCurrentProjectId(),
       createdSnippetIds.map((id) => ({ kind: "snippet" as const, id })),
@@ -559,8 +585,8 @@ export async function importTree(
 ): Promise<{ imported: number; errors: string[] }> {
   let imported = 0;
   const errors: string[] = [];
-  // Imported scenes get their content via saveSceneContent (DB direct), which
-  // bypasses the editor's doc.step recording. Collect them so we can re-anchor
+  // Imported scenes get their content via the Native scene writer, outside the
+  // editor's doc.step recording. Collect them so we can re-anchor
   // their editor baselines at the chain tail (like a restore) — otherwise a
   // later edit to an imported scene replays from an empty genesis doc and
   // throws RangeError.
@@ -598,14 +624,17 @@ export async function importTree(
                   return key;
                 })()
               : keys[i]!;
-          await createNode({
-            id: node.id,
-            projectId: getCurrentProjectId(),
-            parentId: parentId ?? undefined,
-            nodeType: "folder",
-            title: node.title || "Untitled",
-            sortOrder,
-          });
+          await createNode(
+            {
+              id: node.id,
+              projectId: getCurrentProjectId(),
+              parentId: parentId ?? undefined,
+              nodeType: "folder",
+              title: node.title || "Untitled",
+              sortOrder,
+            },
+            { writeContext: createCanonicalWriteContext("import") },
+          );
           imported++;
           done++;
           await insertNodes(node.children, node.id);
@@ -624,19 +653,23 @@ export async function importTree(
                   return key;
                 })()
               : keys[i]!;
-          await createNode({
-            id: node.id,
-            projectId: getCurrentProjectId(),
-            parentId: parentId ?? undefined,
-            nodeType: "scene",
-            title: node.title || "Untitled",
-            sortOrder,
-          });
+          await createNode(
+            {
+              id: node.id,
+              projectId: getCurrentProjectId(),
+              parentId: parentId ?? undefined,
+              nodeType: "scene",
+              title: node.title || "Untitled",
+              sortOrder,
+            },
+            { writeContext: createCanonicalWriteContext("import") },
+          );
           const content = await resolveSceneContent(node);
           if (content !== "{}") {
             await saveSceneContent(node.id, {
               content,
               charCount: sceneCharCount(content),
+              writeContext: createCanonicalWriteContext("import"),
             });
           }
           createdSceneIds.push(node.id);
@@ -653,11 +686,6 @@ export async function importTree(
   await insertNodes(roots, null);
 
   if (imported > 0) {
-    recordChangeEvent({
-      domain: "import",
-      opType: "tree",
-      payload: { imported, scenes: createdSceneIds.length },
-    });
     // Import always targets the currently-loaded project (past-genesis), so a
     // tail-anchored rebaseline is correct here.
     await rebaselineScenesAtTail(getCurrentProjectId(), createdSceneIds);

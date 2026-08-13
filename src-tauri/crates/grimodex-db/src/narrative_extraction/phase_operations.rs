@@ -74,9 +74,7 @@ pub(crate) fn parse_phase_create_payload(
         .map_err(|err| anyhow::anyhow!("invalid codex.phase.create payload: {err}"))
 }
 
-pub(crate) fn parse_phase_patch_payload(
-    payload: &Value,
-) -> anyhow::Result<CodexPhasePatchPayload> {
+pub(crate) fn parse_phase_patch_payload(payload: &Value) -> anyhow::Result<CodexPhasePatchPayload> {
     serde_json::from_value(payload.clone())
         .map_err(|err| anyhow::anyhow!("invalid codex.phase.patch payload: {err}"))
 }

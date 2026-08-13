@@ -235,8 +235,38 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
   });
 
   it("AI 経路 agentCreateEvent は detail に authorship マークを焼き込む", async () => {
-    await agentCreateEvent({ title: "t", detail: DETAIL_DOC });
+    await agentCreateEvent({
+      requestId: "event-detail-create",
+      title: "t",
+      detail: DETAIL_DOC,
+    });
     expect(hasAuthorshipMark(lastDetailDoc())).toBe(true);
+  });
+
+  it("import 経路は取り込んだ detail を AI 帰属へ書き換えない", async () => {
+    await agentCreateEvent(
+      {
+        requestId: "event-detail-import",
+        title: "t",
+        detail: DETAIL_DOC,
+      },
+      {
+        projectId: "p1",
+        surface: "import",
+        skipPolicyGate: true,
+      },
+    );
+    expect(hasAuthorshipMark(lastDetailDoc())).toBe(false);
+    expect(h.invoke).toHaveBeenCalledWith("agent_event_create", {
+      payload: expect.objectContaining({ surface: "import" }),
+    });
+  });
+
+  it("agentCreateEvent は requestId 欠落を invoke 前に拒否する", async () => {
+    await expect(
+      agentCreateEvent({ title: "missing request" } as never),
+    ).rejects.toThrow("requestId is required");
+    expect(h.invoke).not.toHaveBeenCalled();
   });
 
   it("caller-reusable eventId is passed through the create payload", async () => {
@@ -257,6 +287,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
   it("granularity 省略を native 推論へ渡し、日付を none で上書きしない", async () => {
     await agentCreateEvent({
+      requestId: "event-dated-create",
       title: "dated",
       startTime: 10,
       startMinute: 720,
@@ -371,6 +402,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
     expect(h.invoke).toHaveBeenCalledWith("agent_event_update", {
       payload: expect.objectContaining({
+        requestId: expect.any(String),
         eventId: "e1",
         baseVersion: 7,
         title: "new",
@@ -382,6 +414,37 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
         domain: "event",
         opType: "event.update",
         entityId: "e1",
+      },
+    );
+  });
+
+  it("update/delete/participants は指定した論理 requestId を再送できる", async () => {
+    await agentUpdateEvent(
+      { eventId: "e1", baseVersion: 0, title: "retryable" },
+      { requestId: "event-update-retry-1" },
+    );
+    await agentDeleteEvent("e1", {
+      baseVersion: 1,
+      requestId: "event-delete-retry-1",
+    });
+    await uiSetEventParticipants("e1", ["c1"], {
+      baseVersion: 2,
+      requestId: "event-participants-retry-1",
+    });
+
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_update", {
+      payload: expect.objectContaining({ requestId: "event-update-retry-1" }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "agent_event_delete", {
+      payload: expect.objectContaining({ requestId: "event-delete-retry-1" }),
+    });
+    expect(h.invoke).toHaveBeenNthCalledWith(
+      3,
+      "agent_event_set_participants",
+      {
+        payload: expect.objectContaining({
+          requestId: "event-participants-retry-1",
+        }),
       },
     );
   });

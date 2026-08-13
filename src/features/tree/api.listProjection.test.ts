@@ -1,7 +1,17 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach } from "vitest";
 import { db } from "@/db/client";
-import { projects, treeNodes } from "@/db/schema";
+import {
+  changeEvents,
+  idempotencyRequests,
+  narrativeChangeCursors,
+  narrativeChangeEvents,
+  narrativeChangeSets,
+  narrativeChangeTransactions,
+  projects,
+  treeNodes,
+  undoJournal,
+} from "@/db/schema";
 import {
   listNodes,
   listAllNodes,
@@ -57,6 +67,13 @@ async function insertNode(
 }
 
 beforeEach(async () => {
+  await db.delete(narrativeChangeEvents);
+  await db.delete(narrativeChangeTransactions);
+  await db.delete(narrativeChangeCursors);
+  await db.delete(narrativeChangeSets);
+  await db.delete(undoJournal);
+  await db.delete(changeEvents);
+  await db.delete(idempotencyRequests);
   await db.delete(treeNodes);
 });
 
