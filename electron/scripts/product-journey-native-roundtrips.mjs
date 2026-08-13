@@ -490,8 +490,14 @@ function snapshotJourney(configureWorkspace, log) {
           const now = new Date().toISOString();
           const scene = await current.invokeOk(page, "tree_node_create", {
             payload: {
-              id: sceneId,
               projectId,
+              requestId: `native-snapshot-scene-request-${randomUUID()}`,
+              sessionId: `native-snapshot-scene-session-${randomUUID()}`,
+              eventUid: `native-snapshot-scene-event-${randomUUID()}`,
+              origin: "human",
+              originalTransactionId: null,
+              undoJournalId: null,
+              id: sceneId,
               parentId: null,
               nodeType: "scene",
               title: "Native snapshot scene",
