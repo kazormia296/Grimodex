@@ -47,8 +47,10 @@ function requireRow(rows, label) {
   return rows[0];
 }
 
-async function assertNoIntegrityOrphans(harness, page, label) {
-  const report = await harness.invokeOk(page, "integrity_check", {});
+async function assertNoIntegrityOrphans(harness, page, projectId, label) {
+  const report = await harness.invokeOk(page, "integrity_check", {
+    projectId,
+  });
   const orphanCounts = Object.entries(report ?? {}).filter(
     ([, count]) => typeof count !== "number" || count !== 0,
   );
@@ -223,7 +225,12 @@ function chronicleJourney(configureWorkspace, log) {
               `${id}/${phase}: persisted Chronicle aggregate did not match the typed mutation`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -320,7 +327,12 @@ function lintJourney(configureWorkspace, log) {
               `${id}/${phase}: SQLite row did not match the typed lint write`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -446,7 +458,12 @@ function mapJourney(configureWorkspace, log) {
               `${id}/${phase}: Map aggregate did not survive as one FK-linked graph`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
@@ -595,7 +612,12 @@ function snapshotJourney(configureWorkspace, log) {
               `${id}/${phase}: SQLite snapshot rows did not match the typed aggregate`,
             );
           }
-          await assertNoIntegrityOrphans(current, page, `${id}/${phase}`);
+          await assertNoIntegrityOrphans(
+            current,
+            page,
+            state.projectId,
+            `${id}/${phase}`,
+          );
         },
       }),
   };
