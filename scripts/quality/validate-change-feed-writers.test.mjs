@@ -72,7 +72,24 @@ function writeFixture(operations) {
   );
   writeFileSync(
     path.join(policyDir, "change-feed-writers.json"),
-    JSON.stringify({ schemaVersion: 1, gateId: "gate-c1", operations }),
+    JSON.stringify({
+      schemaVersion: 1,
+      gateId: "gate-c1",
+      writerMatrix: [
+        {
+          writer: "fixture.writer",
+          objectKey: "fixture",
+          addressing: "independent-key",
+          paths: ["/"],
+          textImpact: "none",
+          cause: ["forward"],
+          atomic: true,
+          undoRedo: false,
+          idempotent: true,
+        },
+      ],
+      operations,
+    }),
   );
   writeFileSync(
     path.join(rustDir, "writer.rs"),

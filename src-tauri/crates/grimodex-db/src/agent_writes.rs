@@ -1961,23 +1961,24 @@ fn codex_delete_cascade_restore_feed_events(
         )?);
     }
     for detail in &cascade.details {
-        let definition_id = detail
-            .get("definitionId")
+        let value_id = detail
+            .get("id")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no definitionId"))?;
+            .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no id"))?;
         let after = crate::canonical_feed_snapshots::canonical_codex_detail_snapshot(
             conn,
             project_id,
-            entry_id,
-            definition_id,
+            detail
+                .get("entryId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no entryId"))?,
+            detail
+                .get("definitionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no definitionId"))?,
         )?;
         events.push(restored_cascade_event(
-            json!({
-                "kind": "component",
-                "componentId": format!(
-                    "codex-detail-value:{entry_id}:{definition_id}"
-                ),
-            }),
+            json!({ "kind": "codex-detail-value", "valueId": value_id }),
             &after,
             "metadata",
             vec!["/".to_string()],
@@ -2179,21 +2180,12 @@ fn codex_delete_cascade_feed_events(
         )?);
     }
     for detail in &snapshot.details {
-        let entry_id = detail
-            .get("entryId")
+        let value_id = detail
+            .get("id")
             .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("Codex detail cascade snapshot has no entryId"))?;
-        let definition_id = detail
-            .get("definitionId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("Codex detail cascade snapshot has no definitionId"))?;
+            .ok_or_else(|| anyhow::anyhow!("Codex detail cascade snapshot has no id"))?;
         events.push(deleted_cascade_event(
-            json!({
-                "kind": "component",
-                "componentId": format!(
-                    "codex-detail-value:{entry_id}:{definition_id}"
-                ),
-            }),
+            json!({ "kind": "codex-detail-value", "valueId": value_id }),
             detail,
             "metadata",
             vec!["/".to_string()],
@@ -8869,7 +8861,7 @@ mod tests {
                     json!({ "kind": "codex-entry", "entryId": "cascade-root" }),
                     json!({ "kind": "codex-relation", "relationId": "cascade-relation" }),
                     json!({ "kind": "codex-phase", "phaseId": "cascade-phase" }),
-                    json!({ "kind": "component", "componentId": "codex-detail-value:cascade-root:cascade-definition" }),
+                    json!({ "kind": "codex-detail-value", "valueId": "cascade-detail" }),
                     json!({ "kind": "codex-entry", "entryId": "cascade-child" }),
                 ]
             );

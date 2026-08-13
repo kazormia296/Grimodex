@@ -345,11 +345,11 @@ pub fn restore_scene_revision(
                             "/content".to_string(),
                             "/placedBeatPreview".to_string(),
                         ],
-                        text_impact: Some(json!({
-                            "sceneId": payload.entity_id,
-                            "revisionId": payload.revision_id,
-                            "safetyRevisionId": safety_revision_id,
-                        })),
+                        // Revision restore has no persisted Canonical Text
+                        // position map at this boundary. Keep it as a full
+                        // content invalidation until a producer can attach
+                        // the versioned TextChangeImpact contract.
+                        text_impact: None,
                         structural_impact: None,
                     }],
                 },

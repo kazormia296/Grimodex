@@ -34,6 +34,10 @@ use super::temporal_operations::{
 use super::temporal_projections::parse_projection_record_payload;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 
+fn json_pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TrustedDecisionActor {
     Human {
@@ -550,7 +554,7 @@ pub(crate) fn affected_fields(
             fields.push(field(
                 "codex-entry",
                 &entry_id,
-                &format!("/details/{}", value.definition_id),
+                &format!("/details/{}", json_pointer_segment(&value.definition_id)),
             ));
         }
         "codex.phase.create" => {
@@ -570,7 +574,7 @@ pub(crate) fn affected_fields(
                 fields.push(field(
                     "codex-phase",
                     &value.phase_id,
-                    &format!("/details/{}", item.definition_id),
+                    &format!("/details/{}", json_pointer_segment(&item.definition_id)),
                 ));
             }
         }
@@ -592,7 +596,7 @@ pub(crate) fn affected_fields(
                 fields.push(field(
                     "codex-phase",
                     &value.phase_id,
-                    &format!("/details/{}", item.definition_id),
+                    &format!("/details/{}", json_pointer_segment(&item.definition_id)),
                 ));
             }
         }

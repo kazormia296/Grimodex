@@ -325,14 +325,32 @@ fn ensure_event_history_continuity(
                 head
             }
         };
-        if let Some(prior_after) = prior_after {
-            let current_before = (event.before_version, event.before_digest.clone());
-            anyhow::ensure!(
-            prior_after == current_before,
-            "NARRATIVE_CHANGE_FEED_DISCONTINUITY: object {identity} previous after state {:?} does not match current before state {:?}",
-            prior_after,
-            current_before
-        );
+        // A project restore starts a new semantic epoch. Its marker is the
+        // explicit trigger for C2's full rebuild and intentionally does not
+        // need to chain from the immediately preceding project marker: a
+        // normal domain write may have occurred between two restores.
+        let is_epoch_reset = event
+            .object_key
+            .get("kind")
+            .and_then(Value::as_str)
+            == Some("project")
+            && event
+                .structural_impact
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|impact| impact.get("event"))
+                .and_then(Value::as_str)
+                == Some("project-restored");
+        if !is_epoch_reset {
+            if let Some(prior_after) = prior_after {
+                let current_before = (event.before_version, event.before_digest.clone());
+                anyhow::ensure!(
+                    prior_after == current_before,
+                    "NARRATIVE_CHANGE_FEED_DISCONTINUITY: object {identity} previous after state {:?} does not match current before state {:?}",
+                    prior_after,
+                    current_before
+                );
+            }
         }
         heads.insert(
             identity,
@@ -352,6 +370,189 @@ fn validate_digest(value: Option<&str>, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn validate_changed_path(path: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !path.is_empty() && path.trim() == path && path.starts_with('/'),
+        "changedPaths must use canonical JSON Pointer paths"
+    );
+    if path == "/" {
+        return Ok(());
+    }
+    let bytes = path.as_bytes();
+    let mut index = 1;
+    while index < bytes.len() {
+        if bytes[index] == b'~' {
+            anyhow::ensure!(
+                index + 1 < bytes.len() && matches!(bytes[index + 1], b'0' | b'1'),
+                "changedPaths contains an invalid JSON Pointer escape"
+            );
+            index += 1;
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+fn normalize_structural_impact(value: &mut Value) -> anyhow::Result<()> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("structuralImpact must be an object"))?;
+    if let Some(event) = object.get("event") {
+        anyhow::ensure!(
+            matches!(
+                event.as_str(),
+                Some("semantic-epoch-reset")
+                    | Some("project-restored")
+                    | Some("schema-component-changed")
+            ),
+            "structuralImpact.event is unsupported"
+        );
+        anyhow::ensure!(
+            object
+                .get("requiresFullRebuild")
+                .and_then(Value::as_bool)
+                == Some(true),
+            "structuralImpact epoch markers require requiresFullRebuild=true"
+        );
+    }
+    if let Some(requires_full_rebuild) = object.get("requiresFullRebuild") {
+        anyhow::ensure!(
+            requires_full_rebuild.is_boolean(),
+            "structuralImpact.requiresFullRebuild must be boolean"
+        );
+    }
+    let Some(paths) = object.get_mut("changedPaths") else {
+        return Ok(());
+    };
+    let paths = paths
+        .as_array_mut()
+        .ok_or_else(|| anyhow::anyhow!("structuralImpact.changedPaths must be an array"))?;
+    anyhow::ensure!(
+        !paths.is_empty(),
+        "structuralImpact.changedPaths must contain at least one path"
+    );
+    let mut normalized = Vec::with_capacity(paths.len());
+    for path in paths.iter() {
+        let path = path
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("structuralImpact.changedPaths must contain strings"))?;
+        validate_changed_path(path)?;
+        normalized.push(path.to_string());
+    }
+    normalized.sort();
+    anyhow::ensure!(
+        normalized.windows(2).all(|pair| pair[0] != pair[1]),
+        "structuralImpact.changedPaths must not contain duplicates"
+    );
+    *paths = normalized.into_iter().map(Value::String).collect();
+    Ok(())
+}
+
+fn validate_utf16_range(value: &Value, field: &str) -> anyhow::Result<()> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("{field} must be an object"))?;
+    let from = object
+        .get("from")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("{field}.from must be a non-negative integer"))?;
+    let to = object
+        .get("to")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow::anyhow!("{field}.to must be a non-negative integer"))?;
+    anyhow::ensure!(to >= from, "{field}.to must be >= {field}.from");
+    Ok(())
+}
+
+fn validate_text_impact(impact: &Value) -> anyhow::Result<()> {
+    let object = impact
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("textImpact must be an object"))?;
+    anyhow::ensure!(
+        object.get("unit").and_then(Value::as_str) == Some("utf16"),
+        "textImpact.unit must be 'utf16'"
+    );
+    require_non_empty(
+        object
+            .get("normalizerVersion")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("textImpact.normalizerVersion is required"))?,
+        "textImpact.normalizerVersion",
+    )?;
+    for field in [
+        "oldStorageDigest",
+        "newStorageDigest",
+        "oldCanonicalDigest",
+        "newCanonicalDigest",
+    ] {
+        validate_digest(
+            Some(
+                object
+                    .get(field)
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("textImpact.{field} is required"))?,
+            ),
+            &format!("textImpact.{field}"),
+        )?;
+    }
+    let mapping = object
+        .get("mapping")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("textImpact.mapping is required"))?;
+    match mapping.get("kind").and_then(Value::as_str) {
+        Some("position-map") => {
+            let segments = mapping
+                .get("segments")
+                .and_then(Value::as_array)
+                .ok_or_else(|| anyhow::anyhow!("textImpact.mapping.segments is required"))?;
+            for (index, segment) in segments.iter().enumerate() {
+                let segment_object = segment.as_object().ok_or_else(|| {
+                    anyhow::anyhow!("textImpact.mapping.segments[{index}] must be an object")
+                })?;
+                validate_utf16_range(
+                    segment_object.get("oldRange").ok_or_else(|| {
+                        anyhow::anyhow!("textImpact.mapping.segments[{index}].oldRange is required")
+                    })?,
+                    &format!("textImpact.mapping.segments[{index}].oldRange"),
+                )?;
+                validate_utf16_range(
+                    segment_object.get("newRange").ok_or_else(|| {
+                        anyhow::anyhow!("textImpact.mapping.segments[{index}].newRange is required")
+                    })?,
+                    &format!("textImpact.mapping.segments[{index}].newRange"),
+                )?;
+                anyhow::ensure!(
+                    matches!(
+                        segment_object.get("behavior").and_then(Value::as_str),
+                        Some("unchanged") | Some("inserted") | Some("deleted") | Some("replaced")
+                    ),
+                    "textImpact.mapping segment behavior is unsupported"
+                );
+            }
+        }
+        Some("canonical-diff") => {
+            for field in ["changedOldRanges", "changedNewRanges"] {
+                let ranges = mapping
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| anyhow::anyhow!("textImpact.mapping.{field} is required"))?;
+                for (index, range) in ranges.iter().enumerate() {
+                    validate_utf16_range(range, &format!("textImpact.mapping.{field}[{index}]"))?;
+                }
+            }
+        }
+        Some("whole-document") => require_non_empty(
+            mapping
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("textImpact.mapping.reason is required"))?,
+            "textImpact.mapping.reason",
+        )?,
+        _ => anyhow::bail!("textImpact.mapping.kind is unsupported"),
+    }
+    Ok(())
+}
+
 fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
     let key = event
         .object_key
@@ -362,13 +563,23 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("objectKey.kind is required"))?;
     let required_identity = match kind {
+        "project" => "projectId",
         "scene" => "sceneId",
         "chronicle-event" => "eventId",
         "codex-entry" => "entryId",
         "codex-relation" => "relationId",
         "codex-phase" => "phaseId",
+        "codex-detail-definition" => "definitionId",
+        "codex-detail-value" => "valueId",
         "plot-thread" => "threadId",
+        "plot-marker" => "markerId",
+        "plot-branch" => "branchId",
         "foreshadow" => "foreshadowId",
+        "foreshadow-setup" => "setupId",
+        "foreshadow-payoff" => "payoffId",
+        "temporal-node" => "nodeId",
+        "temporal-constraint" => "constraintId",
+        "temporal-projection" => "projectionId",
         "calendar" => "calendarRef",
         "import-source" => "sourceSetId",
         "component" => "componentId",
@@ -408,7 +619,7 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
         "changedPaths must contain at least one path"
     );
     for path in &event.changed_paths {
-        anyhow::ensure!(!path.trim().is_empty(), "changedPaths must be non-empty");
+        validate_changed_path(path)?;
         anyhow::ensure!(
             changed_paths.insert(path),
             "changedPaths must not contain duplicates"
@@ -422,6 +633,9 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
     }
     validate_digest(event.before_digest.as_deref(), "beforeDigest")?;
     validate_digest(event.after_digest.as_deref(), "afterDigest")?;
+    if let Some(text_impact) = event.text_impact.as_ref() {
+        validate_text_impact(text_impact)?;
+    }
     let has_before = event.before_version.is_some() || event.before_digest.is_some();
     let has_after = event.after_version.is_some() || event.after_digest.is_some();
     match event.mutation_kind.as_str() {
@@ -478,6 +692,13 @@ fn ensure_feed_object_project_scope(
             .ok_or_else(|| anyhow::anyhow!("objectKey.{name} is required"))
     };
     let lookup = match kind {
+        "project" => {
+            anyhow::ensure!(
+                identity("projectId")? == project_id,
+                "Narrative Change Feed project marker belongs to another project"
+            );
+            None
+        }
         "scene" => Some((
             "SELECT project_id FROM tree_nodes WHERE id = ?1",
             identity("sceneId")?,
@@ -501,13 +722,61 @@ fn ensure_feed_object_project_scope(
               WHERE phase.id = ?1",
             identity("phaseId")?,
         )),
+        "codex-detail-definition" => Some((
+            "SELECT project_id FROM codex_detail_definitions WHERE id = ?1",
+            identity("definitionId")?,
+        )),
+        "codex-detail-value" => Some((
+            "SELECT entry.project_id
+               FROM codex_detail_values value
+               JOIN codex_entries entry ON entry.id = value.entry_id
+              WHERE value.id = ?1",
+            identity("valueId")?,
+        )),
         "plot-thread" => Some((
             "SELECT project_id FROM plot_threads WHERE id = ?1",
             identity("threadId")?,
         )),
+        "plot-marker" => Some((
+            "SELECT thread.project_id
+               FROM plot_thread_scene_links marker
+               JOIN plot_threads thread ON thread.id = marker.thread_id
+              WHERE marker.id = ?1",
+            identity("markerId")?,
+        )),
+        "plot-branch" => Some((
+            "SELECT project_id FROM plot_thread_branches WHERE id = ?1",
+            identity("branchId")?,
+        )),
         "foreshadow" => Some((
             "SELECT project_id FROM foreshadows WHERE id = ?1",
             identity("foreshadowId")?,
+        )),
+        "foreshadow-setup" => Some((
+            "SELECT foreshadow.project_id
+               FROM foreshadow_setups setup
+               JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+              WHERE setup.id = ?1",
+            identity("setupId")?,
+        )),
+        "foreshadow-payoff" => Some((
+            "SELECT foreshadow.project_id
+               FROM foreshadow_payoffs payoff
+               JOIN foreshadows foreshadow ON foreshadow.id = payoff.foreshadow_id
+              WHERE payoff.id = ?1",
+            identity("payoffId")?,
+        )),
+        "temporal-node" => Some((
+            "SELECT project_id FROM narrative_temporal_nodes WHERE id = ?1",
+            identity("nodeId")?,
+        )),
+        "temporal-constraint" => Some((
+            "SELECT project_id FROM narrative_temporal_constraints WHERE id = ?1",
+            identity("constraintId")?,
+        )),
+        "temporal-projection" => Some((
+            "SELECT project_id FROM narrative_temporal_projections WHERE id = ?1",
+            identity("projectionId")?,
         )),
         "calendar" => {
             anyhow::ensure!(
@@ -1059,6 +1328,16 @@ pub fn append_narrative_change_transaction_in_tx(
         !conn.is_autocommit(),
         "Narrative Change Feed append requires a caller-owned transaction"
     );
+    let mut normalized_input = input.clone();
+    for event in &mut normalized_input.events {
+        validate_event(event)?;
+        event.changed_paths.sort();
+        if let Some(structural_impact) = event.structural_impact.as_mut() {
+            normalize_structural_impact(structural_impact)?;
+        }
+    }
+    let input = normalized_input;
+
     require_non_empty(&input.project_id, "projectId")?;
     require_non_empty(&input.request_id, "requestId")?;
     require_non_empty(&input.source_domain, "sourceDomain")?;
@@ -1069,7 +1348,6 @@ pub fn append_narrative_change_transaction_in_tx(
         "Narrative Change Feed transaction requires at least one event"
     );
     for event in &input.events {
-        validate_event(event)?;
         ensure_feed_object_project_scope(conn, &input.project_id, event)?;
     }
 
@@ -1318,7 +1596,7 @@ pub fn append_narrative_change_transaction_in_tx(
         );
     }
 
-    let digest = payload_digest(input)?;
+    let digest = payload_digest(&input)?;
     if let Some(existing) = existing_result(
         conn,
         &input.project_id,
@@ -1729,8 +2007,25 @@ pub fn narrative_object_key(entity_kind: &str, entity_id: &str) -> Value {
         "codex_phase" | "codex_entry_phase" => {
             json!({ "kind": "codex-phase", "phaseId": entity_id })
         }
+        "codex_detail_definition" => {
+            json!({ "kind": "codex-detail-definition", "definitionId": entity_id })
+        }
+        "codex_detail_value" => {
+            json!({ "kind": "codex-detail-value", "valueId": entity_id })
+        }
         "plot_thread" => json!({ "kind": "plot-thread", "threadId": entity_id }),
+        "plot_thread_marker" => json!({ "kind": "plot-marker", "markerId": entity_id }),
+        "plot_thread_branch" => json!({ "kind": "plot-branch", "branchId": entity_id }),
         "foreshadow" => json!({ "kind": "foreshadow", "foreshadowId": entity_id }),
+        "foreshadow_setup" => json!({ "kind": "foreshadow-setup", "setupId": entity_id }),
+        "foreshadow_payoff" => json!({ "kind": "foreshadow-payoff", "payoffId": entity_id }),
+        "temporal_node" => json!({ "kind": "temporal-node", "nodeId": entity_id }),
+        "temporal_constraint" => {
+            json!({ "kind": "temporal-constraint", "constraintId": entity_id })
+        }
+        "temporal_projection" => {
+            json!({ "kind": "temporal-projection", "projectionId": entity_id })
+        }
         other => json!({
             "kind": "component",
             "componentId": format!("{other}:{entity_id}"),
@@ -1810,27 +2105,7 @@ pub fn events_from_journal_entities(
             NarrativeChangeCauseKind::Redo => (before_snapshot, after_snapshot),
         };
 
-        let object_key = if entity_kind == "codex_detail_value" {
-            let identity_snapshot = after_snapshot.or(before_snapshot).ok_or_else(|| {
-                anyhow::anyhow!("Codex detail journal entity has no identity snapshot")
-            })?;
-            let entry_id = identity_snapshot
-                .get("entryId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("Codex detail snapshot has no entryId"))?;
-            let definition_id = identity_snapshot
-                .get("definitionId")
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("Codex detail snapshot has no definitionId"))?;
-            json!({
-                "kind": "component",
-                "componentId": format!(
-                    "codex-detail-value:{entry_id}:{definition_id}"
-                ),
-            })
-        } else {
-            narrative_object_key(entity_kind, entity_id)
-        };
+        let object_key = narrative_object_key(entity_kind, entity_id);
         events.push(NarrativeChangeEventInput {
             object_key,
             change_kind: change_kind(entity_kind).to_string(),
@@ -1969,7 +2244,10 @@ pub fn event_from_undo_journal_row(
         after_version: after.map(|_| after_version).flatten(),
         after_digest: snapshot_digest(after)?,
         changed_paths: vec!["/".to_string()],
-        text_impact: (row.entity_kind == "scene").then(|| json!({ "changedPaths": ["/"] })),
+        // A journal row only has storage snapshots, not the Canonical Text
+        // projection and coordinate map. Do not persist a partial text impact;
+        // producers may attach the full versioned contract when available.
+        text_impact: None,
         structural_impact: Some(json!({ "changedPaths": ["/"] })),
     })
 }
@@ -2008,6 +2286,44 @@ mod tests {
             structural_impact: None,
         };
         assert!(validate_event(&event).is_err());
+    }
+
+    #[test]
+    fn text_impact_requires_a_versioned_utf16_mapping() {
+        let mut event = NarrativeChangeEventInput {
+            object_key: json!({ "kind": "scene", "sceneId": "scene-1" }),
+            change_kind: "content".to_string(),
+            mutation_kind: "update".to_string(),
+            before_version: Some(1),
+            before_digest: Some("sha256:before".to_string()),
+            after_version: Some(2),
+            after_digest: Some("sha256:after".to_string()),
+            changed_paths: vec!["/content".to_string()],
+            text_impact: Some(json!({
+                "unit": "utf16",
+                "normalizerVersion": "gdx-canonical-text/1",
+                "oldStorageDigest": "sha256:storage-a",
+                "newStorageDigest": "sha256:storage-b",
+                "oldCanonicalDigest": "sha256:canonical-a",
+                "newCanonicalDigest": "sha256:canonical-b",
+                "mapping": {
+                    "kind": "canonical-diff",
+                    "changedOldRanges": [{ "from": 2, "to": 4 }],
+                    "changedNewRanges": [{ "from": 2, "to": 3 }]
+                }
+            })),
+            structural_impact: None,
+        };
+        assert!(validate_event(&event).is_ok());
+        event.text_impact = Some(json!({ "changedPaths": ["/content"] }));
+        assert!(validate_event(&event).is_err());
+    }
+
+    #[test]
+    fn changed_paths_use_json_pointer_escapes() {
+        assert!(validate_changed_path("/sceneLinks/a~1b").is_ok());
+        assert!(validate_changed_path("title").is_err());
+        assert!(validate_changed_path("/title~2").is_err());
     }
 
     #[test]

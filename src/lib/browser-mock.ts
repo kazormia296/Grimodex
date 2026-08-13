@@ -45,6 +45,10 @@ import {
 } from "@/features/timelapse/hashChain";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import {
+  canonicalChangedPaths,
+  jsonPointerSegment,
+} from "@/features/narrative-extraction/maintenance/changedPath";
+import {
   buildCodexRelationSemanticKey,
   normalizeRelationLabel,
 } from "@/features/codex/extraction/relationVocabulary";
@@ -3898,6 +3902,63 @@ export async function createBrowserMock(
     /** Canonical JSON snapshot used when the aggregate has no numeric version. */
     afterState?: unknown;
     changedPaths: string[];
+    /** Full versioned Canonical Text impact, when this writer has a map. */
+    textImpact?: Record<string, unknown> | null;
+    structuralImpact?: Record<string, unknown> | null;
+  }
+
+  function normalizeBrowserStructuralImpact(
+    value: Record<string, unknown> | null | undefined,
+    fallbackPaths: string[],
+    eventOrdinal: number,
+  ): string {
+    const normalized: Record<string, unknown> =
+      value == null ? { changedPaths: fallbackPaths } : { ...value };
+    if (Object.hasOwn(normalized, "changedPaths")) {
+      if (!Array.isArray(normalized.changedPaths)) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact.changedPaths must be an array`,
+        );
+      }
+      normalized.changedPaths = canonicalChangedPaths(
+        normalized.changedPaths.map((path) => {
+          if (typeof path !== "string") {
+            throw new Error(
+              `Narrative Change Feed events[${eventOrdinal}].structuralImpact.changedPaths must contain strings`,
+            );
+          }
+          return path;
+        }),
+      );
+    }
+    if (Object.hasOwn(normalized, "event")) {
+      if (
+        normalized.event !== "semantic-epoch-reset" &&
+        normalized.event !== "project-restored" &&
+        normalized.event !== "schema-component-changed"
+      ) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact.event is unsupported`,
+        );
+      }
+      if (normalized.requiresFullRebuild !== true) {
+        throw new Error(
+          `Narrative Change Feed events[${eventOrdinal}].structuralImpact epoch markers require requiresFullRebuild=true`,
+        );
+      }
+    }
+    if (
+      Object.hasOwn(normalized, "requiresFullRebuild") &&
+      typeof normalized.requiresFullRebuild !== "boolean"
+    ) {
+      throw new Error(
+        `Narrative Change Feed events[${eventOrdinal}].structuralImpact.requiresFullRebuild must be boolean`,
+      );
+    }
+    return narrativeStateJson(
+      normalized,
+      `events[${eventOrdinal}].structuralImpact`,
+    );
   }
 
   function insertBrowserNarrativeChange(input: {
@@ -4059,9 +4120,13 @@ export async function createBrowserMock(
           `Narrative Change Feed ${event.mutationKind} state contract is invalid`,
         );
       }
-      const paths = [...new Set(event.changedPaths)].sort(compareUtf8);
-      if (paths.length === 0 || paths.some((path) => path.length === 0)) {
-        throw new Error("Narrative Change Feed changedPaths are invalid");
+      let paths: string[];
+      try {
+        paths = canonicalChangedPaths(event.changedPaths);
+      } catch (error) {
+        throw new Error(
+          `Narrative Change Feed changedPaths are invalid: ${String(error)}`,
+        );
       }
       const beforeDigest = hasBeforeState
         ? browserNarrativeStateDigest(
@@ -4075,6 +4140,18 @@ export async function createBrowserMock(
             `events[${eventOrdinal}].afterState`,
           )
         : null;
+      const textImpactJson =
+        event.textImpact == null
+          ? null
+          : narrativeStateJson(
+              event.textImpact,
+              `events[${eventOrdinal}].textImpact`,
+            );
+      const structuralImpactJson = normalizeBrowserStructuralImpact(
+        event.structuralImpact,
+        paths,
+        eventOrdinal,
+      );
       return {
         event,
         eventOrdinal,
@@ -4082,6 +4159,8 @@ export async function createBrowserMock(
         paths,
         beforeDigest,
         afterDigest,
+        textImpactJson,
+        structuralImpactJson,
       };
     });
 
@@ -4129,7 +4208,11 @@ export async function createBrowserMock(
         heads.set(row.objectKeyJson, previous);
       }
       const previous = heads.get(row.objectKeyJson) ?? null;
+      const isEpochReset =
+        row.event.objectKey.kind === "project" &&
+        row.event.structuralImpact?.event === "project-restored";
       if (
+        !isEpochReset &&
         previous !== null &&
         (previous.afterVersion !== row.event.beforeVersion ||
           previous.afterDigest !== row.beforeDigest)
@@ -4181,6 +4264,8 @@ export async function createBrowserMock(
       paths,
       beforeDigest,
       afterDigest,
+      textImpactJson,
+      structuralImpactJson,
     } of eventRows) {
       db.run(
         `INSERT INTO narrative_change_events
@@ -4189,7 +4274,7 @@ export async function createBrowserMock(
            mutation_kind, before_version, before_digest, after_version,
            after_digest, changed_paths_json, text_impact_json,
            structural_impact_json, occurred_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           crypto.randomUUID(),
           input.identity.projectId,
@@ -4205,7 +4290,8 @@ export async function createBrowserMock(
           event.afterVersion,
           afterDigest,
           JSON.stringify(paths),
-          JSON.stringify({ changedPaths: paths }),
+          textImpactJson,
+          structuralImpactJson,
           input.occurredAt,
         ],
       );
@@ -8040,14 +8126,12 @@ export async function createBrowserMock(
               objectKey:
                 operation === "detail.value.upsert"
                   ? {
-                      kind: "component",
-                      componentId: `codex-detail-value:${String(
-                        valueEntryId,
-                      )}:${definitionId}`,
+                      kind: "codex-detail-value",
+                      valueId: entityId,
                     }
                   : {
-                      kind: "component",
-                      componentId: `codex-detail-definition:${definitionId}`,
+                      kind: "codex-detail-definition",
+                      definitionId: definitionId,
                     },
               changeKind:
                 operation === "detail.value.upsert" ? "metadata" : "catalog",
@@ -8062,7 +8146,7 @@ export async function createBrowserMock(
               ...(afterState ? { afterState } : {}),
               changedPaths:
                 operation === "detail.value.upsert"
-                  ? [`/details/${definitionId}`]
+                  ? [`/details/${jsonPointerSegment(definitionId)}`]
                   : mutationKind === "update"
                     ? Object.keys(p)
                         .filter(
@@ -12756,6 +12840,12 @@ export async function createBrowserMock(
           `codex rename target '${update.refId}' disappeared during mutation`,
         );
       }
+      if (update.kind === "codex-detail" && isRecord(afterState)) {
+        feedContract.objectKey = {
+          kind: "codex-detail-value",
+          valueId: String(afterState.id),
+        };
+      }
       feedEvents.push({
         objectKey: feedContract.objectKey,
         changeKind: feedContract.changeKind,
@@ -12831,11 +12921,13 @@ export async function createBrowserMock(
       }
       case "codex-detail":
         objectKey = {
-          kind: "component",
-          componentId: `codex-detail-value:${update.refId}:${update.detailDefinitionId}`,
+          kind: "codex-detail-value",
+          valueId: update.refId,
         };
         changeKind = "metadata";
-        changedPaths = [`/details/${update.detailDefinitionId}`];
+        changedPaths = [
+          `/details/${jsonPointerSegment(update.detailDefinitionId ?? "")}`,
+        ];
         break;
       case "codex-relation-label":
         objectKey = {
@@ -15404,23 +15496,14 @@ export async function createBrowserMock(
       case "codex_tags":
         return one(browserSnapshotComponent("codex-tag", id()), true);
       case "codex_detail_definitions":
-        return one(
-          browserSnapshotComponent("codex-detail-definition", id()),
-          true,
-        );
+        return one({ kind: "codex-detail-definition", definitionId: id() }, true);
       case "codex_detail_semantic_bindings":
         return one(
           browserSnapshotComponent("codex_semantic_binding", id()),
           true,
         );
       case "codex_detail_values":
-        return one(
-          browserSnapshotComponent(
-            "codex-detail-value",
-            `${id("entry_id")}:${id("definition_id")}`,
-          ),
-          true,
-        );
+        return one({ kind: "codex-detail-value", valueId: id() }, true);
       case "codex_entry_tags":
       case "codex_quick_pins":
       case "codex_dismissed_relations":
@@ -15450,17 +15533,32 @@ export async function createBrowserMock(
       case "lint_ignored_diagnostics":
         return one({ kind: "scene", sceneId: id("scene_id") }, false);
       case "foreshadow_setups":
+        return one({ kind: "foreshadow-setup", setupId: id() }, true);
       case "foreshadow_payoffs":
+        return one({ kind: "foreshadow-payoff", payoffId: id() }, true);
       case "foreshadow_setup_payoff_links":
+        return [
+          {
+            objectKey: { kind: "foreshadow-setup", setupId: id("setup_id") },
+            root: false,
+          },
+          {
+            objectKey: {
+              kind: "foreshadow-payoff",
+              payoffId: id("payoff_id"),
+            },
+            root: false,
+          },
+        ];
       case "foreshadow_codex_links":
         return one(
           { kind: "foreshadow", foreshadowId: id("foreshadow_id") },
           false,
         );
       case "plot_thread_scene_links":
-        return one(browserSnapshotComponent("plot_thread_marker", id()), true);
+        return one({ kind: "plot-marker", markerId: id() }, true);
       case "plot_thread_branches":
-        return one(browserSnapshotComponent("plot_thread_branch", id()), true);
+        return one({ kind: "plot-branch", branchId: id() }, true);
       case "scene_events":
       case "event_participants":
         return one({ kind: "chronicle-event", eventId: id("event_id") }, false);
@@ -15522,6 +15620,9 @@ export async function createBrowserMock(
           }
           if (kind === "codex-entry") {
             return one({ kind: "codex-entry", entryId: ownerId }, false);
+          }
+          if (kind === "codex_detail_value") {
+            return one({ kind: "codex-detail-value", valueId: ownerId }, false);
           }
           return one(browserSnapshotComponent(kind, ownerId), false);
         }
@@ -15705,6 +15806,79 @@ export async function createBrowserMock(
     return null;
   }
 
+  function loadBrowserCodexDetailValueSnapshot(
+    valueId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT value.id, value.entry_id AS entryId,
+              value.definition_id AS definitionId, value.value,
+              value.version, value.created_at AS createdAt,
+              value.updated_at AS updatedAt
+         FROM codex_detail_values value
+         JOIN codex_entries entry ON entry.id = value.entry_id
+         JOIN codex_detail_definitions definition
+           ON definition.id = value.definition_id
+        WHERE value.id = ? AND entry.project_id = ?
+          AND definition.project_id = ?`,
+      [valueId, projectId, projectId],
+    );
+    return row
+      ? {
+          id: String(row.id),
+          entryId: String(row.entryId),
+          definitionId: String(row.definitionId),
+          value: row.value == null ? null : String(row.value),
+          version: Number(row.version),
+          createdAt: String(row.createdAt),
+          updatedAt: String(row.updatedAt),
+        }
+      : null;
+  }
+
+  function loadBrowserPlotMarkerSnapshot(
+    markerId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const row = queryOne(
+      `SELECT marker.*
+         FROM plot_thread_scene_links marker
+         JOIN plot_threads thread ON thread.id = marker.thread_id
+        WHERE marker.id = ? AND thread.project_id = ?`,
+      [markerId, projectId],
+    );
+    return row ?? null;
+  }
+
+  function loadBrowserPlotBranchSnapshot(
+    branchId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    return (
+      queryOne(
+        `SELECT * FROM plot_thread_branches
+          WHERE id = ? AND project_id = ?`,
+        [branchId, projectId],
+      ) ?? null
+    );
+  }
+
+  function loadBrowserForeshadowChildSnapshot(
+    kind: "setup" | "payoff",
+    childId: string,
+    projectId: string,
+  ): Record<string, unknown> | null {
+    const table = kind === "setup" ? "foreshadow_setups" : "foreshadow_payoffs";
+    const row = queryOne(
+      `SELECT child.*
+         FROM ${table} child
+         JOIN foreshadows root ON root.id = child.foreshadow_id
+        WHERE child.id = ? AND root.project_id = ?`,
+      [childId, projectId],
+    );
+    return row ?? null;
+  }
+
   function browserSnapshotDetailDefinitionState(
     definitionId: string,
     projectId: string,
@@ -15757,14 +15931,46 @@ export async function createBrowserMock(
         String(state.objectKey.phaseId),
         projectId,
       );
+    } else if (kind === "codex-detail-definition") {
+      canonical = browserSnapshotDetailDefinitionState(
+        String(state.objectKey.definitionId),
+        projectId,
+      );
+    } else if (kind === "codex-detail-value") {
+      canonical = loadBrowserCodexDetailValueSnapshot(
+        String(state.objectKey.valueId),
+        projectId,
+      );
     } else if (kind === "chronicle-event") {
       canonical = loadBrowserEventSnapshot(
         String(state.objectKey.eventId),
         projectId,
       );
+    } else if (kind === "plot-marker") {
+      canonical = loadBrowserPlotMarkerSnapshot(
+        String(state.objectKey.markerId),
+        projectId,
+      );
+    } else if (kind === "plot-branch") {
+      canonical = loadBrowserPlotBranchSnapshot(
+        String(state.objectKey.branchId),
+        projectId,
+      );
     } else if (kind === "foreshadow") {
       canonical = loadBrowserForeshadowAggregateSnapshot(
         String(state.objectKey.foreshadowId),
+        projectId,
+      );
+    } else if (kind === "foreshadow-setup") {
+      canonical = loadBrowserForeshadowChildSnapshot(
+        "setup",
+        String(state.objectKey.setupId),
+        projectId,
+      );
+    } else if (kind === "foreshadow-payoff") {
+      canonical = loadBrowserForeshadowChildSnapshot(
+        "payoff",
+        String(state.objectKey.payoffId),
         projectId,
       );
     } else if (kind === "calendar") {
@@ -15826,74 +16032,46 @@ export async function createBrowserMock(
     return canonical ?? browserSnapshotGroupedState(state);
   }
 
-  function browserSnapshotJsonPointerSegment(value: string): string {
-    return value.replaceAll("~", "~0").replaceAll("/", "~1");
-  }
-
-  function browserSnapshotFeedChangedPaths(
-    before: BrowserSnapshotFeedState | undefined,
-    after: BrowserSnapshotFeedState | undefined,
-  ): string[] {
-    const paths = new Set<string>();
-    const rowIds = [
-      ...new Set([
-        ...(before?.rows.keys() ?? []),
-        ...(after?.rows.keys() ?? []),
-      ]),
-    ].sort();
-    for (const rowId of rowIds) {
-      const prefix = `/rows/${browserSnapshotJsonPointerSegment(rowId)}`;
-      const beforeRow = before?.rows.get(rowId);
-      const afterRow = after?.rows.get(rowId);
-      if (!beforeRow || !afterRow) {
-        paths.add(prefix);
-        continue;
-      }
-      const fields = [
-        ...new Set([...Object.keys(beforeRow), ...Object.keys(afterRow)]),
-      ].sort();
-      for (const field of fields) {
-        if (beforeRow[field] !== afterRow[field]) {
-          paths.add(`${prefix}/${browserSnapshotJsonPointerSegment(field)}`);
-        }
-      }
-    }
-    return paths.size === 0 ? ["/"] : [...paths].sort();
-  }
-
   function buildBrowserSnapshotFeedEvents(
+    projectId: string,
     before: Map<string, BrowserSnapshotFeedState>,
     after: Map<string, BrowserSnapshotFeedState>,
   ): BrowserNarrativeChangeEventInput[] {
-    const tokens = [...new Set([...before.keys(), ...after.keys()])].sort();
-    const events: BrowserNarrativeChangeEventInput[] = [];
-    for (const token of tokens) {
-      const beforeState = before.get(token);
-      const afterState = after.get(token);
-      const beforeCanonical = beforeState?.canonicalSnapshot;
-      const afterCanonical = afterState?.canonicalSnapshot;
-      if (JSON.stringify(beforeCanonical) === JSON.stringify(afterCanonical)) {
-        continue;
-      }
-      const state = afterState ?? beforeState;
-      if (!state) continue;
-      events.push({
-        objectKey: state.objectKey,
-        changeKind: state.changeKind,
-        mutationKind:
-          beforeState && afterState
-            ? "update"
-            : beforeState
-              ? "delete"
-              : "restore",
-        beforeVersion: beforeState?.version ?? null,
-        ...(beforeState ? { beforeState: beforeCanonical } : {}),
-        afterVersion: afterState?.version ?? null,
-        ...(afterState ? { afterState: afterCanonical } : {}),
-        changedPaths: browserSnapshotFeedChangedPaths(beforeState, afterState),
-      });
-    }
-    return events;
+    const groupedState = (state: Map<string, BrowserSnapshotFeedState>) =>
+      [...state.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([token, value]) => ({
+          token,
+          objectKey: value.objectKey,
+          rows: [...value.rows.entries()].map(([identity, row]) => ({
+            identity,
+            row,
+          })),
+          canonicalSnapshot: value.canonicalSnapshot,
+          version: value.version,
+          changeKind: value.changeKind,
+        }));
+    const beforeState = groupedState(before);
+    const afterState = groupedState(after);
+    const beforeDigest = browserNarrativeStateDigest(beforeState);
+    const afterDigest = browserNarrativeStateDigest(afterState);
+    if (beforeDigest === afterDigest) return [];
+    return [
+      {
+        objectKey: { kind: "project", projectId },
+        changeKind: "schema",
+        mutationKind: "update",
+        beforeVersion: null,
+        beforeState,
+        afterVersion: null,
+        afterState,
+        changedPaths: ["/"],
+        structuralImpact: {
+          event: "project-restored",
+          requiresFullRebuild: true,
+        },
+      },
+    ];
   }
 
   async function handleProjectSnapshotApplyRestore(
@@ -16386,6 +16564,7 @@ export async function createBrowserMock(
         }
         const feedAfter = captureBrowserSnapshotFeedState(projectId, scopes);
         const feedEvents = buildBrowserSnapshotFeedEvents(
+          projectId,
           feedBefore,
           feedAfter,
         );
@@ -16956,10 +17135,9 @@ export async function createBrowserMock(
     const objectKey =
       input.entityKind === "thread"
         ? { kind: "plot-thread", threadId: input.entityId }
-        : {
-            kind: "component",
-            componentId: `plot_thread_${input.entityKind}:${input.entityId}`,
-          };
+        : input.entityKind === "marker"
+          ? { kind: "plot-marker", markerId: input.entityId }
+          : { kind: "plot-branch", branchId: input.entityId };
     return {
       objectKey,
       changeKind: input.changeKind,

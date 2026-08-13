@@ -20,6 +20,10 @@ use crate::narrative_extraction::change_feed::{
     NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 
+fn json_pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
 fn event_timestamp(value: &str) -> i64 {
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|value| value.timestamp_millis())
@@ -597,6 +601,8 @@ fn codex_rename_update_sort_key(update: &CodexRenameUndoUpdate) -> anyhow::Resul
 }
 
 fn codex_rename_feed_contract(
+    conn: &rusqlite::Connection,
+    project_id: &str,
     update: &CodexRenameUndoUpdate,
 ) -> anyhow::Result<(Value, &'static str, Vec<String>)> {
     match update.kind.as_str() {
@@ -637,16 +643,27 @@ fn codex_rename_feed_contract(
                 .detail_definition_id
                 .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?;
+            let value_id: String = conn
+                .query_row(
+                    "SELECT value.id FROM codex_detail_values value
+                      JOIN codex_entries entry ON entry.id = value.entry_id
+                      JOIN codex_detail_definitions definition
+                        ON definition.id = value.definition_id
+                     WHERE value.entry_id = ?1 AND value.definition_id = ?2
+                       AND entry.project_id = ?3
+                       AND definition.project_id = ?3",
+                    params![update.ref_id, definition_id, project_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow::anyhow!("codex detail value is missing"))?;
             Ok((
                 json!({
-                    "kind": "component",
-                    "componentId": format!(
-                        "codex-detail-value:{}:{definition_id}",
-                        update.ref_id
-                    ),
+                    "kind": "codex-detail-value",
+                    "valueId": value_id,
                 }),
                 "metadata",
-                vec![format!("/details/{definition_id}")],
+                vec![format!("/details/{}", json_pointer_segment(definition_id))],
             ))
         }
         "codex-relation-label" => Ok((
@@ -717,7 +734,8 @@ fn apply_codex_rename_updates_in_tx(
     let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
     for (_, index) in keyed_indices {
         let update = &updates[index];
-        let (object_key, change_kind, changed_paths) = codex_rename_feed_contract(update)?;
+        let (object_key, change_kind, changed_paths) =
+            codex_rename_feed_contract(conn, project_id, update)?;
         let before_state = crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
             conn,
             project_id,
@@ -946,7 +964,7 @@ fn apply_codex_rename_updates_in_tx(
                     .detail_definition_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?;
-                let field_path = format!("/details/{definition_id}");
+                let field_path = format!("/details/{}", json_pointer_segment(definition_id));
                 crate::narrative_extraction::record_human_field_write(
                     conn,
                     project_id,
@@ -4650,8 +4668,8 @@ mod tests {
                 vec![
                     (
                         json!({
-                            "kind": "component",
-                            "componentId": "codex-detail-value:c1:d1"
+                            "kind": "codex-detail-value",
+                            "valueId": "value-p1"
                         }),
                         json!(["/details/d1"]),
                         0,

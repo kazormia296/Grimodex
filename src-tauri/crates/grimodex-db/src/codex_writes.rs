@@ -47,6 +47,10 @@ struct CodexFeedTarget {
     changed_paths: Vec<String>,
 }
 
+fn json_pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
 fn codex_feed_target(
     payload: &AgentCodexMutationPayload,
     operation: &str,
@@ -102,8 +106,8 @@ fn codex_feed_target(
             let definition_id = required_string(&payload.fields, "definitionId")?;
             (
                 json!({
-                    "kind": "component",
-                    "componentId": format!("codex-detail-definition:{definition_id}"),
+                    "kind": "codex-detail-definition",
+                    "definitionId": definition_id,
                 }),
                 "catalog",
                 if operation.ends_with("create") {
@@ -118,8 +122,8 @@ fn codex_feed_target(
             let definition_id = required_string(&payload.fields, "definitionId")?;
             (
                 json!({
-                    "kind": "component",
-                    "componentId": format!("codex-detail-definition:{definition_id}"),
+                    "kind": "codex-detail-definition",
+                    "definitionId": definition_id,
                 }),
                 "catalog",
                 "update",
@@ -141,14 +145,15 @@ fn codex_feed_target(
             let definition_id = required_string(&payload.fields, "definitionId")?;
             (
                 json!({
-                    "kind": "component",
-                    "componentId": format!(
-                        "codex-detail-value:{entry_id}:{definition_id}"
-                    ),
+                    "kind": "codex-detail-value",
+                    // Upsert replaces this with the persisted value id after
+                    // mutation; the composite is retained only as a
+                    // pre-mutation placeholder for target construction.
+                    "valueId": format!("{entry_id}:{definition_id}"),
                 }),
                 "metadata",
                 "update",
-                vec![format!("/details/{definition_id}")],
+                vec![format!("/details/{}", json_pointer_segment(&definition_id))],
             )
         }
         "tag.create" | "tag.update" | "tag.delete" => {
@@ -641,7 +646,7 @@ fn record_manual_mutation_fields(
         }
         "detail.value.upsert" => {
             let definition_id = required_string(&payload.fields, "definitionId")?;
-            let path = format!("/details/{definition_id}");
+            let path = format!("/details/{}", json_pointer_segment(&definition_id));
             crate::narrative_extraction::record_human_field_write(
                 conn,
                 &payload.project_id,
@@ -749,9 +754,15 @@ where
                         .ok_or_else(|| anyhow::anyhow!("undoJournalId is required"))?,
                 )?;
             }
-            let target = codex_feed_target(&payload, operation)?;
+            let mut target = codex_feed_target(&payload, operation)?;
             let before = codex_feed_snapshot(conn, &payload, operation)?;
             let (entity_id, version) = mutate(conn, &payload, &event_uid)?;
+            if operation == "detail.value.upsert" {
+                target.object_key = json!({
+                    "kind": "codex-detail-value",
+                    "valueId": entity_id,
+                });
+            }
             let after = codex_feed_snapshot(conn, &payload, operation)?;
             let mutation_kind = if operation == "detail.value.upsert" && before.is_none() {
                 "create"
@@ -2002,8 +2013,8 @@ mod tests {
             assert_eq!(
                 serde_json::from_str::<Value>(&row.2)?,
                 json!({
-                    "kind": "component",
-                    "componentId": "codex-detail-value:e1:d1"
+                    "kind": "codex-detail-value",
+                    "valueId": "value-1"
                 })
             );
             assert_eq!(

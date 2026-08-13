@@ -28,6 +28,19 @@ Electron IPC／N-API／MCP／internal operation as:
 - `excluded` — the operation has a fixed non-domain reason such as migration,
   database-image replacement, staging, derived state, or untrusted generic SQL.
 
+The manifest's `writerMatrix` is the C1 input contract for the Semantic Build
+System. Every row fixes the addressing strategy (`independent-key` or
+`aggregate-path`), canonical object-key family, JSON Pointer path vocabulary,
+text-impact requirement, allowed cause directions, transaction atomicity,
+Undo/Redo coverage, and retry idempotency. Plot and temporal child rows use
+independent typed keys. Foreshadow's renderer writer deliberately uses
+aggregate-root addressing because its root OCC token owns setup/payoff writes;
+its child paths are therefore `/setups/<setupId>` and `/payoffs/<payoffId>`.
+Writers that own an independent Foreshadow child table may use the typed child
+key, and must declare that strategy in their matrix row. A restore is the
+exception: it emits one project-level `project-restored` epoch-reset marker and
+asks C2 for a full rebuild instead of replaying every restored row.
+
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public
 routes, implementation modules and symbols, active writer IDs, identity
 contract, and fixed exclusion reasons. Gate C1 additionally requires

@@ -428,8 +428,8 @@ describe("Browser Mock Plot canonical writers", () => {
       {
         ordinal: 0,
         objectKey: JSON.stringify({
-          componentId: "plot_thread_branch:branch/order~id",
-          kind: "component",
+          branchId: "branch/order~id",
+          kind: "plot-branch",
         }),
         changedPaths: '["/"]',
       },
@@ -793,13 +793,11 @@ describe("Browser Mock Plot canonical writers", () => {
       ),
     ).toEqual([
       {
-        objectKey:
-          '{"componentId":"plot_thread_marker:move-marker","kind":"component"}',
+        objectKey: '{"kind":"plot-marker","markerId":"move-marker"}',
         changedPaths: '["/sceneId","/semanticKey","/threadId"]',
       },
       {
-        objectKey:
-          '{"componentId":"plot_thread_branch:move-branch","kind":"component"}',
+        objectKey: '{"branchId":"move-branch","kind":"plot-branch"}',
         changedPaths: '["/atSceneId","/semanticKey","/toThreadId"]',
       },
     ]);
@@ -979,12 +977,12 @@ describe("Browser Mock Plot canonical writers", () => {
       },
       {
         objectKey:
-          '{"componentId":"plot_thread_marker:restored-marker","kind":"component"}',
+          '{"kind":"plot-marker","markerId":"restored-marker"}',
         changedPaths: '["/"]',
       },
       {
         objectKey:
-          '{"componentId":"plot_thread_branch:restored-branch","kind":"component"}',
+          '{"branchId":"restored-branch","kind":"plot-branch"}',
         changedPaths: '["/"]',
       },
     ]);
@@ -1080,12 +1078,12 @@ describe("Browser Mock Plot canonical writers", () => {
       },
       {
         objectKey:
-          '{"componentId":"plot_thread_marker:restored-marker","kind":"component"}',
+          '{"kind":"plot-marker","markerId":"restored-marker"}',
         changedPaths: '["/"]',
       },
       {
         objectKey:
-          '{"componentId":"plot_thread_branch:restored-branch","kind":"component"}',
+          '{"branchId":"restored-branch","kind":"plot-branch"}',
         changedPaths: '["/"]',
       },
     ]);

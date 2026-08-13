@@ -187,6 +187,15 @@ const MCP_MUTATING_ROUTES = [
   "remove_event_relation",
 ];
 
+const MATRIX_CAUSES = new Set(["forward", "undo", "redo"]);
+const MATRIX_TEXT_IMPACTS = new Set([
+  "required",
+  "required-when-anchor",
+  "optional",
+  "none",
+]);
+const MATRIX_ADDRESSING = new Set(["independent-key", "aggregate-path"]);
+
 export const KNOWN_CHANGE_FEED_ROUTES = Object.freeze([
   ...pairedElectronRoutes(ELECTRON_MUTATING_ROUTES),
   ...MCP_MUTATING_ROUTES.map((name) => ({ surface: "mcp-tool", name })),
@@ -199,6 +208,22 @@ function isObject(value) {
 
 function nonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function isCanonicalChangedPath(value) {
+  if (!nonEmptyString(value) || value.trim() !== value || !value.startsWith("/")) {
+    return false;
+  }
+  if (value === "/") return true;
+  const segments = value.slice(1).split("/");
+  return segments.every((segment) => {
+    for (let index = 0; index < segment.length; index += 1) {
+      if (segment[index] !== "~") continue;
+      if (segment[index + 1] !== "0" && segment[index + 1] !== "1") return false;
+      index += 1;
+    }
+    return true;
+  });
 }
 
 function safeRepoPath(repoRoot, relativePath, label, errors) {
@@ -362,6 +387,60 @@ function validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache) {
   return routes;
 }
 
+function validateWriterMatrix(manifest, errors) {
+  if (!Array.isArray(manifest.writerMatrix) || manifest.writerMatrix.length === 0) {
+    errors.push("change feed writer manifest writerMatrix must be a non-empty array");
+    return;
+  }
+  const writers = new Set();
+  for (const [index, row] of manifest.writerMatrix.entries()) {
+    const label = `writerMatrix[${index}]`;
+    if (!isObject(row)) {
+      errors.push(`${label} must be an object`);
+      continue;
+    }
+    for (const field of ["writer", "objectKey"]) {
+      if (!nonEmptyString(row[field])) {
+        errors.push(`${label}.${field} must be non-empty`);
+      }
+    }
+    if (!MATRIX_ADDRESSING.has(row.addressing)) {
+      errors.push(
+        `${label}.addressing must be independent-key or aggregate-path`,
+      );
+    }
+    if (nonEmptyString(row.writer)) {
+      if (writers.has(row.writer)) errors.push(`${label}.writer is duplicated`);
+      writers.add(row.writer);
+    }
+    if (!Array.isArray(row.paths) || row.paths.length === 0) {
+      errors.push(`${label}.paths must be a non-empty array`);
+    } else {
+      for (const path of row.paths) {
+        if (!isCanonicalChangedPath(path)) {
+          errors.push(`${label}.paths must contain canonical JSON Pointer paths`);
+          break;
+        }
+      }
+    }
+    if (
+      !Array.isArray(row.cause) ||
+      row.cause.length === 0 ||
+      row.cause.some((cause) => !MATRIX_CAUSES.has(cause))
+    ) {
+      errors.push(`${label}.cause must contain forward/undo/redo values`);
+    }
+    if (!MATRIX_TEXT_IMPACTS.has(row.textImpact)) {
+      errors.push(`${label}.textImpact is invalid`);
+    }
+    for (const field of ["atomic", "undoRedo", "idempotent"]) {
+      if (typeof row[field] !== "boolean") {
+        errors.push(`${label}.${field} must be boolean`);
+      }
+    }
+  }
+}
+
 export function validateChangeFeedWriters({
   repoRoot = REPO_ROOT,
   manifestPath = MANIFEST_PATH,
@@ -394,6 +473,7 @@ export function validateChangeFeedWriters({
   if (manifest.gateId !== "gate-c1") {
     errors.push("change feed writer manifest gateId must be gate-c1");
   }
+  validateWriterMatrix(manifest, errors);
   if (!Array.isArray(manifest.operations)) {
     errors.push("change feed writer manifest operations must be an array");
     return {

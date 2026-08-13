@@ -221,10 +221,11 @@ describe("browser snapshot restore authority", () => {
         cause_kind: "forward",
         event_ordinal: 0,
         object_key_json: JSON.stringify({
-          kind: "scene",
-          sceneId: "snapshot-authority-scene",
+          kind: "project",
+          projectId: "snapshot-authority-project",
         }),
         mutation_kind: "update",
+        changed_paths_json: JSON.stringify(["/"]),
       }),
     ]);
   });

@@ -342,7 +342,10 @@ fn append_change(
                 after_version: input.after_version,
                 after_digest: input.after.map(narrative_snapshot_digest).transpose()?,
                 changed_paths: input.paths.clone(),
-                text_impact: has_text_impact.then(|| json!({ "changedPaths": input.paths })),
+                // Changed paths alone are not a TextChangeImpact. A producer
+                // must also provide storage/canonical digests and a mapping
+                // in the declared UTF-16 normalizer coordinate system.
+                text_impact: None,
                 structural_impact: Some(json!({ "changedPaths": input.paths })),
             }],
         },

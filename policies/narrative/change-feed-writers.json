@@ -1,6 +1,128 @@
 {
   "schemaVersion": 1,
   "gateId": "gate-c1",
+  "writerMatrix": [
+    {
+      "writer": "scene.body",
+      "objectKey": "scene",
+      "addressing": "independent-key",
+      "paths": ["/content", "/charCount", "/placedBeatPreview"],
+      "textImpact": "required",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "codex.entry",
+      "objectKey": "codex-entry",
+      "addressing": "independent-key",
+      "paths": ["/name", "/summary", "/content", "/aliases"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "codex.detail.value",
+      "objectKey": "codex-detail-value",
+      "addressing": "independent-key",
+      "paths": ["/value"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "chronicle.aggregate",
+      "objectKey": "chronicle-event",
+      "addressing": "aggregate-path",
+      "paths": ["/title", "/content", "/sceneLinks/<sceneId>", "/participants/<entryId>"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "plot.aggregate",
+      "objectKey": "plot-thread|plot-marker|plot-branch",
+      "addressing": "independent-key",
+      "paths": ["/title", "/markers/<markerId>", "/branches/<branchId>"],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "foreshadow.aggregate",
+      "objectKey": "foreshadow|foreshadow-setup|foreshadow-payoff",
+      "addressing": "aggregate-path",
+      "paths": [
+        "/title",
+        "/setups/<setupId>",
+        "/setups/<setupId>/anchor",
+        "/setups/<setupId>/orphan",
+        "/payoff/sceneId",
+        "/payoff/fromPos",
+        "/payoff/toPos",
+        "/payoff/confirmed",
+        "/payoffs/<payoffId>"
+      ],
+      "textImpact": "required-when-anchor",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "temporal.graph",
+      "objectKey": "temporal-node|temporal-constraint|temporal-projection",
+      "addressing": "independent-key",
+      "paths": ["/subject", "/constraints/<constraintId>", "/projection"],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "import.apply",
+      "objectKey": "import-source",
+      "addressing": "independent-key",
+      "paths": ["/"],
+      "textImpact": "optional",
+      "cause": ["forward"],
+      "atomic": true,
+      "undoRedo": false,
+      "idempotent": true
+    },
+    {
+      "writer": "narrative-extraction.apply",
+      "objectKey": "codex-entry|chronicle-event|plot-thread|foreshadow",
+      "addressing": "aggregate-path",
+      "paths": ["/"],
+      "textImpact": "optional",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
+      "writer": "snapshot.restore",
+      "objectKey": "project",
+      "addressing": "independent-key",
+      "paths": ["/"],
+      "textImpact": "none",
+      "cause": ["forward"],
+      "atomic": true,
+      "undoRedo": false,
+      "idempotent": true
+    }
+  ],
   "operations": [
     {
       "id": "renderer.generic-sql.execute",

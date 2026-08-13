@@ -36,6 +36,9 @@ pub(crate) use foreshadow_undo::{
 };
 pub(crate) use phase_operations::collect_phase_snapshot;
 pub(crate) use semantic_bindings::collect_semantic_binding_snapshot;
+pub(crate) use temporal_snapshots::{
+    collect_constraint_snapshot, collect_node_snapshot, collect_projection_snapshot,
+};
 
 pub use commit::digest_plan;
 pub(crate) use field_authority::{

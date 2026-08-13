@@ -7,6 +7,8 @@ import {
   assertValidDomainObjectKey,
   type DomainObjectKey,
 } from "./domainObjectKey";
+import { canonicalChangedPaths } from "./changedPath";
+import { assertValidUtf16Range } from "./rangeImpact";
 
 export type { Sha256Digest, Utf16Range };
 
@@ -58,6 +60,9 @@ export interface TextRevisionMapSegment {
 }
 
 export interface TextChangeImpact {
+  readonly unit: "utf16";
+  /** Version of the Canonical Text coordinate system used by all ranges. */
+  readonly normalizerVersion: string;
   readonly oldStorageDigest: Sha256Digest;
   readonly newStorageDigest: Sha256Digest;
   readonly oldCanonicalDigest: Sha256Digest;
@@ -79,7 +84,13 @@ export interface TextChangeImpact {
 }
 
 export interface StructuralChangeImpact {
-  readonly changedPaths: readonly string[];
+  readonly changedPaths?: readonly string[];
+  /** A bounded semantic epoch marker; it is not a row-level audit diff. */
+  readonly event?:
+    | "semantic-epoch-reset"
+    | "project-restored"
+    | "schema-component-changed";
+  readonly requiresFullRebuild?: boolean;
 }
 
 export type NarrativeChangeKind =
@@ -143,6 +154,72 @@ function requireSequence(value: number, field: string, minimum: number): void {
   }
 }
 
+function requireDigest(value: string, field: string): void {
+  if (!value.startsWith("sha256:") || value.length <= "sha256:".length) {
+    throw new TypeError(`${field} must be a sha256-prefixed digest`);
+  }
+}
+
+function validateTextImpact(impact: TextChangeImpact): void {
+  if (impact.unit !== "utf16") {
+    throw new TypeError("textImpact.unit must be 'utf16'");
+  }
+  requireNonEmpty(impact.normalizerVersion, "textImpact.normalizerVersion");
+  requireDigest(impact.oldStorageDigest, "textImpact.oldStorageDigest");
+  requireDigest(impact.newStorageDigest, "textImpact.newStorageDigest");
+  requireDigest(impact.oldCanonicalDigest, "textImpact.oldCanonicalDigest");
+  requireDigest(impact.newCanonicalDigest, "textImpact.newCanonicalDigest");
+  if (impact.mapping.kind === "position-map") {
+    for (const [index, segment] of impact.mapping.segments.entries()) {
+      assertValidUtf16Range(segment.oldRange, `textImpact.mapping.segments[${index}].oldRange`);
+      assertValidUtf16Range(segment.newRange, `textImpact.mapping.segments[${index}].newRange`);
+      if (
+        !["unchanged", "inserted", "deleted", "replaced"].includes(
+          segment.behavior,
+        )
+      ) {
+        throw new TypeError("textImpact mapping has an unsupported segment behavior");
+      }
+    }
+  } else if (impact.mapping.kind === "canonical-diff") {
+    impact.mapping.changedOldRanges.forEach((range, index) =>
+      assertValidUtf16Range(range, `textImpact.mapping.changedOldRanges[${index}]`),
+    );
+    impact.mapping.changedNewRanges.forEach((range, index) =>
+      assertValidUtf16Range(range, `textImpact.mapping.changedNewRanges[${index}]`),
+    );
+  } else if (impact.mapping.kind === "whole-document") {
+    requireNonEmpty(impact.mapping.reason, "textImpact.mapping.reason");
+  } else {
+    throw new TypeError("textImpact.mapping.kind is unsupported");
+  }
+}
+
+function validateStructuralImpact(impact: StructuralChangeImpact): void {
+  if (impact.changedPaths) canonicalChangedPaths(impact.changedPaths);
+  if (
+    impact.event !== undefined &&
+    ![
+      "semantic-epoch-reset",
+      "project-restored",
+      "schema-component-changed",
+    ].includes(impact.event)
+  ) {
+    throw new TypeError("structuralImpact.event is unsupported");
+  }
+  if (impact.event !== undefined && impact.requiresFullRebuild !== true) {
+    throw new TypeError(
+      "structuralImpact epoch markers require requiresFullRebuild=true",
+    );
+  }
+  if (
+    impact.requiresFullRebuild !== undefined &&
+    typeof impact.requiresFullRebuild !== "boolean"
+  ) {
+    throw new TypeError("structuralImpact.requiresFullRebuild must be boolean");
+  }
+}
+
 /** Validate a decoded Native record before using it for coalescing/planning. */
 export function createNarrativeChangeEvent(
   event: NarrativeChangeEvent,
@@ -159,13 +236,9 @@ export function createNarrativeChangeEvent(
   requireSequence(event.eventOrdinal, "eventOrdinal", 0);
   assertValidDomainObjectKey(event.objectKey);
 
-  if (
-    event.changedPaths.length === 0 ||
-    event.changedPaths.some((path) => path.trim().length === 0) ||
-    new Set(event.changedPaths).size !== event.changedPaths.length
-  ) {
-    throw new TypeError("changedPaths must be unique, non-empty paths");
-  }
+  canonicalChangedPaths(event.changedPaths);
+  if (event.textImpact) validateTextImpact(event.textImpact);
+  if (event.structuralImpact) validateStructuralImpact(event.structuralImpact);
   if (
     event.cause.applicationIds.some((id) => id.trim().length === 0) ||
     new Set(event.cause.applicationIds).size !==

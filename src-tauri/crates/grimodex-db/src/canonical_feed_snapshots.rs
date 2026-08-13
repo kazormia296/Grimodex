@@ -84,6 +84,42 @@ pub(crate) fn canonical_foreshadow_snapshot(
     crate::narrative_extraction::collect_aggregate_snapshot(conn, project_id, foreshadow_id)
 }
 
+pub(crate) fn canonical_foreshadow_setup_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    setup_id: &str,
+) -> anyhow::Result<Value> {
+    canonical_raw_row(
+        conn,
+        "SELECT setup.* FROM foreshadow_setups setup
+           JOIN foreshadows foreshadow ON foreshadow.id = setup.foreshadow_id
+          WHERE setup.id = ?1 AND foreshadow.project_id = ?2",
+        &[
+            Value::String(setup_id.to_string()),
+            Value::String(project_id.to_string()),
+        ],
+        "foreshadow setup",
+    )
+}
+
+pub(crate) fn canonical_foreshadow_payoff_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    payoff_id: &str,
+) -> anyhow::Result<Value> {
+    canonical_raw_row(
+        conn,
+        "SELECT payoff.* FROM foreshadow_payoffs payoff
+           JOIN foreshadows foreshadow ON foreshadow.id = payoff.foreshadow_id
+          WHERE payoff.id = ?1 AND foreshadow.project_id = ?2",
+        &[
+            Value::String(payoff_id.to_string()),
+            Value::String(project_id.to_string()),
+        ],
+        "foreshadow payoff",
+    )
+}
+
 pub(crate) fn canonical_codex_entry_snapshot(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -351,6 +387,7 @@ pub(crate) fn canonical_snapshot_for_object_key(
 ) -> anyhow::Result<Option<Value>> {
     let kind = object_key.get("kind").and_then(Value::as_str);
     let result = match kind {
+        Some("project") => return Ok(None),
         Some("scene") => canonical_scene_snapshot(
             conn,
             project_id,
@@ -405,6 +442,28 @@ pub(crate) fn canonical_snapshot_for_object_key(
             );
             crate::narrative_extraction::collect_phase_snapshot(conn, phase_id)
         }
+        Some("codex-detail-definition") => canonical_codex_detail_definition_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("definitionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("codex-detail-definition object key has no definitionId")
+                })?,
+        ),
+        Some("codex-detail-value") => {
+            let value_id = object_key
+                .get("valueId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("codex-detail-value object key has no valueId"))?;
+            let pair: (String, String) = conn.query_row(
+                "SELECT entry_id, definition_id FROM codex_detail_values WHERE id = ?1",
+                params![value_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            canonical_codex_detail_snapshot(conn, project_id, &pair.0, &pair.1)
+        }
         Some("plot-thread") => canonical_plot_thread_snapshot(
             conn,
             project_id,
@@ -412,6 +471,22 @@ pub(crate) fn canonical_snapshot_for_object_key(
                 .get("threadId")
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("plot-thread object key has no threadId"))?,
+        ),
+        Some("plot-marker") => canonical_plot_marker_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("markerId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot-marker object key has no markerId"))?,
+        ),
+        Some("plot-branch") => canonical_plot_branch_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("branchId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("plot-branch object key has no branchId"))?,
         ),
         Some("calendar") => {
             let calendar_ref = object_key
@@ -421,6 +496,47 @@ pub(crate) fn canonical_snapshot_for_object_key(
             anyhow::ensure!(calendar_ref == project_id, "calendar escaped its project");
             canonical_calendar_snapshot(conn, project_id)
         }
+        Some("foreshadow-setup") => canonical_foreshadow_setup_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("setupId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("foreshadow-setup object key has no setupId"))?,
+        ),
+        Some("foreshadow-payoff") => canonical_foreshadow_payoff_snapshot(
+            conn,
+            project_id,
+            object_key
+                .get("payoffId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("foreshadow-payoff object key has no payoffId"))?,
+        ),
+        Some("temporal-node") => crate::narrative_extraction::collect_node_snapshot(
+            conn,
+            object_key
+                .get("nodeId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("temporal-node object key has no nodeId"))?,
+        ),
+        Some("temporal-constraint") => crate::narrative_extraction::collect_constraint_snapshot(
+            conn,
+            object_key
+                .get("constraintId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("temporal-constraint object key has no constraintId")
+                })?,
+        ),
+        Some("temporal-projection") => crate::narrative_extraction::collect_projection_snapshot(
+            conn,
+            object_key
+                .get("projectionId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("temporal-projection object key has no projectionId")
+                })?,
+        ),
         Some("chronicle-event") => {
             let event_id = object_key
                 .get("eventId")
@@ -485,16 +601,38 @@ pub(crate) fn object_key_identity(object_key: &Value) -> anyhow::Result<String> 
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("Narrative object key has no kind"))?;
     let normalized = match kind {
+        "project" => json!({ "kind": kind, "projectId": required(object_key, "projectId")? }),
         "scene" => json!({ "kind": kind, "sceneId": required(object_key, "sceneId")? }),
         "codex-entry" => json!({ "kind": kind, "entryId": required(object_key, "entryId")? }),
         "codex-relation" => {
             json!({ "kind": kind, "relationId": required(object_key, "relationId")? })
         }
         "codex-phase" => json!({ "kind": kind, "phaseId": required(object_key, "phaseId")? }),
+        "codex-detail-definition" => {
+            json!({ "kind": kind, "definitionId": required(object_key, "definitionId")? })
+        }
+        "codex-detail-value" => {
+            json!({ "kind": kind, "valueId": required(object_key, "valueId")? })
+        }
         "chronicle-event" => json!({ "kind": kind, "eventId": required(object_key, "eventId")? }),
         "plot-thread" => json!({ "kind": kind, "threadId": required(object_key, "threadId")? }),
+        "plot-marker" => json!({ "kind": kind, "markerId": required(object_key, "markerId")? }),
+        "plot-branch" => json!({ "kind": kind, "branchId": required(object_key, "branchId")? }),
         "foreshadow" => {
             json!({ "kind": kind, "foreshadowId": required(object_key, "foreshadowId")? })
+        }
+        "foreshadow-setup" => {
+            json!({ "kind": kind, "setupId": required(object_key, "setupId")? })
+        }
+        "foreshadow-payoff" => {
+            json!({ "kind": kind, "payoffId": required(object_key, "payoffId")? })
+        }
+        "temporal-node" => json!({ "kind": kind, "nodeId": required(object_key, "nodeId")? }),
+        "temporal-constraint" => {
+            json!({ "kind": kind, "constraintId": required(object_key, "constraintId")? })
+        }
+        "temporal-projection" => {
+            json!({ "kind": kind, "projectionId": required(object_key, "projectionId")? })
         }
         "calendar" => json!({ "kind": kind, "calendarRef": required(object_key, "calendarRef")? }),
         "component" => json!({ "kind": kind, "componentId": required(object_key, "componentId")? }),

@@ -194,8 +194,8 @@ fn plot_branch_feed_identifies_the_mutated_component_once() {
     assert_eq!(
         object_key,
         json!({
-            "kind": "component",
-            "componentId": "plot_thread_branch:branch-order",
+            "kind": "plot-branch",
+            "branchId": "branch-order",
         })
     );
     let paths: Value = serde_json::from_str(&roots[0].1).expect("changed paths");

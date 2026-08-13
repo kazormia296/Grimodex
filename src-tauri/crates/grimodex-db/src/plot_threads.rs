@@ -321,7 +321,10 @@ fn normalize_plot_feed_events_in_tx(
     // and source update/delete `before` state from the existing Feed head.
     for event in events {
         let kind = event.object_key.get("kind").and_then(Value::as_str);
-        if !matches!(kind, Some("plot-thread") | Some("component")) {
+        if !matches!(
+            kind,
+            Some("plot-thread") | Some("plot-marker") | Some("plot-branch") | Some("component")
+        ) {
             continue;
         }
         let current = if event.mutation_kind == "delete" {
@@ -4802,7 +4805,7 @@ mod tests {
     }
 
     #[test]
-    fn child_feed_uses_component_identity_and_preserves_state_continuity() {
+    fn child_feed_uses_typed_identity_and_preserves_state_continuity() {
         let d = db();
         d.with_conn(|conn| {
             conn.execute_batch(
@@ -4894,16 +4897,28 @@ mod tests {
         )
         .expect("delete branch");
 
-        for (component_id, expected_paths) in [
+        for (object_kind, object_id, expected_paths) in [
             (
-                "plot_thread_marker:marker-feed",
+                "plot-marker",
+                "marker-feed",
                 vec![vec!["/"], vec!["/note", "/sceneId"], vec!["/"]],
             ),
             (
-                "plot_thread_branch:branch-feed",
+                "plot-branch",
+                "branch-feed",
                 vec![vec!["/"], vec!["/atSceneId"], vec!["/"]],
             ),
         ] {
+            let identity_path = if object_kind == "plot-marker" {
+                "$.markerId"
+            } else {
+                "$.branchId"
+            };
+            let expected_key = if object_kind == "plot-marker" {
+                json!({ "kind": object_kind, "markerId": object_id })
+            } else {
+                json!({ "kind": object_kind, "branchId": object_id })
+            };
             d.with_conn(|conn| {
                 let rows = conn
                     .prepare(
@@ -4915,10 +4930,10 @@ mod tests {
                              ON transaction_row.id = event.transaction_id
                             AND transaction_row.project_id = event.project_id
                           WHERE event.project_id = 'p1'
-                            AND json_extract(event.object_key_json, '$.componentId') = ?1
+                            AND json_extract(event.object_key_json, ?1) = ?2
                           ORDER BY event.canonical_sequence, event.event_ordinal",
                     )?
-                    .query_map([component_id], |row| {
+                    .query_map(rusqlite::params![identity_path, object_id], |row| {
                         Ok((
                             row.get::<_, String>(0)?,
                             row.get::<_, String>(1)?,
@@ -4930,11 +4945,7 @@ mod tests {
                     .collect::<Result<Vec<_>, _>>()?;
                 assert_eq!(rows.len(), 3);
                 assert!(rows.iter().all(|row| {
-                    serde_json::from_str::<Value>(&row.0).ok()
-                        == Some(json!({
-                            "kind": "component",
-                            "componentId": component_id,
-                        }))
+                    serde_json::from_str::<Value>(&row.0).ok() == Some(expected_key.clone())
                 }));
                 assert_eq!(
                     rows.iter().map(|row| row.1.as_str()).collect::<Vec<_>>(),
@@ -4951,7 +4962,7 @@ mod tests {
                 assert_eq!(paths, expected_paths);
                 Ok(())
             })
-            .expect("inspect plot child Feed continuity");
+            .expect("inspect typed plot child Feed continuity");
         }
     }
 
@@ -4982,10 +4993,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 json!({ "kind": "plot-thread", "threadId": "thread-z" }),
-                json!({ "kind": "component", "componentId": "plot_thread_marker:marker-a" }),
-                json!({ "kind": "component", "componentId": "plot_thread_marker:marker-z" }),
-                json!({ "kind": "component", "componentId": "plot_thread_branch:branch-a" }),
-                json!({ "kind": "component", "componentId": "plot_thread_branch:branch-z" }),
+                json!({ "kind": "plot-marker", "markerId": "marker-a" }),
+                json!({ "kind": "plot-marker", "markerId": "marker-z" }),
+                json!({ "kind": "plot-branch", "branchId": "branch-a" }),
+                json!({ "kind": "plot-branch", "branchId": "branch-z" }),
             ]
         );
     }

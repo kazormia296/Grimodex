@@ -5,7 +5,7 @@
 //! trusted live references. Only an exact normalized plan is accepted, then
 //! wipe, insert, audit, and Change Feed append commit in one transaction.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rusqlite::types::{Value as SqlValue, ValueRef};
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
@@ -924,98 +924,56 @@ fn capture_snapshot_feed_state(
     Ok(state)
 }
 
-fn json_pointer_segment(value: &str) -> String {
-    value.replace('~', "~0").replace('/', "~1")
-}
-
-fn snapshot_feed_changed_paths(
-    before: Option<&SnapshotFeedObjectState>,
-    after: Option<&SnapshotFeedObjectState>,
-) -> Vec<String> {
-    let mut paths = BTreeSet::new();
-    let row_ids = before
-        .into_iter()
-        .flat_map(|state| state.rows.keys())
-        .chain(after.into_iter().flat_map(|state| state.rows.keys()))
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    for row_id in row_ids {
-        let prefix = format!("/rows/{}", json_pointer_segment(&row_id));
-        let before_row = before.and_then(|state| state.rows.get(&row_id));
-        let after_row = after.and_then(|state| state.rows.get(&row_id));
-        match (before_row, after_row) {
-            (Some(Value::Object(before)), Some(Value::Object(after))) => {
-                let fields = before
-                    .keys()
-                    .chain(after.keys())
-                    .cloned()
-                    .collect::<BTreeSet<_>>();
-                for field in fields {
-                    if before.get(&field) != after.get(&field) {
-                        paths.insert(format!("{prefix}/{}", json_pointer_segment(&field)));
-                    }
-                }
-            }
-            _ => {
-                paths.insert(prefix);
-            }
-        }
-    }
-    if paths.is_empty() {
-        vec!["/".to_string()]
-    } else {
-        paths.into_iter().collect()
-    }
-}
-
 fn build_snapshot_restore_feed_events(
+    project_id: &str,
     before: &BTreeMap<String, SnapshotFeedObjectState>,
     after: &BTreeMap<String, SnapshotFeedObjectState>,
 ) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
-    let object_tokens = before
-        .keys()
-        .chain(after.keys())
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let mut events = Vec::new();
-    for token in object_tokens {
-        let before_state = before.get(&token);
-        let after_state = after.get(&token);
-        let before_value = before_state.map(|state| state.canonical_snapshot.clone());
-        let after_value = after_state.map(|state| state.canonical_snapshot.clone());
-        if before_value == after_value {
-            continue;
-        }
-        let changed_paths = snapshot_feed_changed_paths(before_state, after_state);
-        let state = after_state.or(before_state).ok_or_else(|| {
-            anyhow::anyhow!("project snapshot Feed object disappeared during diff")
-        })?;
-        events.push(NarrativeChangeEventInput {
-            object_key: state.object_key.clone(),
-            change_kind: state.change_kind.to_string(),
-            mutation_kind: match (before_state, after_state) {
-                (Some(_), Some(_)) => "update",
-                (Some(_), None) => "delete",
-                (None, Some(_)) => "restore",
-                (None, None) => unreachable!(),
-            }
-            .to_string(),
-            before_version: before_state.and_then(|state| state.version),
-            before_digest: before_value
-                .as_ref()
-                .map(narrative_snapshot_digest)
-                .transpose()?,
-            after_version: after_state.and_then(|state| state.version),
-            after_digest: after_value
-                .as_ref()
-                .map(narrative_snapshot_digest)
-                .transpose()?,
-            changed_paths: changed_paths.clone(),
-            text_impact: None,
-            structural_impact: Some(json!({ "changedPaths": changed_paths })),
-        });
+    fn state_digest(state: &BTreeMap<String, SnapshotFeedObjectState>) -> anyhow::Result<String> {
+        let value = Value::Object(
+            state
+                .iter()
+                .map(|(token, object)| {
+                    (
+                        token.clone(),
+                        json!({
+                            "objectKey": object.object_key,
+                            "rows": object.rows,
+                            "canonicalSnapshot": object.canonical_snapshot,
+                            "version": object.version,
+                            "changeKind": object.change_kind,
+                        }),
+                    )
+                })
+                .collect(),
+        );
+        narrative_snapshot_digest(&value)
     }
-    Ok(events)
+
+    let before_digest = state_digest(before)?;
+    let after_digest = state_digest(after)?;
+    if before_digest == after_digest {
+        return Ok(Vec::new());
+    }
+
+    // Restore replaces a scoped projection. It is a semantic epoch reset, not
+    // an audit replay: one deterministic marker lets C2 rebuild dependencies
+    // without flooding the Feed with one event per restored row.
+    Ok(vec![NarrativeChangeEventInput {
+        object_key: json!({ "kind": "project", "projectId": project_id }),
+        change_kind: "schema".to_string(),
+        mutation_kind: "update".to_string(),
+        before_version: None,
+        before_digest: Some(before_digest),
+        after_version: None,
+        after_digest: Some(after_digest),
+        changed_paths: vec!["/".to_string()],
+        text_impact: None,
+        structural_impact: Some(json!({
+            "event": "project-restored",
+            "requiresFullRebuild": true,
+        })),
+    }])
 }
 
 fn sql_value(value: &Value, field: &str) -> anyhow::Result<SqlValue> {
@@ -2944,10 +2902,11 @@ pub fn apply_project_snapshot_restore(
 
         let mut ordered_scopes = scopes.iter().copied().collect::<Vec<_>>();
         ordered_scopes.sort_by_key(|scope| scope.as_str());
-        let feed_events = build_snapshot_restore_feed_events(&feed_before, &feed_after)?;
+        let feed_events =
+            build_snapshot_restore_feed_events(&payload.project_id, &feed_before, &feed_after)?;
         if feed_events.is_empty() {
-            // A net no-op must not manufacture a project-snapshot component
-            // merely to satisfy the non-empty Feed transaction contract.
+            // A net no-op must not manufacture a project restore marker merely
+            // to satisfy the non-empty Feed transaction contract.
             // Persist the retry receipt at the current canonical tail instead.
             let canonical_sequence = transaction.query_row(
                 "SELECT COALESCE(MAX(sequence), 0)
@@ -3274,12 +3233,12 @@ mod tests {
             assert_eq!(days_per_year, 400);
             assert_eq!(version, 9);
             assert_ne!(updated_at, "2000-01-01T00:00:00.000Z");
-            let recorded: (String, String, i64, i64, String, String) = conn.query_row(
+            let recorded: (String, String, Option<i64>, Option<i64>, String, String) = conn.query_row(
                 "SELECT object_key_json, mutation_kind, before_version,
                         after_version, before_digest, after_digest
                    FROM narrative_change_events
                   WHERE project_id = 'p1'
-                    AND object_key_json LIKE '%\"kind\":\"calendar\"%'",
+                    AND object_key_json LIKE '%\"kind\":\"project\"%'",
                 [],
                 |row| {
                     Ok((
@@ -3294,11 +3253,22 @@ mod tests {
             )?;
             assert_eq!(
                 serde_json::from_str::<Value>(&recorded.0)?,
-                json!({ "kind": "calendar", "calendarRef": "p1" })
+                json!({ "kind": "project", "projectId": "p1" })
             );
             assert_eq!(recorded.1, "update");
-            assert_eq!((recorded.2, recorded.3), (8, 9));
+            assert_eq!((recorded.2, recorded.3), (None, None));
             assert_ne!(recorded.4, recorded.5);
+            let structural: String = conn.query_row(
+                "SELECT structural_impact_json
+                   FROM narrative_change_events
+                  WHERE project_id = 'p1'
+                    AND object_key_json LIKE '%\"kind\":\"project\"%'",
+                [],
+                |row| row.get(0),
+            )?;
+            let structural: Value = serde_json::from_str(&structural)?;
+            assert_eq!(structural["event"], "project-restored");
+            assert_eq!(structural["requiresFullRebuild"], true);
             let stale_write = conn.execute(
                 "UPDATE project_calendar
                     SET days_per_year = 401, version = version + 1
@@ -3710,46 +3680,32 @@ mod tests {
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
-            assert_eq!(events.len(), 2);
-            let object_keys = events
-                .iter()
-                .map(|event| serde_json::from_str::<Value>(&event.0).expect("object key"))
-                .collect::<Vec<_>>();
-            assert!(object_keys.contains(&json!({
-                "kind": "component",
-                "componentId": "project-snapshot:s-feed:labels",
-            })));
-            assert!(object_keys.contains(&json!({
-                "kind": "scene",
-                "sceneId": "t1",
-            })));
-            let serialized_keys = events
-                .iter()
-                .map(|event| event.0.as_str())
-                .collect::<Vec<_>>();
-            assert!(serialized_keys.windows(2).all(|pair| pair[0] < pair[1]));
+            assert_eq!(events.len(), 1);
+            let object_key = serde_json::from_str::<Value>(&events[0].0).expect("object key");
             assert_eq!(
-                events.iter().map(|event| event.1).collect::<Vec<_>>(),
-                vec![0, 1]
-            );
-            for event in &events {
-                assert_eq!(event.2, "update");
-                assert!(event.3.is_some(), "before digest must be recorded");
-                assert!(event.4.is_some(), "after digest must be recorded");
-                assert_ne!(event.3, event.4);
-            }
-            let changed_paths = events
-                .iter()
-                .flat_map(|event| {
-                    serde_json::from_str::<Vec<String>>(&event.5).expect("changed paths")
+                object_key,
+                json!({
+                    "kind": "project",
+                    "projectId": "p1",
                 })
-                .collect::<Vec<_>>();
-            assert!(changed_paths
-                .iter()
-                .any(|path| path.contains("tree_nodes:") && path.ends_with("/title")));
-            assert!(changed_paths
-                .iter()
-                .any(|path| path.contains("labels:") && path.ends_with("/color")));
+            );
+            assert_eq!(events[0].1, 0);
+            assert_eq!(events[0].2, "update");
+            assert!(events[0].3.is_some(), "before digest must be recorded");
+            assert!(events[0].4.is_some(), "after digest must be recorded");
+            assert_ne!(events[0].3, events[0].4);
+            assert_eq!(events[0].5, "[\"/\"]");
+
+            let structural: Value = conn
+                .query_row(
+                    "SELECT structural_impact_json FROM narrative_change_events
+                  WHERE project_id = 'p1' LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map(|raw| serde_json::from_str(&raw))??;
+            assert_eq!(structural["event"], "project-restored");
+            assert_eq!(structural["requiresFullRebuild"], true);
             let foreign_events: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM narrative_change_events
                   WHERE object_key_json LIKE '%t2%' OR object_key_json LIKE '%l2%'",
@@ -3858,10 +3814,7 @@ mod tests {
             )?;
             assert!(keys.iter().any(|key| {
                 serde_json::from_str::<Value>(key).ok()
-                    == Some(json!({
-                        "kind": "component",
-                        "componentId": "tree-node:note-1",
-                    }))
+                    == Some(json!({ "kind": "project", "projectId": "p1" }))
             }));
             assert!(!keys.iter().any(|key| {
                 serde_json::from_str::<Value>(key).ok()

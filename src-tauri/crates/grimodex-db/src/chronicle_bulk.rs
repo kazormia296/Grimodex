@@ -2104,12 +2104,12 @@ mod tests {
         assert_eq!(
             cleared["changedPaths"],
             json!([
-                "/startTime",
-                "/startMinute",
-                "/startGranularity",
-                "/endTime",
-                "/endMinute",
                 "/endGranularity",
+                "/endMinute",
+                "/endTime",
+                "/startGranularity",
+                "/startMinute",
+                "/startTime",
             ])
         );
 
