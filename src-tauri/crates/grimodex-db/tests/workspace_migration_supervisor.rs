@@ -51,6 +51,19 @@ fn live_user_version(ws: &Path) -> i32 {
         .expect("read version")
 }
 
+#[cfg(feature = "test-failpoints")]
+fn observe_user_version_read_only(path: &Path) -> Option<i32> {
+    // This helper is used while another thread owns the migration lease. Do
+    // not use Database::new here: its trusted-writer setup negotiates WAL mode
+    // and waits up to five seconds on SQLITE_BUSY, so an observational poll
+    // can otherwise contend with the seal/replace operation it is observing.
+    let conn =
+        rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .ok()?;
+    conn.pragma_query_value(None, "user_version", |row| row.get(0))
+        .ok()
+}
+
 fn live_table_exists(ws: &Path, table: &str) -> bool {
     let db = Database::new(&ws.join("grimodex.db")).expect("open live");
     db.with_conn(|conn| {
@@ -613,43 +626,29 @@ mod failpoint_tests {
             barrier_b.wait();
             let deadline = std::time::Instant::now() + Duration::from_secs(30);
             loop {
-                if db_b.exists() {
-                    if let Ok(db) = Database::new(&db_b) {
-                        if let Ok(version) = db.with_conn(|conn| {
-                            Ok(conn.pragma_query_value(None, "user_version", |row| {
-                                row.get::<_, i32>(0)
-                            })?)
-                        }) {
-                            if version == SCHEMA_VERSION {
-                                drop(db);
-                                if let Ok(exclusive) =
-                                    grimodex_db::workspace_lease::acquire_exclusive(
-                                        &ws_b,
-                                        Duration::from_secs(5),
-                                    )
-                                {
-                                    let foreign = ws_b.join("foreign.db");
-                                    {
-                                        let fdb = Database::new(&foreign).expect("foreign");
-                                        fdb.migrate().expect("migrate foreign");
-                                        fdb.with_conn(|conn| {
-                                        conn.execute(
-                                            "INSERT INTO projects (id, title, language) VALUES (?1, 'Foreign', 'ja')",
-                                            ["project-foreign"],
-                                        )?;
-                                        Ok(())
-                                    })
-                                    .expect("seed foreign");
-                                    }
-                                    migration_supervisor::seal_sqlite_image(&foreign)
-                                        .expect("seal foreign");
-                                    fs::copy(&foreign, &db_b).expect("install foreign live");
-                                    migration_supervisor::seal_sqlite_image(&db_b).expect("reseal");
-                                    drop(exclusive);
-                                    return;
-                                }
-                            }
+                if observe_user_version_read_only(&db_b) == Some(SCHEMA_VERSION) {
+                    if let Ok(exclusive) = grimodex_db::workspace_lease::acquire_exclusive(
+                        &ws_b,
+                        Duration::from_secs(5),
+                    ) {
+                        let foreign = ws_b.join("foreign.db");
+                        {
+                            let fdb = Database::new(&foreign).expect("foreign");
+                            fdb.migrate().expect("migrate foreign");
+                            fdb.with_conn(|conn| {
+                                conn.execute(
+                                    "INSERT INTO projects (id, title, language) VALUES (?1, 'Foreign', 'ja')",
+                                    ["project-foreign"],
+                                )?;
+                                Ok(())
+                            })
+                            .expect("seed foreign");
                         }
+                        migration_supervisor::seal_sqlite_image(&foreign).expect("seal foreign");
+                        fs::copy(&foreign, &db_b).expect("install foreign live");
+                        migration_supervisor::seal_sqlite_image(&db_b).expect("reseal");
+                        drop(exclusive);
+                        return;
                     }
                 }
                 if std::time::Instant::now() >= deadline {
