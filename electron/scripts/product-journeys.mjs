@@ -539,6 +539,7 @@ async function prepareCodexContextEntry(harness) {
     await harness.invokeOk(prepared.page, "agent_codex_create", {
       payload: {
         requestId: `product-codex-create-${entryId}`,
+        eventUid: `product-codex-create-event:${entryId}`,
         entryId,
         projectId,
         sessionId: "electron-product-journey",
