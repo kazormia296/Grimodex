@@ -355,6 +355,9 @@ function mapJourney(configureWorkspace, log) {
           const now = new Date().toISOString();
           await current.invokeOk(page, "map_write_bundle", {
             payload: {
+              requestId: `native-map-request-${randomUUID()}`,
+              sessionId: `native-map-session-${randomUUID()}`,
+              eventUid: `native-map-event-${randomUUID()}`,
               kind: "create-board",
               projectId,
               board: {
