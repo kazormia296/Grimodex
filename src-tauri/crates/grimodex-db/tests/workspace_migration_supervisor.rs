@@ -51,6 +51,20 @@ fn live_user_version(ws: &Path) -> i32 {
         .expect("read version")
 }
 
+fn live_table_exists(ws: &Path, table: &str) -> bool {
+    let db = Database::new(&ws.join("grimodex.db")).expect("open live");
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            [table],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    })
+    .expect("inspect table")
+}
+
 #[test]
 fn same_schema_opens_without_migration_snapshot() {
     let ws = temp_workspace("same");
@@ -89,6 +103,79 @@ fn same_schema_opens_without_migration_snapshot() {
         !snaps.exists() || fs::read_dir(&snaps).unwrap().next().is_none(),
         "same-schema open must not create migration snapshots"
     );
+}
+
+#[test]
+fn schema_20_shadow_migrates_to_21_and_preserves_existing_rows() {
+    assert_eq!(SCHEMA_VERSION, 21, "Gate C0 owns the SCHEMA 20 -> 21 step");
+    let ws = temp_workspace("schema-20-to-21");
+    let db_path = ws.join("grimodex.db");
+
+    // Start from the complete current physical schema, remove only the Gate C0
+    // tables, then stamp 20. This preserves the exact Gate B2 schema rather
+    // than trying to maintain a second hand-written SCHEMA 20 fixture.
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-from-20', 'Preserve Me')",
+                [],
+            )?;
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE narrative_change_events;
+                 DROP TABLE narrative_change_transactions;
+                 DROP TABLE narrative_change_cursors;
+                 DROP TABLE narrative_change_sets;
+                 PRAGMA user_version = 20;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(())
+        })
+        .expect("shape schema 20 fixture");
+    }
+    assert_eq!(live_user_version(&ws), 20);
+    assert!(!live_table_exists(&ws, "narrative_change_transactions"));
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate 20");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, 20);
+            assert_eq!(to_schema, 21);
+            drop(opened);
+        }
+        other => panic!("expected Migrated for SCHEMA 20, got {other:?}"),
+    }
+
+    assert_eq!(live_user_version(&ws), 21);
+    for table in [
+        "narrative_change_transactions",
+        "narrative_change_events",
+        "narrative_change_cursors",
+        "narrative_change_sets",
+    ] {
+        assert!(
+            live_table_exists(&ws, table),
+            "missing migrated table {table}"
+        );
+    }
+    let db = Database::new(&db_path).expect("reopen migrated");
+    let title: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT title FROM projects WHERE id = 'project-from-20'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("preserved row");
+    assert_eq!(title, "Preserve Me");
 }
 
 #[test]
@@ -176,6 +263,117 @@ fn current_marker_missing_invariants_uses_shadow_path() {
         other => panic!("expected Migrated via shadow path, got {other:?}"),
     }
     assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
+}
+
+#[test]
+fn current_marker_missing_change_feed_index_is_shadow_repaired() {
+    let ws = temp_workspace("missing-feed-index");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('preserved-index-repair', 'Keep')",
+                [],
+            )?;
+            conn.execute_batch("DROP INDEX idx_narrative_change_events_project_sequence;")?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "missing feed index must invalidate the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("shape missing-index fixture");
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("repair");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, SCHEMA_VERSION);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            drop(opened);
+        }
+        other => panic!("expected shadow repair, got {other:?}"),
+    }
+
+    let db = Database::new(&db_path).expect("reopen repaired");
+    db.with_conn(|conn| {
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        let title: String = conn.query_row(
+            "SELECT title FROM projects WHERE id = 'preserved-index-repair'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(title, "Keep");
+        Ok(())
+    })
+    .expect("verify repaired workspace");
+}
+
+#[test]
+fn current_marker_missing_change_feed_nullable_column_is_shadow_repaired() {
+    let ws = temp_workspace("missing-feed-column");
+    let db_path = ws.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('preserved-column-repair', 'Keep')",
+                [],
+            )?;
+            conn.execute_batch(
+                "ALTER TABLE narrative_change_transactions DROP COLUMN journal_id;",
+            )?;
+            assert!(
+                !grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?,
+                "missing nullable feed column must invalidate the current checkpoint"
+            );
+            Ok(())
+        })
+        .expect("shape missing-column fixture");
+    }
+
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("repair");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, SCHEMA_VERSION);
+            assert_eq!(to_schema, SCHEMA_VERSION);
+            drop(opened);
+        }
+        other => panic!("expected shadow repair, got {other:?}"),
+    }
+
+    let db = Database::new(&db_path).expect("reopen repaired");
+    db.with_conn(|conn| {
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        let journal_column: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('narrative_change_transactions')
+              WHERE name = 'journal_id' AND type = 'TEXT' AND \"notnull\" = 0",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(journal_column, 1, "nullable journal_id must be restored");
+        let title: String = conn.query_row(
+            "SELECT title FROM projects WHERE id = 'preserved-column-repair'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(title, "Keep");
+        Ok(())
+    })
+    .expect("verify repaired workspace");
 }
 
 #[test]

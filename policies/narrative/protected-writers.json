@@ -256,5 +256,33 @@
     "protection": "table",
     "writer": "narrative.field-authority",
     "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_transactions",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_events",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_cursors",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_sets",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
   }
 ]

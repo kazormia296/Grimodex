@@ -433,6 +433,98 @@ fn relation_failure_rolls_back_entries() {
 }
 
 #[test]
+fn change_feed_failure_rolls_back_domain_and_canonical_event() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-feed-fail", "Rollback", "ent:feed-fail"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-feed-fail", "set-feed-fail", &items);
+    let prepare = build_prepare(
+        "req-feed-fail",
+        "digest-feed-fail",
+        "set-feed-fail",
+        "run-feed-fail",
+        ops_from_pairs(&pairs, &items),
+        vec![],
+    );
+    enable_manual_apply(&db);
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(&db, prepare.clone())
+        .expect("prepare");
+    let before_change_events: i64 = db
+        .with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER test_reject_narrative_change_event
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'TEST_CHANGE_FEED_APPEND_FAILED');
+                 END;",
+            )?;
+            Ok(conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row.get(0))?)
+        })
+        .expect("install feed failpoint");
+
+    let error = narrative_extraction::narrative_extraction_apply_commit(
+        &db,
+        ApplyCommitPayload {
+            project_id: prepare.project_id,
+            prepared_commit_id: prepared["preparedCommitId"].as_str().unwrap().to_string(),
+            request_id: prepare.request_id,
+            session_id: prepare.session_id,
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect_err("feed append must fail the whole commit");
+    assert!(
+        error.to_string().contains("TEST_CHANGE_FEED_APPEND_FAILED"),
+        "unexpected error: {error}"
+    );
+
+    db.with_conn(|conn| {
+        let commit_status: String = conn.query_row(
+            "SELECT status FROM narrative_apply_commits WHERE id = ?1",
+            [prepared["preparedCommitId"].as_str().unwrap()],
+            |row| row.get(0),
+        )?;
+        assert_eq!(commit_status, "failed");
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM codex_entries", [], |row| row
+                .get::<_, i64>(0))?,
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_applications",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            0
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions",
+                [],
+                |row| row.get::<_, i64>(0)
+            )?,
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_events", [], |row| {
+                row.get::<_, i64>(0)
+            })?,
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM change_events", [], |row| row
+                .get::<_, i64>(0))?,
+            before_change_events
+        );
+        Ok(())
+    })
+    .expect("verify atomic rollback");
+}
+
+#[test]
 fn patch_create_and_relation_atomic() {
     let db = migrated_db();
     db.execute(
@@ -716,7 +808,7 @@ fn undo_deletes_relation_before_entries() {
     );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
-    let undone = narrative_extraction::narrative_extraction_undo_commit(
+    let schema20_undone = narrative_extraction::narrative_extraction_undo_commit(
         &db,
         UndoCommitPayload {
             project_id: "project-1".to_string(),
@@ -726,8 +818,32 @@ fn undo_deletes_relation_before_entries() {
             request_id: None,
         },
     )
-    .expect("undo");
-    assert_eq!(undone["status"], "undone");
+    .expect("initial undo");
+    assert_eq!(schema20_undone["status"], "undone");
+
+    // Simulate a SCHEMA 20 commit that was already undone before 20→21. Its
+    // receipt changeEventUid points at the latest Undo event, while the root
+    // apply event remains in the canonical ledger. Redo must recover that
+    // root by commit identity instead of treating the receipt UID as apply.
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_change_transactions WHERE commit_id = ?1",
+            [&commit_id],
+        )?;
+        conn.execute(
+            "UPDATE narrative_apply_commits
+                SET receipt_json = json_remove(
+                    receipt_json,
+                    '$.maintenanceTransactionId',
+                    '$.maintenanceOriginalTransactionId',
+                    '$.maintenanceEventIds'
+                )
+              WHERE id = ?1",
+            [&commit_id],
+        )?;
+        Ok(())
+    })
+    .expect("simulate pre-feed already-undone commit");
 
     let redone = narrative_extraction::narrative_extraction_redo_commit(
         &db,
@@ -767,6 +883,39 @@ fn undo_deletes_relation_before_entries() {
         .unwrap();
     assert_eq!(entry_count, 0);
     assert_eq!(relation_count, 0);
+
+    let feed_rows: Vec<(String, Option<String>, String, String)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT t.id, t.original_transaction_id, t.cause_kind, e.mutation_kind
+                   FROM narrative_change_transactions t
+                   INNER JOIN narrative_change_events e
+                     ON e.project_id = t.project_id AND e.transaction_id = t.id
+                  WHERE t.project_id = 'project-1' AND t.commit_id = ?1
+                  ORDER BY t.source_change_event_sequence, e.event_ordinal",
+            )?;
+            let rows = statement
+                .query_map([applied["commitId"].as_str().unwrap()], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read maintenance feed");
+    assert_eq!(feed_rows.len(), 9, "three feed operations x three entities");
+    let forward_transaction_id = feed_rows[0].0.as_str();
+    let expectations = [
+        (0..3, ("forward", "create"), None),
+        (3..6, ("redo", "restore"), Some(forward_transaction_id)),
+        (6..9, ("undo", "delete"), Some(forward_transaction_id)),
+    ];
+    for (index, expected, expected_origin) in expectations {
+        for row in &feed_rows[index] {
+            assert_eq!(row.2, expected.0);
+            assert_eq!(row.3, expected.1);
+            assert_eq!(row.1.as_deref(), expected_origin);
+        }
+    }
 }
 
 #[test]
@@ -1459,6 +1608,54 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
         })
         .unwrap();
     assert_eq!(entry_count, 1);
+
+    let (feed_transactions, feed_events, correlated_to_canonical): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE project_id = 'project-1'
+                        AND source_domain = 'narrative.commit.apply'
+                        AND request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_change_events e
+                       INNER JOIN narrative_change_transactions t
+                         ON t.project_id = e.project_id AND t.id = e.transaction_id
+                      WHERE t.project_id = 'project-1'
+                        AND t.source_domain = 'narrative.commit.apply'
+                        AND t.request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*)
+                       FROM narrative_change_transactions t
+                       INNER JOIN change_events c
+                         ON c.project_id = t.project_id
+                        AND c.event_uid = t.source_change_event_uid
+                        AND c.sequence = t.source_change_event_sequence
+                      WHERE t.project_id = 'project-1'
+                        AND t.source_domain = 'narrative.commit.apply'
+                        AND t.request_id = ?1",
+                    [request_id],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("inspect retry feed");
+    assert_eq!(
+        feed_transactions, 1,
+        "retry must not duplicate feed transaction"
+    );
+    assert_eq!(feed_events, 1, "retry must not duplicate feed event");
+    assert_eq!(
+        correlated_to_canonical, 1,
+        "feed must reference the audit ledger"
+    );
 
     // Re-prepare with the same ops fails once applied — status-first avoids this.
     // For codex.entry.create, ensure_entry_id_available rejects the duplicate entry id

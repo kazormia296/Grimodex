@@ -18,6 +18,7 @@ use grimodex_core::chronicle_time::{
 // (Electron 移行 Phase 3 バッチ1 — napi Backend と Tauri コマンドで共用)。
 // grimodex-db は grimodex-core に依存済みなので tracked write / undo_journal を直接呼べる。
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
+use crate::execute::with_writer_mutation_denied;
 use crate::idempotency::{
     insert_idempotent_response, load_idempotent_response, IdempotencyRequest,
 };
@@ -175,12 +176,7 @@ fn record_manual_event_fields(
         return Ok(());
     }
     crate::narrative_extraction::record_human_field_write(
-        conn,
-        project_id,
-        "event",
-        event_id,
-        fields,
-        updated_at,
+        conn, project_id, "event", event_id, fields, updated_at,
     )
 }
 
@@ -228,7 +224,10 @@ fn manual_update_fields(payload: &AgentCodexUpdatePayload) -> Vec<&'static str> 
         payload.summary.as_ref().map(|_| "/summary"),
         payload.content.as_ref().map(|_| "/content"),
         payload.aliases.as_ref().map(|_| "/aliases"),
-        payload.excluded_aliases.as_ref().map(|_| "/excludedAliases"),
+        payload
+            .excluded_aliases
+            .as_ref()
+            .map(|_| "/excludedAliases"),
         payload.readings.as_ref().map(|_| "/readings"),
         payload.tags_cache.as_ref().map(|_| "/tagsCache"),
         payload.parent_id.as_ref().map(|_| "/parentId"),
@@ -1548,7 +1547,9 @@ pub fn agent_write_bundle_impl(
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<AgentWriteResult> {
-            run_statements_in_tx(conn, &payload.statements)?;
+            with_writer_mutation_denied(conn, "narrative.maintenance-feed", |conn| {
+                run_statements_in_tx(conn, &payload.statements)
+            })?;
 
             insert_undo_journal_in_tx(
                 conn,
@@ -5643,6 +5644,167 @@ mod tests {
             .collect();
         keys.sort();
         keys
+    }
+
+    #[test]
+    fn agent_bundle_cannot_bypass_maintenance_feed_writer_and_rolls_back_atomically() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let feed_table = "narrative_change_cursors";
+        let seed_sql = format!(
+            "INSERT INTO \"{feed_table}\"
+             (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+             VALUES (?1, 'native-consumer', 0, datetime('now'))"
+        );
+        db.execute(&seed_sql, &[Value::String(project_id.clone())], "run")
+            .expect("trusted Native setup");
+
+        let attempts = [
+            (
+                format!(
+                    "WITH incoming(project_id, consumer_id, seq) AS (VALUES (?1, ?2, 0))
+                     INSERT INTO \"{feed_table}\"
+                     (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+                     SELECT project_id, consumer_id, seq, datetime('now') FROM incoming"
+                ),
+                vec![
+                    Value::String(project_id.clone()),
+                    Value::String("bundle-consumer".to_string()),
+                ],
+            ),
+            (
+                format!(
+                    "WITH next(seq) AS (VALUES (999))
+                     UPDATE \"{feed_table}\"
+                     SET acknowledged_through_sequence = (SELECT seq FROM next)
+                     WHERE project_id = ?1 AND consumer_id = 'native-consumer'"
+                ),
+                vec![Value::String(project_id.clone())],
+            ),
+            (
+                format!(
+                    "/* comments and quoted identifiers do not bypass SQLite authority */
+                     DELETE FROM \"{feed_table}\"
+                     WHERE project_id = ?1 AND consumer_id = 'native-consumer'"
+                ),
+                vec![Value::String(project_id.clone())],
+            ),
+            (
+                format!("ALTER TABLE \"{feed_table}\" RENAME TO escaped_feed"),
+                vec![],
+            ),
+            (format!("DROP TABLE \"{feed_table}\""), vec![]),
+            ("COMMIT".to_string(), vec![]),
+        ];
+
+        for (index, (feed_sql, feed_params)) in attempts.into_iter().enumerate() {
+            let entity_id = format!("bundle-snippet-{index}");
+            let error = agent_write_bundle_impl(
+                &db,
+                AgentWriteBundlePayload {
+                    project_id: project_id.clone(),
+                    session_id: "bundle-session".to_string(),
+                    surface: "test".to_string(),
+                    statements: vec![
+                        BatchStatement {
+                            sql: "INSERT INTO snippets (id, project_id, title, content)
+                                  VALUES (?1, ?2, 'Should roll back', '{}')"
+                                .to_string(),
+                            params: vec![
+                                Value::String(entity_id.clone()),
+                                Value::String(project_id.clone()),
+                            ],
+                            method: "run".to_string(),
+                        },
+                        BatchStatement {
+                            sql: feed_sql,
+                            params: feed_params,
+                            method: "run".to_string(),
+                        },
+                    ],
+                    undo_journal: UndoJournalPayload {
+                        entity_kind: "snippet".to_string(),
+                        entity_id,
+                        op_kind: "create".to_string(),
+                        before_json: None,
+                        after_json: Some(r#"{"title":"Should roll back"}"#.to_string()),
+                        base_version: 0,
+                        result_version: 1,
+                    },
+                    change_event: ChangeEventPayload {
+                        event_uid: format!("bundle-event-{index}"),
+                        scene_id: None,
+                        domain: "snippet".to_string(),
+                        op_type: "create".to_string(),
+                        entity_type: Some("snippet".to_string()),
+                        entity_id: Some(format!("bundle-snippet-{index}")),
+                        payload: "{}".to_string(),
+                        timestamp: 1,
+                    },
+                },
+            )
+            .expect_err("agent bundle must not bypass the feed writer or outer transaction");
+            assert!(
+                error.to_string().contains("PROTECTED_WRITER_SQL")
+                    && error.to_string().contains("narrative.maintenance-feed"),
+                "unexpected denial: {error}"
+            );
+            assert_eq!(table_count(&db, "snippets"), 0);
+            assert_eq!(table_count(&db, "undo_journal"), 0);
+            assert_eq!(table_count(&db, "change_events"), 0);
+            assert_eq!(table_count(&db, feed_table), 1);
+            let (canonical_table, escaped_table): (i64, i64) = db
+                .with_conn(|conn| {
+                    Ok((
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM sqlite_master
+                              WHERE type = 'table' AND name = ?1",
+                            [feed_table],
+                            |row| row.get(0),
+                        )?,
+                        conn.query_row(
+                            "SELECT COUNT(*) FROM sqlite_master
+                              WHERE type = 'table' AND name = 'escaped_feed'",
+                            [],
+                            |row| row.get(0),
+                        )?,
+                    ))
+                })
+                .expect("inspect protected table identity");
+            assert_eq!(canonical_table, 1, "protected table must retain its name");
+            assert_eq!(escaped_table, 0, "rename attempt must roll back");
+
+            // The scoped authorizer must be gone before typed Native work
+            // resumes on the shared connection.
+            let trusted_update = format!(
+                "UPDATE \"{feed_table}\"
+                 SET acknowledged_through_sequence = ?1
+                 WHERE project_id = ?2 AND consumer_id = 'native-consumer'"
+            );
+            db.execute(
+                &trusted_update,
+                &[
+                    Value::from((index + 1) as i64),
+                    Value::String(project_id.clone()),
+                ],
+                "run",
+            )
+            .expect("scoped authorizer restored before Native mutation");
+        }
+
+        let acknowledged: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    &format!(
+                        "SELECT acknowledged_through_sequence FROM \"{feed_table}\"
+                         WHERE project_id = ?1 AND consumer_id = 'native-consumer'"
+                    ),
+                    rusqlite::params![project_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read Native cursor");
+        assert_eq!(acknowledged, 6);
     }
 
     #[test]

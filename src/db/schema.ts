@@ -2728,6 +2728,174 @@ export const genericExtractionSchemas = sqliteTable(
   ],
 );
 
+// =========================================================================
+// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21).
+//
+// This is a freshness / dependency-invalidation feed, not a second audit
+// ledger. Every transaction is correlated to the canonical change_events hash
+// chain. Writes are Native-only; renderer schema declarations exist for typed
+// reads and physical contract parity.
+// =========================================================================
+export const narrativeChangeTransactions = sqliteTable(
+  "narrative_change_transactions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    requestId: text("request_id").notNull(),
+    sourceDomain: text("source_domain").notNull(),
+    sourceChangeEventUid: text("source_change_event_uid").notNull(),
+    sourceChangeEventSequence: integer(
+      "source_change_event_sequence",
+    ).notNull(),
+    causeKind: text("cause_kind", {
+      enum: ["forward", "undo", "redo"],
+    }).notNull(),
+    originalTransactionId: text("original_transaction_id"),
+    commitId: text("commit_id"),
+    journalId: text("journal_id"),
+    applicationIdsJson: text("application_ids_json").notNull().default("[]"),
+    payloadDigest: text("payload_digest").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_transactions_project_id").on(
+      table.projectId,
+      table.id,
+    ),
+    uniqueIndex("uq_narrative_change_transactions_request").on(
+      table.projectId,
+      table.sourceDomain,
+      table.requestId,
+    ),
+    uniqueIndex("uq_narrative_change_transactions_source_event").on(
+      table.projectId,
+      table.sourceChangeEventUid,
+    ),
+    index("idx_narrative_change_transactions_project_sequence").on(
+      table.projectId,
+      table.sourceChangeEventSequence,
+    ),
+  ],
+);
+
+export const narrativeChangeEvents = sqliteTable(
+  "narrative_change_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    transactionId: text("transaction_id").notNull(),
+    canonicalChangeEventUid: text("canonical_change_event_uid").notNull(),
+    canonicalSequence: integer("canonical_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    objectKeyJson: text("object_key_json").notNull(),
+    changeKind: text("change_kind", {
+      enum: [
+        "content",
+        "metadata",
+        "order",
+        "association",
+        "catalog",
+        "calendar",
+        "policy",
+        "schema",
+        "unknown",
+      ],
+    }).notNull(),
+    mutationKind: text("mutation_kind", {
+      enum: ["create", "update", "delete", "restore"],
+    }).notNull(),
+    beforeVersion: integer("before_version"),
+    beforeDigest: text("before_digest"),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    changedPathsJson: text("changed_paths_json").notNull(),
+    textImpactJson: text("text_impact_json"),
+    structuralImpactJson: text("structural_impact_json"),
+    occurredAt: text("occurred_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_events_project_id").on(
+      table.projectId,
+      table.id,
+    ),
+    uniqueIndex("uq_narrative_change_events_source_ordinal").on(
+      table.projectId,
+      table.canonicalChangeEventUid,
+      table.eventOrdinal,
+    ),
+    foreignKey({
+      columns: [table.projectId, table.transactionId],
+      foreignColumns: [
+        narrativeChangeTransactions.projectId,
+        narrativeChangeTransactions.id,
+      ],
+      name: "narrative_change_events_transaction_fkey",
+    }).onDelete("cascade"),
+    index("idx_narrative_change_events_project_sequence").on(
+      table.projectId,
+      table.canonicalSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
+export const narrativeChangeCursors = sqliteTable(
+  "narrative_change_cursors",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerId: text("consumer_id").notNull(),
+    acknowledgedThroughSequence: integer("acknowledged_through_sequence")
+      .notNull()
+      .default(0),
+    leaseOwner: text("lease_owner"),
+    leaseExpiresAt: text("lease_expires_at"),
+    lastError: text("last_error"),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.consumerId] }),
+    index("idx_narrative_change_cursors_project").on(
+      table.projectId,
+      table.consumerId,
+    ),
+  ],
+);
+
+export const narrativeChangeSets = sqliteTable(
+  "narrative_change_sets",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    fromSequenceExclusive: integer("from_sequence_exclusive").notNull(),
+    throughSequenceInclusive: integer("through_sequence_inclusive").notNull(),
+    eventIdsJson: text("event_ids_json").notNull(),
+    affectedObjectsJson: text("affected_objects_json").notNull(),
+    digest: text("digest").notNull(),
+    createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_change_sets_project_range_digest").on(
+      table.projectId,
+      table.fromSequenceExclusive,
+      table.throughSequenceInclusive,
+      table.digest,
+    ),
+    index("idx_narrative_change_sets_project_range").on(
+      table.projectId,
+      table.fromSequenceExclusive,
+      table.throughSequenceInclusive,
+    ),
+  ],
+);
+
 /** Temporal Constraint Graph nodes (SCHEMA_VERSION 10). */
 export const narrativeTemporalNodes = sqliteTable(
   "narrative_temporal_nodes",

@@ -347,6 +347,10 @@ export interface ApplyCommitResult {
   readonly status: string;
   readonly journalId?: string;
   readonly changeEventUid?: string;
+  /** Gate C0 freshness/invalidation feed correlation; not an audit ledger. */
+  readonly maintenanceTransactionId?: string;
+  readonly maintenanceOriginalTransactionId?: string;
+  readonly maintenanceEventIds?: readonly string[];
   readonly created?: readonly {
     readonly operationIndex: number;
     readonly entityKind: string;

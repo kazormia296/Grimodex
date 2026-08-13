@@ -14,7 +14,7 @@ use std::time::Instant;
 
 use super::protected_writers::{
     bundled_protected_writer_registry, classify_insert_columns, untrusted_mutation_rejection,
-    PROTECTED_WRITER_SQL_ERROR,
+    WriterEnforcement, PROTECTED_WRITER_SQL_ERROR,
 };
 use super::{BatchStatement, Database};
 
@@ -52,6 +52,7 @@ impl SqlOrigin {
 thread_local! {
     static UNTRUSTED_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static PENDING_INSERT_COLUMNS: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+    static SCOPED_WRITER_POLICY_ACTIVE: Cell<bool> = const { Cell::new(false) };
 }
 
 const RENDERER_SQL_RESOURCE_ERROR: &str = "RENDERER_SQL_RESOURCE_LIMIT";
@@ -148,6 +149,190 @@ fn protected_writer_rejection(ctx: &AuthContext<'_>) -> Option<String> {
         ),
         _ => None,
     }
+}
+
+fn scoped_writer_policy_rejection(ctx: &AuthContext<'_>, denied_writer: &str) -> Option<String> {
+    if !matches!(ctx.database_name, None | Some("main") | Some("temp")) {
+        return Some(format!(
+            "access to an attached database is not allowed while protecting writer {denied_writer}"
+        ));
+    }
+
+    let table_name = match &ctx.action {
+        AuthAction::Delete { table_name }
+        | AuthAction::Insert { table_name }
+        | AuthAction::Update { table_name, .. } => table_name,
+        _ => "",
+    };
+    if let Some(entry) = bundled_protected_writer_registry().get(table_name) {
+        if entry.enforcement == WriterEnforcement::Active && entry.writer == denied_writer {
+            return Some(format!(
+                "mutation of protected narrative table {} (writer {})",
+                entry.table, entry.writer
+            ));
+        }
+    }
+
+    // This policy wraps renderer-supplied statements in `agent_write_bundle`.
+    // DML against the bundle's domain tables remains allowed, but schema
+    // changes would let a caller rename/drop a protected table and then mutate
+    // it after the registry can no longer resolve its canonical name.
+    match &ctx.action {
+        AuthAction::Attach { .. } => Some(format!(
+            "ATTACH or VACUUM is not allowed while protecting writer {denied_writer}"
+        )),
+        AuthAction::Detach { .. } => Some(format!(
+            "DETACH is not allowed while protecting writer {denied_writer}"
+        )),
+        AuthAction::CreateIndex { .. }
+        | AuthAction::CreateTable { .. }
+        | AuthAction::CreateTempIndex { .. }
+        | AuthAction::CreateTempTable { .. }
+        | AuthAction::CreateTempTrigger { .. }
+        | AuthAction::CreateTempView { .. }
+        | AuthAction::CreateTrigger { .. }
+        | AuthAction::CreateView { .. }
+        | AuthAction::DropIndex { .. }
+        | AuthAction::DropTable { .. }
+        | AuthAction::DropTempIndex { .. }
+        | AuthAction::DropTempTable { .. }
+        | AuthAction::DropTempTrigger { .. }
+        | AuthAction::DropTempView { .. }
+        | AuthAction::DropTrigger { .. }
+        | AuthAction::DropView { .. }
+        | AuthAction::AlterTable { .. }
+        | AuthAction::Reindex { .. }
+        | AuthAction::Analyze { .. }
+        | AuthAction::CreateVtable { .. }
+        | AuthAction::DropVtable { .. } => Some(format!(
+            "schema operation is not allowed while protecting writer {denied_writer}"
+        )),
+        AuthAction::Pragma {
+            pragma_name,
+            pragma_value: _,
+        } => Some(format!(
+            "PRAGMA {pragma_name} is not allowed while protecting writer {denied_writer}"
+        )),
+        AuthAction::Transaction { .. } | AuthAction::Savepoint { .. } => Some(format!(
+            "transaction control is not allowed while protecting writer {denied_writer}"
+        )),
+        AuthAction::Function { function_name } if renderer_function_denied(function_name) => {
+            Some(format!(
+                "function {function_name} is not allowed while protecting writer {denied_writer}"
+            ))
+        }
+        // rusqlite can expose parameterized ATTACH/DETACH as Unknown.
+        AuthAction::Unknown { code, .. }
+            if *code == rusqlite::ffi::SQLITE_ATTACH || *code == rusqlite::ffi::SQLITE_DETACH =>
+        {
+            Some(format!(
+                "ATTACH or DETACH is not allowed while protecting writer {denied_writer}"
+            ))
+        }
+        AuthAction::Unknown { code, arg1, arg2 } => Some(format!(
+            "unknown SQLite operation code={code} arg1={arg1:?} arg2={arg2:?} is not allowed while protecting writer {denied_writer}"
+        )),
+        _ => None,
+    }
+}
+
+struct ScopedWriterAuthorizer<'a> {
+    conn: &'a Connection,
+    armed: bool,
+}
+
+impl ScopedWriterAuthorizer<'_> {
+    fn restore(mut self) -> rusqlite::Result<()> {
+        let result = self
+            .conn
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        if result.is_ok() {
+            self.armed = false;
+            SCOPED_WRITER_POLICY_ACTIVE.with(|active| active.set(false));
+        }
+        result
+    }
+}
+
+impl Drop for ScopedWriterAuthorizer<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Best effort on unwinding. Normal returns use `restore`, surface a
+        // cleanup error, and never continue with an unexpectedly armed hook.
+        let _ = self
+            .conn
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+        SCOPED_WRITER_POLICY_ACTIVE.with(|active| active.set(false));
+    }
+}
+
+/// Run trusted, caller-supplied SQL while withholding one Native writer.
+///
+/// Agent bundles are intentionally allowed to mutate the aggregate tables
+/// they own, so the renderer/MCP policy is too broad for them. The maintenance
+/// feed is different: it may only be appended by its typed Native writer after
+/// the canonical change event exists. This scoped authorizer rejects feed DML
+/// by SQLite's resolved table identity, making comments, quoting, CTEs, and
+/// triggers unable to bypass it. The connection must be outside the generic
+/// SQL policy; the guard restores that canonical prior no-authorizer state on
+/// success, error, and unwind paths.
+pub(crate) fn with_writer_mutation_denied<T, F>(
+    conn: &Connection,
+    denied_writer: &str,
+    operation: F,
+) -> anyhow::Result<T>
+where
+    F: FnOnce(&Connection) -> anyhow::Result<T>,
+{
+    anyhow::ensure!(
+        !UNTRUSTED_SQL_ACTIVE.with(Cell::get),
+        "scoped writer policy cannot nest inside untrusted SQL policy"
+    );
+    anyhow::ensure!(
+        !SCOPED_WRITER_POLICY_ACTIVE.with(Cell::get),
+        "scoped writer policy cannot be nested"
+    );
+
+    let denied_reason = Arc::new(Mutex::new(None::<String>));
+    let denied_for_hook = Arc::clone(&denied_reason);
+    let denied_writer = denied_writer.to_string();
+    conn.authorizer(Some(move |ctx: AuthContext<'_>| {
+        if let Some(reason) = scoped_writer_policy_rejection(&ctx, &denied_writer) {
+            if let Ok(mut denied) = denied_for_hook.lock() {
+                if denied.is_none() {
+                    *denied = Some(reason);
+                }
+            }
+            Authorization::Deny
+        } else {
+            Authorization::Allow
+        }
+    }))?;
+    SCOPED_WRITER_POLICY_ACTIVE.with(|active| active.set(true));
+    let guard = ScopedWriterAuthorizer { conn, armed: true };
+
+    let result = operation(conn);
+    guard.restore().map_err(|error| {
+        anyhow::anyhow!("failed to restore SQLite authorizer after scoped writer policy: {error}")
+    })?;
+
+    if let Some(reason) = denied_reason.lock().ok().and_then(|reason| reason.clone()) {
+        return Err(anyhow::anyhow!(
+            "{PROTECTED_WRITER_SQL_ERROR}: denied {reason}"
+        ));
+    }
+    if matches!(
+        result.as_ref().err().and_then(|error| error.downcast_ref::<rusqlite::Error>()),
+        Some(rusqlite::Error::SqliteFailure(failure, _))
+            if failure.code == ErrorCode::AuthorizationForStatementDenied
+    ) {
+        return Err(anyhow::anyhow!(
+            "{PROTECTED_WRITER_SQL_ERROR}: scoped writer authorization denied"
+        ));
+    }
+    result
 }
 
 fn renderer_sql_rejection(ctx: AuthContext<'_>) -> Option<String> {
@@ -1028,7 +1213,9 @@ mod tests {
                 "run",
             )
             .expect_err("renderer project delete must not bypass protected cascades");
-        assert!(renderer_error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
+        assert!(renderer_error
+            .to_string()
+            .contains(PROTECTED_WRITER_SQL_ERROR));
 
         crate::domain_writes::project_delete(
             &db,
@@ -1074,7 +1261,10 @@ mod tests {
             ("narrative_proposal_sets", "id = 'set-delete'"),
             ("narrative_proposals", "id = 'proposal-delete'"),
             ("narrative_proposal_revisions", "id = 'revision-delete'"),
-            ("narrative_revision_source_basis", "revision_id = 'revision-delete'"),
+            (
+                "narrative_revision_source_basis",
+                "revision_id = 'revision-delete'",
+            ),
             ("narrative_proposal_decisions", "id = 'decision-delete'"),
             ("narrative_apply_commits", "id = 'commit-delete'"),
             ("narrative_apply_operations", "id = 'operation-delete'"),
@@ -1102,7 +1292,9 @@ mod tests {
             },
         )
         .expect_err("repeated project delete must report not found");
-        assert!(missing.to_string().contains("project 'project-1' not found"));
+        assert!(missing
+            .to_string()
+            .contains("project 'project-1' not found"));
     }
 
     #[test]
@@ -1340,6 +1532,81 @@ mod tests {
         assert_eq!(rows[0]["title"], Value::from("later"));
         assert_eq!(rows[0]["protected_col"], Value::from("secret"));
         assert_eq!(rows[0]["version"], Value::from(9));
+    }
+
+    #[test]
+    fn renderer_and_mcp_generic_sql_cannot_mutate_maintenance_feed_tables() {
+        let db = test_db();
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES ('feed-project', 'Feed')",
+            &[],
+            "run",
+        )
+        .expect("seed project");
+        db.execute(
+            "INSERT INTO narrative_change_cursors
+             (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+             VALUES ('feed-project', 'native-consumer', 0, datetime('now'))",
+            &[],
+            "run",
+        )
+        .expect("trusted Native setup remains available");
+
+        let feed_tables = [
+            "narrative_change_transactions",
+            "narrative_change_events",
+            "narrative_change_cursors",
+            "narrative_change_sets",
+        ];
+        for origin in [SqlOrigin::Renderer, SqlOrigin::McpGeneric] {
+            for table in feed_tables {
+                let error = db
+                    .execute_untrusted(
+                        origin,
+                        &format!("DELETE FROM \"{table}\" WHERE 0"),
+                        &[],
+                        "run",
+                    )
+                    .expect_err("generic SQL must not delete from a feed table");
+                assert!(
+                    error.to_string().contains("PROTECTED_WRITER_SQL"),
+                    "unexpected {origin:?} error for {table}: {error}"
+                );
+            }
+        }
+
+        let insert_error = db
+            .execute_renderer(
+                "INSERT INTO narrative_change_cursors
+                 (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+                 VALUES ('feed-project', 'renderer-consumer', 0, datetime('now'))",
+                &[],
+                "run",
+            )
+            .expect_err("renderer feed insert must be denied");
+        assert!(insert_error.to_string().contains("PROTECTED_WRITER_SQL"));
+
+        let update_error = db
+            .execute_untrusted(
+                SqlOrigin::McpGeneric,
+                "UPDATE narrative_change_cursors
+                 SET acknowledged_through_sequence = 1
+                 WHERE project_id = 'feed-project' AND consumer_id = 'native-consumer'",
+                &[],
+                "run",
+            )
+            .expect_err("MCP feed update must be denied");
+        assert!(update_error.to_string().contains("PROTECTED_WRITER_SQL"));
+
+        db.execute(
+            "UPDATE narrative_change_cursors
+             SET acknowledged_through_sequence = 1
+             WHERE project_id = 'feed-project' AND consumer_id = 'native-consumer'",
+            &[],
+            "run",
+        )
+        .expect("trusted Native mutation remains available");
     }
 
     #[test]

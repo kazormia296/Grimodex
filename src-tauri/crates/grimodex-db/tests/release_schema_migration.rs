@@ -21,6 +21,14 @@ use release_schema_fixture::{
 
 #[test]
 fn previous_release_shaped_database_migrates_and_preserves_rows() {
+    assert_eq!(
+        LAST_PUBLIC_RELEASE_SCHEMA_VERSION, 2,
+        "the published v2.0.10 fixture must remain the public migration floor"
+    );
+    assert_eq!(
+        SCHEMA_VERSION, 21,
+        "Gate C0 migration target must be SCHEMA 21"
+    );
     let workspace = temp_workspace("release-shaped");
     let db_path = seed_previous_release_workspace(&workspace);
     assert_previous_release_fixture_shape(&db_path);

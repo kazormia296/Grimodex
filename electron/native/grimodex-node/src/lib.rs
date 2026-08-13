@@ -1609,6 +1609,7 @@ impl Backend {
                     "backgroundAiEnabled": policy.background_ai_enabled,
                     "version": policy.version,
                     "effectiveMode": policy.effective_mode().as_str(),
+                    "maintenancePreviewAllowed": policy.maintenance_preview_allowed(),
                 }))?)
             })
         })
@@ -1634,6 +1635,7 @@ impl Backend {
                     "backgroundAiEnabled": policy.background_ai_enabled,
                     "version": policy.version,
                     "effectiveMode": policy.effective_mode().as_str(),
+                    "maintenancePreviewAllowed": policy.maintenance_preview_allowed(),
                 }))?)
             })
         })
