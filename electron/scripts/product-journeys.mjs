@@ -540,6 +540,9 @@ async function prepareCodexContextEntry(harness) {
       payload: {
         requestId: `product-codex-create-${entryId}`,
         eventUid: `product-codex-create-event:${entryId}`,
+        origin: "human",
+        originalTransactionId: null,
+        undoJournalId: null,
         entryId,
         projectId,
         sessionId: "electron-product-journey",
