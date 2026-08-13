@@ -877,11 +877,9 @@ fn capture_snapshot_feed_state(
                     });
                 entry.change_kind =
                     merge_snapshot_change_kind(entry.change_kind, snapshot_feed_change_kind(table));
-                if is_root || !entry.has_root_version {
-                    if row_version.is_some() {
-                        entry.version = row_version;
-                        entry.has_root_version = is_root;
-                    }
+                if (is_root || !entry.has_root_version) && row_version.is_some() {
+                    entry.version = row_version;
+                    entry.has_root_version = is_root;
                 }
                 entry
                     .rows
@@ -1151,7 +1149,7 @@ fn canonical_core_rows(
         .into_iter()
         .map(|row| {
             let content = snapshot_content(conn, &row)?;
-            Ok(raw_row(json!({
+            raw_row(json!({
                 "id": snapshot_value(&row, "entry_id"),
                 "project_id": project_id,
                 "parent_id": snapshot_value(&row, "parent_id"),
@@ -1169,7 +1167,7 @@ fn canonical_core_rows(
                 "notes": snapshot_value(&row, "notes"),
                 "created_at": snapshot_value(&row, "created_at"),
                 "updated_at": snapshot_value(&row, "updated_at")
-            }))?)
+            }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
         push_canonical_rows(
@@ -1211,7 +1209,7 @@ fn canonical_core_rows(
             } else {
                 Value::Null
             };
-            Ok(raw_row(json!({
+            raw_row(json!({
                 "id": snapshot_value(&row, "node_id"),
                 "project_id": project_id,
                 "parent_id": snapshot_value(&row, "parent_id"),
@@ -1255,7 +1253,7 @@ fn canonical_core_rows(
                 "placed_beat_preview": null,
                 "created_at": snapshot_value(&row, "created_at"),
                 "updated_at": snapshot_value(&row, "updated_at")
-            }))?)
+            }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
         push_canonical_rows(
@@ -1287,7 +1285,7 @@ fn canonical_core_rows(
             } else {
                 Value::Null
             };
-            Ok(raw_row(json!({
+            raw_row(json!({
                 "id": snapshot_value(&row, "snippet_id"),
                 "project_id": project_id,
                 "title": snapshot_value(&row, "title"),
@@ -1300,7 +1298,7 @@ fn canonical_core_rows(
                 "version": 0,
                 "created_at": snapshot_value(&row, "created_at"),
                 "updated_at": snapshot_value(&row, "updated_at")
-            }))?)
+            }))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
         push_canonical_rows(

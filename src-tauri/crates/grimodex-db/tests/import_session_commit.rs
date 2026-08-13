@@ -296,7 +296,7 @@ fn feed_failure_rolls_back_import_project_session_and_receipt() {
                 "SELECT COUNT(*) FROM narrative_change_events WHERE project_id = 'failed-import-project'",
             ),
         ] {
-            let count: i64 = conn.query_row(&sql, [], |row| row.get(0))?;
+            let count: i64 = conn.query_row(sql, [], |row| row.get(0))?;
             assert_eq!(count, 0, "{label} must roll back");
         }
         Ok(())

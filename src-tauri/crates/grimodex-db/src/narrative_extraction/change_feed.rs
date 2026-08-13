@@ -2239,9 +2239,9 @@ pub fn event_from_undo_journal_row(
         object_key: narrative_object_key(&row.entity_kind, &row.entity_id),
         change_kind: change_kind(&row.entity_kind).to_string(),
         mutation_kind: mutation.to_string(),
-        before_version: before.map(|_| before_version).flatten(),
+        before_version: before.and(before_version),
         before_digest: snapshot_digest(before)?,
-        after_version: after.map(|_| after_version).flatten(),
+        after_version: after.and(after_version),
         after_digest: snapshot_digest(after)?,
         changed_paths: vec!["/".to_string()],
         // A journal row only has storage snapshots, not the Canonical Text

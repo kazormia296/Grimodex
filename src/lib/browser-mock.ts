@@ -4126,6 +4126,7 @@ export async function createBrowserMock(
       } catch (error) {
         throw new Error(
           `Narrative Change Feed changedPaths are invalid: ${String(error)}`,
+          { cause: error },
         );
       }
       const beforeDigest = hasBeforeState
@@ -15496,7 +15497,10 @@ export async function createBrowserMock(
       case "codex_tags":
         return one(browserSnapshotComponent("codex-tag", id()), true);
       case "codex_detail_definitions":
-        return one({ kind: "codex-detail-definition", definitionId: id() }, true);
+        return one(
+          { kind: "codex-detail-definition", definitionId: id() },
+          true,
+        );
       case "codex_detail_semantic_bindings":
         return one(
           browserSnapshotComponent("codex_semantic_binding", id()),

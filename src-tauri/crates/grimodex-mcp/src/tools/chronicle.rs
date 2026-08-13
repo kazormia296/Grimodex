@@ -511,6 +511,7 @@ pub async fn get_chronicle_state(
 
 // ───────── writes ─────────
 
+#[allow(dead_code)]
 fn map_write(
     outcome: anyhow::Result<Option<db::EventWriteResult>>,
     not_found_msg: &str,

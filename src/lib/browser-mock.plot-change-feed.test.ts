@@ -976,13 +976,11 @@ describe("Browser Mock Plot canonical writers", () => {
         changedPaths: '["/"]',
       },
       {
-        objectKey:
-          '{"kind":"plot-marker","markerId":"restored-marker"}',
+        objectKey: '{"kind":"plot-marker","markerId":"restored-marker"}',
         changedPaths: '["/"]',
       },
       {
-        objectKey:
-          '{"branchId":"restored-branch","kind":"plot-branch"}',
+        objectKey: '{"branchId":"restored-branch","kind":"plot-branch"}',
         changedPaths: '["/"]',
       },
     ]);
@@ -1077,13 +1075,11 @@ describe("Browser Mock Plot canonical writers", () => {
         changedPaths: '["/"]',
       },
       {
-        objectKey:
-          '{"kind":"plot-marker","markerId":"restored-marker"}',
+        objectKey: '{"kind":"plot-marker","markerId":"restored-marker"}',
         changedPaths: '["/"]',
       },
       {
-        objectKey:
-          '{"branchId":"restored-branch","kind":"plot-branch"}',
+        objectKey: '{"branchId":"restored-branch","kind":"plot-branch"}',
         changedPaths: '["/"]',
       },
     ]);

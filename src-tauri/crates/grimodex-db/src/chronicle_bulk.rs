@@ -2046,7 +2046,7 @@ mod tests {
 
         let events = narrative_feed_events(&db);
         assert_eq!(events.len(), 3);
-        let mut expected_event_ids = vec![event_clear_id.clone(), event_delete_id.clone()];
+        let mut expected_event_ids = [event_clear_id.clone(), event_delete_id.clone()];
         expected_event_ids.sort();
         assert_eq!(
             events

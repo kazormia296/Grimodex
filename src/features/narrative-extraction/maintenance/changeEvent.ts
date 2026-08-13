@@ -171,22 +171,36 @@ function validateTextImpact(impact: TextChangeImpact): void {
   requireDigest(impact.newCanonicalDigest, "textImpact.newCanonicalDigest");
   if (impact.mapping.kind === "position-map") {
     for (const [index, segment] of impact.mapping.segments.entries()) {
-      assertValidUtf16Range(segment.oldRange, `textImpact.mapping.segments[${index}].oldRange`);
-      assertValidUtf16Range(segment.newRange, `textImpact.mapping.segments[${index}].newRange`);
+      assertValidUtf16Range(
+        segment.oldRange,
+        `textImpact.mapping.segments[${index}].oldRange`,
+      );
+      assertValidUtf16Range(
+        segment.newRange,
+        `textImpact.mapping.segments[${index}].newRange`,
+      );
       if (
         !["unchanged", "inserted", "deleted", "replaced"].includes(
           segment.behavior,
         )
       ) {
-        throw new TypeError("textImpact mapping has an unsupported segment behavior");
+        throw new TypeError(
+          "textImpact mapping has an unsupported segment behavior",
+        );
       }
     }
   } else if (impact.mapping.kind === "canonical-diff") {
     impact.mapping.changedOldRanges.forEach((range, index) =>
-      assertValidUtf16Range(range, `textImpact.mapping.changedOldRanges[${index}]`),
+      assertValidUtf16Range(
+        range,
+        `textImpact.mapping.changedOldRanges[${index}]`,
+      ),
     );
     impact.mapping.changedNewRanges.forEach((range, index) =>
-      assertValidUtf16Range(range, `textImpact.mapping.changedNewRanges[${index}]`),
+      assertValidUtf16Range(
+        range,
+        `textImpact.mapping.changedNewRanges[${index}]`,
+      ),
     );
   } else if (impact.mapping.kind === "whole-document") {
     requireNonEmpty(impact.mapping.reason, "textImpact.mapping.reason");

@@ -1933,8 +1933,12 @@ pub struct ChronicleCalendarRaw {
 }
 
 /// camelCase write result (same shape as foreshadow/codex `AgentWriteResult`).
+// The MCP tool surface now delegates to the canonical agent writers. These
+// helpers remain for the legacy db-level test fixtures until those fixtures
+// are migrated to the tool boundary.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct EventWriteResult {
     pub entity_id: String,
     pub version: i64,
@@ -2148,6 +2152,7 @@ pub fn chronicle_scene_nodes(
 // ─── Chronicle writes (tracked, surface="mcp") ───────────────────────────────
 
 /// Run `f` inside a BEGIN IMMEDIATE transaction; COMMIT on Ok, ROLLBACK on Err.
+#[allow(dead_code)]
 fn in_immediate_tx<T>(
     conn: &Connection,
     f: impl FnOnce(&Connection) -> anyhow::Result<T>,
@@ -2170,6 +2175,7 @@ fn in_immediate_tx<T>(
 /// relations (both directions). Byte-identical shape to
 /// `agent_writes.rs::collect_event_snapshot` so undo payloads are cross-surface
 /// portable.
+#[allow(dead_code)]
 fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<serde_json::Value> {
     use serde_json::json;
     let event_json: String = conn.query_row(
@@ -2248,6 +2254,7 @@ fn collect_event_snapshot(conn: &Connection, event_id: &str) -> anyhow::Result<s
     }))
 }
 
+#[allow(dead_code)]
 fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
     let mut related = std::collections::BTreeSet::new();
     for key in ["asCause", "asEffect"] {
@@ -2265,6 +2272,7 @@ fn event_snapshot_related_ids(snapshot: &serde_json::Value) -> Vec<String> {
     related.into_iter().collect()
 }
 
+#[allow(dead_code)]
 fn collect_participants_json(
     conn: &Connection,
     event_id: &str,
@@ -2295,6 +2303,7 @@ fn collect_participants_json(
 /// 書込み対象 event の存在ゲート。AI 秘匿(fail-closed): MCP は現在シーンを持てない
 /// ため secret=1 を「存在しない」扱いにし、update/delete/stamp/participants/relation
 /// すべての write-by-id を一律遮断する(存在 oracle 化を防ぐ・spec §2.4.4)。
+#[allow(dead_code)]
 fn visible_event_version(
     conn: &Connection,
     project_id: &str,
@@ -2310,6 +2319,7 @@ fn visible_event_version(
     .map_err(Into::into)
 }
 
+#[allow(dead_code)]
 struct VisibleEventDateState {
     version: i64,
     start_time: Option<i64>,
@@ -2320,6 +2330,7 @@ struct VisibleEventDateState {
     end_granularity: String,
 }
 
+#[allow(dead_code)]
 fn visible_event_date_state(
     conn: &Connection,
     project_id: &str,
@@ -2348,6 +2359,7 @@ fn visible_event_date_state(
     .map_err(Into::into)
 }
 
+#[allow(dead_code)]
 fn ensure_chronicle_codex_in_project(
     conn: &Connection,
     project_id: &str,
@@ -2367,6 +2379,7 @@ fn ensure_chronicle_codex_in_project(
     Ok(())
 }
 
+#[allow(dead_code)]
 fn ensure_chronicle_scene_in_project(
     conn: &Connection,
     project_id: &str,
@@ -2389,6 +2402,7 @@ fn ensure_chronicle_scene_in_project(
 /// Parameters for `chronicle_create_event` (defaults match
 /// `agent_event_create_impl`: title="", ordinal="a0", precision="exact",
 /// kind="generic"). XPROJ: the event's `project_id` is the server scope.
+#[allow(dead_code)]
 pub struct ChronicleCreateInput<'a> {
     pub project_id: &'a str,
     pub session_id: &'a str,
@@ -2415,6 +2429,7 @@ pub struct ChronicleCreateInput<'a> {
     pub scene_ids: &'a [String],
 }
 
+#[allow(dead_code)]
 pub fn chronicle_create_event(
     conn: &Connection,
     input: ChronicleCreateInput<'_>,
@@ -2565,6 +2580,7 @@ pub fn chronicle_create_event(
 }
 
 #[derive(Default)]
+#[allow(dead_code)]
 pub struct ChroniclePatch<'a> {
     pub title: Option<&'a str>,
     pub note: Option<&'a str>,
@@ -2586,6 +2602,7 @@ pub struct ChroniclePatch<'a> {
 }
 
 /// `Ok(None)` = event not found in this project (XPROJ-safe; nothing written).
+#[allow(dead_code)]
 pub fn chronicle_update_event(
     conn: &Connection,
     project_id: &str,
@@ -2828,6 +2845,7 @@ pub fn chronicle_update_event(
 
 /// `Ok(None)` = event not found in this project. Cascade snapshot is captured
 /// BEFORE the DELETE fires ON DELETE CASCADE so undo can fully restore.
+#[allow(dead_code)]
 pub fn chronicle_delete_event(
     conn: &Connection,
     project_id: &str,
@@ -2918,6 +2936,7 @@ pub fn chronicle_delete_event(
 }
 
 /// Replace the participant set (delete-all → insert). `Ok(None)` = not found.
+#[allow(dead_code)]
 pub fn chronicle_set_participants(
     conn: &Connection,
     project_id: &str,
@@ -3017,6 +3036,7 @@ pub fn chronicle_set_participants(
 
 /// Stamp/unstamp a scene↔event link. `Ok(None)` = scene or event not found in
 /// this project (XPROJ: both must belong to the active project).
+#[allow(dead_code)]
 pub fn chronicle_scene_event(
     conn: &Connection,
     project_id: &str,
@@ -3139,6 +3159,7 @@ pub fn chronicle_scene_event(
 
 /// Add/remove a causal edge. `Ok(None)` = either event missing in this project.
 /// Self-loop (cause == effect) must be rejected by the caller before this runs.
+#[allow(dead_code)]
 pub fn chronicle_event_relation(
     conn: &Connection,
     project_id: &str,

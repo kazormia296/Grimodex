@@ -295,6 +295,10 @@ fn change_occurred_at(timestamp: i64) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow::anyhow!("canonical Change Event timestamp is out of range"))
 }
 
+// This bridge carries the full canonical and narrative write context across
+// the single transaction; keeping the values explicit makes the authority
+// boundary visible at each writer call site.
+#[allow(clippy::too_many_arguments)]
 fn append_agent_forward_change_in_tx(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -8086,7 +8090,7 @@ pub fn agent_event_relation_mutate_impl(
                 );
             }
 
-            let mut feed_event_ids = vec![
+            let mut feed_event_ids = [
                 payload.cause_event_id.clone(),
                 payload.effect_event_id.clone(),
             ];
