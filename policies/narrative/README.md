@@ -12,7 +12,7 @@ runtime policy.
   `pnpm test:narrative:writers` requires zero production Drizzle / raw-SQL writes.
 
 Gate B2 has passed. All registered Narrative authority tables, including the
-four Narrative Change Feed tables, are `active` and remain unavailable to
+five Narrative Change Feed tables, are `active` and remain unavailable to
 Renderer and MCP generic SQL.
 
 ## Change Feed operation coverage
@@ -43,19 +43,27 @@ asks C2 for a full rebuild instead of replaying every restored row.
 
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public
 routes, implementation modules and symbols, active writer IDs, identity
-contract, and fixed exclusion reasons. Gate C1 additionally requires
+contract, and fixed exclusion reasons. `coverageStatus` is an inventory
+certification: `verified` means the manifest's route/module mapping has been
+reviewed, not that the validator executed the writer or proved runtime
+atomicity. Gate C1 additionally requires
 `pnpm test:narrative:change-feed-writers:strict`: every `required` or
-`delegated` operation must have `coverageStatus: "verified"`.
+`delegated` operation must have `coverageStatus: "verified"`; runtime proof
+comes from the Native writer, browser contract, and Journey/quality tests.
 
 Generic Renderer/MCP SQL and `agent_write_bundle` are never Feed authorities.
 Staging-only prose accept also stays out of the Feed; the subsequent typed scene
 body save records the authoritative `ai-apply` mutation.
 
-Project metadata remains updateable through the existing Renderer API, while
-Project INSERT/DELETE is structurally protected. `project_create` publishes the
-Project scope and its four builtin Codex types in one trusted transaction; the
-builtin catalog is the ordered Feed payload. Bootstrap, sample seed, and scan
-staging creation retain their fixed non-user initialization contracts.
+Project metadata is published by the typed `project_patch` Native writer. It
+uses the previous `updatedAt` as an OCC token and appends the semantic JSON
+Pointer paths (including `aiPolicy`) in the same transaction as the domain
+update, Undo Journal, canonical Change Event, and Narrative Change Feed.
+Project INSERT/DELETE is also structurally protected. `project_create`
+publishes the Project scope and its four builtin Codex types in one trusted
+transaction; the builtin catalog is the ordered Feed payload. Bootstrap, sample
+seed, and scan staging creation retain their fixed non-user initialization
+contracts.
 
 Map has an explicit boundary. `map_write_bundle` is the only Canonical Native
 Map aggregate writer and owns promotions that create Scene, Snippet, Codex Entry,

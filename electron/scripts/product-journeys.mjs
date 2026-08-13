@@ -615,6 +615,12 @@ async function commitExternalSceneWrite(
   await harness.invokeOk(page, "tree_node_patch", {
     payload: {
       projectId,
+      requestId: eventUid,
+      sessionId: "external-product-journey",
+      eventUid,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
       nodeId: sceneId,
       updatedAt: new Date(now).toISOString(),
       patch: {

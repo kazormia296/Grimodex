@@ -17,7 +17,8 @@ use crate::idempotency::{
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
     require_replay_lineage_in_project, AppendNarrativeChangeTransactionInput,
-    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+    scene_text_impact, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeOrigin,
 };
 
 fn json_pointer_segment(value: &str) -> String {
@@ -1599,6 +1600,278 @@ pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::R
     })
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPatchPayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+    /// The renderer's last authoritative project token. Project metadata does
+    /// not have a numeric version column, so `updatedAt` is the OCC token.
+    pub base_updated_at: String,
+    pub updated_at: String,
+    pub patch: serde_json::Map<String, Value>,
+}
+
+const PROJECT_PATCH_FIELDS: [(&str, &str, &str); 11] = [
+    ("title", "title", "/title"),
+    ("genre", "genre", "/genre"),
+    ("pov", "pov", "/pov"),
+    ("tense", "tense", "/tense"),
+    ("language", "language", "/language"),
+    ("styleGuide", "style_guide", "/styleGuide"),
+    ("aiInstructions", "ai_instructions", "/aiInstructions"),
+    ("outline", "outline", "/outline"),
+    ("targetReaders", "target_readers", "/targetReaders"),
+    ("aiPolicy", "ai_policy", "/aiPolicy"),
+    (
+        "phaseResolutionMode",
+        "phase_resolution_mode",
+        "/phaseResolutionMode",
+    ),
+];
+
+fn project_patch_field(key: &str) -> Option<(&'static str, &'static str)> {
+    PROJECT_PATCH_FIELDS
+        .iter()
+        .find(|(wire, _, _)| *wire == key)
+        .map(|(_, sql, path)| (*sql, *path))
+}
+
+fn project_patch_sql_value(value: &Value, field: &str) -> anyhow::Result<rusqlite::types::Value> {
+    match value {
+        Value::Null => Ok(rusqlite::types::Value::Null),
+        Value::String(value) => {
+            if field == "title" {
+                require_non_empty(value, "patch.title")?;
+            }
+            Ok(rusqlite::types::Value::Text(value.clone()))
+        }
+        _ => anyhow::bail!("project patch field '{field}' must be a string or null"),
+    }
+}
+
+/// Update Project metadata through the same Native transaction contract as
+/// every other Canonical Writer. The `updatedAt` precondition is deliberately
+/// checked in the SQL UPDATE so two renderer windows cannot publish divergent
+/// feed states for one Project.
+pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.project_id, "projectId"),
+        (&payload.request_id, "requestId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_uid, "eventUid"),
+        (&payload.base_updated_at, "baseUpdatedAt"),
+        (&payload.updated_at, "updatedAt"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        !payload.patch.is_empty(),
+        "project patch must contain at least one field"
+    );
+    anyhow::ensure!(
+        payload
+            .patch
+            .keys()
+            .all(|key| project_patch_field(key).is_some()),
+        "project patch contains an unsupported field"
+    );
+    let replay = matches!(
+        payload.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    anyhow::ensure!(
+        replay
+            == (payload.original_transaction_id.is_some() && payload.undo_journal_id.is_some())
+            && (replay
+                || (payload.original_transaction_id.is_none()
+                    && payload.undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
+    let request_hash = canonical_write_payload_fingerprint("project_patch", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "project_patch",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "PROJECT_PATCH_REQUEST_CONFLICT",
+    };
+
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        if replay {
+            require_replay_lineage_in_project(
+                &tx,
+                &payload.project_id,
+                payload
+                    .original_transaction_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("missing originalTransactionId"))?,
+                payload
+                    .undo_journal_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("missing undoJournalId"))?,
+            )?;
+        }
+        let before = crate::canonical_feed_snapshots::canonical_project_snapshot(
+            &tx,
+            &payload.project_id,
+        )?;
+        let before_updated_at = before
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("project snapshot has no updatedAt"))?;
+        anyhow::ensure!(
+            before_updated_at == payload.base_updated_at,
+            "PROJECT_VERSION_MISMATCH: project '{}' changed since {}",
+            payload.project_id,
+            payload.base_updated_at
+        );
+
+        let mut assignments = Vec::with_capacity(payload.patch.len() + 1);
+        let mut values = Vec::with_capacity(payload.patch.len() + 3);
+        let mut changed_paths = BTreeSet::new();
+        for (wire, value) in &payload.patch {
+            let (sql, path) = project_patch_field(wire)
+                .ok_or_else(|| anyhow::anyhow!("unsupported project patch field '{wire}'"))?;
+            assignments.push(format!("{sql} = ?{}", values.len() + 1));
+            values.push(project_patch_sql_value(value, wire)?);
+            changed_paths.insert(path.to_string());
+        }
+        assignments.push(format!("updated_at = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(payload.updated_at.clone()));
+        values.push(rusqlite::types::Value::Text(payload.project_id.clone()));
+        values.push(rusqlite::types::Value::Text(payload.base_updated_at.clone()));
+        let sql = format!(
+            "UPDATE projects SET {} WHERE id = ?{} AND updated_at = ?{}",
+            assignments.join(", "),
+            values.len() - 1,
+            values.len()
+        );
+        let changed = tx.execute(&sql, rusqlite::params_from_iter(values.iter()))?;
+        anyhow::ensure!(
+            changed == 1,
+            "PROJECT_VERSION_MISMATCH: project '{}' update lost its OCC race",
+            payload.project_id
+        );
+        let after = crate::canonical_feed_snapshots::canonical_project_snapshot(
+            &tx,
+            &payload.project_id,
+        )?;
+        let changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
+        let before_json = serde_json::to_string(&before)?;
+        let after_json = serde_json::to_string(&after)?;
+        let journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        if !replay {
+            crate::undo_journal::insert_undo_journal_in_tx(
+                &tx,
+                crate::undo_journal::UndoJournalInsert {
+                    id: &journal_id,
+                    project_id: &payload.project_id,
+                    surface: "project",
+                    entity_kind: "project",
+                    entity_id: &payload.project_id,
+                    op_kind: "update",
+                    before_json: Some(&before_json),
+                    after_json: Some(&after_json),
+                    base_version: 0,
+                    result_version: 0,
+                    change_event_uid: Some(&payload.event_uid),
+                },
+            )?;
+        }
+        let cause_kind = match payload.origin {
+            NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+            NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+            _ => NarrativeChangeCauseKind::Forward,
+        };
+        let change_kind = if changed_paths.iter().any(|path| path == "/aiPolicy") {
+            "policy"
+        } else {
+            "metadata"
+        };
+        let maintenance = append_canonical_and_narrative_change_in_tx(
+            &tx,
+            &payload.project_id,
+            &payload.session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: "project".to_string(),
+                op_type: "project.meta.update".to_string(),
+                entity_type: Some("project".to_string()),
+                entity_id: Some(payload.project_id.clone()),
+                payload: json!({
+                    "projectId": payload.project_id,
+                    "fields": changed_paths.clone(),
+                    "patch": payload.patch,
+                })
+                .to_string(),
+                timestamp: event_timestamp(&payload.updated_at),
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: payload.project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: "project.meta.update".to_string(),
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind,
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.clone(),
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: Some(journal_id.clone()),
+                application_ids: Vec::new(),
+                occurred_at: payload.updated_at.clone(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "project",
+                        "projectId": payload.project_id,
+                    }),
+                    change_kind: change_kind.to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some(narrative_snapshot_digest(&before)?),
+                    after_version: None,
+                    after_digest: Some(narrative_snapshot_digest(&after)?),
+                    changed_paths: changed_paths.clone(),
+                    text_impact: None,
+                    structural_impact: Some(json!({
+                        "changedPaths": changed_paths,
+                    })),
+                }],
+            },
+        )?;
+        let mut response = after;
+        response
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("project patch response is not an object"))?
+            .insert(
+                "__writeReceipt".to_string(),
+                json!({
+                    "changeEventUid": payload.event_uid,
+                    "maintenanceTransactionId": maintenance.narrative.transaction_id,
+                    "undoJournalId": journal_id,
+                }),
+            );
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+        tx.commit()?;
+        Ok(response)
+    })
+}
+
 /// Delete a project through a trusted domain writer so foreign-key cascades
 /// may clean up protected Narrative tables without reopening generic renderer
 /// SQL access. Durable AI audit rows intentionally have no project FK and are
@@ -2085,7 +2358,7 @@ fn tree_feed_event(
         after_version: tree_version(after),
         after_digest: after.map(narrative_snapshot_digest).transpose()?,
         changed_paths: changed_paths.clone(),
-        text_impact: None,
+        text_impact: scene_text_impact(before, after)?,
         structural_impact: Some(json!({ "changedPaths": changed_paths })),
     })
 }
@@ -3822,6 +4095,35 @@ mod tests {
         }
     }
 
+    fn project_patch_payload(
+        project_id: &str,
+        request_id: &str,
+        base_updated_at: &str,
+        updated_at: &str,
+    ) -> ProjectPatchPayload {
+        ProjectPatchPayload {
+            project_id: project_id.to_string(),
+            request_id: request_id.to_string(),
+            session_id: "project-session".to_string(),
+            event_uid: format!("{request_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            base_updated_at: base_updated_at.to_string(),
+            updated_at: updated_at.to_string(),
+            patch: serde_json::Map::from_iter([
+                (
+                    "styleGuide".to_string(),
+                    Value::String("clear and vivid".to_string()),
+                ),
+                (
+                    "aiPolicy".to_string(),
+                    Value::String("{\"preset\":\"review-only\"}".to_string()),
+                ),
+            ]),
+        }
+    }
+
     #[test]
     fn project_create_publishes_builtin_catalog_once_in_deterministic_order() {
         let db = fixture();
@@ -3930,6 +4232,66 @@ mod tests {
         assert!(error
             .to_string()
             .contains("PROJECT_CREATE_REQUEST_CONFLICT"));
+    }
+
+    #[test]
+    fn project_patch_is_atomic_idempotent_and_publishes_semantic_paths() {
+        let db = fixture();
+        let created = project_create(
+            &db,
+            project_create_payload("project-patch", "project-patch-create"),
+        )
+        .expect("create project");
+        let base_updated_at = created["updatedAt"].as_str().expect("created timestamp");
+        let payload = project_patch_payload(
+            "project-patch",
+            "project-patch-request",
+            base_updated_at,
+            "2026-08-13T00:00:01.000Z",
+        );
+        let response = project_patch(&db, payload.clone()).expect("patch project");
+        assert_eq!(response["styleGuide"], "clear and vivid");
+        assert_eq!(response["aiPolicy"], "{\"preset\":\"review-only\"}");
+
+        let replay = project_patch(&db, payload).expect("replay project patch");
+        assert_eq!(replay, response);
+
+        db.with_conn(|conn| {
+            let (object_key, paths, change_kind): (String, String, String) = conn.query_row(
+                "SELECT object_key_json, changed_paths_json, change_kind
+                   FROM narrative_change_events
+                  WHERE canonical_change_event_uid = 'project-patch-request-event'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                serde_json::from_str::<Value>(&object_key)?,
+                json!({ "kind": "project", "projectId": "project-patch" })
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&paths)?,
+                json!(["/aiPolicy", "/styleGuide"])
+            );
+            assert_eq!(change_kind, "policy");
+            let feed_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE canonical_change_event_uid = 'project-patch-request-event'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(feed_count, 1);
+            Ok(())
+        })
+        .expect("inspect project patch feed");
+
+        let stale = project_patch_payload(
+            "project-patch",
+            "project-patch-stale",
+            base_updated_at,
+            "2026-08-13T00:00:02.000Z",
+        );
+        let error = project_patch(&db, stale).expect_err("stale patch must fail closed");
+        assert!(error.to_string().contains("PROJECT_VERSION_MISMATCH"));
     }
 
     #[test]
@@ -5575,6 +5937,108 @@ mod tests {
             Ok(())
         })
         .expect("verify duplicate UID rollback");
+    }
+
+    #[test]
+    fn native_scene_content_forward_undo_redo_feed_text_impact_is_reversible() {
+        let db = fixture();
+        let content_a = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"A"}]}]}"#;
+        let content_b = "{}";
+        let mut forward = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_a.to_string())),
+                ("charCount".to_string(), Value::Number(1.into())),
+            ]),
+            Some(0),
+            "scene-forward",
+        );
+        forward.request_id = "scene-forward-request".to_string();
+        forward.event_uid = "scene-forward-event".to_string();
+        let forward_result = tree_node_patch(&db, forward).expect("forward scene write");
+        let root_transaction_id = forward_result["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward_result["__writeReceipt"]["undoJournalId"]
+            .as_str()
+            .expect("forward undo journal")
+            .to_string();
+
+        let mut undo = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_b.to_string())),
+                ("charCount".to_string(), Value::Number(2.into())),
+            ]),
+            Some(1),
+            "scene-undo",
+        );
+        undo.request_id = "scene-undo-request".to_string();
+        undo.event_uid = "scene-undo-event".to_string();
+        undo.origin = NarrativeChangeOrigin::Undo;
+        undo.original_transaction_id = Some(root_transaction_id.clone());
+        undo.undo_journal_id = Some(undo_journal_id.clone());
+        tree_node_patch(&db, undo).expect("undo scene write");
+
+        let mut redo = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_a.to_string())),
+                ("charCount".to_string(), Value::Number(1.into())),
+            ]),
+            Some(2),
+            "scene-redo",
+        );
+        redo.request_id = "scene-redo-request".to_string();
+        redo.event_uid = "scene-redo-event".to_string();
+        redo.origin = NarrativeChangeOrigin::Redo;
+        redo.original_transaction_id = Some(root_transaction_id);
+        redo.undo_journal_id = Some(undo_journal_id);
+        tree_node_patch(&db, redo).expect("redo scene write");
+
+        db.with_conn(|conn| {
+            let impacts = conn
+                .prepare(
+                    "SELECT tx.cause_kind, event.text_impact_json
+                       FROM narrative_change_events event
+                       JOIN narrative_change_transactions tx
+                         ON tx.id = event.transaction_id
+                      WHERE event.project_id = 'p1'
+                        AND json_extract(event.object_key_json, '$.kind') = 'scene'
+                      ORDER BY event.canonical_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(impacts.len(), 3);
+            assert_eq!(
+                impacts.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+                vec!["forward", "undo", "redo"]
+            );
+            let parsed = impacts
+                .iter()
+                .map(|row| serde_json::from_str::<Value>(&row.1))
+                .collect::<Result<Vec<_>, _>>()?;
+            for impact in &parsed {
+                assert_eq!(
+                    impact["normalizerVersion"],
+                    crate::narrative_extraction::change_feed::CANONICAL_TEXT_NORMALIZER_VERSION
+                );
+                assert_eq!(impact["mapping"]["kind"], "whole-document");
+            }
+            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[1]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[1]["newCanonicalDigest"]);
+            assert_eq!(parsed[1]["newCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[2]["newCanonicalDigest"]);
+            Ok(())
+        })
+        .expect("verify forward undo redo text impacts");
     }
 
     #[test]

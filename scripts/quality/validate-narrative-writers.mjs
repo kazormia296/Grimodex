@@ -90,6 +90,7 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_field_authority: ["narrativeFieldAuthority"],
   narrative_change_transactions: ["narrativeChangeTransactions"],
   narrative_change_events: ["narrativeChangeEvents"],
+  narrative_change_object_heads: ["narrativeChangeObjectHeads"],
   narrative_change_cursors: ["narrativeChangeCursors"],
   narrative_change_sets: ["narrativeChangeSets"],
 };
@@ -104,6 +105,7 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_field_authority",
   "narrative_change_transactions",
   "narrative_change_events",
+  "narrative_change_object_heads",
   "narrative_change_cursors",
   "narrative_change_sets",
 ];

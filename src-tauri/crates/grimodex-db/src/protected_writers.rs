@@ -245,11 +245,11 @@ mod tests {
     }
 
     #[test]
-    fn project_lifecycle_rejects_insert_and_delete_but_allows_metadata_update() {
+    fn project_lifecycle_rejects_generic_insert_delete_and_metadata_update() {
         let registry = bundled_protected_writer_registry();
         let project = registry.get("projects").expect("project lifecycle");
         assert_eq!(project.protection, WriterProtection::Columns);
-        assert!(project.columns.is_empty());
+        assert!(project.columns.iter().any(|column| column == "title"));
         assert!(untrusted_mutation_rejection(
             registry,
             "projects",
@@ -264,7 +264,7 @@ mod tests {
         );
         assert_eq!(
             untrusted_mutation_rejection(registry, "projects", Some("title"), false, false, None,),
-            None
+            Some("update of protected column projects.title (writer project.lifecycle)".into())
         );
     }
 

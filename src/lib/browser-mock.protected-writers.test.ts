@@ -31,15 +31,15 @@ describe("Browser generic SQL Writer Authority", () => {
       }),
     ).rejects.toThrow(/protected narrative table projects/u);
 
-    // Existing Project metadata remains renderer-updateable; only structural
-    // INSERT/DELETE executes protected trigger/cascade subprograms.
+    // Project metadata is a Canonical Native Writer input as well; generic
+    // SQL must not bypass its OCC, Undo, and Change Feed transaction.
     await expect(
       mock.invoke("db_execute", {
         sql: "UPDATE projects SET title = title WHERE id = 'default-project'",
         params: [],
         method: "run",
       }),
-    ).resolves.toEqual({ rows: [] });
+    ).rejects.toThrow(/protected column projects\.title/u);
 
     await expect(
       mock.invoke("db_execute", {

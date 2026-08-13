@@ -4264,6 +4264,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "project_calendar_upsert",
       "project_create",
       "project_delete",
+      "project_patch",
       "project_snapshot_apply_restore",
       "project_snapshot_create",
       "project_snapshot_restore_context",

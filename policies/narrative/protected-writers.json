@@ -92,7 +92,22 @@
     "aggregate": "project-lifecycle",
     "table": "projects",
     "protection": "columns",
-    "columns": [],
+    "columns": [
+      "id",
+      "title",
+      "genre",
+      "pov",
+      "tense",
+      "language",
+      "style_guide",
+      "ai_instructions",
+      "outline",
+      "target_readers",
+      "phase_resolution_mode",
+      "ai_policy",
+      "created_at",
+      "updated_at"
+    ],
     "writer": "project.lifecycle",
     "enforcement": "active"
   },
@@ -328,6 +343,13 @@
   {
     "aggregate": "narrative-maintenance-feed",
     "table": "narrative_change_events",
+    "protection": "table",
+    "writer": "narrative.maintenance-feed",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-feed",
+    "table": "narrative_change_object_heads",
     "protection": "table",
     "writer": "narrative.maintenance-feed",
     "enforcement": "active"

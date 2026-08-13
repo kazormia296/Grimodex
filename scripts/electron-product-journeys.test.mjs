@@ -295,6 +295,10 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /clean-external-write-reloaded/);
   assert.match(source, /dirty-external-write-conflict/);
   assert.match(source, /"tree_node_patch"/);
+  assert.match(source, /requestId:\s*eventUid/);
+  assert.match(source, /origin:\s*"human"/);
+  assert.match(source, /originalTransactionId:\s*null/);
+  assert.match(source, /undoJournalId:\s*null/);
   assert.match(source, /baseVersion/);
   assert.match(source, /changeEvent:\s*\{/);
   assert.match(source, /eventUid/);

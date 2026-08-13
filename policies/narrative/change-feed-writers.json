@@ -3,6 +3,29 @@
   "gateId": "gate-c1",
   "writerMatrix": [
     {
+      "writer": "project.metadata",
+      "objectKey": "project",
+      "addressing": "independent-key",
+      "paths": [
+        "/title",
+        "/genre",
+        "/pov",
+        "/tense",
+        "/language",
+        "/styleGuide",
+        "/aiInstructions",
+        "/outline",
+        "/targetReaders",
+        "/aiPolicy",
+        "/phaseResolutionMode"
+      ],
+      "textImpact": "none",
+      "cause": ["forward", "undo", "redo"],
+      "atomic": true,
+      "undoRedo": true,
+      "idempotent": true
+    },
+    {
       "writer": "scene.body",
       "objectKey": "scene",
       "addressing": "independent-key",
@@ -294,6 +317,37 @@
         "transactionId"
       ],
       "canonical": { "origin": "renderer", "opType": "project.create" }
+    },
+    {
+      "id": "project.metadata.patch.renderer",
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Project semantic metadata is a canonical build input and must publish its changed JSON Pointer paths with an OCC token.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/domain_writes.rs",
+        "symbol": "project_patch"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_patch",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_patch",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["project.lifecycle"],
+      "scope": "project",
+      "requiredIdentities": [
+        "projectId",
+        "requestId",
+        "sessionId",
+        "transactionId"
+      ],
+      "canonical": { "origin": "renderer", "opType": "project.meta.update" }
     },
     {
       "id": "project.delete",

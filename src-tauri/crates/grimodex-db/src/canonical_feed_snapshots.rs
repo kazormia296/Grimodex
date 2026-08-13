@@ -35,6 +35,24 @@ pub(crate) fn canonical_scene_snapshot(
     Ok(root)
 }
 
+pub(crate) fn canonical_project_snapshot(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    let raw: String = conn.query_row(
+        "SELECT json_object(
+            'id', id, 'title', title, 'genre', genre, 'pov', pov, 'tense', tense,
+            'language', language, 'styleGuide', style_guide,
+            'aiInstructions', ai_instructions, 'outline', outline,
+            'targetReaders', target_readers, 'phaseResolutionMode', phase_resolution_mode,
+            'aiPolicy', ai_policy, 'createdAt', created_at, 'updatedAt', updated_at
+         ) FROM projects WHERE id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    serde_json::from_str(&raw).map_err(Into::into)
+}
+
 pub(crate) fn canonical_tree_node_snapshot(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -387,7 +405,20 @@ pub(crate) fn canonical_snapshot_for_object_key(
 ) -> anyhow::Result<Option<Value>> {
     let kind = object_key.get("kind").and_then(Value::as_str);
     let result = match kind {
-        Some("project") => return Ok(None),
+        Some("project") => canonical_project_snapshot(
+            conn,
+            {
+                let object_project_id = object_key
+                    .get("projectId")
+                    .and_then(Value::as_str)
+                    .unwrap_or(project_id);
+                anyhow::ensure!(
+                    object_project_id == project_id,
+                    "project snapshot escaped its project"
+                );
+                object_project_id
+            },
+        ),
         Some("scene") => canonical_scene_snapshot(
             conn,
             project_id,

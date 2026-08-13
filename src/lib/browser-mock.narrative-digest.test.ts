@@ -227,6 +227,20 @@ describe("Browser Narrative Change Feed state digests", () => {
       ],
       method: "run",
     });
+    await mock.invoke("db_execute", {
+      sql: `UPDATE narrative_change_object_heads
+               SET after_digest = ?
+             WHERE event_id = (
+               SELECT id FROM narrative_change_events
+                WHERE project_id = 'default-project'
+                  AND transaction_id = (
+                    SELECT id FROM narrative_change_transactions
+                     WHERE request_id = 'digest-mismatch:create'
+                  )
+             )`,
+      params: [`sha256:${"0".repeat(64)}`],
+      method: "run",
+    });
 
     await expect(
       mock.invoke("agent_codex_mutate", {

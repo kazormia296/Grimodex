@@ -1420,8 +1420,8 @@ describe("BrowserMock AI audit ledger", () => {
       );
     await delayedDigest.started;
     await mock.invoke("db_execute", {
-      sql: "UPDATE projects SET title = ? WHERE id = ?",
-      params: ["concurrent-mutation-kept", "default-project"],
+      sql: "INSERT INTO app_settings (key, value) VALUES (?, ?)",
+      params: ["audit.concurrent-mutation", "concurrent-mutation-kept"],
       method: "run",
     });
     delayedDigest.release();
@@ -1432,12 +1432,12 @@ describe("BrowserMock AI audit ledger", () => {
     expect(String(collision)).toMatch(/eventId collision/iu);
     await expect(
       mock.invoke("db_execute", {
-        sql: "SELECT title FROM projects WHERE id = ?",
-        params: ["default-project"],
+        sql: "SELECT value FROM app_settings WHERE key = ?",
+        params: ["audit.concurrent-mutation"],
         method: "all",
       }),
     ).resolves.toMatchObject({
-      rows: [{ title: "concurrent-mutation-kept" }],
+      rows: [{ value: "concurrent-mutation-kept" }],
     });
     await mock.invoke("ai_audit_append_batch", {
       expectedWorkspacePath,

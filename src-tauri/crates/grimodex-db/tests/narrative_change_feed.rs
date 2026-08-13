@@ -165,6 +165,74 @@ fn count(conn: &Connection, table: &str) -> i64 {
 }
 
 #[test]
+fn object_head_lookup_is_index_backed_after_a_large_head_fixture() {
+    let db = migrated_db();
+    append_committed(
+        &db,
+        PROJECT_ONE,
+        "head-anchor-request",
+        "head-anchor-event",
+        "head-anchor",
+        vec![narrative_event("head-anchor", "create")],
+    );
+
+    db.with_conn(|conn| {
+        let anchor_event_id: String = conn.query_row(
+            "SELECT id FROM narrative_change_events
+              WHERE project_id = ?1
+              LIMIT 1",
+            [PROJECT_ONE],
+            |row| row.get(0),
+        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        for index in 0..10_000_i64 {
+            conn.execute(
+                "INSERT INTO narrative_change_object_heads (
+                    project_id, object_identity, after_version, after_digest,
+                    event_id, canonical_sequence, event_ordinal, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                rusqlite::params![
+                    PROJECT_ONE,
+                    format!("{{\"kind\":\"scene\",\"sceneId\":\"scene-{index}\"}}"),
+                    index,
+                    format!("sha256:head-{index}"),
+                    anchor_event_id,
+                    index + 1,
+                    "2026-08-13T00:00:00.000Z",
+                ],
+            )?;
+        }
+        conn.execute_batch("COMMIT")?;
+
+        let details = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                   SELECT after_version, after_digest
+                     FROM narrative_change_object_heads
+                    WHERE project_id = ?1
+                      AND object_identity = ?2",
+            )?
+            .query_map(
+                [PROJECT_ONE, "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}"],
+                |row| row.get::<_, String>(3),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(
+            details.iter().any(|detail| detail.contains("USING INDEX")),
+            "object head lookup lost its identity index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains("narrative_change_events")),
+            "continuity lookup must not scan the historical feed: {details:?}"
+        );
+        Ok(())
+    })
+    .expect("large object-head fixture remains indexed");
+}
+
+#[test]
 fn continuity_guard_rejects_a_mismatched_head_and_rolls_back_domain_state() {
     let db = migrated_db();
     append_committed(

@@ -3668,6 +3668,21 @@ pub(crate) mod tests {
                 FOREIGN KEY(project_id, canonical_change_event_uid)
                     REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
             );
+            CREATE TABLE narrative_change_object_heads (
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                object_identity TEXT NOT NULL,
+                after_version INTEGER,
+                after_digest TEXT,
+                event_id TEXT NOT NULL,
+                canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, object_identity),
+                FOREIGN KEY(project_id, event_id)
+                    REFERENCES narrative_change_events(project_id, id) ON DELETE CASCADE
+            );
+            CREATE INDEX idx_narrative_change_object_heads_project_sequence
+                ON narrative_change_object_heads(project_id, canonical_sequence, event_ordinal);
             CREATE TABLE idempotency_requests (
                 domain TEXT NOT NULL,
                 request_id TEXT NOT NULL,

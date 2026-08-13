@@ -2856,6 +2856,39 @@ export const narrativeChangeEvents = sqliteTable(
   ],
 );
 
+/** Latest after-state per normalized object identity for O(1) continuity checks. */
+export const narrativeChangeObjectHeads = sqliteTable(
+  "narrative_change_object_heads",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    objectIdentity: text("object_identity").notNull(),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    eventId: text("event_id").notNull(),
+    canonicalSequence: integer("canonical_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.objectIdentity] }),
+    foreignKey({
+      columns: [table.projectId, table.eventId],
+      foreignColumns: [
+        narrativeChangeEvents.projectId,
+        narrativeChangeEvents.id,
+      ],
+      name: "narrative_change_object_heads_event_fkey",
+    }).onDelete("cascade"),
+    index("idx_narrative_change_object_heads_project_sequence").on(
+      table.projectId,
+      table.canonicalSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
 export const narrativeChangeCursors = sqliteTable(
   "narrative_change_cursors",
   {

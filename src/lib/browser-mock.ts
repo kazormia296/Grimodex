@@ -1409,6 +1409,54 @@ function narrativeStateJson(value: unknown, label: string): string {
   return serialized;
 }
 
+function browserNarrativeObjectIdentity(
+  objectKey: Record<string, unknown>,
+): string {
+  const kind = objectKey.kind;
+  if (typeof kind !== "string" || kind.length === 0) {
+    throw new Error("Narrative object key kind is required");
+  }
+  const fieldByKind: Record<string, string> = {
+    project: "projectId",
+    scene: "sceneId",
+    "codex-entry": "entryId",
+    "codex-relation": "relationId",
+    "codex-phase": "phaseId",
+    "codex-detail-definition": "definitionId",
+    "codex-detail-value": "valueId",
+    "chronicle-event": "eventId",
+    "plot-thread": "threadId",
+    "plot-marker": "markerId",
+    "plot-branch": "branchId",
+    foreshadow: "foreshadowId",
+    "foreshadow-setup": "setupId",
+    "foreshadow-payoff": "payoffId",
+    "temporal-node": "nodeId",
+    "temporal-constraint": "constraintId",
+    "temporal-projection": "projectionId",
+    calendar: "calendarRef",
+    component: "componentId",
+  };
+  if (kind === "import-source") {
+    return narrativeStateJson(
+      {
+        kind,
+        sourceSetId: objectKey.sourceSetId,
+        objectKey: objectKey.objectKey,
+      },
+      "Narrative object identity",
+    );
+  }
+  const field = fieldByKind[kind];
+  if (!field || objectKey[field] === null || objectKey[field] === undefined) {
+    throw new Error(`Narrative object key '${kind}' has no canonical identity`);
+  }
+  return narrativeStateJson(
+    { kind, [field]: objectKey[field] },
+    "Narrative object identity",
+  );
+}
+
 export function browserNarrativeStateDigest(
   value: unknown,
   label = "Narrative state",
@@ -4157,6 +4205,7 @@ export async function createBrowserMock(
         event,
         eventOrdinal,
         objectKeyJson,
+        objectIdentity: browserNarrativeObjectIdentity(event.objectKey),
         paths,
         beforeDigest,
         afterDigest,
@@ -4170,30 +4219,16 @@ export async function createBrowserMock(
       afterDigest: string | null;
     };
     const heads = new Map<string, BrowserNarrativeHead | null>();
-    const existingEvents = queryAll(
-      `SELECT object_key_json, after_version, after_digest
-         FROM narrative_change_events
-        WHERE project_id = ?
-        ORDER BY canonical_sequence DESC, event_ordinal DESC`,
-      [input.identity.projectId],
-    );
     for (const row of eventRows) {
-      if (!heads.has(row.objectKeyJson)) {
-        let previous: BrowserNarrativeHead | null = null;
-        for (const existing of existingEvents) {
-          let existingKey: unknown;
-          try {
-            existingKey = JSON.parse(String(existing.object_key_json));
-          } catch {
-            throw new Error(
-              "Narrative Change Feed contains an invalid object key",
-            );
-          }
-          if (
-            narrativeStateJson(existingKey, "stored objectKey") ===
-            row.objectKeyJson
-          ) {
-            previous = {
+      if (!heads.has(row.objectIdentity)) {
+        const existing = queryOne(
+          `SELECT after_version, after_digest
+             FROM narrative_change_object_heads
+            WHERE project_id = ? AND object_identity = ?`,
+          [input.identity.projectId, row.objectIdentity],
+        );
+        const previous: BrowserNarrativeHead | null = existing
+          ? {
               afterVersion:
                 existing.after_version == null
                   ? null
@@ -4202,13 +4237,11 @@ export async function createBrowserMock(
                 existing.after_digest == null
                   ? null
                   : String(existing.after_digest),
-            };
-            break;
-          }
-        }
-        heads.set(row.objectKeyJson, previous);
+            }
+          : null;
+        heads.set(row.objectIdentity, previous);
       }
-      const previous = heads.get(row.objectKeyJson) ?? null;
+      const previous = heads.get(row.objectIdentity) ?? null;
       const isEpochReset =
         row.event.objectKey.kind === "project" &&
         row.event.structuralImpact?.event === "project-restored";
@@ -4219,12 +4252,12 @@ export async function createBrowserMock(
           previous.afterDigest !== row.beforeDigest)
       ) {
         throw new Error(
-          `Narrative Change Feed continuity mismatch for ${row.objectKeyJson} ` +
+          `Narrative Change Feed continuity mismatch for ${row.objectIdentity} ` +
             `(previous version=${String(previous.afterVersion)} digest=${String(previous.afterDigest)}; ` +
             `incoming version=${String(row.event.beforeVersion)} digest=${String(row.beforeDigest)})`,
         );
       }
-      heads.set(row.objectKeyJson, {
+      heads.set(row.objectIdentity, {
         afterVersion: row.event.afterVersion,
         afterDigest: row.afterDigest,
       });
@@ -4262,12 +4295,14 @@ export async function createBrowserMock(
       event,
       eventOrdinal,
       objectKeyJson,
+      objectIdentity,
       paths,
       beforeDigest,
       afterDigest,
       textImpactJson,
       structuralImpactJson,
     } of eventRows) {
+      const eventId = crypto.randomUUID();
       db.run(
         `INSERT INTO narrative_change_events
           (id, project_id, transaction_id, canonical_change_event_uid,
@@ -4277,7 +4312,7 @@ export async function createBrowserMock(
            structural_impact_json, occurred_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
-          crypto.randomUUID(),
+          eventId,
           input.identity.projectId,
           transactionId,
           input.preparedEvent.eventUid,
@@ -4293,6 +4328,32 @@ export async function createBrowserMock(
           JSON.stringify(paths),
           textImpactJson,
           structuralImpactJson,
+          input.occurredAt,
+        ],
+      );
+      db.run(
+        `INSERT INTO narrative_change_object_heads
+          (project_id, object_identity, after_version, after_digest, event_id,
+           canonical_sequence, event_ordinal, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(project_id, object_identity) DO UPDATE SET
+           after_version = excluded.after_version,
+           after_digest = excluded.after_digest,
+           event_id = excluded.event_id,
+           canonical_sequence = excluded.canonical_sequence,
+           event_ordinal = excluded.event_ordinal,
+           updated_at = excluded.updated_at
+         WHERE excluded.canonical_sequence > narrative_change_object_heads.canonical_sequence
+            OR (excluded.canonical_sequence = narrative_change_object_heads.canonical_sequence
+                AND excluded.event_ordinal > narrative_change_object_heads.event_ordinal)`,
+        [
+          input.identity.projectId,
+          objectIdentity,
+          event.afterVersion,
+          afterDigest,
+          eventId,
+          input.preparedEvent.sequence,
+          eventOrdinal,
           input.occurredAt,
         ],
       );
@@ -13426,6 +13487,235 @@ export async function createBrowserMock(
         db.run("ROLLBACK");
       } catch {
         // Preserve the canonical Project creation failure.
+      }
+      throw error;
+    }
+  }
+
+  async function handleProjectPatch(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const command = "project_patch";
+    const payload = browserCommandPayload(command, args);
+    const identity = browserCanonicalWriteIdentity(payload, command);
+    const baseUpdatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "baseUpdatedAt",
+    );
+    const updatedAt = browserCodexRequiredNonEmptyPayloadString(
+      payload,
+      "updatedAt",
+    );
+    const patch = payload.patch;
+    if (!isRecord(patch) || Object.keys(patch).length === 0) {
+      throw new Error(`${command}: patch must be a non-empty object`);
+    }
+    const fieldMap: Record<string, string> = {
+      title: "title",
+      genre: "genre",
+      pov: "pov",
+      tense: "tense",
+      language: "language",
+      styleGuide: "style_guide",
+      aiInstructions: "ai_instructions",
+      outline: "outline",
+      targetReaders: "target_readers",
+      aiPolicy: "ai_policy",
+      phaseResolutionMode: "phase_resolution_mode",
+    };
+    const pathMap: Record<string, string> = {
+      title: "/title",
+      genre: "/genre",
+      pov: "/pov",
+      tense: "/tense",
+      language: "/language",
+      styleGuide: "/styleGuide",
+      aiInstructions: "/aiInstructions",
+      outline: "/outline",
+      targetReaders: "/targetReaders",
+      aiPolicy: "/aiPolicy",
+      phaseResolutionMode: "/phaseResolutionMode",
+    };
+    const patchKeys = Object.keys(patch);
+    if (patchKeys.some((key) => !fieldMap[key])) {
+      throw new Error(`${command}: patch contains an unsupported field`);
+    }
+    for (const key of patchKeys) {
+      const value = patch[key];
+      if (value !== null && typeof value !== "string") {
+        throw new Error(`${command}: patch.${key} must be a string or null`);
+      }
+      if (key === "title" && value === null) {
+        throw new Error(`${command}: patch.title cannot be null`);
+      }
+    }
+    const requestHash = await browserCanonicalWriteFingerprint(
+      command,
+      payload,
+    );
+    const replay = loadBrowserCanonicalWriteReplay({
+      domain: command,
+      identity,
+      requestHash,
+      conflictMarker: "PROJECT_PATCH_REQUEST_CONFLICT",
+    });
+    if (replay) return replay;
+
+    const snapshot = (row: Record<string, unknown>) => ({
+      id: row.id,
+      title: row.title,
+      genre: row.genre,
+      pov: row.pov,
+      tense: row.tense,
+      language: row.language,
+      styleGuide: row.styleGuide,
+      aiInstructions: row.aiInstructions,
+      outline: row.outline,
+      targetReaders: row.targetReaders,
+      phaseResolutionMode: row.phaseResolutionMode,
+      aiPolicy: row.aiPolicy,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    });
+    const current = queryOne(
+      `SELECT id, title, genre, pov, tense, language,
+              style_guide AS styleGuide, ai_instructions AS aiInstructions,
+              outline, target_readers AS targetReaders,
+              phase_resolution_mode AS phaseResolutionMode,
+              ai_policy AS aiPolicy, created_at AS createdAt,
+              updated_at AS updatedAt
+         FROM projects WHERE id = ?`,
+      [identity.projectId],
+    );
+    if (!current) throw new Error(`project '${identity.projectId}' not found`);
+    if (String(current.updatedAt) !== baseUpdatedAt) {
+      throw new Error(
+        `PROJECT_VERSION_MISMATCH: project '${identity.projectId}' changed since ${baseUpdatedAt}`,
+      );
+    }
+    const beforeState = snapshot(current);
+    const timestamp = Number.isFinite(Date.parse(updatedAt))
+      ? Date.parse(updatedAt)
+      : Date.now();
+    const preparedEvent = await prepareBrowserTrackedChangeEvent({
+      eventUid: identity.eventUid,
+      projectId: identity.projectId,
+      sceneId: null,
+      domain: "project",
+      opType: "project.meta.update",
+      entityType: "project",
+      entityId: identity.projectId,
+      payload: JSON.stringify({
+        projectId: identity.projectId,
+        fields: patchKeys.slice().sort(),
+        patch,
+      }),
+      sessionId: identity.sessionId,
+      timestamp,
+    });
+
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const replayAfterLock = loadBrowserCanonicalWriteReplay({
+        domain: command,
+        identity,
+        requestHash,
+        conflictMarker: "PROJECT_PATCH_REQUEST_CONFLICT",
+      });
+      if (replayAfterLock) {
+        db.run("COMMIT");
+        return replayAfterLock;
+      }
+      const assignments = patchKeys.map((key) => `${fieldMap[key]} = ?`);
+      const values: SqlValue[] = patchKeys.map(
+        (key) => (patch[key] as SqlValue | null | undefined) ?? null,
+      );
+      assignments.push("updated_at = ?");
+      values.push(updatedAt);
+      values.push(identity.projectId, baseUpdatedAt);
+      db.run(
+        `UPDATE projects SET ${assignments.join(", ")}
+          WHERE id = ? AND updated_at = ?`,
+        values,
+      );
+      if (db.getRowsModified() !== 1) {
+        throw new Error(
+          `PROJECT_VERSION_MISMATCH: project '${identity.projectId}' update lost its OCC race`,
+        );
+      }
+      const afterRow = queryOne(
+        `SELECT id, title, genre, pov, tense, language,
+                style_guide AS styleGuide, ai_instructions AS aiInstructions,
+                outline, target_readers AS targetReaders,
+                phase_resolution_mode AS phaseResolutionMode,
+                ai_policy AS aiPolicy, created_at AS createdAt,
+                updated_at AS updatedAt
+           FROM projects WHERE id = ?`,
+        [identity.projectId],
+      );
+      if (!afterRow) throw new Error("project patch did not return a row");
+      const afterState = snapshot(afterRow);
+      const undoJournalId = identity.undoJournalId ?? identity.requestId;
+      if (identity.origin !== "undo" && identity.origin !== "redo") {
+        db.run(
+          `INSERT INTO undo_journal
+            (id, project_id, surface, entity_kind, entity_id, op_kind,
+             before_json, after_json, base_version, result_version,
+             change_event_uid, created_at)
+           VALUES (?, ?, 'project', 'project', ?, 'update', ?, ?, 0, 0, ?, ?)`,
+          [
+            undoJournalId,
+            identity.projectId,
+            identity.projectId,
+            JSON.stringify(beforeState),
+            JSON.stringify(afterState),
+            identity.eventUid,
+            updatedAt,
+          ],
+        );
+      }
+      const maintenanceTransactionId = insertBrowserNarrativeChange({
+        preparedEvent,
+        identity,
+        requestHash,
+        undoJournalId,
+        occurredAt: updatedAt,
+        events: [
+          {
+            objectKey: { kind: "project", projectId: identity.projectId },
+            changeKind: patchKeys.includes("aiPolicy") ? "policy" : "metadata",
+            mutationKind: "update",
+            beforeVersion: null,
+            afterVersion: null,
+            beforeState,
+            afterState,
+            changedPaths: patchKeys.map((key) => pathMap[key]).sort(),
+          },
+        ],
+      });
+      const response: Record<string, unknown> = {
+        ...afterRow,
+        __writeReceipt: {
+          changeEventUid: identity.eventUid,
+          maintenanceTransactionId,
+          undoJournalId,
+        },
+      };
+      insertBrowserCanonicalWriteReceipt({
+        domain: command,
+        identity,
+        requestHash,
+        response,
+        now: updatedAt,
+      });
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return response;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the original project patch failure.
       }
       throw error;
     }
@@ -26549,6 +26839,8 @@ export async function createBrowserMock(
         return handleDbExecuteBatch(args) as T;
       case "project_create":
         return (await handleProjectCreate(args)) as T;
+      case "project_patch":
+        return (await handleProjectPatch(args)) as T;
       case "project_delete": {
         const command = "project_delete";
         const payload = browserCommandPayload(command, args);

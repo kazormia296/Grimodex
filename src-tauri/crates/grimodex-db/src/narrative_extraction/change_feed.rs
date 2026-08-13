@@ -12,6 +12,11 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// The coordinate system used by the renderer's canonical text projection.
+/// Keep this value on every text impact so a future normalizer can reject or
+/// rebuild old ranges instead of silently interpreting them in a new space.
+pub(crate) const CANONICAL_TEXT_NORMALIZER_VERSION: &str = "gdx-canonical-text/1";
+
 use crate::change_events::{
     append_change_events_in_tx, AppendChangeEvent, AppendResult as AppendCanonicalChangeResult,
 };
@@ -287,25 +292,145 @@ pub(crate) fn previous_event_after_state(
     project_id: &str,
     identity: &str,
 ) -> anyhow::Result<Option<(Option<i64>, Option<String>)>> {
-    let mut statement = conn.prepare(
-        "SELECT object_key_json, after_version, after_digest
-           FROM narrative_change_events
-          WHERE project_id = ?1
-          ORDER BY canonical_sequence DESC, event_ordinal DESC",
+    conn.query_row(
+        "SELECT after_version, after_digest
+           FROM narrative_change_object_heads
+          WHERE project_id = ?1 AND object_identity = ?2",
+        params![project_id, identity],
+        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<String>>(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+struct NarrativeChangeObjectHead<'a> {
+    project_id: &'a str,
+    identity: &'a str,
+    after_version: Option<i64>,
+    after_digest: Option<&'a str>,
+    event_id: &'a str,
+    canonical_sequence: i64,
+    event_ordinal: i64,
+    occurred_at: &'a str,
+}
+
+fn upsert_object_head(
+    conn: &Connection,
+    head: NarrativeChangeObjectHead<'_>,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO narrative_change_object_heads (
+            project_id, object_identity, after_version, after_digest, event_id,
+            canonical_sequence, event_ordinal, updated_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(project_id, object_identity) DO UPDATE SET
+            after_version = excluded.after_version,
+            after_digest = excluded.after_digest,
+            event_id = excluded.event_id,
+            canonical_sequence = excluded.canonical_sequence,
+            event_ordinal = excluded.event_ordinal,
+            updated_at = excluded.updated_at
+          WHERE excluded.canonical_sequence > narrative_change_object_heads.canonical_sequence
+             OR (excluded.canonical_sequence = narrative_change_object_heads.canonical_sequence
+                 AND excluded.event_ordinal > narrative_change_object_heads.event_ordinal)",
+        params![
+            head.project_id,
+            head.identity,
+            head.after_version,
+            head.after_digest,
+            head.event_id,
+            head.canonical_sequence,
+            head.event_ordinal,
+            head.occurred_at,
+        ],
     )?;
-    let mut candidates = statement.query(params![project_id])?;
-    while let Some(row) = candidates.next()? {
-        let raw_key: String = row.get(0)?;
-        let prior_key: Value = serde_json::from_str(&raw_key)?;
-        if crate::canonical_feed_snapshots::object_key_identity(&prior_key)? != identity {
-            continue;
+    Ok(())
+}
+
+fn scene_canonical_text(storage: &str) -> String {
+    fn walk(node: &Value, out: &mut String, needs_separator: &mut bool) {
+        let node_type = node.get("type").and_then(Value::as_str);
+        if node_type == Some("text") {
+            if let Some(text) = node.get("text").and_then(Value::as_str) {
+                out.push_str(text);
+                *needs_separator = false;
+            }
+            return;
         }
-        return Ok(Some((
-            row.get::<_, Option<i64>>(1)?,
-            row.get::<_, Option<String>>(2)?,
-        )));
+        if let Some(children) = node.get("content").and_then(Value::as_array) {
+            for (index, child) in children.iter().enumerate() {
+                let before = out.len();
+                walk(child, out, needs_separator);
+                // ProseMirror block boundaries are represented by one newline
+                // in the canonical flat-text coordinate system. Unknown nodes
+                // are still traversed, but never invent a separator.
+                if before != out.len()
+                    && matches!(
+                        child.get("type").and_then(Value::as_str),
+                        Some(
+                            "paragraph"
+                                | "heading"
+                                | "blockquote"
+                                | "listItem"
+                                | "codeBlock"
+                        )
+                    )
+                {
+                    *needs_separator = true;
+                }
+                if *needs_separator && index + 1 < children.len() {
+                    out.push('\n');
+                    *needs_separator = false;
+                }
+            }
+        }
     }
-    Ok(None)
+
+    let Ok(document) = serde_json::from_str::<Value>(storage) else {
+        return storage.to_string();
+    };
+    let mut output = String::new();
+    let mut needs_separator = false;
+    walk(&document, &mut output, &mut needs_separator);
+    output
+}
+
+fn sha256_digest(value: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(value)))
+}
+
+/// Build the complete text-impact contract for a Scene `/content` mutation.
+///
+/// Native writers currently do not receive ProseMirror step maps from every
+/// caller (notably Undo/Redo and external writes). A whole-document mapping is
+/// therefore the safe common denominator: it is explicit, versioned, and
+/// guarantees C2 will re-evaluate the affected source instead of guessing at
+/// stale coordinates.
+pub(crate) fn scene_text_impact(
+    before: Option<&Value>,
+    after: Option<&Value>,
+) -> anyhow::Result<Option<Value>> {
+    let old_storage = before
+        .and_then(|snapshot| snapshot.get("content"))
+        .and_then(Value::as_str);
+    let new_storage = after
+        .and_then(|snapshot| snapshot.get("content"))
+        .and_then(Value::as_str);
+    let (Some(old_storage), Some(new_storage)) = (old_storage, new_storage) else {
+        return Ok(None);
+    };
+    Ok(Some(json!({
+        "unit": "utf16",
+        "normalizerVersion": CANONICAL_TEXT_NORMALIZER_VERSION,
+        "oldStorageDigest": sha256_digest(old_storage.as_bytes()),
+        "newStorageDigest": sha256_digest(new_storage.as_bytes()),
+        "oldCanonicalDigest": sha256_digest(scene_canonical_text(old_storage).as_bytes()),
+        "newCanonicalDigest": sha256_digest(scene_canonical_text(new_storage).as_bytes()),
+        "mapping": {
+            "kind": "whole-document",
+            "reason": "native-writer-fallback"
+        }
+    })))
 }
 
 fn ensure_event_history_continuity(
@@ -1645,6 +1770,7 @@ pub fn append_narrative_change_transaction_in_tx(
     let mut event_ids = Vec::with_capacity(input.events.len());
     for (ordinal, event) in input.events.iter().enumerate() {
         let event_id = Uuid::new_v4().to_string();
+        let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
         conn.execute(
             "INSERT INTO narrative_change_events (
                 id, project_id, transaction_id, canonical_change_event_uid,
@@ -1681,6 +1807,19 @@ pub fn append_narrative_change_transaction_in_tx(
                     .transpose()?,
                 input.occurred_at,
             ],
+        )?;
+        upsert_object_head(
+            conn,
+            NarrativeChangeObjectHead {
+                project_id: &input.project_id,
+                identity: &identity,
+                after_version: event.after_version,
+                after_digest: event.after_digest.as_deref(),
+                event_id: &event_id,
+                canonical_sequence,
+                event_ordinal: i64::try_from(ordinal)?,
+                occurred_at: &input.occurred_at,
+            },
         )?;
         event_ids.push(event_id);
     }
@@ -2338,5 +2477,35 @@ mod tests {
             narrative_snapshot_digest(&fixture).unwrap(),
             "sha256:c1f56a548e2a3ab4573fc13ad51436765db5616ebb773409d9eed7194d270a11"
         );
+    }
+
+    #[test]
+    fn scene_text_impact_is_versioned_and_reverses_for_undo() {
+        let before = json!({
+            "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"before\"}]}]}"
+        });
+        let after = json!({
+            "content": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"after\"}]}]}"
+        });
+        let forward = scene_text_impact(Some(&before), Some(&after))
+            .expect("build forward impact")
+            .expect("content snapshots produce an impact");
+        assert_eq!(
+            forward["normalizerVersion"],
+            CANONICAL_TEXT_NORMALIZER_VERSION
+        );
+        assert_eq!(forward["mapping"]["kind"], "whole-document");
+        assert_ne!(
+            forward["oldCanonicalDigest"],
+            forward["newCanonicalDigest"]
+        );
+
+        let undo = scene_text_impact(Some(&after), Some(&before))
+            .expect("build undo impact")
+            .expect("content snapshots produce an undo impact");
+        assert_eq!(undo["oldStorageDigest"], forward["newStorageDigest"]);
+        assert_eq!(undo["newStorageDigest"], forward["oldStorageDigest"]);
+        assert_eq!(undo["oldCanonicalDigest"], forward["newCanonicalDigest"]);
+        assert_eq!(undo["newCanonicalDigest"], forward["oldCanonicalDigest"]);
     }
 }

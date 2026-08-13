@@ -40,6 +40,7 @@ use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendar
 use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
+    ProjectPatchPayload,
     ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
     TreeNodeDeletePayload, TreeNodePatchPayload, UndoAiTreePlanPayload,
 };
@@ -2002,6 +2003,20 @@ impl Backend {
             let payload: ProjectCreatePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
                 Ok(serde_json::to_string(&domain_writes::project_create(
+                    db, payload,
+                )?)?)
+            })
+        })
+        .await
+    }
+
+    #[napi]
+    pub async fn project_patch(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: ProjectPatchPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&domain_writes::project_patch(
                     db, payload,
                 )?)?)
             })

@@ -4,6 +4,7 @@ import contractJson from "./generated/schema-contract.json";
 import {
   narrativeChangeCursors,
   narrativeChangeEvents,
+  narrativeChangeObjectHeads,
   narrativeChangeSets,
   narrativeChangeTransactions,
 } from "./schema";
@@ -23,6 +24,10 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
     expect(events.canonicalSequence).toBeDefined();
     expect(events.eventOrdinal).toBeDefined();
     expect(events.mutationKind).toBeDefined();
+    const heads = getTableColumns(narrativeChangeObjectHeads);
+    expect(heads.objectIdentity).toBeDefined();
+    expect(heads.afterDigest).toBeDefined();
+    expect(heads.eventId).toBeDefined();
   });
 
   it("models project-scoped cursors and deterministic coalesced sets", () => {
@@ -66,5 +71,9 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
     ).toBeDefined();
     expect(contractJson.tables.narrative_change_cursors).toBeDefined();
     expect(contractJson.tables.narrative_change_sets).toBeDefined();
+    expect(contractJson.tables.narrative_change_object_heads).toBeDefined();
+    expect(
+      contractJson.indexes.idx_narrative_change_object_heads_project_sequence,
+    ).toBeDefined();
   });
 });

@@ -108,6 +108,7 @@ export declare class Backend {
   codexRenameApply(payload: any): Promise<string>
   scanStagingProjectCreate(payload: any): Promise<void>
   projectCreate(payload: any): Promise<string>
+  projectPatch(payload: any): Promise<string>
   projectDelete(payload: any): Promise<void>
   aiTreePlanApply(payload: any): Promise<string>
   aiTreePlanUndo(payload: any): Promise<string>

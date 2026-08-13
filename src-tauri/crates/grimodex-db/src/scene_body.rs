@@ -22,8 +22,8 @@ use crate::{
     },
     narrative_extraction::change_feed::{
         append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
-        AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
-        NarrativeChangeOrigin,
+        scene_text_impact, AppendNarrativeChangeTransactionInput,
+        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
     },
     Database,
 };
@@ -89,7 +89,7 @@ fn feed_event(
         after_version: snapshot_version(after),
         after_digest: after.map(narrative_snapshot_digest).transpose()?,
         changed_paths: changed_paths.clone(),
-        text_impact: None,
+        text_impact: scene_text_impact(before, after)?,
         structural_impact: Some(json!({ "changedPaths": changed_paths })),
     })
 }
@@ -1171,7 +1171,8 @@ mod tests {
             let events = conn
                 .prepare(
                     "SELECT object_key_json, change_kind, mutation_kind,
-                            before_version, after_version, changed_paths_json
+                            before_version, after_version, changed_paths_json,
+                            text_impact_json
                        FROM narrative_change_events
                       ORDER BY event_ordinal",
                 )?
@@ -1185,6 +1186,7 @@ mod tests {
                         row.get::<_, Option<i64>>(4)?,
                         serde_json::from_str::<Value>(&row.get::<_, String>(5)?)
                             .expect("valid changed paths"),
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1196,6 +1198,14 @@ mod tests {
             assert_eq!(events[0].1, "content");
             assert_eq!(events[0].2, "update");
             assert_eq!((events[0].3, events[0].4), (Some(0), Some(1)));
+            let text_impact: Value = serde_json::from_str(
+                events[0].6.as_deref().expect("scene feed text impact"),
+            )?;
+            assert_eq!(
+                text_impact["normalizerVersion"],
+                crate::narrative_extraction::change_feed::CANONICAL_TEXT_NORMALIZER_VERSION
+            );
+            assert_eq!(text_impact["mapping"]["kind"], "whole-document");
             assert_eq!(
                 events[1].0,
                 serde_json::json!({ "kind": "foreshadow", "foreshadowId": "f1" })

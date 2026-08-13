@@ -61,7 +61,6 @@
         "src/features/map/mapApi.ts:drizzle-update:mapFrames": 1,
         "src/features/map/mapApi.ts:drizzle-update:mapNodePositions": 2,
         "src/features/map/mapApi.ts:drizzle-update:mapStickies": 3,
-        "src/features/project/api.ts:drizzle-update:projects": 1,
         "src/features/prompt-library/api.ts:drizzle-delete:promptTemplates": 1,
         "src/features/prompt-library/api.ts:drizzle-insert:promptTemplates": 1,
         "src/features/prompt-library/api.ts:drizzle-update:promptTemplates": 2,

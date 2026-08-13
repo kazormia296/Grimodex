@@ -436,6 +436,7 @@ export interface NapiBackendLike {
   codexRenameApply?(payload: unknown): Promise<string>;
   scanStagingProjectCreate?(payload: unknown): Promise<void>;
   projectCreate?(payload: unknown): Promise<string>;
+  projectPatch?(payload: unknown): Promise<string>;
   projectDelete?(payload: unknown): Promise<void>;
   aiTreePlanApply?(payload: unknown): Promise<string>;
   aiTreePlanUndo?(payload: unknown): Promise<string>;
@@ -2394,6 +2395,42 @@ function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
     "targetReaders",
   ]) {
     requireNullableStringField(payload, key, command);
+  }
+  return payload;
+}
+
+function requireProjectPatchPayload(args: CommandArgs): CommandArgs {
+  const command = "project_patch";
+  const payload = requireCanonicalWriterIdentity(args, command);
+  requireNonEmptyString(payload, "baseUpdatedAt", command);
+  requireNonEmptyString(payload, "updatedAt", command);
+  const patch = requireRecord(payload, "patch", command);
+  const allowed = new Set([
+    "title",
+    "genre",
+    "pov",
+    "tense",
+    "language",
+    "styleGuide",
+    "aiInstructions",
+    "outline",
+    "targetReaders",
+    "aiPolicy",
+    "phaseResolutionMode",
+  ]);
+  const keys = Object.keys(patch);
+  if (keys.length === 0 || keys.some((key) => !allowed.has(key))) {
+    throw new Error(
+      `invalid args \`patch\` for command \`${command}\`: expected non-empty Project metadata fields`,
+    );
+  }
+  for (const key of keys) {
+    requireNullableStringField(patch, key, command);
+  }
+  if (Object.hasOwn(patch, "title") && patch.title === null) {
+    throw new Error(
+      `invalid args \`patch.title\` for command \`${command}\`: title cannot be null`,
+    );
   }
   return payload;
 }
@@ -5193,6 +5230,16 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.projectCreate,
           "projectCreate",
         )(requireProjectCreatePayload(a)),
+      ),
+  },
+  project_patch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectPatch,
+          "projectPatch",
+        )(requireProjectPatchPayload(a)),
       ),
   },
   project_delete: {

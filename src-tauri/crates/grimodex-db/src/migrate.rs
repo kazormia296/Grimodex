@@ -3164,6 +3164,19 @@ impl Database {
                 FOREIGN KEY(project_id, canonical_change_event_uid)
                     REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
             );
+            CREATE TABLE IF NOT EXISTS narrative_change_object_heads (
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                object_identity               TEXT NOT NULL,
+                after_version                 INTEGER,
+                after_digest                  TEXT,
+                event_id                      TEXT NOT NULL,
+                canonical_sequence            INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal                 INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, object_identity),
+                FOREIGN KEY(project_id, event_id)
+                    REFERENCES narrative_change_events(project_id, id) ON DELETE CASCADE
+            );
             CREATE TABLE IF NOT EXISTS narrative_change_cursors (
                 project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
@@ -3194,6 +3207,8 @@ impl Database {
                 ON narrative_change_transactions(project_id, source_change_event_sequence);
             CREATE INDEX IF NOT EXISTS idx_narrative_change_events_project_sequence
                 ON narrative_change_events(project_id, canonical_sequence, event_ordinal);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_object_heads_project_sequence
+                ON narrative_change_object_heads(project_id, canonical_sequence, event_ordinal);
             CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
                 ON narrative_change_cursors(project_id, consumer_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_change_sets_project_range
@@ -3210,6 +3225,7 @@ impl Database {
         // default to a populated table, so rebuild the SCHEMA 21 parent while
         // preserving its child events and deterministic transaction identity.
         Self::migrate_narrative_change_transactions_v22(&conn)?;
+        Self::backfill_narrative_change_object_heads(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -3221,6 +3237,96 @@ impl Database {
         );
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
 
+        Ok(())
+    }
+
+    fn backfill_narrative_change_object_heads(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_object_heads'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        let rows = conn
+            .prepare(
+                "SELECT project_id, object_key_json, after_version, after_digest,
+                        id, canonical_sequence, event_ordinal, occurred_at
+                   FROM narrative_change_events
+                  ORDER BY project_id, canonical_sequence, event_ordinal",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        for (
+            project_id,
+            object_key_json,
+            after_version,
+            after_digest,
+            event_id,
+            canonical_sequence,
+            event_ordinal,
+            occurred_at,
+        ) in rows
+        {
+            let mut object_key: serde_json::Value = serde_json::from_str(&object_key_json)?;
+            // SCHEMA 21 accepted the project aggregate marker without an
+            // explicit projectId. Preserve that historical row by deriving
+            // the identity from its already-scoped project column.
+            if object_key.get("kind").and_then(serde_json::Value::as_str)
+                == Some("project")
+                && object_key.get("projectId").is_none()
+            {
+                if let Some(object) = object_key.as_object_mut() {
+                    object.insert(
+                        "projectId".to_string(),
+                        serde_json::Value::String(project_id.clone()),
+                    );
+                }
+            }
+            let identity = crate::canonical_feed_snapshots::object_key_identity(&object_key)?;
+            conn.execute(
+                "INSERT INTO narrative_change_object_heads (
+                    project_id, object_identity, after_version, after_digest, event_id,
+                    canonical_sequence, event_ordinal, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(project_id, object_identity) DO UPDATE SET
+                    after_version = excluded.after_version,
+                    after_digest = excluded.after_digest,
+                    event_id = excluded.event_id,
+                    canonical_sequence = excluded.canonical_sequence,
+                    event_ordinal = excluded.event_ordinal,
+                    updated_at = excluded.updated_at
+                  WHERE excluded.canonical_sequence > narrative_change_object_heads.canonical_sequence
+                     OR (excluded.canonical_sequence = narrative_change_object_heads.canonical_sequence
+                         AND excluded.event_ordinal > narrative_change_object_heads.event_ordinal)",
+                rusqlite::params![
+                    project_id,
+                    identity,
+                    after_version,
+                    after_digest,
+                    event_id,
+                    canonical_sequence,
+                    event_ordinal,
+                    occurred_at,
+                ],
+            )?;
+        }
         Ok(())
     }
 

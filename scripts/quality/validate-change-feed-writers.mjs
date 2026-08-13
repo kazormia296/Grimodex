@@ -6,6 +6,10 @@
  * from operation coverage. During the C1 restack, required routes may remain
  * `declared`; `--require-runtime-coverage` is the later cutover switch that
  * requires every required/delegated operation to be `verified`.
+ * `verified` is an inventory certification (route/module/symbol mapping), not
+ * a claim that this static validator executed the writer or proved runtime
+ * atomicity. Runtime evidence belongs to the Native/browser contract and
+ * Journey/quality test suites.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -77,6 +81,7 @@ const ELECTRON_MUTATING_ROUTES = [
   "restore_backup",
   "restore_recovery_candidate",
   "project_create",
+  "project_patch",
   "project_delete",
   "import_web_editor_workspace",
   "narrative_runtime_policy_set",

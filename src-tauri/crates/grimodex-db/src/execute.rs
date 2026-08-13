@@ -1416,7 +1416,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_rejects_project_insert_and_delete_but_allows_metadata_update() {
+    fn renderer_rejects_project_insert_delete_and_metadata_update() {
         let db = test_db();
         db.migrate().expect("migrate");
 
@@ -1433,12 +1433,13 @@ mod tests {
             );
         }
 
-        db.execute_renderer(
+        let error = db.execute_renderer(
             "UPDATE projects SET title = 'Renamed' WHERE id = 'default-project'",
             &[],
             "run",
         )
-        .expect("project metadata remains renderer-updateable");
+        .expect_err("project metadata must use the typed Native writer");
+        assert!(error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
         let rows = db
             .execute(
                 "SELECT title FROM projects WHERE id = 'default-project'",
@@ -1446,7 +1447,7 @@ mod tests {
                 "get",
             )
             .expect("read updated project");
-        assert_eq!(rows[0]["title"], Value::from("Renamed"));
+        assert_eq!(rows[0]["title"], Value::from("Untitled Project"));
     }
 
     #[test]
