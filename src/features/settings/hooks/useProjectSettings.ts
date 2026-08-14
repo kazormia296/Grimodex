@@ -4,7 +4,10 @@ import type { Project } from "@/features/project/api";
 import { useCurrentProjectId } from "@/features/project/projectStore";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
-import { scheduleProjectMetadataWrite } from "./projectMetadataWriteQueue";
+import {
+  scheduleProjectMetadataWrite,
+  type ProjectMetadataField,
+} from "./projectMetadataWriteQueue";
 
 export function useProjectSettings() {
   const [project, setProject] = useState<Project | null>(null);
@@ -26,12 +29,13 @@ export function useProjectSettings() {
 
   const updateField = useCallback(
     (
-      field: keyof Omit<Project, "id" | "createdAt" | "updatedAt">,
+      field: ProjectMetadataField,
       value: string | null,
       /** DB 書込 (debounce) 確定後に発火。言語切替後の index status 再取得用。 */
       onPersist?: () => void,
     ) => {
       if (!canScheduleQuiescenceMutation()) return;
+      const previousValue = project?.[field] ?? null;
       setProject((prev) => (prev ? { ...prev, [field]: value } : prev));
 
       // 執筆言語が変わったら loadProject と同じ reconcile を即時に行う:
@@ -49,9 +53,19 @@ export function useProjectSettings() {
         value,
         // DB 書込後 (Rust の project_language JOIN が新言語を返す) に発火。
         onPersist,
+        // A timer-triggered write is not allowed to leave an optimistic value
+        // looking persisted after Native OCC or disk failure. Strict
+        // quiescence still retains the patch for lifecycle recovery.
+        onFailure: () => {
+          setProject((prev) =>
+            prev && prev[field] === value
+              ? { ...prev, [field]: previousValue }
+              : prev,
+          );
+        },
       });
     },
-    [currentProjectId],
+    [currentProjectId, project],
   );
 
   return { project, isLoading, updateField };

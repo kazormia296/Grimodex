@@ -347,52 +347,97 @@ fn upsert_object_head(
     Ok(())
 }
 
-fn scene_canonical_text(storage: &str) -> String {
-    fn walk(node: &Value, out: &mut String, needs_separator: &mut bool) {
-        let node_type = node.get("type").and_then(Value::as_str);
-        if node_type == Some("text") {
+fn normalize_canonical_fragment(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn append_canonical_inline_text(node: &Value, output: &mut String) {
+    match node.get("type").and_then(Value::as_str) {
+        Some("text") => {
             if let Some(text) = node.get("text").and_then(Value::as_str) {
-                out.push_str(text);
-                *needs_separator = false;
+                output.push_str(&normalize_canonical_fragment(text));
             }
-            return;
         }
-        if let Some(children) = node.get("content").and_then(Value::as_array) {
-            for (index, child) in children.iter().enumerate() {
-                let before = out.len();
-                walk(child, out, needs_separator);
-                // ProseMirror block boundaries are represented by one newline
-                // in the canonical flat-text coordinate system. Unknown nodes
-                // are still traversed, but never invent a separator.
-                if before != out.len()
-                    && matches!(
-                        child.get("type").and_then(Value::as_str),
-                        Some(
-                            "paragraph"
-                                | "heading"
-                                | "blockquote"
-                                | "listItem"
-                                | "codeBlock"
-                        )
-                    )
-                {
-                    *needs_separator = true;
-                }
-                if *needs_separator && index + 1 < children.len() {
-                    out.push('\n');
-                    *needs_separator = false;
+        Some("hardBreak") => output.push('\n'),
+        Some("ruby") => {
+            if let Some(base) = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("base"))
+                .and_then(Value::as_str)
+            {
+                output.push_str(&normalize_canonical_fragment(base));
+            }
+        }
+        Some("mention") => {
+            let label = node
+                .get("attrs")
+                .and_then(|attrs| attrs.get("label"))
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    node.get("attrs")
+                        .and_then(|attrs| attrs.get("id"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default();
+            output.push('@');
+            output.push_str(&normalize_canonical_fragment(label));
+        }
+        Some("image") => output.push('\u{fffc}'),
+        _ => {
+            if let Some(children) = node.get("content").and_then(Value::as_array) {
+                for child in children {
+                    append_canonical_inline_text(child, output);
                 }
             }
         }
     }
+}
 
+fn collect_canonical_blocks(node: &Value, blocks: &mut Vec<String>) {
+    let node_type = node.get("type").and_then(Value::as_str);
+    match node_type {
+        Some("doc") => {
+            if let Some(children) = node.get("content").and_then(Value::as_array) {
+                for child in children {
+                    collect_canonical_blocks(child, blocks);
+                }
+            }
+        }
+        Some("paragraph") | Some("heading") | Some("codeBlock") | Some("sceneBeat") => {
+            let mut block = String::new();
+            if let Some(children) = node.get("content").and_then(Value::as_array) {
+                for child in children {
+                    append_canonical_inline_text(child, &mut block);
+                }
+            }
+            blocks.push(block);
+        }
+        Some("horizontalRule") | Some("sceneBreak") => blocks.push(String::new()),
+        Some("image") => blocks.push("\u{fffc}".to_string()),
+        _ => {
+            let before = blocks.len();
+            if let Some(children) = node.get("content").and_then(Value::as_array) {
+                for child in children {
+                    collect_canonical_blocks(child, blocks);
+                }
+            }
+            // This mirrors collectBlocks in the TypeScript serializer: a
+            // valid empty block container is represented by an empty block so
+            // synthetic boundaries remain deterministic.
+            if blocks.len() == before {
+                blocks.push(String::new());
+            }
+        }
+    }
+}
+
+fn scene_canonical_text(storage: &str) -> String {
     let Ok(document) = serde_json::from_str::<Value>(storage) else {
         return storage.to_string();
     };
-    let mut output = String::new();
-    let mut needs_separator = false;
-    walk(&document, &mut output, &mut needs_separator);
-    output
+    let mut blocks = Vec::new();
+    collect_canonical_blocks(&document, &mut blocks);
+    blocks.join("\n")
 }
 
 fn sha256_digest(value: &[u8]) -> String {
@@ -2507,5 +2552,47 @@ mod tests {
         assert_eq!(undo["newStorageDigest"], forward["oldStorageDigest"]);
         assert_eq!(undo["oldCanonicalDigest"], forward["newCanonicalDigest"]);
         assert_eq!(undo["newCanonicalDigest"], forward["oldCanonicalDigest"]);
+    }
+
+    #[test]
+    fn scene_canonical_text_matches_the_shared_typescript_golden_fixtures() {
+        #[derive(Debug, Deserialize)]
+        struct GoldenFixture {
+            id: String,
+            document: Value,
+            #[serde(rename = "canonicalText")]
+            canonical_text: String,
+            #[serde(rename = "canonicalDigest")]
+            canonical_digest: String,
+        }
+
+        fn utf16_len(value: &str) -> usize {
+            value.encode_utf16().count()
+        }
+
+        let fixtures: Vec<GoldenFixture> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../evals/fixtures/narrative/canonical-text-v1.json"
+        )))
+        .expect("parse canonical text golden fixtures");
+
+        for fixture in fixtures {
+            let storage =
+                serde_json::to_string(&fixture.document).expect("serialize canonical text fixture");
+            let actual = scene_canonical_text(&storage);
+            assert_eq!(actual, fixture.canonical_text, "fixture {}", fixture.id);
+            assert_eq!(
+                utf16_len(&actual),
+                utf16_len(&fixture.canonical_text),
+                "UTF-16 length for fixture {}",
+                fixture.id
+            );
+            assert_eq!(
+                sha256_digest(actual.as_bytes()),
+                fixture.canonical_digest,
+                "digest for fixture {}",
+                fixture.id
+            );
+        }
     }
 }

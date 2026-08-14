@@ -43,14 +43,14 @@ beforeEach(() => {
   _resetProjectMetadataWritesForTests();
   h.currentProjectId = "project-a";
   h.updateProject.mockReset();
-  h.updateProject.mockResolvedValue(undefined);
+  h.updateProject.mockResolvedValue({ id: "project-a" });
   h.refreshProjects.mockReset();
   h.refreshProjects.mockResolvedValue(undefined);
 });
 
 describe("Project metadata write quiescence", () => {
   it("forces a pending debounce immediately and waits for the real write", async () => {
-    const write = deferred<void>();
+    const write = deferred<unknown>();
     h.updateProject.mockReturnValueOnce(write.promise);
     const onPersist = vi.fn();
 
@@ -71,7 +71,7 @@ describe("Project metadata write quiescence", () => {
       language: "en",
     });
 
-    write.resolve();
+    write.resolve({ id: "project-a" });
     await flush;
 
     expect(h.refreshProjects).toHaveBeenCalledOnce();
@@ -98,6 +98,27 @@ describe("Project metadata write quiescence", () => {
     });
   });
 
+  it("coalesces different fields into one Project patch", async () => {
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "Novel",
+    });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "genre",
+      value: "Mystery",
+    });
+
+    await flushQuiescenceProviderStage("scoped-mutations");
+
+    expect(h.updateProject).toHaveBeenCalledOnce();
+    expect(h.updateProject).toHaveBeenCalledWith("project-a", {
+      title: "Novel",
+      genre: "Mystery",
+    });
+  });
+
   it("persists null when a nullable metadata field is explicitly cleared", async () => {
     scheduleProjectMetadataWrite({
       projectId: "project-a",
@@ -115,10 +136,10 @@ describe("Project metadata write quiescence", () => {
   });
 
   it("keeps one field single-flight and drains the latest queued value", async () => {
-    const first = deferred<void>();
+    const first = deferred<unknown>();
     h.updateProject
       .mockReturnValueOnce(first.promise)
-      .mockResolvedValueOnce(undefined);
+      .mockResolvedValueOnce({ id: "project-a" });
     scheduleProjectMetadataWrite({
       projectId: "project-a",
       field: "title",
@@ -136,7 +157,7 @@ describe("Project metadata write quiescence", () => {
     await Promise.resolve();
     expect(h.updateProject).toHaveBeenCalledTimes(1);
 
-    first.resolve();
+    first.resolve({ id: "project-a" });
     await flush;
 
     expect(h.updateProject).toHaveBeenCalledTimes(2);
@@ -146,12 +167,46 @@ describe("Project metadata write quiescence", () => {
     ]);
   });
 
+  it("serializes a second field behind an in-flight Project patch", async () => {
+    const first = deferred<unknown>();
+    h.updateProject
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ id: "project-a" });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "First",
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.waitFor(() => expect(h.updateProject).toHaveBeenCalledTimes(1));
+
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "language",
+      value: "en",
+    });
+    const flush = flushQuiescenceProviderStage("scoped-mutations");
+    await Promise.resolve();
+    expect(h.updateProject).toHaveBeenCalledTimes(1);
+
+    first.resolve({ id: "project-a" });
+    await flush;
+
+    expect(h.updateProject).toHaveBeenCalledTimes(2);
+    expect(h.updateProject.mock.calls[1]).toEqual([
+      "project-a",
+      { language: "en" },
+    ]);
+  });
+
   it("propagates persistence failure to strict quiescence", async () => {
     h.updateProject.mockRejectedValueOnce(new Error("metadata disk full"));
+    const onFailure = vi.fn();
     scheduleProjectMetadataWrite({
       projectId: "project-a",
       field: "genre",
       value: "Mystery",
+      onFailure,
     });
 
     await expect(
@@ -163,6 +218,7 @@ describe("Project metadata write quiescence", () => {
       field: "genre",
       value: "Mystery",
     });
+    expect(onFailure).toHaveBeenCalledOnce();
   });
 
   it("does not write after Project authority changes", async () => {

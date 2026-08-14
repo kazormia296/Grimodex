@@ -97,6 +97,7 @@ export async function updateProject(
       | "outline"
       | "targetReaders"
       | "aiPolicy"
+      | "phaseResolutionMode"
     >
   >,
   options?: { suppressImeExport?: boolean },
