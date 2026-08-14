@@ -83,3 +83,27 @@ state, Undo Journal where supported, canonical Change Event, idempotency receipt
 and Narrative Change Feed commit or roll back together. Dependency Index,
 scheduler, automatic maintenance, and Background AI remain Gate C2+ work and do
 not start here.
+
+## Gate C1.5 semantic contract
+
+The C1.5 machine-readable contracts are:
+
+- `mutation-authority-routes.json` — the six Mutation Authority Routes and
+  route-specific required controls;
+- `semantic-state-vocabulary.json` — Review, Evidence Freshness,
+  Reconciliation Signal, Build Action, Component Compatibility, and Projection
+  Application State as separate axes;
+- `semantic-core-authorities.json` — the canonical authority matrix and the
+  Semantic Index field allowlist;
+- `retrieval-disclosure.json` — pre-admission spoiler, phase, scope, and
+  knowledge-holder rules;
+- `schemas/*.schema.json` — JSON Schema draft 2020-12 definitions for the four
+  policy documents;
+- `fixtures/` — route, evidence, and many-to-many Projection contract cases.
+
+`authorityRoute` is required on every C1 operation. It complements, and does
+not replace, the existing low-level `canonical.origin` audit attribute. The
+read-only validator `scripts/quality/validate-semantic-core-boundary.mjs`
+rejects unknown routes, missing route controls, direct Interpreter/Maintenance
+imports of Agent Writers, mixed state vocabulary, and a second Freshness
+authority. C1.5 keeps workspace SCHEMA 22 and does not create C2 tables.

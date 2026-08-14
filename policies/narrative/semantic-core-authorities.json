@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-semantic-core-authorities",
+  "authorities": [
+    {
+      "concern": "evidence-freshness",
+      "canonicalAuthority": "C2 consumer freshness evaluator",
+      "compatibilityMirror": "legacy projection freshness",
+      "writePolicy": "canonical-only"
+    },
+    {
+      "concern": "semantic-assessment",
+      "canonicalAuthority": "reconciler proposal revision",
+      "compatibilityMirror": null,
+      "writePolicy": "proposal-only"
+    },
+    {
+      "concern": "domain-state",
+      "canonicalAuthority": "typed native writer",
+      "compatibilityMirror": "browser mock mirror",
+      "writePolicy": "typed-writer-only"
+    },
+    {
+      "concern": "search-generation",
+      "canonicalAuthority": "semantic index metadata",
+      "compatibilityMirror": null,
+      "writePolicy": "index-metadata-only"
+    },
+    {
+      "concern": "review",
+      "canonicalAuthority": "decision ledger",
+      "compatibilityMirror": "none",
+      "writePolicy": "decision-only"
+    }
+  ],
+  "semanticIndexAllowedFields": [
+    "generation",
+    "builtAt",
+    "sourceDigest",
+    "dependencySetDigest",
+    "dirtyCacheFlag"
+  ],
+  "forbiddenFreshnessClaims": [
+    "assertion-is-authoritative-fresh",
+    "assertionFresh",
+    "isAuthoritativeFresh",
+    "semanticTruth"
+  ],
+  "secondaryFreshnessAuthorityPolicy": "forbid"
+}

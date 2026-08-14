@@ -117,6 +117,17 @@ gate are scored as independent semantic dimensions. Plans, rumors, dreams, hypot
 blocked attempts, negations, recollections, and disputed claims are not promoted to narrator-
 asserted story-world facts. A missing output dimension is `unobservable`, never an implicit pass.
 
+## GDX-NARR-SEMANTIC-CONTRACT-001 — Keep narrative authority and state axes explicit
+
+Mutation `origin` and `authorityRoute` are separate audit and authorization
+attributes. Human Direct, Interactive Agent Command, Interpreter Projection,
+Import, History, and Restore/Migration routes are classified explicitly, and
+unknown routes fail closed. Review, Evidence Freshness, Reconciliation Signal,
+Build Action, Component Compatibility, and Projection Application State are
+orthogonal vocabularies; no one axis may be used as another. Evidence, Scope,
+Disclosure, and the canonical Freshness authority are machine-readable and
+validated before C2 adds durable dependency graph state.
+
 ## GDX-NARR-COVERAGE-001 — Do not overclaim from partial narrative coverage
 
 Narrative evaluations and extraction artifacts declare included and omitted documents. Partial

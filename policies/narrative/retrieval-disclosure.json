@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-retrieval-disclosure",
+  "admissionStage": "before-ranking-candidate-admission",
+  "phaseResolutionModes": ["reading", "story", "auto"],
+  "contextFields": [
+    "projectId",
+    "currentSceneId",
+    "phaseResolutionMode",
+    "temporalAnchor",
+    "viewpointRef",
+    "knowledgeHolderRef",
+    "audienceRef",
+    "allowSecrets"
+  ],
+  "rejectionRules": [
+    {
+      "id": "future-phase",
+      "reason": "A candidate in a future phase is not admitted."
+    },
+    {
+      "id": "future-story-time",
+      "reason": "A candidate beyond the resolved story-time anchor is not admitted."
+    },
+    {
+      "id": "secret-before-reveal",
+      "reason": "Secret foreshadowing remains hidden before its reveal scene or without explicit secret access."
+    },
+    {
+      "id": "knowledge-holder-mismatch",
+      "reason": "Character-relative knowledge is scoped to its knowledge holder."
+    },
+    {
+      "id": "reader-knowledge-not-character",
+      "reason": "Reader knowledge cannot be silently injected into a character context."
+    },
+    {
+      "id": "worldline-mismatch",
+      "reason": "Assertions from another worldline are not admitted."
+    },
+    {
+      "id": "timeline-mismatch",
+      "reason": "Assertions from another timeline are not admitted."
+    },
+    {
+      "id": "narrative-layer-mismatch",
+      "reason": "Assertions from another narrative layer are not admitted."
+    }
+  ],
+  "fixtures": [
+    "reading-future-phase-rejected",
+    "story-future-time-rejected",
+    "auto-matches-adr-002",
+    "secret-before-reveal-rejected",
+    "knowledge-holder-mismatch-rejected",
+    "reader-knowledge-is-not-character-knowledge",
+    "worldline-mismatch-rejected"
+  ]
+}

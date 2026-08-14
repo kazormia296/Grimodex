@@ -33,7 +33,7 @@ describe("narrative evidence policy", () => {
     expect(
       validateEvidencePolicy({
         producerKind: "legacy-migration",
-        supportClass: "legacy-unbound",
+        supportClass: "unresolved",
         evidenceSet: [],
         sourceBasis: ["legacy:1@revision:1"],
       }),
@@ -45,7 +45,7 @@ describe("narrative evidence policy", () => {
     expect(
       validateEvidencePolicy({
         producerKind: "legacy-migration",
-        supportClass: "legacy-unbound",
+        supportClass: "unresolved",
         evidenceSet: [],
         sourceBasis: ["legacy:1@revision:1"],
         evidenceAbsenceReason: "legacy-unbound",

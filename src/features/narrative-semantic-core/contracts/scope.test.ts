@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  canAutoExpandNarrativeScope,
-  validateNarrativeScope,
-} from "./scope";
+import { canAutoExpandNarrativeScope, validateNarrativeScope } from "./scope";
 
 describe("narrative scope", () => {
   it("does not treat an unresolved empty scope as global truth", () => {

@@ -149,6 +149,8 @@
   "operations": [
     {
       "id": "renderer.generic-sql.execute",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Renderer generic SQL is untrusted and is never authoritative for Narrative Change Feed records. This exclusion includes direct Map board, position, sticky, edge, and frame canvas-layout CRUD, which cannot create or mutate Scene, Codex, Chronicle, Plot, or Foreshadow narrative artifacts.",
@@ -176,6 +178,8 @@
     },
     {
       "id": "renderer.generic-sql.batch",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Renderer generic SQL batches are untrusted and cannot append authority Feed rows, including batches limited to non-narrative Map canvas layout state.",
@@ -203,6 +207,8 @@
     },
     {
       "id": "mcp.generic-sql.execute",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "MCP generic SQL has no public write tool and remains an untrusted origin.",
@@ -219,6 +225,8 @@
     },
     {
       "id": "mcp.generic-sql.batch",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "MCP generic SQL batches have no public write tool and remain an untrusted origin.",
@@ -235,6 +243,8 @@
     },
     {
       "id": "workspace.backup.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "A backup restore atomically replaces the database image instead of appending to the replaced image's Feed.",
@@ -262,6 +272,8 @@
     },
     {
       "id": "workspace.recovery.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Safe Mode recovery atomically replaces the database image and cannot append to the discarded image.",
@@ -289,6 +301,8 @@
     },
     {
       "id": "project.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Publishing a Project atomically creates its scope container and the four canonical builtin Codex types, then appends one ordered catalog Feed transaction before commit.",
@@ -320,6 +334,8 @@
     },
     {
       "id": "project.metadata.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Project semantic metadata is a canonical build input and must publish its changed JSON Pointer paths with an OCC token.",
@@ -351,6 +367,8 @@
     },
     {
       "id": "project.delete",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Project deletion removes the project-scoped Feed itself; no consumer remains to acknowledge a terminal event.",
@@ -394,6 +412,8 @@
     },
     {
       "id": "workspace.web-editor.import",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Web Editor handoff creates a new workspace image and establishes its initial Feed baseline during import.",
@@ -421,6 +441,8 @@
     },
     {
       "id": "narrative.runtime-policy.set",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "The runtime policy is workspace control-plane state, not a project-scoped narrative mutation.",
@@ -448,6 +470,8 @@
     },
     {
       "id": "project.snapshot.capture",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Capturing a read-only project snapshot does not mutate source narrative aggregates.",
@@ -475,6 +499,8 @@
     },
     {
       "id": "workspace.sample.seed",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Sample seeding initializes a new workspace and establishes its initial Feed baseline.",
@@ -513,6 +539,8 @@
     },
     {
       "id": "test.runtime-performance.seed",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Runtime performance data is a guarded test fixture and never a user domain mutation.",
@@ -551,6 +579,8 @@
     },
     {
       "id": "schema.migrate",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Schema migrations transform storage shape and establish baselines; they are not user narrative transactions.",
@@ -585,6 +615,8 @@
     },
     {
       "id": "narrative.workflow.create-run",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Extraction run lifecycle state is staging-only and does not change domain artifacts.",
@@ -612,6 +644,8 @@
     },
     {
       "id": "narrative.workflow.cancel-run",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Cancelling an extraction run changes workflow state only.",
@@ -639,6 +673,8 @@
     },
     {
       "id": "narrative.workflow.claim-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Claiming an extraction task changes workflow coordination state only.",
@@ -666,6 +702,8 @@
     },
     {
       "id": "narrative.workflow.finish-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Finishing an extraction task records staging output without applying domain mutations.",
@@ -693,6 +731,8 @@
     },
     {
       "id": "narrative.workflow.fail-task",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Failing an extraction task records workflow diagnostics without changing domain artifacts.",
@@ -720,6 +760,8 @@
     },
     {
       "id": "narrative.proposal.save-set",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Saving proposals is review staging; the later apply operation owns the domain Feed transaction.",
@@ -747,6 +789,8 @@
     },
     {
       "id": "narrative.proposal.append-revision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Proposal revisions are immutable review metadata until an apply commit succeeds.",
@@ -774,6 +818,8 @@
     },
     {
       "id": "narrative.proposal.append-decision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "A review decision is authority metadata; apply emits the eventual domain Feed transaction.",
@@ -801,6 +847,8 @@
     },
     {
       "id": "narrative.proposal.append-human-decision",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "A human review decision is authority metadata; apply emits the eventual domain Feed transaction.",
@@ -828,6 +876,8 @@
     },
     {
       "id": "narrative.proposal.revise-and-decide",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Atomic revise-and-decide remains review metadata until apply.",
@@ -855,6 +905,8 @@
     },
     {
       "id": "narrative.proposal.revise-and-decide-human",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Human revise-and-decide remains review metadata until apply.",
@@ -882,6 +934,8 @@
     },
     {
       "id": "narrative.field-authority.set-lock",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Field locks are control metadata consumed by maintenance self-stale guards, not domain mutations.",
@@ -909,6 +963,8 @@
     },
     {
       "id": "narrative.commit.prepare",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Preparing a commit records authority and preconditions but performs no domain mutation.",
@@ -936,6 +992,8 @@
     },
     {
       "id": "authorship.sidecar.replace-lane",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Authorship spans are source-attribution sidecars; the owning scene or Codex writer emits the authoritative domain Feed event.",
@@ -963,6 +1021,8 @@
     },
     {
       "id": "scan.staging-project.create",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "The scan staging project is an isolated import workspace and is not visible as a canonical narrative aggregate until import apply.",
@@ -990,6 +1050,8 @@
     },
     {
       "id": "trash.envelope.create",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Creating a Trash envelope stores recovery metadata; the canonical delete writer owns the domain Feed event.",
@@ -1017,6 +1079,8 @@
     },
     {
       "id": "trash.envelope.delete",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Deleting an inactive Trash envelope does not mutate the live narrative aggregate.",
@@ -1044,6 +1108,8 @@
     },
     {
       "id": "trash.envelope.clear",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Clearing inactive Trash envelopes does not mutate live narrative aggregates.",
@@ -1071,6 +1137,8 @@
     },
     {
       "id": "trash.envelope.prune",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Retention pruning removes only inactive Trash envelopes and does not mutate live narrative aggregates.",
@@ -1098,6 +1166,8 @@
     },
     {
       "id": "test.protected-writer-fixture",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Gate fixtures exist only to prove protected writer enforcement.",
@@ -1114,6 +1184,8 @@
     },
     {
       "id": "integrity.repair.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Integrity repair mutates project-scoped Codex and Snippet authority rows, so the repair, canonical Change Event, Narrative Change Feed transaction, and retry receipt must commit atomically.",
@@ -1145,6 +1217,8 @@
     },
     {
       "id": "chronicle.event.set-participants.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Participant membership changes Chronicle and Codex-derived artifact freshness.",
@@ -1176,6 +1250,8 @@
     },
     {
       "id": "chronicle.calendar.upsert.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Calendar changes invalidate temporal interpretation across the project.",
@@ -1207,6 +1283,8 @@
     },
     {
       "id": "codex.tags.set.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Codex or Snippet tag changes affect context selection and derived artifact dependencies.",
@@ -1238,6 +1316,8 @@
     },
     {
       "id": "codex.rename.undo.renderer",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Undoing a Codex rename changes the authoritative entity and its dependents.",
@@ -1269,6 +1349,8 @@
     },
     {
       "id": "codex.rename.apply.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Applying a Codex rename changes the authoritative entity and its dependents.",
@@ -1300,6 +1382,8 @@
     },
     {
       "id": "tree.ai-plan.apply.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Applying or redoing a typed AI tree plan changes narrative structure and ordering as one Native transaction.",
@@ -1334,6 +1418,8 @@
     },
     {
       "id": "tree.ai-plan.undo.renderer",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Undoing a typed AI tree plan restores its exact structural generation with explicit Feed lineage.",
@@ -1365,6 +1451,8 @@
     },
     {
       "id": "tree.node.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a scene or structural node changes narrative ordering and dependency scope.",
@@ -1396,6 +1484,8 @@
     },
     {
       "id": "tree.node.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Deleting a scene or structural node invalidates every artifact that depends on it.",
@@ -1427,6 +1517,8 @@
     },
     {
       "id": "tree.node.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Patching narrative node content or metadata changes derived artifact inputs.",
@@ -1458,6 +1550,8 @@
     },
     {
       "id": "temporal.scene.patch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Temporal scene changes invalidate Chronicle and structure-health projections.",
@@ -1489,6 +1583,8 @@
     },
     {
       "id": "map.write.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "map_write_bundle is the only Canonical Native Map aggregate writer: its promotion variants can create authoritative scene, snippet, Codex entry, or Codex relation entities. Direct Renderer Map canvas-layout CRUD is excluded through renderer.generic-sql.execute/batch and cannot create narrative artifacts.",
@@ -1520,6 +1616,8 @@
     },
     {
       "id": "project.snapshot.restore",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "A project snapshot restore is a user-visible bulk domain mutation and requires explicit restore events.",
@@ -1565,6 +1663,8 @@
     },
     {
       "id": "revision.scene.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Restoring a scene revision replaces authoritative prose and invalidates scene-derived artifacts in the same transaction.",
@@ -1596,6 +1696,8 @@
     },
     {
       "id": "trash.structure.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Restoring structural Trash content recreates a project-owned domain aggregate and consumes the Trash item atomically.",
@@ -1627,6 +1729,8 @@
     },
     {
       "id": "scene.body.save.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Saving scene prose and its sidecars changes the primary input to maintenance projections.",
@@ -1658,6 +1762,8 @@
     },
     {
       "id": "plot.thread.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a plot thread changes plot dependency inputs.",
@@ -1689,6 +1795,8 @@
     },
     {
       "id": "plot.thread.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Updating a plot thread changes plot dependency inputs.",
@@ -1720,6 +1828,8 @@
     },
     {
       "id": "plot.thread.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Deleting a plot thread invalidates thread and marker dependents.",
@@ -1751,6 +1861,8 @@
     },
     {
       "id": "plot.marker.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a plot marker changes scene-to-thread dependencies.",
@@ -1782,6 +1894,8 @@
     },
     {
       "id": "plot.marker.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Updating a plot marker changes scene-to-thread dependencies.",
@@ -1813,6 +1927,8 @@
     },
     {
       "id": "plot.marker.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Deleting a plot marker invalidates scene-to-thread and dependent branch artifacts.",
@@ -1844,6 +1960,8 @@
     },
     {
       "id": "plot.branch.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a plot branch changes plot dependency topology.",
@@ -1875,6 +1993,8 @@
     },
     {
       "id": "plot.branch.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Updating a plot branch changes plot dependency topology.",
@@ -1906,6 +2026,8 @@
     },
     {
       "id": "plot.branch.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Deleting a plot branch changes plot dependency topology.",
@@ -1937,6 +2059,8 @@
     },
     {
       "id": "plot.marker.move.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Moving a plot marker atomically updates marker and dependent branch topology.",
@@ -1968,6 +2092,8 @@
     },
     {
       "id": "plot.history.restore.renderer",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "History restore must be distinguishable from forward plot mutations.",
@@ -1999,6 +2125,8 @@
     },
     {
       "id": "plot.history.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "History deletion must be distinguishable from forward plot mutations.",
@@ -2030,6 +2158,8 @@
     },
     {
       "id": "foreshadow.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a foreshadow changes structure-health and callback dependencies.",
@@ -2061,6 +2191,8 @@
     },
     {
       "id": "foreshadow.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Updating a foreshadow changes structure-health and callback dependencies.",
@@ -2092,6 +2224,8 @@
     },
     {
       "id": "foreshadow.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Deleting a foreshadow invalidates setups, payoffs, and linked Codex dependents.",
@@ -2123,6 +2257,8 @@
     },
     {
       "id": "foreshadow.setup.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Updating a setup changes foreshadow-to-scene dependency state.",
@@ -2154,6 +2290,8 @@
     },
     {
       "id": "foreshadow.codex-link.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Linking Codex to a foreshadow changes dependency topology.",
@@ -2188,6 +2326,8 @@
     },
     {
       "id": "foreshadow.codex-link.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Unlinking Codex from a foreshadow changes dependency topology.",
@@ -2222,6 +2362,8 @@
     },
     {
       "id": "foreshadow.setup.strength.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Setup strength changes structure-health severity and dependency state.",
@@ -2256,6 +2398,8 @@
     },
     {
       "id": "foreshadow.setup.create-ai.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating a setup from AI output changes authoritative foreshadow dependencies.",
@@ -2287,6 +2431,8 @@
     },
     {
       "id": "foreshadow.orphan.resolve.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Resolving an orphan changes setup identity and scene anchoring.",
@@ -2321,6 +2467,8 @@
     },
     {
       "id": "foreshadow.anchors.save.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Saving anchors changes exact setup/payoff ranges used by freshness and reanchor planning.",
@@ -2352,6 +2500,8 @@
     },
     {
       "id": "agent.codex.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex creation already emits a canonical Change Event and must append the linked Feed row.",
@@ -2383,6 +2533,8 @@
     },
     {
       "id": "agent.codex.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex update already emits a canonical Change Event and must append the linked Feed row.",
@@ -2414,6 +2566,8 @@
     },
     {
       "id": "agent.codex.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex deletion invalidates the entity and every linked derived artifact.",
@@ -2450,6 +2604,8 @@
     },
     {
       "id": "agent.codex.mutate",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Typed aggregate Codex mutation changes entries, relations, phases, or details.",
@@ -2487,6 +2643,8 @@
     },
     {
       "id": "agent.snippet.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Creating an accepted AI snippet changes a project-owned narrative source and records its Undo and freshness lineage atomically.",
@@ -2518,6 +2676,8 @@
     },
     {
       "id": "renderer.snippet.create",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Manual, import, and restore Snippet creation commits the domain row, Undo Journal, canonical Change Event, Feed transaction, and retry receipt atomically.",
@@ -2549,6 +2709,8 @@
     },
     {
       "id": "renderer.snippet.update",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Manual Snippet updates are OCC guarded and atomically append the canonical event and Narrative Change Feed before commit.",
@@ -2580,6 +2742,8 @@
     },
     {
       "id": "renderer.snippet.delete",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Manual Snippet deletion is OCC guarded and rolls back with the domain row when Undo, canonical event, Feed, or receipt append fails.",
@@ -2611,6 +2775,8 @@
     },
     {
       "id": "agent.sql-bundle.mutate",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "The generic agent SQL bundle fails closed; all domain mutations must use a typed Native writer.",
@@ -2638,6 +2804,8 @@
     },
     {
       "id": "agent.prose.propose",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "A prose proposal is staging-only until accepted.",
@@ -2665,6 +2833,8 @@
     },
     {
       "id": "agent.prose.accept",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Accepting prose marks staging state only; save_scene_body_bundle performs the authoritative ai-apply scene mutation.",
@@ -2692,6 +2862,8 @@
     },
     {
       "id": "agent.prose.discard",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Discarding staged prose removes proposal state without changing authoritative scene content.",
@@ -2719,6 +2891,8 @@
     },
     {
       "id": "agent.history.apply-undo-journal",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Applying an Undo Journal changes authoritative domain state and needs explicit undo or redo semantics.",
@@ -2761,6 +2935,8 @@
     },
     {
       "id": "agent.foreshadow.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent foreshadow creation changes structure-health inputs.",
@@ -2792,6 +2968,8 @@
     },
     {
       "id": "agent.foreshadow.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent foreshadow update changes structure-health inputs.",
@@ -2823,6 +3001,8 @@
     },
     {
       "id": "agent.event.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event creation changes Chronicle dependencies.",
@@ -2854,6 +3034,8 @@
     },
     {
       "id": "agent.event.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event update changes Chronicle dependencies.",
@@ -2885,6 +3067,8 @@
     },
     {
       "id": "agent.event.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event deletion invalidates the event and its associations.",
@@ -2916,6 +3100,8 @@
     },
     {
       "id": "agent.chronicle.bulk",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Chronicle bulk mutation changes events, associations, and temporal scene state in one transaction.",
@@ -2947,6 +3133,8 @@
     },
     {
       "id": "agent.event.participants",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent participant replacement changes Chronicle and Codex dependency edges.",
@@ -2978,6 +3166,8 @@
     },
     {
       "id": "agent.event.scene-link",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Linking a Chronicle event to a scene changes dependency topology.",
@@ -3019,6 +3209,8 @@
     },
     {
       "id": "agent.event.scene-link-batch",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Batch scene linking changes multiple Chronicle dependency edges atomically.",
@@ -3050,6 +3242,8 @@
     },
     {
       "id": "agent.event.relation",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Adding or removing a causal relation changes Chronicle dependency topology.",
@@ -3091,6 +3285,8 @@
     },
     {
       "id": "import.session.apply.internal",
+      "authorityRoute": "import-apply",
+      "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Applying an import creates the reserved project baseline and its canonical import Feed transaction atomically.",
@@ -3117,6 +3313,8 @@
     },
     {
       "id": "narrative.commit.apply",
+      "authorityRoute": "interpreter-projection",
+      "controls": ["proposal-revision","decision","prepared-commit","application-id","source-basis-occ","field-authority","typed-writer"],
       "feedPolicy": "delegated",
       "coverageStatus": "verified",
       "reason": "Gate C0 already appends a canonical Change Event and linked Feed transaction in the apply transaction.",
@@ -3161,6 +3359,8 @@
     },
     {
       "id": "narrative.commit.undo",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "delegated",
       "coverageStatus": "verified",
       "reason": "Gate C0 already appends an undo-specific canonical Change Event and linked Feed transaction.",
@@ -3205,6 +3405,8 @@
     },
     {
       "id": "narrative.commit.redo",
+      "authorityRoute": "history-replay",
+      "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
       "feedPolicy": "delegated",
       "coverageStatus": "verified",
       "reason": "Gate C0 already appends a redo-specific canonical Change Event and linked Feed transaction.",
@@ -3249,6 +3451,8 @@
     },
     {
       "id": "mcp.foreshadow.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP foreshadow creation changes authoritative structure-health inputs.",
@@ -3275,6 +3479,8 @@
     },
     {
       "id": "mcp.foreshadow.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP foreshadow update changes authoritative structure-health inputs.",
@@ -3301,6 +3507,8 @@
     },
     {
       "id": "mcp.snippet.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Snippet creation uses the accepted-AI Native writer and atomically records Undo, canonical event, Feed, and retry identity.",
@@ -3327,6 +3535,8 @@
     },
     {
       "id": "mcp.codex.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Codex creation changes authoritative context dependencies.",
@@ -3353,6 +3563,8 @@
     },
     {
       "id": "mcp.codex.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Codex update changes authoritative context dependencies.",
@@ -3379,6 +3591,8 @@
     },
     {
       "id": "mcp.event.create",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Chronicle creation already emits a canonical Change Event and must append the linked Feed row.",
@@ -3405,6 +3619,8 @@
     },
     {
       "id": "mcp.event.update",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Chronicle update already emits a canonical Change Event and must append the linked Feed row.",
@@ -3431,6 +3647,8 @@
     },
     {
       "id": "mcp.event.delete",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP Chronicle deletion already emits a canonical Change Event and must append the linked Feed row.",
@@ -3457,6 +3675,8 @@
     },
     {
       "id": "mcp.event.scene-link",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP scene stamping changes Chronicle dependency topology.",
@@ -3488,6 +3708,8 @@
     },
     {
       "id": "mcp.event.participants",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP participant replacement changes Chronicle and Codex dependency edges.",
@@ -3514,6 +3736,8 @@
     },
     {
       "id": "mcp.event.relation",
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "MCP causal relation changes Chronicle dependency topology.",

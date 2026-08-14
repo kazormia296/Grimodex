@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/semantic-state-vocabulary-v1.json",
+  "type": "object",
+  "required": ["schemaVersion", "contract", "reviewStates", "evidenceFreshness", "reconciliationSignals", "buildActions", "componentCompatibility", "projectionApplicationStates"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "narrative-semantic-state-vocabulary" },
+    "reviewStates": { "const": ["unreviewed", "accepted", "rejected", "held", "superseded"] },
+    "evidenceFreshness": { "const": ["fresh", "stale", "source-missing", "anchor-mismatch", "read-set-drift", "unknown"] },
+    "reconciliationSignals": { "const": ["needs-reconciliation"] },
+    "buildActions": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "componentCompatibility": { "type": "array", "minItems": 3, "items": { "type": "string", "minLength": 1 } },
+    "projectionApplicationStates": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "separationRules": { "type": "array", "items": { "type": "array", "minItems": 2, "maxItems": 2 } }
+  },
+  "additionalProperties": false
+}

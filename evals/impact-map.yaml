@@ -7,6 +7,7 @@ allSuites:
   - retrieval-grounding
   - narrative-runtime
   - narrative-extraction
+  - narrative-semantic-contract
 rules:
   - id: quality-foundation
     reason: Quality policy, skills, selectors, and evaluation metadata affect every gate.
@@ -165,6 +166,21 @@ rules:
       - GDX-ISOLATION-001
     suites:
       - retrieval-grounding
+  - id: narrative-semantic-contract
+    reason: Narrative authority routes, state vocabulary, disclosure policy, and C2 authority boundaries share the C1.5 contract gate.
+    paths:
+      - docs/adr/002-phase-resolution-modes.md
+      - docs/adr/004-narrative-reconciliation-boundary.md
+      - docs/adr/005-narrative-semantic-core-boundary.md
+      - docs/adr/006-narrative-mutation-authority-routes.md
+      - policies/narrative/**
+      - src/features/narrative-semantic-core/**
+      - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+    requirements:
+      - GDX-NARR-SEMANTIC-CONTRACT-001
+    suites:
+      - narrative-semantic-contract
   - id: narrative-extraction
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:

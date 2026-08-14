@@ -106,11 +106,12 @@ describe("validate-semantic-core-boundary", () => {
     mkdirSync(path.join(root, "src/features/narrative-extraction/reconciler"), { recursive: true });
     writeFileSync(
       path.join(root, "src/features/narrative-extraction/reconciler/bad.ts"),
-      'import { agentCreateCodexEntry } from "@/features/agent-writes/codex";\n',
+      'import { agentCreateCodexEntry } from "@/features/agent-writes/codex";\nimport { createCodexEntry } from "@/features/codex/api";\n',
     );
 
     const result = validateSemanticCoreBoundary({ repoRoot: root });
     assert.ok(result.errors.some((error) => /unknown authority route/i.test(error)));
     assert.ok(result.errors.some((error) => /forbidden.*agent writer|interpreter.*agent/i.test(error)));
+    assert.ok(result.errors.some((error) => /Domain API directly/i.test(error)));
   });
 });

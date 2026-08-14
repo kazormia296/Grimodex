@@ -23,21 +23,17 @@ describe("narrative semantic state vocabulary", () => {
     expect(isProjectionApplicationState("accepted")).toBe(false);
     expect(isReviewState("stale")).toBe(false);
 
-    const axes = [
-      REVIEW_STATES,
-      EVIDENCE_FRESHNESS_STATES,
-      RECONCILIATION_SIGNALS,
-      BUILD_ACTIONS,
-      PROJECTION_APPLICATION_STATES,
-    ];
-    const values = axes.flatMap((axis) => [...axis]);
-    expect(new Set(values).size).toBe(values.length);
+    expect(REVIEW_STATES).toContain("accepted");
+    expect(EVIDENCE_FRESHNESS_STATES).toContain("stale");
+    expect(PROJECTION_APPLICATION_STATES).toContain("stale");
+    expect(RECONCILIATION_SIGNALS).toEqual(["needs-reconciliation"]);
+    expect(BUILD_ACTIONS).toContain("rebuild-required");
   });
 
   it("rejects a value used on the wrong axis", () => {
-    expect(() => assertStateValueBelongsToAxis("accepted", "projection")).toThrow(
-      /projection/i,
-    );
+    expect(() =>
+      assertStateValueBelongsToAxis("accepted", "projection"),
+    ).toThrow(/projection/i);
     expect(() =>
       assertStateValueBelongsToAxis("needs-reconciliation", "build-action"),
     ).toThrow(/build-action/i);

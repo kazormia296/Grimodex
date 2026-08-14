@@ -40,8 +40,8 @@ describe("narrative projection state", () => {
     ];
 
     expect(states.every(isNarrativeProjectionState)).toBe(true);
-    expect(groupProjectionStatesByRevision(states).get("revision-1")).toHaveLength(
-      4,
-    );
+    expect(
+      groupProjectionStatesByRevision(states).get("revision-1"),
+    ).toHaveLength(4);
   });
 });

@@ -14,6 +14,7 @@ lightSuites:
   - retrieval-grounding
   - narrative-runtime
   - narrative-extraction
+  - narrative-semantic-contract
 requirements:
   - id: GDX-ROUTE-001
     title: Every production AI route is registered, routed, and assigned a verifier.
@@ -360,6 +361,35 @@ requirements:
       - src/features/narrative-extraction/eval/chronicleProduction.live.test.ts
     evaluatedBy:
       - eval-narrative-semantic-frame
+  - id: GDX-NARR-SEMANTIC-CONTRACT-001
+    title: Narrative mutation routes, state axes, disclosure, and authority matrix remain ratified.
+    definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
+    implementedBy:
+      - docs/adr/005-narrative-semantic-core-boundary.md
+      - docs/adr/006-narrative-mutation-authority-routes.md
+      - policies/narrative/mutation-authority-routes.json
+      - policies/narrative/semantic-state-vocabulary.json
+      - policies/narrative/semantic-core-authorities.json
+      - policies/narrative/retrieval-disclosure.json
+      - policies/narrative/schemas/mutation-authority-routes.schema.json
+      - policies/narrative/schemas/semantic-state-vocabulary.schema.json
+      - policies/narrative/schemas/semantic-core-authorities.schema.json
+      - policies/narrative/schemas/retrieval-disclosure.schema.json
+      - src/features/narrative-semantic-core/contracts/index.ts
+      - scripts/quality/validate-semantic-core-boundary.mjs
+    lightTests:
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
+      - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
+      - src/features/narrative-semantic-core/contracts/assertionState.test.ts
+      - src/features/narrative-semantic-core/contracts/projectionState.test.ts
+      - src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts
+      - src/features/narrative-semantic-core/contracts/scope.test.ts
+      - src/features/narrative-semantic-core/contracts/disclosure.test.ts
+    heavyTests:
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
+    evaluatedBy:
+      - eval-narrative-replay-provenance
   - id: GDX-NARR-COVERAGE-001
     title: Partial Narrative coverage cannot support absence or completion claims.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-COVERAGE-001

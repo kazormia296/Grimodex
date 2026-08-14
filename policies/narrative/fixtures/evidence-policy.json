@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    {
+      "name": "ai-inference-without-evidence",
+      "producerKind": "ai-inference",
+      "supportClass": "single-source-inference",
+      "evidenceSet": [],
+      "sourceBasis": ["scene:1@revision:1"],
+      "expected": "reject"
+    },
+    {
+      "name": "author-declaration-with-source-basis",
+      "producerKind": "author-declaration",
+      "supportClass": "author-declared",
+      "evidenceSet": [],
+      "sourceBasis": ["codex:1@revision:2"],
+      "evidenceAbsenceReason": "author-declaration",
+      "expected": "accept"
+    },
+    {
+      "name": "legacy-migration-with-reason",
+      "producerKind": "legacy-migration",
+      "supportClass": "unresolved",
+      "evidenceSet": [],
+      "sourceBasis": ["legacy:1@revision:1"],
+      "evidenceAbsenceReason": "legacy-unbound",
+      "expected": "accept"
+    },
+    {
+      "name": "legacy-migration-without-reason",
+      "producerKind": "legacy-migration",
+      "supportClass": "unresolved",
+      "evidenceSet": [],
+      "sourceBasis": ["legacy:1@revision:1"],
+      "expected": "reject"
+    }
+  ]
+}
