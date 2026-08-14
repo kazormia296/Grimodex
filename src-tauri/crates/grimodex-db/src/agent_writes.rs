@@ -8579,6 +8579,31 @@ mod tests {
         assert!(error.to_string().contains("Forbidden caller"));
     }
 
+    #[test]
+    fn renderer_authority_rejects_empty_controls() {
+        let context = RendererCanonicalWriteContext {
+            request_id: "request-1".to_string(),
+            event_uid: "event-1".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: Vec::new(),
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+
+        let error = validate_renderer_authority_context(&context)
+            .expect_err("an explicit empty controls list must fail closed");
+        assert!(error.to_string().contains("Missing required control"));
+    }
+
     fn insert_project(db: &Database) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         db.execute(

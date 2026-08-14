@@ -78,6 +78,15 @@ test("repairIntegrity は空 workspace でもレポート object を返す", asy
       sessionId: "integrity-test-session",
       eventUid: "integrity-empty-event",
       occurredAt: "2026-08-13T10:00:00.000Z",
+      authorityRoute: "restore-or-migration",
+      caller: "integrity-repair",
+      controls: [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
     }),
   );
   assert.equal(typeof report, "object");

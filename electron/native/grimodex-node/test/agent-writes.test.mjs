@@ -38,12 +38,40 @@ const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed（'character' codex_type も seed 済み）
 
 function canonical(requestId, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
   return {
     requestId,
     projectId: PROJECT,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : "human-direct",
+    caller: isInteractiveAgent ? "chat-tool-executor" : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: isInteractiveAgent
+      ? { requestId, traceId: `${requestId}:trace` }
+      : null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
     undoJournalId: null,
   };
@@ -329,15 +357,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
 });
 
 test("manual Snippet CRUD crosses napi through one canonical transaction per write", async () => {
-  const identity = (requestId) => ({
-    requestId,
-    projectId: PROJECT,
-    sessionId: `${requestId}:session`,
-    eventUid: `${requestId}:event`,
-    origin: "human",
-    originalTransactionId: null,
-    undoJournalId: null,
-  });
+  const identity = (requestId) => canonical(requestId, "human");
   const createPayload = {
     ...identity("manual-snippet-create-napi"),
     snippetId: "manual-snippet-napi",

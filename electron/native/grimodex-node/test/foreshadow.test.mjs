@@ -32,12 +32,53 @@ const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed
 
 function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
+  const isRestore = origin === "restore";
   return {
     requestId,
     projectId,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : isRestore
+        ? "restore-or-migration"
+        : "human-direct",
+    caller: isInteractiveAgent
+      ? "chat-tool-executor"
+      : isRestore
+        ? "restore-controller"
+        : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : isRestore
+        ? [
+            "exclusive-system-operation",
+            "semantic-epoch-event",
+            "full-rebuild-marker",
+          ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: isInteractiveAgent
+      ? { requestId, traceId: `${requestId}:trace` }
+      : null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
   };
 }
