@@ -105,6 +105,134 @@ test("new skills use current frontmatter and call the canonical commands", async
   assert.match(impact, /deferred/i);
 });
 
+test("adversarial review keeps execution controls explicit and findings evidence-backed", async () => {
+  const agents = await read("AGENTS.md");
+  const review = await read(".agents/skills/adversarial-review/SKILL.md");
+  const manifest = yaml.load(await read("evals/quality-manifest.yaml"));
+  const reviewUi = yaml.load(
+    await read(".agents/skills/adversarial-review/agents/openai.yaml"),
+  );
+
+  assert.deepEqual(Object.keys(frontmatter(review)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(review).name, "adversarial-review");
+  assert.match(frontmatter(review).description, /多次元|multidimensional/i);
+  assert.match(frontmatter(review).description, /敵対的|adversarial/i);
+  assert.match(agents, /多次元敵対的レビュー.*adversarial-review/is);
+
+  assert.match(review, /model=<inherit\|model-id>/);
+  assert.match(
+    review,
+    /effort=<inherit\|low\|medium\|high\|xhigh\|max\|ultra>/,
+  );
+  assert.match(review, /fast=<inherit\|on\|off>/);
+  assert.match(review, /Fast.*service tier|service tier.*Fast/is);
+  assert.match(review, /requested.*effective/is);
+  assert.match(review, /個別.*Fast.*上書き.*(?:ない|不可).*\[precheck\]/is);
+
+  assert.match(review, /独立.*reviewer|reviewer.*独立/is);
+  assert.match(review, /正しさ|correctness/i);
+  assert.match(review, /security|セキュリティ/i);
+  assert.match(review, /境界|contract/i);
+  assert.match(review, /テスト|test/i);
+  assert.match(review, /performance|性能/i);
+  assert.match(review, /false positive|誤検知/i);
+
+  assert.match(review, /P0.*P1.*P2.*P3/is);
+  assert.match(review, /file:line/);
+  assert.match(review, /failure scenario|失敗シナリオ/i);
+  assert.match(review, /根拠|evidence/i);
+  assert.match(review, /変更しない|read-only/i);
+
+  assert.match(reviewUi.interface.default_prompt, /\$adversarial-review/);
+  assert.match(reviewUi.interface.default_prompt, /model=/);
+  assert.match(reviewUi.interface.default_prompt, /effort=/);
+  assert.match(reviewUi.interface.default_prompt, /fast=(?:on|off|inherit)/);
+
+  for (const requirementId of [
+    "GDX-PRECHECK-001",
+    "GDX-ARTIFACT-001",
+    "GDX-ISOLATION-001",
+    "GDX-TRACE-001",
+  ]) {
+    const requirement = manifest.requirements.find(
+      (candidate) => candidate.id === requirementId,
+    );
+    assert.ok(requirement, `${requirementId} must exist`);
+    assert.ok(
+      requirement.implementedBy.includes(
+        ".agents/skills/adversarial-review/SKILL.md",
+      ),
+    );
+    assert.ok(
+      requirement.lightTests.includes(
+        "scripts/quality/quality-workflow.test.mjs",
+      ),
+    );
+  }
+});
+
+test("sandbox EPERM reruns preserve the failed command and escalate only a verified tsx IPC bootstrap", async () => {
+  const agents = await read("AGENTS.md");
+  const skill = await read(".agents/skills/rerun-sandbox-eperm/SKILL.md");
+  const skillUi = yaml.load(
+    await read(".agents/skills/rerun-sandbox-eperm/agents/openai.yaml"),
+  );
+  const manifest = yaml.load(await read("evals/quality-manifest.yaml"));
+
+  assert.deepEqual(Object.keys(frontmatter(skill)).sort(), [
+    "description",
+    "name",
+  ]);
+  assert.equal(frontmatter(skill).name, "rerun-sandbox-eperm");
+  assert.match(frontmatter(skill).description, /tsx/i);
+  assert.match(frontmatter(skill).description, /IPC|pipe|listen/i);
+  assert.match(frontmatter(skill).description, /EPERM/);
+  assert.match(agents, /tsx.*IPC.*EPERM.*rerun-sandbox-eperm/is);
+
+  assert.match(skill, /sandbox.*tsx.*(?:IPC|pipe|listen).*EPERM/is);
+  assert.match(skill, /command.*cwd.*(?:argv|引数).*(?:env|環境)/is);
+  assert.match(skill, /同一|unchanged/i);
+  assert.match(skill, /sandbox_permissions.*require_escalated/is);
+  assert.match(skill, /一度だけ|exactly once/i);
+  assert.match(skill, /最初.*失敗.*保存|preserve.*first failure/is);
+  assert.match(skill, /一般.*EPERM.*(?:対象外|十分ではない)/is);
+  assert.match(skill, /product.*EPERM.*(?:対象外|再実行しない)/is);
+  assert.match(skill, /TMPDIR.*(?:変更しない|書き換えない)/is);
+  assert.match(skill, /sudo.*(?:使用しない|実行しない)/is);
+  assert.match(skill, /prompt injection|untrusted/i);
+
+  assert.match(skill, /sandbox 外.*成功.*\[tool\]/is);
+  assert.match(skill, /同じ.*EPERM.*再試行しない/is);
+  assert.match(skill, /別の失敗.*再試行しない/is);
+  assert.match(skill, /command.*exit code.*stderr/is);
+
+  assert.match(skillUi.interface.default_prompt, /\$rerun-sandbox-eperm/);
+
+  for (const requirementId of [
+    "GDX-PRECHECK-001",
+    "GDX-POLICY-001",
+    "GDX-TRACE-001",
+  ]) {
+    const requirement = manifest.requirements.find(
+      (candidate) => candidate.id === requirementId,
+    );
+    assert.ok(requirement, `${requirementId} must exist`);
+    assert.ok(
+      requirement.implementedBy.includes(
+        ".agents/skills/rerun-sandbox-eperm/SKILL.md",
+      ),
+    );
+    assert.ok(
+      requirement.lightTests.includes(
+        "scripts/quality/quality-workflow.test.mjs",
+      ),
+    );
+  }
+});
+
 test("release CI failures route through a no-bump targeted debug skill", async () => {
   const agents = await read("AGENTS.md");
   const releaseDebug = await read(".agents/skills/debug-release-ci/SKILL.md");
