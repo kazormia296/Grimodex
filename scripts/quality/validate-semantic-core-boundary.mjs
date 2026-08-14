@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -87,38 +87,100 @@ const REQUIRED_DISCLOSURE_RULES = Object.freeze([
   "secret-before-reveal",
   "knowledge-holder-mismatch",
   "reader-knowledge-not-character",
+  "audience-mismatch",
+  "scene-scope-mismatch",
   "worldline-mismatch",
   "timeline-mismatch",
   "narrative-layer-mismatch",
+  "unresolved-scope",
 ]);
 
 const REQUIRED_DISCLOSURE_FIXTURES = Object.freeze([
   "reading-future-phase-rejected",
   "story-future-time-rejected",
   "auto-matches-adr-002",
+  "auto-incomplete-reading",
+  "auto-complete-story",
   "secret-before-reveal-rejected",
   "knowledge-holder-mismatch-rejected",
   "reader-knowledge-is-not-character-knowledge",
+  "audience-mismatch-rejected",
+  "unresolved-scope-rejected",
   "worldline-mismatch-rejected",
 ]);
 
 const SEMANTIC_BOUNDARY_ROOTS = Object.freeze([
+  "src/features/narrative-semantic-core",
   "src/features/narrative-extraction/reconciler",
   "src/features/narrative-extraction/maintenance",
   "src/features/narrative-extraction/eval",
   "src/features/narrative-extraction/ir",
   "src/features/semantic-search",
+  "src/application/narrative-extraction",
+  "src/application/scheduler",
+  "src/application/background-maintenance",
+  "src/features/scheduler",
+  "src/features/background-maintenance",
+  "src-tauri/crates/grimodex-db/src/narrative_extraction",
+  "src-tauri/crates/grimodex-semantic/src",
+]);
+
+const EXPECTED_ALLOWED_CALLERS = Object.freeze({
+  "human-direct": ["human-ui", "manual-wrapper", "typed-domain-api"],
+  "interactive-agent-command": [
+    "chat-tool-executor",
+    "manual-wrapper",
+    "registered-agent-surface",
+  ],
+  "interpreter-projection": [
+    "interpreter",
+    "reconciler",
+    "proposal-review",
+    "prepared-commit-runner",
+  ],
+  "import-apply": ["import-session", "import-review"],
+  "history-replay": ["history-controller", "undo-redo-command"],
+  "restore-or-migration": [
+    "restore-controller",
+    "migration-runner",
+    "integrity-repair",
+  ],
+});
+
+const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
+  "human-direct": [{ control: "field-authority", when: "writes-authority-protected-field" }],
+  "interactive-agent-command": [{ control: "field-authority", when: "writes-authority-protected-field" }],
+  "interpreter-projection": [],
+  "import-apply": [],
+  "history-replay": [],
+  "restore-or-migration": [],
+});
+
+// These are the small Native typed-writer bridges that intentionally call
+// shared writer helpers. New Interpreter/Maintenance Rust modules must use the
+// canonical bridge instead of adding another direct dependency.
+const ALLOWED_RUST_TYPED_WRITER_BRIDGES = new Set([
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/chronicle_operations.rs",
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs",
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/codex_snapshots.rs",
+  "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
 ]);
 
 const FORBIDDEN_DIRECT_BOUNDARY_IMPORTS = [
   /\bfrom\s+["'`][^"'`]*features\/agent-writes\/(?:codex|event|foreshadow|snippet|bundle)(?:["'`/]|$)/,
   /\b(?:import|require)\s*\(\s*["'`][^"'`]*features\/agent-writes\/(?:codex|event|foreshadow|snippet|bundle)(?:["'`/]|$)/,
-  /\bfrom\s+["'`][^"'`]*features\/(?:codex|chronicle|tree|foreshadow|plot-threads|snippets)\/(?:api|detailApi|relationApi|sceneCodexPinsApi|tagApi|phaseApi|codexRelationApi|typeApi|codexQuickPinApi)(?:["'`]|$)/,
-  /\b(?:import|require)\s*\(\s*["'`][^"'`]*features\/(?:codex|chronicle|tree|foreshadow|plot-threads|snippets)\/(?:api|detailApi|relationApi|sceneCodexPinsApi|tagApi|phaseApi|codexRelationApi|typeApi|codexQuickPinApi)(?:["'`]|$)/,
+  /\bfrom\s+["'`][^"'`]*features\/(?:codex|chronicle|foreshadow|plot-threads|snippets)\/(?:api|detailApi|relationApi|sceneCodexPinsApi|tagApi|phaseApi|codexRelationApi|typeApi|codexQuickPinApi)(?:["'`]|$)/,
+  /\b(?:import|require)\s*\(\s*["'`][^"'`]*features\/(?:codex|chronicle|foreshadow|plot-threads|snippets)\/(?:api|detailApi|relationApi|sceneCodexPinsApi|tagApi|phaseApi|codexRelationApi|typeApi|codexQuickPinApi)(?:["'`]|$)/,
 ];
 
 const FORBIDDEN_DIRECT_AGENT_COMMAND_CALL =
   /\b(?:invoke\w*|call\w*|execute\w*|dispatch\w*)\s*\([^\n]{0,160}["'`]agent_(?:codex|event|foreshadow|snippet|write_bundle)(?:_|["'`])/;
+
+const FORBIDDEN_DIRECT_RUST_BOUNDARY_IMPORTS = [
+  /\buse\s+(?:crate|grimodex_db)::agent_writes(?:::|\s*;)/,
+  /\buse\s+(?:crate|grimodex_db)::codex_writes(?:::|\s*;)/,
+  /\b(?:agent_writes|codex_writes)::[A-Za-z_][A-Za-z0-9_]*\s*\(/,
+];
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -147,6 +209,7 @@ function readJson(repoRoot, relativePath, errors, label) {
 function listSourceFiles(repoRoot, relativeRoot) {
   const absoluteRoot = path.join(repoRoot, relativeRoot);
   if (!existsSync(absoluteRoot)) return [];
+  if (statSync(absoluteRoot).isFile()) return [absoluteRoot];
   const files = [];
   const visit = (current) => {
     for (const entry of readdirSync(current, { withFileTypes: true })) {
@@ -196,6 +259,16 @@ function validateRouteRegistry(registry, errors) {
     if (!Array.isArray(route.forbiddenCallers)) {
       errors.push(`${label} forbiddenCallers must be an array`);
     }
+    const expectedCallers = EXPECTED_ALLOWED_CALLERS[route.id] ?? [];
+    if (!Array.isArray(route.allowedCallers) || route.allowedCallers.length === 0) {
+      errors.push(`${label} allowedCallers must be a non-empty allowlist`);
+    } else if (JSON.stringify(route.allowedCallers) !== JSON.stringify(expectedCallers)) {
+      errors.push(`${route.id} allowedCallers do not match the canonical allowlist`);
+    }
+    const expectedConditional = EXPECTED_CONDITIONAL_CONTROLS[route.id] ?? [];
+    if (JSON.stringify(route.conditionalControls ?? []) !== JSON.stringify(expectedConditional)) {
+      errors.push(`${route.id} conditionalControls do not match the canonical contract`);
+    }
   }
   for (const routeId of AUTHORITY_ROUTE_IDS) {
     if (!routes.has(routeId)) errors.push(`missing mutation authority route: ${routeId}`);
@@ -218,27 +291,72 @@ function validateWriterRoutes(manifest, routes, errors) {
       errors.push(`${label} must be an object`);
       continue;
     }
-    if (!isNonEmptyString(operation.authorityRoute)) {
-      errors.push(`${label} must declare authorityRoute; unknown/unclassified is forbidden`);
+    const variants = Array.isArray(operation.authorityVariants)
+      ? operation.authorityVariants
+      : [
+          {
+            authorityRoute: operation.authorityRoute,
+            controls: operation.controls,
+          },
+        ];
+    if (variants.length === 0) {
+      errors.push(`${label} must declare at least one authority route variant`);
       continue;
     }
-    const route = routes.get(operation.authorityRoute);
-    if (!route) {
-      errors.push(`${label} has unknown authority route: ${operation.authorityRoute}`);
-      continue;
+    if (
+      Array.isArray(operation.authorityVariants) &&
+      isNonEmptyString(operation.authorityRoute) &&
+      operation.authorityRoute !== variants[0]?.authorityRoute
+    ) {
+      errors.push(`${label} authorityRoute must match the first authority variant`);
     }
-    routeCounts[operation.authorityRoute] += 1;
-    if (!Array.isArray(operation.controls)) {
-      errors.push(`${label} must declare route controls`);
-      continue;
-    }
-    const required = Array.isArray(route.requiredControls)
-      ? route.requiredControls
-      : REQUIRED_ROUTE_CONTROLS[operation.authorityRoute] ?? [];
-    for (const control of required) {
-      if (!operation.controls.includes(control)) {
-        errors.push(`${label} is missing required control '${control}' for ${operation.authorityRoute}`);
+    const untrustedExcluded =
+      operation.feedPolicy === "excluded" &&
+      operation.exclusionReason === "untrusted-generic-sql";
+    for (const [variantIndex, variant] of variants.entries()) {
+      const variantLabel = `${label} authority variant ${variantIndex}`;
+      if (!isObject(variant) || !isNonEmptyString(variant.authorityRoute)) {
+        errors.push(`${variantLabel} must declare authorityRoute`);
+        continue;
       }
+      const route = routes.get(variant.authorityRoute);
+      if (!route) {
+        errors.push(`${variantLabel} has unknown authority route: ${variant.authorityRoute}`);
+        continue;
+      }
+      routeCounts[variant.authorityRoute] += 1;
+      if (!Array.isArray(variant.controls)) {
+        errors.push(`${variantLabel} must declare route controls`);
+        continue;
+      }
+      if (variant.allowedCallers !== undefined) {
+        const expectedCallers = route.allowedCallers ?? [];
+        if (JSON.stringify(variant.allowedCallers) !== JSON.stringify(expectedCallers)) {
+          errors.push(`${variantLabel} allowedCallers do not match the route allowlist`);
+        }
+      }
+      if (untrustedExcluded) {
+        if (variant.controls.length > 0) {
+          errors.push(`${label} untrusted generic SQL must not self-report runtime controls`);
+        }
+        continue;
+      }
+      const required = Array.isArray(route.requiredControls)
+        ? route.requiredControls
+        : REQUIRED_ROUTE_CONTROLS[variant.authorityRoute] ?? [];
+      for (const control of required) {
+        if (!variant.controls.includes(control)) {
+          errors.push(`${variantLabel} is missing required control '${control}' for ${variant.authorityRoute}`);
+        }
+      }
+    }
+    if (
+      untrustedExcluded &&
+      (!isObject(operation.runtimeEvidence) ||
+        operation.runtimeEvidence.status !== "excluded" ||
+        operation.runtimeEvidence.reason !== "untrusted-generic-sql")
+    ) {
+      errors.push(`${label} must declare excluded runtimeEvidence for untrusted generic SQL`);
     }
   }
   return { operationCount: manifest.operations.length, routeCounts };
@@ -364,6 +482,8 @@ function validateDisclosurePolicy(policy, errors) {
     "projectId",
     "currentSceneId",
     "phaseResolutionMode",
+    "phaseResolution",
+    "candidateScope",
     "temporalAnchor",
     "viewpointRef",
     "knowledgeHolderRef",
@@ -380,11 +500,16 @@ function validateArchitectureImports(repoRoot, errors) {
   for (const relativeRoot of SEMANTIC_BOUNDARY_ROOTS) {
     for (const file of listSourceFiles(repoRoot, relativeRoot)) {
       const source = readFileSync(file, "utf8");
+      const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
+      const isRustBoundaryViolation =
+        file.endsWith(".rs") &&
+        FORBIDDEN_DIRECT_RUST_BOUNDARY_IMPORTS.some((pattern) => pattern.test(source)) &&
+        !ALLOWED_RUST_TYPED_WRITER_BRIDGES.has(relativeFile);
       if (
         FORBIDDEN_DIRECT_BOUNDARY_IMPORTS.some((pattern) => pattern.test(source)) ||
-        FORBIDDEN_DIRECT_AGENT_COMMAND_CALL.test(source)
+        FORBIDDEN_DIRECT_AGENT_COMMAND_CALL.test(source) ||
+        isRustBoundaryViolation
       ) {
-        const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
         errors.push(
           `Interpreter/maintenance boundary cannot call Agent Writer or Domain API directly: ${relativeFile}`,
         );

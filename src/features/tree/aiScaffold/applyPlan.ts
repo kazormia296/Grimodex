@@ -19,6 +19,7 @@ import { validateAiTreePlan, type ValidationError } from "./validate";
 import { assignNodePlacements } from "./placement";
 import type { AiTreePlan, ApplyContext, ApplyResult } from "./types";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export class AiTreePlanError extends Error {
   constructor(public readonly errors: ValidationError[]) {
@@ -304,6 +305,41 @@ async function applyAiTreePlanWithAuthority(
       originalTransactionId: null,
       undoJournalId: null,
     };
+    const authorityContext = createCanonicalWriteContext(
+      redo ? "redo" : "ai-apply",
+      redo
+        ? {
+            originalTransactionId: originalMaintenanceTransactionId!,
+            undoJournalId: originalUndoJournalId!,
+          }
+        : undefined,
+      typeof payload.requestId === "string"
+        ? payload.requestId
+        : initialRequest.payload.requestId,
+      redo
+        ? undefined
+        : {
+            provenance: {
+              requestId:
+                typeof payload.requestId === "string"
+                  ? payload.requestId
+                  : initialRequest.payload.requestId,
+              traceId:
+                ctx.traceId ??
+                (typeof payload.requestId === "string"
+                  ? payload.requestId
+                  : initialRequest.payload.requestId),
+            },
+          },
+    );
+    Object.assign(payload, {
+      authorityRoute: authorityContext.authorityRoute,
+      caller: authorityContext.caller,
+      controls: authorityContext.controls,
+      provenance: authorityContext.provenance,
+      writesAuthorityProtectedField:
+        authorityContext.writesAuthorityProtectedField,
+    });
     let nativeResponseReceived = false;
     try {
       const rawReceipt = await invoke("ai_tree_plan_apply", { payload });
@@ -343,15 +379,31 @@ async function applyAiTreePlanWithAuthority(
       }
       return { id, version };
     });
-    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => ({
-      requestId,
-      projectId: ctx.projectId,
-      sessionId: getRecorderSessionId(),
-      updatedAt: new Date().toISOString(),
-      originalTransactionId: originalMaintenanceTransactionId,
-      undoJournalId: originalUndoJournalId,
-      expectedVersions,
-    }));
+    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => {
+      const authorityContext = createCanonicalWriteContext(
+        "undo",
+        {
+          originalTransactionId: originalMaintenanceTransactionId!,
+          undoJournalId: originalUndoJournalId!,
+        },
+        requestId,
+      );
+      return {
+        requestId,
+        projectId: ctx.projectId,
+        sessionId: getRecorderSessionId(),
+        updatedAt: new Date().toISOString(),
+        originalTransactionId: originalMaintenanceTransactionId,
+        undoJournalId: originalUndoJournalId,
+        authorityRoute: authorityContext.authorityRoute,
+        caller: authorityContext.caller,
+        controls: authorityContext.controls,
+        provenance: authorityContext.provenance,
+        writesAuthorityProtectedField:
+          authorityContext.writesAuthorityProtectedField,
+        expectedVersions,
+      };
+    });
     let nativeResponseReceived = false;
     try {
       const rawReceipt = await invoke("ai_tree_plan_undo", {

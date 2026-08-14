@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   MUTATION_AUTHORITY_ROUTES,
   assertMutationAuthorityContext,
+  allowedCallersForRoute,
+  conditionalControlsForRoute,
   isMutationAuthorityRoute,
   requiredControlsForRoute,
   type MutationAuthorityContext,
@@ -47,7 +49,7 @@ describe("narrative mutation authority routes", () => {
     ).toThrow(/required control/i);
   });
 
-  it("does not allow background callers to use the interactive agent route", () => {
+  it("does not allow unknown or versioned background callers to use the interactive agent route", () => {
     expect(() =>
       assertMutationAuthorityContext({
         origin: "ai-apply",
@@ -57,6 +59,82 @@ describe("narrative mutation authority routes", () => {
         provenance: { requestId: "request-1", traceId: "trace-1" },
       }),
     ).toThrow(/forbidden caller/i);
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "background-maintenance-v2",
+        controls: requiredControlsForRoute("interactive-agent-command"),
+        provenance: { requestId: "request-1", traceId: "trace-1" },
+      }),
+    ).toThrow(/forbidden caller/i);
+  });
+
+  it("binds each route to its origin and explicit caller allowlist", () => {
+    expect(allowedCallersForRoute("interactive-agent-command")).toEqual([
+      "chat-tool-executor",
+      "manual-wrapper",
+      "registered-agent-surface",
+    ]);
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "import",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: requiredControlsForRoute("interactive-agent-command"),
+        provenance: { requestId: "request-1", traceId: "trace-1" },
+      }),
+    ).toThrow(/origin/i);
+  });
+
+  it("requires Field Authority only when the mutation targets protected fields", () => {
+    expect(conditionalControlsForRoute("human-direct")).toEqual([
+      "field-authority",
+    ]);
+    const base = {
+      origin: "human" as const,
+      authorityRoute: "human-direct" as const,
+      caller: "human-ui",
+      controls: requiredControlsForRoute("human-direct"),
+    };
+    expect(() => assertMutationAuthorityContext(base)).not.toThrow();
+    expect(() =>
+      assertMutationAuthorityContext({
+        ...base,
+        writesAuthorityProtectedField: true,
+      }),
+    ).toThrow(/field-authority/i);
+    expect(() =>
+      assertMutationAuthorityContext({
+        ...base,
+        writesAuthorityProtectedField: true,
+        controls: [
+          ...requiredControlsForRoute("human-direct"),
+          "field-authority",
+        ],
+      }),
+    ).not.toThrow();
+  });
+
+  it("requires complete history replay lineage", () => {
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "undo",
+        authorityRoute: "history-replay",
+        caller: "history-controller",
+        controls: requiredControlsForRoute("history-replay"),
+      }),
+    ).toThrow(/lineage/i);
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "undo",
+        authorityRoute: "history-replay",
+        caller: "history-controller",
+        controls: requiredControlsForRoute("history-replay"),
+        originalTransactionId: "tx-1",
+        undoJournalId: "journal-1",
+      }),
+    ).not.toThrow();
   });
 
   it("exposes the complete six-route vocabulary", () => {

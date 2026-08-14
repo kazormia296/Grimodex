@@ -45,6 +45,15 @@ fn payload() -> RepairIntegrityPayload {
         session_id: "repair-session-1".to_string(),
         event_uid: "repair-event-1".to_string(),
         occurred_at: "2026-08-13T10:00:00.000Z".to_string(),
+        authority_route: "restore-or-migration".to_string(),
+        caller: "integrity-repair".to_string(),
+        controls: vec![
+            "exclusive-system-operation".to_string(),
+            "semantic-epoch-event".to_string(),
+            "full-rebuild-marker".to_string(),
+        ],
+        provenance: None,
+        writes_authority_protected_field: false,
     }
 }
 
@@ -161,11 +170,20 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
         assert_eq!(
             transaction,
             (
-                "human".to_string(),
+                "restore".to_string(),
                 "forward".to_string(),
                 "repair-event-1".to_string(),
             )
         );
+        let canonical_payload: String = conn.query_row(
+            "SELECT payload FROM change_events WHERE project_id = 'repair-p1' AND event_uid = 'repair-event-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        let canonical_payload: serde_json::Value = serde_json::from_str(&canonical_payload)?;
+        assert_eq!(canonical_payload["authorityRoute"], "restore-or-migration");
+        assert_eq!(canonical_payload["authorityCaller"], "integrity-repair");
+        assert_eq!(canonical_payload["authorityEvidence"]["status"], "validated");
         let event_keys = conn
             .prepare(
                 "SELECT object_key_json, changed_paths_json,

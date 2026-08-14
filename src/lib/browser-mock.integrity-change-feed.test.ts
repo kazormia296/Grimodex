@@ -30,6 +30,15 @@ function payload(requestId = "browser-integrity-repair") {
     sessionId: "browser-repair-session",
     eventUid: requestId,
     occurredAt: "2026-08-13T10:00:00.000Z",
+    authorityRoute: "restore-or-migration",
+    caller: "integrity-repair",
+    controls: [
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
   };
 }
 

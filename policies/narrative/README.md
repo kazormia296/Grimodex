@@ -88,8 +88,9 @@ not start here.
 
 The C1.5 machine-readable contracts are:
 
-- `mutation-authority-routes.json` — the six Mutation Authority Routes and
-  route-specific required controls;
+- `mutation-authority-routes.json` — the six Mutation Authority Routes,
+  exact caller allowlists, route-specific required controls, and conditional
+  Field Authority requirements;
 - `semantic-state-vocabulary.json` — Review, Evidence Freshness,
   Reconciliation Signal, Build Action, Component Compatibility, and Projection
   Application State as separate axes;
@@ -101,9 +102,16 @@ The C1.5 machine-readable contracts are:
   policy documents;
 - `fixtures/` — route, evidence, and many-to-many Projection contract cases.
 
-`authorityRoute` is required on every C1 operation. It complements, and does
-not replace, the existing low-level `canonical.origin` audit attribute. The
-read-only validator `scripts/quality/validate-semantic-core-boundary.mjs`
-rejects unknown routes, missing route controls, direct Interpreter/Maintenance
-imports of Agent Writers, mixed state vocabulary, and a second Freshness
-authority. C1.5 keeps workspace SCHEMA 22 and does not create C2 tables.
+`authorityRoute` is required on every C1 operation; operations that share one
+typed writer across surfaces may additionally declare `authorityVariants` so
+each runtime route has its own controls and caller allowlist. The route is
+also carried by the renderer Native write context. Native validation binds the route to an exact
+caller allowlist, origin, provenance, and replay lineage, then records the
+validated route and runtime evidence in the canonical audit payload. It
+complements, and does not replace, the existing low-level `canonical.origin`
+audit attribute. The read-only validator
+`scripts/quality/validate-semantic-core-boundary.mjs` rejects unknown routes,
+missing route controls, false runtime-control claims for untrusted generic SQL,
+direct Interpreter/Maintenance imports of Agent Writers, mixed state
+vocabulary, and a second Freshness authority. C1.5 keeps workspace SCHEMA 22
+and does not create C2 tables.

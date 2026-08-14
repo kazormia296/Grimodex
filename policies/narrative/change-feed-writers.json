@@ -150,7 +150,8 @@
     {
       "id": "renderer.generic-sql.execute",
       "authorityRoute": "human-direct",
-      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Renderer generic SQL is untrusted and is never authoritative for Narrative Change Feed records. This exclusion includes direct Map board, position, sticky, edge, and frame canvas-layout CRUD, which cannot create or mutate Scene, Codex, Chronicle, Plot, or Foreshadow narrative artifacts.",
@@ -179,7 +180,8 @@
     {
       "id": "renderer.generic-sql.batch",
       "authorityRoute": "human-direct",
-      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "Renderer generic SQL batches are untrusted and cannot append authority Feed rows, including batches limited to non-narrative Map canvas layout state.",
@@ -208,7 +210,8 @@
     {
       "id": "mcp.generic-sql.execute",
       "authorityRoute": "interactive-agent-command",
-      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "MCP generic SQL has no public write tool and remains an untrusted origin.",
@@ -226,7 +229,8 @@
     {
       "id": "mcp.generic-sql.batch",
       "authorityRoute": "interactive-agent-command",
-      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "MCP generic SQL batches have no public write tool and remain an untrusted origin.",
@@ -1184,8 +1188,8 @@
     },
     {
       "id": "integrity.repair.renderer",
-      "authorityRoute": "human-direct",
-      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Integrity repair mutates project-scoped Codex and Snippet authority rows, so the repair, canonical Change Event, Narrative Change Feed transaction, and retry receipt must commit atomically.",
@@ -1382,8 +1386,20 @@
     },
     {
       "id": "tree.ai-plan.apply.renderer",
-      "authorityRoute": "human-direct",
-      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityRoute": "interactive-agent-command",
+      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Applying or redoing a typed AI tree plan changes narrative structure and ordering as one Native transaction.",
@@ -2678,6 +2694,23 @@
       "id": "renderer.snippet.create",
       "authorityRoute": "human-direct",
       "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Manual, import, and restore Snippet creation commits the domain row, Undo Journal, canonical Change Event, Feed transaction, and retry receipt atomically.",
@@ -2776,7 +2809,8 @@
     {
       "id": "agent.sql-bundle.mutate",
       "authorityRoute": "interactive-agent-command",
-      "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "controls": [],
+      "runtimeEvidence": { "status": "excluded", "reason": "untrusted-generic-sql" },
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "reason": "The generic agent SQL bundle fails closed; all domain mutations must use a typed Native writer.",

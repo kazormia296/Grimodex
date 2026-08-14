@@ -145,10 +145,28 @@ pub struct AgentCodexDeletePayload {
 /// strict renderer entry points below.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RendererMutationProvenance {
+    pub request_id: String,
+    pub trace_id: String,
+    #[serde(default)]
+    pub chat_message_id: Option<String>,
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RendererCanonicalWriteContext {
     pub request_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -208,6 +226,254 @@ fn narrative_origin_for_surface(surface: Option<&str>) -> NarrativeChangeOrigin 
     }
 }
 
+const HUMAN_DIRECT_CONTROLS: &[&str] = &[
+    "runtime-policy",
+    "actor-context",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const INTERACTIVE_AGENT_CONTROLS: &[&str] = &[
+    "knowledge-write-policy",
+    "stable-request-id",
+    "agent-provenance",
+    "typed-writer",
+    "occ",
+    "undo-journal",
+    "change-event",
+    "change-feed",
+];
+const INTERPRETER_PROJECTION_CONTROLS: &[&str] = &[
+    "proposal-revision",
+    "decision",
+    "prepared-commit",
+    "application-id",
+    "source-basis-occ",
+    "field-authority",
+    "typed-writer",
+];
+const IMPORT_APPLY_CONTROLS: &[&str] = &[
+    "import-policy",
+    "source-package-evidence",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const HISTORY_REPLAY_CONTROLS: &[&str] = &[
+    "original-transaction",
+    "journal-lineage",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+];
+const RESTORE_OR_MIGRATION_CONTROLS: &[&str] = &[
+    "exclusive-system-operation",
+    "semantic-epoch-event",
+    "full-rebuild-marker",
+];
+const KNOWN_MUTATION_CONTROLS: &[&str] = &[
+    "runtime-policy",
+    "actor-context",
+    "knowledge-write-policy",
+    "stable-request-id",
+    "agent-provenance",
+    "typed-writer",
+    "occ",
+    "source-basis-occ",
+    "field-authority",
+    "proposal-revision",
+    "decision",
+    "prepared-commit",
+    "application-id",
+    "undo-journal",
+    "journal-lineage",
+    "original-transaction",
+    "change-event",
+    "change-feed",
+    "import-policy",
+    "source-package-evidence",
+    "exclusive-system-operation",
+    "semantic-epoch-event",
+    "full-rebuild-marker",
+];
+
+fn allowed_callers_for_route(route: &str) -> Option<&'static [&'static str]> {
+    match route {
+        "human-direct" => Some(&["human-ui", "manual-wrapper", "typed-domain-api"]),
+        "interactive-agent-command" => Some(&[
+            "chat-tool-executor",
+            "manual-wrapper",
+            "registered-agent-surface",
+        ]),
+        "interpreter-projection" => Some(&[
+            "interpreter",
+            "reconciler",
+            "proposal-review",
+            "prepared-commit-runner",
+        ]),
+        "import-apply" => Some(&["import-session", "import-review"]),
+        "history-replay" => Some(&["history-controller", "undo-redo-command"]),
+        "restore-or-migration" => Some(&[
+            "restore-controller",
+            "migration-runner",
+            "integrity-repair",
+        ]),
+        _ => None,
+    }
+}
+
+fn required_controls_for_route(route: &str) -> Option<&'static [&'static str]> {
+    match route {
+        "human-direct" => Some(HUMAN_DIRECT_CONTROLS),
+        "interactive-agent-command" => Some(INTERACTIVE_AGENT_CONTROLS),
+        "interpreter-projection" => Some(INTERPRETER_PROJECTION_CONTROLS),
+        "import-apply" => Some(IMPORT_APPLY_CONTROLS),
+        "history-replay" => Some(HISTORY_REPLAY_CONTROLS),
+        "restore-or-migration" => Some(RESTORE_OR_MIGRATION_CONTROLS),
+        _ => None,
+    }
+}
+
+fn origin_allowed_for_route(route: &str, origin: NarrativeChangeOrigin) -> bool {
+    match route {
+        "human-direct" => origin == NarrativeChangeOrigin::Human,
+        "interactive-agent-command" | "interpreter-projection" => {
+            origin == NarrativeChangeOrigin::AiApply
+        }
+        "import-apply" => origin == NarrativeChangeOrigin::Import,
+        "history-replay" => matches!(
+            origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ),
+        "restore-or-migration" => matches!(
+            origin,
+            NarrativeChangeOrigin::Restore | NarrativeChangeOrigin::Migration
+        ),
+        _ => false,
+    }
+}
+
+/// Validate the runtime route before any renderer-originated Native writer is
+/// allowed to append an audit event. The caller allowlist is deliberately
+/// exact; a versioned or otherwise unknown background caller must not inherit
+/// a route by merely avoiding a blacklist entry.
+pub(crate) fn validate_renderer_authority_context(
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    let allowed_callers = allowed_callers_for_route(&context.authority_route)
+        .ok_or_else(|| anyhow::anyhow!("Unknown mutation authority route"))?;
+    anyhow::ensure!(
+        allowed_callers.contains(&context.caller.as_str()),
+        "Forbidden caller '{}' for authority route '{}'",
+        context.caller,
+        context.authority_route
+    );
+    anyhow::ensure!(
+        origin_allowed_for_route(&context.authority_route, context.origin),
+        "Origin '{}' is not valid for authority route '{}'",
+        context.origin.as_str(),
+        context.authority_route
+    );
+    let required = required_controls_for_route(&context.authority_route)
+        .ok_or_else(|| anyhow::anyhow!("Unknown mutation authority route"))?;
+    for control in &context.controls {
+        anyhow::ensure!(
+            KNOWN_MUTATION_CONTROLS.contains(&control.as_str()),
+            "Unknown mutation authority control '{}'",
+            control
+        );
+    }
+    for control in required {
+        anyhow::ensure!(
+            context.controls.iter().any(|value| value == control),
+            "Missing required control '{}' for authority route '{}'",
+            control,
+            context.authority_route
+        );
+    }
+    if context.writes_authority_protected_field {
+        anyhow::ensure!(
+            context.controls.iter().any(|value| value == "field-authority"),
+            "Protected-field mutation requires field-authority control"
+        );
+    }
+    if context.authority_route == "interactive-agent-command" {
+        let provenance = context
+            .provenance
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Interactive agent command requires provenance"))?;
+        anyhow::ensure!(!provenance.request_id.trim().is_empty(), "provenance requestId is required");
+        anyhow::ensure!(!provenance.trace_id.trim().is_empty(), "provenance traceId is required");
+        anyhow::ensure!(
+            provenance.request_id == context.request_id,
+            "provenance requestId must match canonical requestId"
+        );
+    }
+    let replay = matches!(
+        context.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = context
+        .original_transaction_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && context
+            .undo_journal_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        context.authority_route == "history-replay" && replay == complete_lineage
+            || context.authority_route != "history-replay" && !replay && !complete_lineage,
+        "history-replay requires undo/redo origin and complete transaction/journal lineage"
+    );
+    Ok(())
+}
+
+pub(crate) fn canonical_payload_with_authority_context(
+    payload: &str,
+    context: &RendererCanonicalWriteContext,
+) -> String {
+    let parsed = serde_json::from_str::<Value>(payload)
+        .unwrap_or_else(|_| json!({ "rawPayload": payload }));
+    let mut evidence = json!({
+        "validated": true,
+        "status": "validated",
+        "authorityRoute": context.authority_route,
+        "caller": context.caller,
+        "origin": context.origin.as_str(),
+        "callerAllowlisted": true,
+        "originRouteMatched": true,
+        "requiredControlsValidated": true,
+        "fieldAuthorityValidated": !context.writes_authority_protected_field
+            || context.controls.iter().any(|control| control == "field-authority"),
+        "replayLineageValidated": context.authority_route == "history-replay",
+        "controls": context.controls,
+    });
+    if let Some(provenance) = &context.provenance {
+        evidence["provenance"] = serde_json::to_value(provenance).unwrap_or(Value::Null);
+    }
+    if let Value::Object(mut object) = parsed {
+        object.insert(
+            "authorityRoute".to_string(),
+            Value::String(context.authority_route.clone()),
+        );
+        object.insert("authorityCaller".to_string(), Value::String(context.caller.clone()));
+        object.insert("authorityEvidence".to_string(), evidence);
+        Value::Object(object).to_string()
+    } else {
+        json!({
+            "authorityRoute": context.authority_route,
+            "authorityCaller": context.caller,
+            "authorityEvidence": evidence,
+            "payload": parsed,
+        })
+        .to_string()
+    }
+}
+
 fn validate_renderer_codex_identity(
     project_id: &str,
     session_id: &str,
@@ -223,6 +489,7 @@ fn validate_renderer_codex_identity(
         !context.event_uid.trim().is_empty(),
         "eventUid must not be empty"
     );
+    validate_renderer_authority_context(context)?;
     let replay = matches!(
         context.origin,
         NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
@@ -324,11 +591,22 @@ fn append_agent_forward_change_in_tx(
         }
     };
     normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
+    let canonical_event = if let Some(context) = renderer_context {
+        validate_renderer_authority_context(context)?;
+        let mut annotated = canonical_event.clone();
+        annotated.payload = canonical_payload_with_authority_context(
+            &canonical_event.payload,
+            context,
+        );
+        annotated
+    } else {
+        canonical_event.clone()
+    };
     let append = append_canonical_and_narrative_change_in_tx(
         conn,
         project_id,
         session_id,
-        canonical_event,
+        &canonical_event,
         &AppendNarrativeChangeTransactionInput {
             project_id: project_id.to_string(),
             request_id: renderer_context
@@ -8260,6 +8538,47 @@ mod tests {
         db
     }
 
+    fn renderer_authority_fields(route: &str, caller: &str) -> (String, String, Vec<String>) {
+        (
+            route.to_string(),
+            caller.to_string(),
+            required_controls_for_route(route)
+                .expect("test route controls")
+                .iter()
+                .map(|control| (*control).to_string())
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn renderer_authority_rejects_versioned_background_callers() {
+        let context = RendererCanonicalWriteContext {
+            request_id: "request-1".to_string(),
+            event_uid: "event-1".to_string(),
+            origin: NarrativeChangeOrigin::AiApply,
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "background-maintenance-v2".to_string(),
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor").2,
+            provenance: Some(RendererMutationProvenance {
+                request_id: "request-1".to_string(),
+                trace_id: "trace-1".to_string(),
+                chat_message_id: None,
+                tool_call_id: None,
+            }),
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        };
+        let error = validate_renderer_authority_context(&context)
+            .expect_err("unknown background caller must fail closed");
+        assert!(error.to_string().contains("Forbidden caller"));
+    }
+
     fn insert_project(db: &Database) -> String {
         let id = uuid::Uuid::new_v4().to_string();
         db.execute(
@@ -8737,6 +9056,11 @@ mod tests {
             request_id: "renderer-create-request".to_string(),
             event_uid: "renderer-create-event".to_string(),
             origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: renderer_authority_fields("human-direct", "human-ui").2,
+            provenance: None,
+            writes_authority_protected_field: false,
             original_transaction_id: None,
             undo_journal_id: None,
             context_mode: Some("always".to_string()),
@@ -8825,6 +9149,11 @@ mod tests {
                 request_id: "cascade-delete-request".to_string(),
                 event_uid: "cascade-delete-event".to_string(),
                 origin: NarrativeChangeOrigin::Human,
+                authority_route: "human-direct".to_string(),
+                caller: "human-ui".to_string(),
+                controls: renderer_authority_fields("human-direct", "human-ui").2,
+                provenance: None,
+                writes_authority_protected_field: false,
                 original_transaction_id: None,
                 undo_journal_id: None,
                 context_mode: None,
@@ -8880,6 +9209,9 @@ mod tests {
                 |row| row.get(0),
             )?;
             let canonical_payload: Value = serde_json::from_str(&canonical_payload)?;
+            assert_eq!(canonical_payload["authorityRoute"], "human-direct");
+            assert_eq!(canonical_payload["authorityCaller"], "human-ui");
+            assert_eq!(canonical_payload["authorityEvidence"]["validated"], true);
             assert_eq!(canonical_payload["cascade"]["relationIds"], json!(["cascade-relation"]));
             assert_eq!(canonical_payload["cascade"]["phaseIds"], json!(["cascade-phase"]));
             assert_eq!(canonical_payload["cascade"]["detailValueIds"], json!(["cascade-detail"]));
@@ -8904,6 +9236,11 @@ mod tests {
             request_id: "cascade-restore-request".to_string(),
             event_uid: "cascade-restore-event".to_string(),
             origin: NarrativeChangeOrigin::Undo,
+            authority_route: "history-replay".to_string(),
+            caller: "history-controller".to_string(),
+            controls: renderer_authority_fields("history-replay", "history-controller").2,
+            provenance: None,
+            writes_authority_protected_field: false,
             original_transaction_id: Some(transaction_id.to_string()),
             undo_journal_id: Some(delete_journal_id.clone()),
             context_mode: None,
@@ -8991,6 +9328,11 @@ mod tests {
                 request_id: "cascade-redo-delete-request".to_string(),
                 event_uid: "cascade-redo-delete-event".to_string(),
                 origin: NarrativeChangeOrigin::Redo,
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: renderer_authority_fields("history-replay", "history-controller").2,
+                provenance: None,
+                writes_authority_protected_field: false,
                 original_transaction_id: Some(transaction_id.to_string()),
                 undo_journal_id: Some(delete_journal_id.clone()),
                 context_mode: None,
@@ -9027,6 +9369,11 @@ mod tests {
                 request_id: "cascade-restore-fail-request".to_string(),
                 event_uid: "cascade-restore-fail-event".to_string(),
                 origin: NarrativeChangeOrigin::Undo,
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: renderer_authority_fields("history-replay", "history-controller").2,
+                provenance: None,
+                writes_authority_protected_field: false,
                 original_transaction_id: Some(transaction_id.to_string()),
                 undo_journal_id: Some(delete_journal_id),
                 context_mode: None,
@@ -9113,6 +9460,11 @@ mod tests {
             request_id: request_id.to_string(),
             event_uid: event_uid.to_string(),
             origin: NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: renderer_authority_fields("human-direct", "human-ui").2,
+            provenance: None,
+            writes_authority_protected_field: false,
             original_transaction_id: None,
             undo_journal_id: None,
             context_mode: None,

@@ -866,6 +866,18 @@ describe("mapApi — deleteAiBranch", () => {
       sessionId: "redo-session",
       eventUid: "redo-event",
       origin: "redo" as const,
+      authorityRoute: "history-replay" as const,
+      caller: "history-controller",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ] as const,
+      provenance: null,
+      writesAuthorityProtectedField: false,
       originalTransactionId: "forward-transaction",
       undoJournalId: "forward-journal",
     };

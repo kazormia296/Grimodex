@@ -7,6 +7,8 @@
     "projectId",
     "currentSceneId",
     "phaseResolutionMode",
+    "phaseResolution",
+    "candidateScope",
     "temporalAnchor",
     "viewpointRef",
     "knowledgeHolderRef",
@@ -35,6 +37,14 @@
       "reason": "Reader knowledge cannot be silently injected into a character context."
     },
     {
+      "id": "audience-mismatch",
+      "reason": "An assertion for another audience is not admitted into the current context."
+    },
+    {
+      "id": "scene-scope-mismatch",
+      "reason": "An assertion explicitly scoped to another scene is not admitted."
+    },
+    {
       "id": "worldline-mismatch",
       "reason": "Assertions from another worldline are not admitted."
     },
@@ -45,15 +55,23 @@
     {
       "id": "narrative-layer-mismatch",
       "reason": "Assertions from another narrative layer are not admitted."
+    },
+    {
+      "id": "unresolved-scope",
+      "reason": "Candidates without a validated explicit scope remain in the review-only lane."
     }
   ],
   "fixtures": [
     "reading-future-phase-rejected",
     "story-future-time-rejected",
     "auto-matches-adr-002",
+    "auto-incomplete-reading",
+    "auto-complete-story",
     "secret-before-reveal-rejected",
     "knowledge-holder-mismatch-rejected",
     "reader-knowledge-is-not-character-knowledge",
+    "audience-mismatch-rejected",
+    "unresolved-scope-rejected",
     "worldline-mismatch-rejected"
   ]
 }

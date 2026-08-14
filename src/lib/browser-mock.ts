@@ -26567,7 +26567,7 @@ export async function createBrowserMock(
     const identity = browserCanonicalWriteIdentity(
       {
         ...payload,
-        origin: "human",
+        origin: "restore",
         originalTransactionId: null,
         undoJournalId: null,
       },
@@ -26673,6 +26673,15 @@ export async function createBrowserMock(
               projectId: identity.projectId,
               snippetScenesFixed,
               snippetSourcesFixed,
+              authorityRoute: "restore-or-migration",
+              authorityCaller: "integrity-repair",
+              authorityEvidence: {
+                validated: true,
+                status: "validated",
+                authorityRoute: "restore-or-migration",
+                caller: "integrity-repair",
+                origin: "restore",
+              },
             }),
             sessionId: identity.sessionId,
             timestamp,

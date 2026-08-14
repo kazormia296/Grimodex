@@ -1,9 +1,24 @@
+import { validateNarrativeScope, type NarrativeScope } from "./scope";
+import type {
+  ApplicablePhaseResolution,
+  PhaseFallbackReason,
+} from "@/features/codex/context/resolveApplicablePhases";
+
 export type NarrativePhaseResolutionMode = "reading" | "story" | "auto";
+export type NarrativeDisclosureAxis = "reading" | "story";
+
+export interface NarrativeDisclosurePhaseResolution {
+  /** These fields are copied from the existing ADR 002 resolver result. */
+  readonly axisUsed: ApplicablePhaseResolution["axisUsed"];
+  readonly fallbackReason: PhaseFallbackReason | null;
+  readonly resolver: "adr-002";
+}
 
 export interface NarrativeDisclosureContext {
   readonly projectId: string;
   readonly currentSceneId: string | null;
   readonly phaseResolutionMode: NarrativePhaseResolutionMode;
+  readonly phaseResolution: NarrativeDisclosurePhaseResolution;
   readonly temporalAnchor: string | null;
   readonly viewpointRef: string | null;
   readonly knowledgeHolderRef: string | null;
@@ -19,15 +34,11 @@ export interface NarrativeDisclosureContext {
 
 export interface NarrativeDisclosureCandidate {
   readonly projectId: string;
+  /** Scope is mandatory so an omitted axis can never become global truth. */
+  readonly scope: NarrativeScope;
   readonly phase?: number | null;
   readonly storyTime?: number | null;
   readonly sceneOrder?: number | null;
-  readonly viewpointRef?: string | null;
-  readonly knowledgeHolderRef?: string | null;
-  readonly audienceRef?: "reader" | string | null;
-  readonly worldlineRef?: string | null;
-  readonly timelineRef?: string | null;
-  readonly narrativeLayer?: string | null;
   readonly foreshadow?: {
     readonly secret: boolean;
     readonly revealSceneId?: string | null;
@@ -37,12 +48,16 @@ export interface NarrativeDisclosureCandidate {
 
 export type NarrativeDisclosureRejection =
   | "project-mismatch"
+  | "unresolved-scope"
+  | "invalid-resolution"
   | "future-phase"
   | "future-story-time"
   | "future-scene"
   | "secret-before-reveal"
   | "knowledge-holder-mismatch"
   | "reader-knowledge-not-character"
+  | "audience-mismatch"
+  | "scene-scope-mismatch"
   | "viewpoint-mismatch"
   | "worldline-mismatch"
   | "timeline-mismatch"
@@ -64,12 +79,34 @@ function differs(
   contextValue: string | null | undefined,
   candidateValue: string | null | undefined,
 ): boolean {
+  // An omitted explicit axis is unconstrained; once a candidate asserts an
+  // axis, an unknown or different context must not silently match it.
+  if (candidateValue === undefined) return false;
+  return (contextValue ?? null) !== candidateValue;
+}
+
+function isValidPhaseResolution(
+  mode: NarrativePhaseResolutionMode,
+  resolution: NarrativeDisclosurePhaseResolution,
+): boolean {
+  if (resolution.resolver !== "adr-002") return false;
+  if (mode === "reading") {
+    return (
+      resolution.axisUsed === "reading" && resolution.fallbackReason === null
+    );
+  }
+  if (mode === "story") {
+    return (
+      (resolution.axisUsed === "story" && resolution.fallbackReason === null) ||
+      (resolution.axisUsed === "reading" &&
+        (resolution.fallbackReason === "story-current-unresolved" ||
+          resolution.fallbackReason === "story-anchor-unresolved"))
+    );
+  }
   return (
-    contextValue !== null &&
-    contextValue !== undefined &&
-    candidateValue !== null &&
-    candidateValue !== undefined &&
-    contextValue !== candidateValue
+    (resolution.axisUsed === "story" && resolution.fallbackReason === null) ||
+    (resolution.axisUsed === "reading" &&
+      resolution.fallbackReason === "auto-incomplete-story-coverage")
   );
 }
 
@@ -82,14 +119,23 @@ export function evaluateNarrativeDisclosure(
     addReason(reasons, "project-mismatch");
   }
 
-  // `auto` inherits the same resolved temporal anchor as the existing ADR 002
-  // resolver. C1.5 deliberately does not create a second phase resolver.
-  const effectiveMode =
-    context.phaseResolutionMode === "auto"
-      ? context.temporalAnchor
-        ? "story"
-        : "reading"
-      : context.phaseResolutionMode;
+  const scopeValidation = validateNarrativeScope(candidate.scope);
+  const scope: NarrativeScope = candidate.scope ?? {
+    scopeStatus: "unresolved",
+  };
+  if (!scopeValidation.valid || scope.scopeStatus === "unresolved") {
+    addReason(reasons, "unresolved-scope");
+  }
+
+  const effectiveMode = context.phaseResolution.axisUsed;
+  if (
+    !isValidPhaseResolution(
+      context.phaseResolutionMode,
+      context.phaseResolution,
+    )
+  ) {
+    addReason(reasons, "invalid-resolution");
+  }
 
   if (
     candidate.phase !== null &&
@@ -132,27 +178,32 @@ export function evaluateNarrativeDisclosure(
     if (beforeReveal) addReason(reasons, "secret-before-reveal");
   }
 
-  if (candidate.audienceRef === "reader" && context.audienceRef !== "reader") {
+  if (scope.audienceRef === "reader" && context.audienceRef !== "reader") {
     addReason(reasons, "reader-knowledge-not-character");
   }
   if (
-    differs(context.knowledgeHolderRef, candidate.knowledgeHolderRef) ||
-    (candidate.knowledgeHolderRef === "reader" &&
-      context.audienceRef !== "reader")
+    differs(context.knowledgeHolderRef, scope.knowledgeHolderRef) ||
+    (scope.knowledgeHolderRef === "reader" && context.audienceRef !== "reader")
   ) {
     addReason(reasons, "knowledge-holder-mismatch");
   }
-  if (differs(context.viewpointRef, candidate.viewpointRef)) {
+  if (differs(context.viewpointRef, scope.viewpointRef)) {
     addReason(reasons, "viewpoint-mismatch");
   }
-  if (differs(context.worldlineRef, candidate.worldlineRef)) {
+  if (differs(context.worldlineRef, scope.worldlineRef)) {
     addReason(reasons, "worldline-mismatch");
   }
-  if (differs(context.timelineRef, candidate.timelineRef)) {
+  if (differs(context.timelineRef, scope.timelineRef)) {
     addReason(reasons, "timeline-mismatch");
   }
-  if (differs(context.narrativeLayer, candidate.narrativeLayer)) {
+  if (differs(context.narrativeLayer, scope.narrativeLayer)) {
     addReason(reasons, "narrative-layer-mismatch");
+  }
+  if (differs(context.currentSceneId, scope.sceneRef)) {
+    addReason(reasons, "scene-scope-mismatch");
+  }
+  if (differs(context.audienceRef, scope.audienceRef)) {
+    addReason(reasons, "audience-mismatch");
   }
 
   return { admitted: reasons.length === 0, reasons };

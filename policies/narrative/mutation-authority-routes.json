@@ -13,6 +13,9 @@
         "change-event",
         "change-feed"
       ],
+      "conditionalControls": [
+        { "control": "field-authority", "when": "writes-authority-protected-field" }
+      ],
       "allowedCallers": ["human-ui", "manual-wrapper", "typed-domain-api"],
       "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
     },
@@ -29,6 +32,9 @@
         "change-event",
         "change-feed"
       ],
+      "conditionalControls": [
+        { "control": "field-authority", "when": "writes-authority-protected-field" }
+      ],
       "allowedCallers": ["chat-tool-executor", "manual-wrapper", "registered-agent-surface"],
       "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
     },
@@ -44,6 +50,7 @@
         "field-authority",
         "typed-writer"
       ],
+      "conditionalControls": [],
       "allowedCallers": ["interpreter", "reconciler", "proposal-review", "prepared-commit-runner"],
       "forbiddenCallers": ["background-maintenance", "idle-scheduler"]
     },
@@ -58,6 +65,7 @@
         "change-event",
         "change-feed"
       ],
+      "conditionalControls": [],
       "allowedCallers": ["import-session", "import-review"],
       "forbiddenCallers": ["background-maintenance", "idle-scheduler"]
     },
@@ -72,6 +80,7 @@
         "change-event",
         "change-feed"
       ],
+      "conditionalControls": [],
       "allowedCallers": ["history-controller", "undo-redo-command"],
       "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
     },
@@ -83,6 +92,7 @@
         "semantic-epoch-event",
         "full-rebuild-marker"
       ],
+      "conditionalControls": [],
       "allowedCallers": ["restore-controller", "migration-runner", "integrity-repair"],
       "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
     }

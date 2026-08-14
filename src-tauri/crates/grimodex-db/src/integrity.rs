@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::Database;
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
+};
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
@@ -27,6 +31,13 @@ pub struct RepairIntegrityPayload {
     pub session_id: String,
     pub event_uid: String,
     pub occurred_at: String,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -72,6 +83,30 @@ fn occurred_at_millis(value: &str) -> anyhow::Result<i64> {
     Ok(chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|error| anyhow::anyhow!("integrity repair occurredAt is invalid: {error}"))?
         .timestamp_millis())
+}
+
+fn integrity_authority_context(
+    payload: &RepairIntegrityPayload,
+) -> anyhow::Result<RendererCanonicalWriteContext> {
+    let context = RendererCanonicalWriteContext {
+        request_id: payload.request_id.clone(),
+        event_uid: payload.event_uid.clone(),
+        origin: NarrativeChangeOrigin::Restore,
+        authority_route: payload.authority_route.clone(),
+        caller: payload.caller.clone(),
+        controls: payload.controls.clone(),
+        provenance: payload.provenance.clone(),
+        writes_authority_protected_field: payload.writes_authority_protected_field,
+        original_transaction_id: None,
+        undo_journal_id: None,
+        context_mode: None,
+        icon: None,
+        children_budget: None,
+        notes: None,
+        canonical_payload: None,
+    };
+    validate_renderer_authority_context(&context)?;
+    Ok(context)
 }
 
 fn codex_targets(
@@ -247,6 +282,7 @@ impl Database {
         require_non_empty(&payload.session_id, "sessionId")?;
         require_non_empty(&payload.event_uid, "eventUid")?;
         require_non_empty(&payload.occurred_at, "occurredAt")?;
+        let authority_context = integrity_authority_context(&payload)?;
         let timestamp = occurred_at_millis(&payload.occurred_at)?;
         // `occurredAt` is domain data and deliberately remains in the hash.
         // The renderer retains the exact materialized payload after an unknown
@@ -426,6 +462,16 @@ impl Database {
                             })),
                         });
                     }
+                    let canonical_payload = canonical_payload_with_authority_context(
+                        &json!({
+                            "codexSourcesFixed": codex_sources_fixed,
+                            "projectId": payload.project_id,
+                            "snippetScenesFixed": snippet_scenes_fixed,
+                            "snippetSourcesFixed": snippet_sources_fixed,
+                        })
+                        .to_string(),
+                        &authority_context,
+                    );
                     let append = append_canonical_and_narrative_change_in_tx(
                         conn,
                         &payload.project_id,
@@ -437,13 +483,7 @@ impl Database {
                             op_type: REPAIR_SOURCE_DOMAIN.to_string(),
                             entity_type: Some("project".to_string()),
                             entity_id: Some(payload.project_id.clone()),
-                            payload: json!({
-                                "codexSourcesFixed": codex_sources_fixed,
-                                "projectId": payload.project_id,
-                                "snippetScenesFixed": snippet_scenes_fixed,
-                                "snippetSourcesFixed": snippet_sources_fixed,
-                            })
-                            .to_string(),
+                            payload: canonical_payload,
                             timestamp,
                         },
                         &AppendNarrativeChangeTransactionInput {
@@ -452,7 +492,7 @@ impl Database {
                             source_domain: REPAIR_SOURCE_DOMAIN.to_string(),
                             source_change_event_uid: payload.event_uid.clone(),
                             cause_kind: NarrativeChangeCauseKind::Forward,
-                            origin: NarrativeChangeOrigin::Human,
+                            origin: NarrativeChangeOrigin::Restore,
                             original_transaction_id: None,
                             commit_id: None,
                             journal_id: None,

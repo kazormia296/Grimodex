@@ -8,7 +8,7 @@
     "contract": { "const": "narrative-retrieval-disclosure" },
     "admissionStage": { "const": "before-ranking-candidate-admission" },
     "phaseResolutionModes": { "const": ["reading", "story", "auto"] },
-    "contextFields": { "type": "array", "minItems": 8, "items": { "type": "string", "minLength": 1 } },
+    "contextFields": { "type": "array", "minItems": 10, "items": { "type": "string", "minLength": 1 } },
     "rejectionRules": {
       "type": "array",
       "minItems": 8,

@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::Database;
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
+};
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
@@ -3314,6 +3318,13 @@ pub struct ApplyAiTreePlanPayload {
     pub updated_at: String,
     pub model: Option<String>,
     pub trace_id: Option<String>,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     pub creates: Vec<AiTreePlanCreateInput>,
     pub updates: Vec<AiTreePlanUpdateInput>,
     #[serde(default)]
@@ -3322,6 +3333,34 @@ pub struct ApplyAiTreePlanPayload {
     pub original_transaction_id: Option<String>,
     #[serde(default)]
     pub undo_journal_id: Option<String>,
+}
+
+fn ai_tree_authority_context(
+    payload: &ApplyAiTreePlanPayload,
+) -> anyhow::Result<RendererCanonicalWriteContext> {
+    let context = RendererCanonicalWriteContext {
+        request_id: payload.request_id.clone(),
+        event_uid: payload.request_id.clone(),
+        origin: if payload.redo {
+            NarrativeChangeOrigin::Redo
+        } else {
+            NarrativeChangeOrigin::AiApply
+        },
+        authority_route: payload.authority_route.clone(),
+        caller: payload.caller.clone(),
+        controls: payload.controls.clone(),
+        provenance: payload.provenance.clone(),
+        writes_authority_protected_field: payload.writes_authority_protected_field,
+        original_transaction_id: payload.original_transaction_id.clone(),
+        undo_journal_id: payload.undo_journal_id.clone(),
+        context_mode: None,
+        icon: None,
+        children_budget: None,
+        notes: None,
+        canonical_payload: None,
+    };
+    validate_renderer_authority_context(&context)?;
+    Ok(context)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -3333,7 +3372,38 @@ pub struct UndoAiTreePlanPayload {
     pub updated_at: String,
     pub original_transaction_id: String,
     pub undo_journal_id: String,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     pub expected_versions: Vec<AiTreeNodeVersionInput>,
+}
+
+fn ai_tree_undo_authority_context(
+    payload: &UndoAiTreePlanPayload,
+) -> anyhow::Result<RendererCanonicalWriteContext> {
+    let context = RendererCanonicalWriteContext {
+        request_id: payload.request_id.clone(),
+        event_uid: payload.request_id.clone(),
+        origin: NarrativeChangeOrigin::Undo,
+        authority_route: payload.authority_route.clone(),
+        caller: payload.caller.clone(),
+        controls: payload.controls.clone(),
+        provenance: payload.provenance.clone(),
+        writes_authority_protected_field: payload.writes_authority_protected_field,
+        original_transaction_id: Some(payload.original_transaction_id.clone()),
+        undo_journal_id: Some(payload.undo_journal_id.clone()),
+        context_mode: None,
+        icon: None,
+        children_budget: None,
+        notes: None,
+        canonical_payload: None,
+    };
+    validate_renderer_authority_context(&context)?;
+    Ok(context)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -3413,6 +3483,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
         payload.creates.len() + payload.updates.len() <= 200,
         "AI tree plan exceeds the mutation budget"
     );
+    let authority_context = ai_tree_authority_context(&payload)?;
     match (
         payload.redo,
         payload.original_transaction_id.as_deref(),
@@ -3712,15 +3783,14 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     .trace_id
                     .as_deref()
                     .unwrap_or_else(|| ids.iter().copied().min().unwrap_or("tree-plan")),
-                canonical_payload: json!({
+            canonical_payload: canonical_payload_with_authority_context(&json!({
                     "requestId": payload.request_id,
                     "model": payload.model,
                     "traceId": payload.trace_id,
                     "createdIds": payload.creates.iter().map(|item| &item.id).collect::<Vec<_>>(),
                     "updatedIds": payload.updates.iter().map(|item| &item.id).collect::<Vec<_>>(),
                     "redo": payload.redo,
-                })
-                .to_string(),
+                }).to_string(), &authority_context),
                 scene_id: None,
                 occurred_at: &payload.updated_at,
                 timestamp,
@@ -3762,6 +3832,7 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
     ] {
         require_non_empty(value, field)?;
     }
+    let authority_context = ai_tree_undo_authority_context(&payload)?;
     let mut normalized = payload.clone();
     normalized.session_id.clear();
     let request_hash = payload_fingerprint("ai_tree_plan_undo", &normalized)?;
@@ -3932,11 +4003,14 @@ pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyho
                 canonical_domain: "tree",
                 canonical_entity_type: "tree_plan",
                 entity_id: &entity_id,
-                canonical_payload: json!({
-                    "requestId": payload.request_id,
-                    "affectedIds": affected_ids,
-                })
-                .to_string(),
+                canonical_payload: canonical_payload_with_authority_context(
+                    &json!({
+                        "requestId": payload.request_id,
+                        "affectedIds": affected_ids,
+                    })
+                    .to_string(),
+                    &authority_context,
+                ),
                 scene_id: None,
                 occurred_at: &payload.updated_at,
                 timestamp,
@@ -4422,6 +4496,25 @@ mod tests {
             updated_at: "2026-08-13T01:00:00Z".to_string(),
             model: Some("model-1".to_string()),
             trace_id: Some("trace-1".to_string()),
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "chat-tool-executor".to_string(),
+            controls: vec![
+                "knowledge-write-policy".to_string(),
+                "stable-request-id".to_string(),
+                "agent-provenance".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "undo-journal".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
+            provenance: Some(RendererMutationProvenance {
+                request_id: request_id.to_string(),
+                trace_id: "trace-1".to_string(),
+                chat_message_id: None,
+                tool_call_id: None,
+            }),
+            writes_authority_protected_field: false,
             creates: vec![AiTreePlanCreateInput {
                 id: "ai-folder".to_string(),
                 parent_id: Some("root".to_string()),
@@ -4487,6 +4580,15 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
             assert_eq!(counts, (1, 1, 2, 1));
+            let canonical_payload: String = conn.query_row(
+                "SELECT payload FROM change_events WHERE event_uid = 'ai-tree-forward-request'",
+                [],
+                |row| row.get(0),
+            )?;
+            let canonical_payload: Value = serde_json::from_str(&canonical_payload)?;
+            assert_eq!(canonical_payload["authorityRoute"], "interactive-agent-command");
+            assert_eq!(canonical_payload["authorityCaller"], "chat-tool-executor");
+            assert_eq!(canonical_payload["authorityEvidence"]["status"], "validated");
             let event_order = conn
                 .prepare(
                     "SELECT event.object_key_json
@@ -4512,6 +4614,18 @@ mod tests {
                 updated_at: "2026-08-13T01:01:00Z".to_string(),
                 original_transaction_id: original_transaction_id.clone(),
                 undo_journal_id: undo_journal_id.clone(),
+                authority_route: "history-replay".to_string(),
+                caller: "history-controller".to_string(),
+                controls: vec![
+                    "original-transaction".to_string(),
+                    "journal-lineage".to_string(),
+                    "typed-writer".to_string(),
+                    "occ".to_string(),
+                    "change-event".to_string(),
+                    "change-feed".to_string(),
+                ],
+                provenance: None,
+                writes_authority_protected_field: false,
                 expected_versions: vec![
                     AiTreeNodeVersionInput {
                         id: "ai-folder".to_string(),
@@ -4535,6 +4649,17 @@ mod tests {
         redo.redo = true;
         redo.original_transaction_id = Some(original_transaction_id.clone());
         redo.undo_journal_id = Some(undo_journal_id);
+        redo.authority_route = "history-replay".to_string();
+        redo.caller = "history-controller".to_string();
+        redo.controls = vec![
+            "original-transaction".to_string(),
+            "journal-lineage".to_string(),
+            "typed-writer".to_string(),
+            "occ".to_string(),
+            "change-event".to_string(),
+            "change-feed".to_string(),
+        ];
+        redo.provenance = None;
         apply_ai_tree_plan(&db, redo).expect("redo AI tree plan");
 
         db.with_conn(|conn| {

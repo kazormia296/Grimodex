@@ -108,10 +108,30 @@ describe("validate-semantic-core-boundary", () => {
       path.join(root, "src/features/narrative-extraction/reconciler/bad.ts"),
       'import { agentCreateCodexEntry } from "@/features/agent-writes/codex";\nimport { createCodexEntry } from "@/features/codex/api";\n',
     );
+    mkdirSync(path.join(root, "src-tauri/crates/grimodex-semantic/src"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(root, "src-tauri/crates/grimodex-semantic/src/bad.rs"),
+      "use grimodex_db::agent_writes::agent_codex_create_impl;\nfn bad() { agent_writes::agent_codex_create_impl(); }\n",
+    );
 
     const result = validateSemanticCoreBoundary({ repoRoot: root });
     assert.ok(result.errors.some((error) => /unknown authority route/i.test(error)));
     assert.ok(result.errors.some((error) => /forbidden.*agent writer|interpreter.*agent/i.test(error)));
     assert.ok(result.errors.some((error) => /Domain API directly/i.test(error)));
+  });
+
+  it("validates every authority variant instead of trusting one static label", () => {
+    const root = minimalFixtureRoot();
+    const manifest = path.join(root, "policies/narrative/change-feed-writers.json");
+    const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+    parsed.operations[0].authorityVariants = [
+      { authorityRoute: "unknown-route", controls: [] },
+    ];
+    writeFileSync(manifest, JSON.stringify(parsed));
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(result.errors.some((error) => /unknown authority route/i.test(error)));
   });
 });

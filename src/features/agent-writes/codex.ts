@@ -79,11 +79,27 @@ interface AgentWriteResult {
 function agentCodexWriteContext(
   surface: string | undefined,
   requestId?: string,
+  provenance?: {
+    traceId?: string | null;
+    chatMessageId?: string | null;
+  },
 ) {
+  const stableRequestId = requestId ?? crypto.randomUUID();
   return createCanonicalWriteContext(
     surface === "manual" ? "human" : "ai-apply",
     undefined,
-    requestId,
+    stableRequestId,
+    surface === "manual"
+      ? undefined
+      : {
+          provenance: {
+            requestId: stableRequestId,
+            traceId: provenance?.traceId ?? stableRequestId,
+            ...(provenance?.chatMessageId
+              ? { chatMessageId: provenance.chatMessageId }
+              : {}),
+          },
+        },
   );
 }
 
@@ -179,6 +195,7 @@ export async function agentCreateCodexEntry(
   const writeContext = agentCodexWriteContext(
     writeOpts?.surface,
     input.requestId,
+    { traceId: input.traceId, chatMessageId },
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
@@ -291,8 +308,9 @@ export async function agentUpdateCodexEntry(
         )
       : undefined;
   const writeContext = agentCodexWriteContext(
-    options?.writeOpts?.surface,
+    options?.restoreHuman ? "manual" : options?.writeOpts?.surface,
     input.requestId,
+    { traceId: input.traceId, chatMessageId },
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_update", {
