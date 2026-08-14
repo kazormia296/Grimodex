@@ -2076,6 +2076,17 @@ impl Backend {
 
     #[napi]
     pub async fn tree_node_delete(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, payload: TreeNodeDeletePayload, context| {
+                    domain_writes::tree_node_delete_with_authority(db, payload, Some(context))
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: TreeNodeDeletePayload = from_wire("payload", payload)?;
@@ -2090,6 +2101,17 @@ impl Backend {
 
     #[napi]
     pub async fn tree_node_patch(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, payload: TreeNodePatchPayload, context| {
+                    domain_writes::tree_node_patch_with_authority(db, payload, Some(context))
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: TreeNodePatchPayload = from_wire("payload", payload)?;
@@ -3987,6 +4009,17 @@ impl Backend {
     /// Option<Option<T>>)。返り値: 更新後行の JSON 文字列。
     #[napi]
     pub async fn foreshadow_update(&self, id: String, patch: serde_json::Value) -> Result<String> {
+        if patch.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "patch",
+                patch,
+                move |db, patch: ForeshadowPatch, context| {
+                    foreshadow::update_with_renderer_authority(db, id, patch, Some(context))
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let patch: ForeshadowPatch = from_wire("patch", patch)?;
@@ -4002,6 +4035,17 @@ impl Backend {
     /// 削除した aggregate の receipt を返す。
     #[napi]
     pub async fn foreshadow_delete(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, payload: ForeshadowDeletePayload, context| {
+                    foreshadow::delete_with_renderer_authority(db, payload, Some(context))
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ForeshadowDeletePayload = from_wire("payload", payload)?;
@@ -4435,11 +4479,13 @@ impl Backend {
 
     #[napi]
     pub async fn agent_foreshadow_update(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_foreshadow_update_impl,
+            |db, payload, context| {
+                agent_writes::renderer_agent_foreshadow_update_impl(db, payload, context)
+            },
         )
         .await
     }

@@ -391,6 +391,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     await backend.agentForeshadowCreate(foreshadow),
   );
   assert.equal(foreshadowFirst.undoJournalId, foreshadow.requestId);
+  assert.equal(foreshadowFirst.changeEventUid, foreshadow.eventUid);
   assert.notEqual(foreshadowFirst.entityId, foreshadow.requestId);
   const foreshadowEvent = await rows(
     "SELECT payload FROM change_events WHERE event_uid = ?",
@@ -403,6 +404,57 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
   assert.equal(foreshadowEventPayload.authorityCaller, "chat-tool-executor");
   assert.equal(foreshadowEventPayload.authorityEvidence.validated, true);
+
+  const foreshadowUpdate = {
+    ...canonical("agent-tool:foreshadow-update-napi-request-1", "ai-apply"),
+    projectId: PROJECT,
+    sessionId: "sess-update-1",
+    foreshadowId: foreshadowFirst.entityId,
+    baseVersion: 0,
+    title: "刻印（更新）",
+    intent: null,
+    notes: null,
+    loadBearing: "critical",
+    payoffConfirmed: null,
+    abandoned: null,
+    secret: true,
+  };
+  const foreshadowUpdateResult = JSON.parse(
+    await backend.agentForeshadowUpdate(foreshadowUpdate),
+  );
+  assert.equal(
+    foreshadowUpdateResult.changeEventUid,
+    foreshadowUpdate.eventUid,
+  );
+  const foreshadowUpdateEvent = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [foreshadowUpdate.eventUid],
+  );
+  const foreshadowUpdateEventPayload = JSON.parse(
+    foreshadowUpdateEvent[0].payload,
+  );
+  assert.equal(
+    foreshadowUpdateEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(
+    foreshadowUpdateEventPayload.authorityEvidence.validated,
+    true,
+  );
+  await assert.rejects(
+    backend.agentForeshadowUpdate({
+      ...foreshadowUpdate,
+      ...canonical("agent-tool:foreshadow-update-napi-invalid", "ai-apply"),
+      projectId: PROJECT,
+      sessionId: "sess-update-invalid",
+      foreshadowId: foreshadowFirst.entityId,
+      baseVersion: 1,
+      requestId: "agent-tool:foreshadow-update-napi-invalid",
+      eventUid: "agent-tool:foreshadow-update-napi-invalid:event",
+      caller: "background-maintenance-v2",
+    }),
+    /Forbidden caller/,
+  );
   assert.deepEqual(
     JSON.parse(
       await backend.agentForeshadowCreate({

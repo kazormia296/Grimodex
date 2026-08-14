@@ -10,12 +10,14 @@
 import { BrowserWindow, ipcMain } from "electron";
 
 import {
+  bindCanonicalAuthorityContext,
   dispatchInvoke,
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
 } from "../shared/ipcContract.js";
 import type {
+  CanonicalAuthorityRoute,
   CommandArgs,
   Envelope,
   NapiBackendLike,
@@ -31,6 +33,20 @@ import {
   hasPanelWindow,
   openPanelWindow,
 } from "./windows.js";
+
+const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
+  "agent_codex_create",
+  "agent_codex_update",
+  "agent_codex_delete",
+  "agent_codex_mutate",
+  "snippet_create",
+  "snippet_update",
+  "snippet_delete",
+  "entity_tags_set",
+  "project_create",
+  "project_patch",
+  "temporal_scene_patch",
+]);
 
 export type ExtraShellHandlers =
   | ShellCommandHandlers
@@ -61,6 +77,88 @@ function logWorkspaceOpenMainTrace(
 
 function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function authorityRouteForRendererCommand(
+  cmd: string,
+  payload: CommandArgs,
+): CanonicalAuthorityRoute | undefined {
+  if (cmd === "agent_foreshadow_create" || cmd === "agent_foreshadow_update") {
+    return "interactive-agent-command";
+  }
+
+  if (
+    cmd === "foreshadow_create" ||
+    cmd === "foreshadow_update" ||
+    cmd === "foreshadow_delete"
+  ) {
+    return payload.origin === "human" ? "human-direct" : undefined;
+  }
+
+  if (GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd)) {
+    switch (payload.origin) {
+      case "human":
+        return "human-direct";
+      case "ai-apply":
+        return "interactive-agent-command";
+      case "import":
+        return "import-apply";
+      case "undo":
+      case "redo":
+        return "history-replay";
+      case "restore":
+      case "migration":
+        return "restore-or-migration";
+      default:
+        return undefined;
+    }
+  }
+
+  if (
+    cmd !== "tree_node_create" &&
+    cmd !== "tree_node_patch" &&
+    cmd !== "tree_node_delete"
+  ) {
+    return undefined;
+  }
+
+  switch (payload.origin) {
+    case "human":
+      return "human-direct";
+    case "import":
+      return "import-apply";
+    case "undo":
+    case "redo":
+      return "history-replay";
+    case "restore":
+    case "migration":
+      return "restore-or-migration";
+    default:
+      // In particular, an interactive-agent payload cannot reuse a tree
+      // renderer command. AI tree plans have their own command contract.
+      return undefined;
+  }
+}
+
+/**
+ * Main-process trust boundary for canonical renderer writers. The preload
+ * bridge intentionally remains a generic transport; this function is the
+ * policy binding that prevents a renderer payload from selecting an arbitrary
+ * allowlisted caller/route/control set before it reaches dispatchInvoke.
+ */
+export function bindRendererAuthorityForIpc(
+  cmd: string,
+  args: CommandArgs,
+): CommandArgs {
+  const payloadKey = cmd === "foreshadow_update" ? "patch" : "payload";
+  const payload = args[payloadKey];
+  if (!isRecord(payload)) return args;
+  const route = authorityRouteForRendererCommand(cmd, payload);
+  if (!route) return args;
+  return {
+    ...args,
+    [payloadKey]: bindCanonicalAuthorityContext(payload, route),
+  };
 }
 
 /**
@@ -97,12 +195,17 @@ export function registerIpcRouter(
           typeof extraShellHandlers === "function"
             ? extraShellHandlers(win)
             : extraShellHandlers;
-        const envelope = await dispatchInvoke(cmd, isRecord(args) ? args : {}, {
-          backend,
-          shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-          secrets,
-          broadcast,
-        });
+        const rawArgs = isRecord(args) ? args : {};
+        const envelope = await dispatchInvoke(
+          cmd,
+          bindRendererAuthorityForIpc(cmd, rawArgs),
+          {
+            backend,
+            shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+            secrets,
+            broadcast,
+          },
+        );
         workspaceOpenResult = envelope.ok ? "success" : "failure";
         if (!envelope.ok) {
           if (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER)) {

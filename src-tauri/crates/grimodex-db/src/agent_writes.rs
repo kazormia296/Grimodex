@@ -363,6 +363,14 @@ fn origin_allowed_for_route(route: &str, origin: NarrativeChangeOrigin) -> bool 
 pub(crate) fn validate_renderer_authority_context(
     context: &RendererCanonicalWriteContext,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !context.request_id.trim().is_empty(),
+        "requestId must not be empty"
+    );
+    anyhow::ensure!(
+        !context.event_uid.trim().is_empty(),
+        "eventUid must not be empty"
+    );
     let allowed_callers = allowed_callers_for_route(&context.authority_route)
         .ok_or_else(|| anyhow::anyhow!("Unknown mutation authority route"))?;
     anyhow::ensure!(
@@ -428,6 +436,19 @@ pub(crate) fn validate_renderer_authority_context(
         context.authority_route == "history-replay" && replay == complete_lineage
             || context.authority_route != "history-replay" && !replay && !complete_lineage,
         "history-replay requires undo/redo origin and complete transaction/journal lineage"
+    );
+    Ok(())
+}
+
+pub(crate) fn validate_renderer_authority_context_for_routes(
+    context: &RendererCanonicalWriteContext,
+    allowed_routes: &[&str],
+) -> anyhow::Result<()> {
+    validate_renderer_authority_context(context)?;
+    anyhow::ensure!(
+        allowed_routes.contains(&context.authority_route.as_str()),
+        "Authority route '{}' is not allowed for this writer",
+        context.authority_route
     );
     Ok(())
 }
@@ -4877,7 +4898,7 @@ pub fn renderer_agent_foreshadow_create_impl(
         payload.request_id == context.request_id,
         "agent foreshadow requestId does not match canonical authority context"
     );
-    validate_renderer_authority_context(&context)?;
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
     agent_foreshadow_create_with_context_impl(db, payload, "in-app-agent", Some(context))
 }
 
@@ -4919,6 +4940,9 @@ fn agent_foreshadow_create_with_context_impl(
                 secret: payload.secret,
                 request_id: Some(&payload.request_id),
                 request_hash: Some(&request_hash),
+                event_uid: renderer_context
+                    .as_ref()
+                    .map(|context| context.event_uid.as_str()),
             },
             |conn, event, undo_journal_id| {
                 let canonical_event = db_change_event_from_core(event);
@@ -4946,7 +4970,35 @@ pub fn agent_foreshadow_update_impl(
     payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
     let request_id = payload.request_id.clone();
-    agent_foreshadow_update_with_request_impl(db, payload, &request_id, "in-app-agent")
+    agent_foreshadow_update_with_context_impl(
+        db,
+        payload,
+        &request_id,
+        "in-app-agent",
+        None,
+    )
+}
+
+pub fn renderer_agent_foreshadow_update_impl(
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!payload.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!payload.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "agent foreshadow update requestId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
+    let request_id = context.request_id.clone();
+    agent_foreshadow_update_with_context_impl(
+        db,
+        payload,
+        &request_id,
+        "in-app-agent",
+        Some(context),
+    )
 }
 
 pub fn agent_foreshadow_update_with_request_impl(
@@ -4954,6 +5006,16 @@ pub fn agent_foreshadow_update_with_request_impl(
     payload: AgentForeshadowUpdatePayload,
     request_id: &str,
     surface: &str,
+) -> anyhow::Result<Value> {
+    agent_foreshadow_update_with_context_impl(db, payload, request_id, surface, None)
+}
+
+fn agent_foreshadow_update_with_context_impl(
+    db: &Database,
+    payload: AgentForeshadowUpdatePayload,
+    request_id: &str,
+    surface: &str,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(!request_id.trim().is_empty(), "requestId must not be empty");
     anyhow::ensure!(
@@ -4978,7 +5040,7 @@ pub fn agent_foreshadow_update_with_request_impl(
                 undo_journal_id,
                 &canonical_event,
                 None,
-                None,
+                renderer_context.as_ref(),
             )
             .map(|_| ())
         };
@@ -4999,6 +5061,9 @@ pub fn agent_foreshadow_update_with_request_impl(
                         abandoned: payload.abandoned,
                         secret: payload.secret,
                     },
+                    event_uid: renderer_context
+                        .as_ref()
+                        .map(|context| context.event_uid.as_str()),
                 },
                 payload.base_version,
                 request_id,

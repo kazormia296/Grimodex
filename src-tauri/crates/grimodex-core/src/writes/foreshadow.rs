@@ -38,6 +38,9 @@ pub struct TrackedForeshadowCreateInput<'a> {
     /// Hash of the normalized client create request. When present, the
     /// persisted create journal becomes a durable idempotency record.
     pub request_hash: Option<&'a str>,
+    /// Renderer canonical event identity. Legacy/MCP callers leave this
+    /// unset and retain UUID allocation inside the core writer.
+    pub event_uid: Option<&'a str>,
 }
 
 /// Only `Some` fields are written (same contract as the raw dynamic-SET
@@ -59,6 +62,9 @@ pub struct TrackedForeshadowUpdateInput<'a> {
     pub surface: &'a str,
     pub foreshadow_id: &'a str,
     pub patch: ForeshadowPatch<'a>,
+    /// Renderer canonical event identity. Legacy/MCP callers leave this
+    /// unset and retain UUID allocation inside the core writer.
+    pub event_uid: Option<&'a str>,
 }
 
 /// Full-row snapshot for undo_journal (camelCase keys, like codex/snippet).
@@ -299,7 +305,10 @@ where
         .request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = input
+        .event_uid
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().timestamp_millis();
 
     let mut change_payload = json!({
@@ -509,7 +518,10 @@ where
     let undo_id = request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = input
+        .event_uid
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().timestamp_millis();
 
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -755,6 +767,7 @@ mod tests {
             secret: false,
             request_id: None,
             request_hash: None,
+            event_uid: None,
         }
     }
 
@@ -942,6 +955,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     load_bearing: Some("supporting"),
@@ -1022,6 +1036,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "ghost",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("X"),
                     ..Default::default()
@@ -1046,6 +1061,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("hijacked"),
                     ..Default::default()
@@ -1077,6 +1093,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch::default(),
             },
         );
@@ -1152,6 +1169,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     abandoned: Some(true),
@@ -1215,6 +1233,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     ..Default::default()
@@ -1252,6 +1271,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("First"),
                     ..Default::default()
@@ -1267,6 +1287,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Second"),
                     ..Default::default()

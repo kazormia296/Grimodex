@@ -48,7 +48,8 @@ vi.mock("./windows.js", () => ({
   openPanelWindow: mocks.openPanelWindow,
 }));
 
-const { registerIpcRouter } = await import("./ipc.js");
+const { bindRendererAuthorityForIpc, registerIpcRouter } =
+  await import("./ipc.js");
 
 function invokeHandler(): (
   event: { sender: unknown },
@@ -72,6 +73,96 @@ afterEach(() => {
 });
 
 describe("registerIpcRouter fail-soft logging", () => {
+  it("binds strict renderer authority from the main-owned command policy", () => {
+    const bound = bindRendererAuthorityForIpc("tree_node_create", {
+      payload: {
+        projectId: "p1",
+        requestId: "request-1",
+        sessionId: "session-1",
+        eventUid: "event-1",
+        origin: "human",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: ["knowledge-write-policy"],
+        provenance: { requestId: "request-1", traceId: "forged" },
+        writesAuthorityProtectedField: true,
+        originalTransactionId: null,
+        undoJournalId: null,
+        id: "node-1",
+        nodeType: "scene",
+        title: "Scene",
+        sortOrder: "a0",
+      },
+    });
+
+    expect(bound.payload).toMatchObject({
+      origin: "human",
+      authorityRoute: "human-direct",
+      caller: "human-ui",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+    });
+  });
+
+  it("passes the bound authority to the native strict writer", async () => {
+    const agentForeshadowCreate = vi.fn(async () =>
+      JSON.stringify({
+        entityId: "f1",
+        version: 1,
+        changeEventUid: "event-1",
+        undoJournalId: "journal-1",
+      }),
+    );
+    registerIpcRouter({ agentForeshadowCreate } as unknown as NapiBackendLike);
+
+    const envelope = await invokeHandler()(
+      { sender: {} },
+      "agent_foreshadow_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "request-1",
+          sessionId: "session-1",
+          eventUid: "event-1",
+          origin: "human",
+          authorityRoute: "human-direct",
+          caller: "human-ui",
+          controls: ["runtime-policy"],
+          provenance: null,
+          writesAuthorityProtectedField: true,
+          originalTransactionId: null,
+          undoJournalId: null,
+          foreshadowId: "f1",
+          title: "Scene clue",
+        },
+      },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(agentForeshadowCreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: expect.arrayContaining([
+          "knowledge-write-policy",
+          "agent-provenance",
+          "change-feed",
+        ]),
+        provenance: { requestId: "request-1", traceId: "request-1" },
+        writesAuthorityProtectedField: false,
+      }),
+    );
+  });
+
   it("injects the side-effect-free panel existence delegate", () => {
     registerIpcRouter(null);
 

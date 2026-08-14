@@ -4605,6 +4605,7 @@ pub(crate) mod tests {
                 secret: false,
                 request_id: None,
                 request_hash: None,
+                event_uid: None,
             },
         )
         .unwrap();
@@ -4638,6 +4639,7 @@ pub(crate) mod tests {
                 secret: true,
                 request_id: None,
                 request_hash: None,
+                event_uid: None,
             },
         )
         .unwrap();

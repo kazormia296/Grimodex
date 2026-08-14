@@ -6234,6 +6234,27 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const payload = {
       requestId: "foreshadow-update-request-1",
+      eventUid: "foreshadow-update-event-1",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "foreshadow-update-request-1",
+        traceId: "foreshadow-update-trace-1",
+      },
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       projectId: "p1",
       sessionId: "s1",
       foreshadowId: "f1",

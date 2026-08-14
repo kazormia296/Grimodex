@@ -164,8 +164,14 @@ export async function agentUpdateForeshadow(
   }
 
   const projectId = getCurrentProjectId();
+  const writeContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+  );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_update", {
     payload: {
+      ...writeContext,
       requestId: input.requestId,
       projectId,
       sessionId: getRecorderSessionId(),

@@ -1175,6 +1175,9 @@ function requireForeshadowVersionedPatch(
 ): CommandArgs {
   const patch = requireRecord(args, "patch", command);
   requireForeshadowMutationIdentity(patch, command);
+  if (command === "foreshadow_update") {
+    requireForeshadowRendererAuthority(patch, command, ["human-direct"]);
+  }
   const baseVersion = requireSafeInteger(patch, "baseVersion", command);
   if (baseVersion < 0) {
     throw new Error(
@@ -1222,12 +1225,34 @@ function requireForeshadowMutationIdentity(
   }
 }
 
+function requireForeshadowRendererAuthority(
+  payload: CommandArgs,
+  command: string,
+  allowedRoutes: readonly string[],
+): void {
+  if (payload.origin === "undo" || payload.origin === "redo") return;
+  if (!Object.hasOwn(payload, "authorityRoute")) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: renderer forward writes require canonical authority context`,
+    );
+  }
+  requireCanonicalAuthorityContext(payload, command);
+  if (!allowedRoutes.includes(String(payload.authorityRoute))) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: ${String(payload.authorityRoute)} is not allowed`,
+    );
+  }
+}
+
 function requireForeshadowPayload(
   args: CommandArgs,
   command: string,
 ): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   requireForeshadowMutationIdentity(payload, command);
+  if (command === "foreshadow_create") {
+    requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
+  }
   return payload;
 }
 
@@ -1236,6 +1261,9 @@ function requireForeshadowDeletePayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  if (command === "foreshadow_delete") {
+    requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
+  }
   requireNonEmptyString(payload, "id", command);
   requireForeshadowBaseVersion(payload, command);
   return payload;
@@ -1283,7 +1311,9 @@ function requireForeshadowBaseVersion(
 
 function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_update";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -1294,7 +1324,9 @@ function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
 
 function requireAgentForeshadowCreatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_create";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireNonEmptyString(payload, "title", command);
   return payload;
@@ -2041,6 +2073,7 @@ function requireNullableStringField(
 function requireCanonicalWriterIdentity(
   args: CommandArgs,
   command: string,
+  allowedRoutes?: readonly string[],
 ): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   for (const key of ["projectId", "requestId", "sessionId", "eventUid"]) {
@@ -2084,6 +2117,14 @@ function requireCanonicalWriterIdentity(
     );
   }
   requireCanonicalAuthorityContext(payload, command);
+  if (
+    allowedRoutes &&
+    !allowedRoutes.includes(String(payload.authorityRoute))
+  ) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: ${String(payload.authorityRoute)} is not allowed`,
+    );
+  }
   return payload;
 }
 
@@ -2174,6 +2215,8 @@ const CANONICAL_AUTHORITY_POLICIES = {
     ],
   },
 } as const;
+
+export type CanonicalAuthorityRoute = keyof typeof CANONICAL_AUTHORITY_POLICIES;
 
 const KNOWN_CANONICAL_AUTHORITY_CONTROLS = new Set([
   "runtime-policy",
@@ -2269,6 +2312,41 @@ function requireCanonicalAuthorityContext(
       );
     }
   }
+}
+
+/**
+ * Bind the authority fields at the Electron main boundary. Renderer payloads
+ * may carry request/session/event identity, but route, caller, controls, and
+ * agent provenance are selected by the main-owned command policy rather than
+ * copied from renderer metadata.
+ */
+export function bindCanonicalAuthorityContext(
+  payload: CommandArgs,
+  route: CanonicalAuthorityRoute,
+): CommandArgs {
+  const policy = CANONICAL_AUTHORITY_POLICIES[route];
+  const requestedOrigin = payload.origin;
+  const origin = policy.allowedOrigins.includes(requestedOrigin as never)
+    ? requestedOrigin
+    : policy.allowedOrigins[0];
+  const requestId =
+    typeof payload.requestId === "string" ? payload.requestId : "";
+  const caller =
+    route === "restore-or-migration" && origin === "migration"
+      ? "migration-runner"
+      : policy.allowedCallers[0];
+  return {
+    ...payload,
+    origin,
+    authorityRoute: route,
+    caller,
+    controls: [...policy.requiredControls],
+    provenance:
+      route === "interactive-agent-command"
+        ? { requestId, traceId: requestId }
+        : null,
+    writesAuthorityProtectedField: false,
+  };
 }
 
 function requireSnippetWriterPayload(
@@ -2775,7 +2853,12 @@ function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_create";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "import-apply",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   for (const key of ["id", "projectId", "nodeType", "title", "sortOrder"]) {
     requireNonEmptyString(payload, key, command);
   }
@@ -2801,7 +2884,12 @@ function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_delete";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "import-apply",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   return payload;
@@ -2809,7 +2897,12 @@ function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "import-apply",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);

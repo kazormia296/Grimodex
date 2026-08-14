@@ -23,8 +23,8 @@ use super::{
 };
 use crate::change_events::AppendChangeEvent;
 use crate::agent_writes::{
-    canonical_payload_with_authority_context, validate_renderer_authority_context,
-    RendererCanonicalWriteContext,
+    canonical_payload_with_authority_context,
+    validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
 };
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
@@ -825,7 +825,10 @@ pub fn create_with_renderer_authority(
 ) -> anyhow::Result<Value> {
     let write_context = resolve_write_context("foreshadow.create", &payload.context)?;
     if let Some(context) = renderer_context.as_ref() {
-        validate_renderer_authority_context(context)?;
+        validate_renderer_authority_context_for_routes(
+            context,
+            &["human-direct", "restore-or-migration"],
+        )?;
         anyhow::ensure!(
             context.request_id == payload.context.request_id,
             "foreshadow create requestId does not match canonical authority context"
@@ -1048,11 +1051,42 @@ pub fn create_with_renderer_authority(
 }
 
 pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Result<Value> {
+    update_with_renderer_authority(db, id, patch, None)
+}
+
+pub fn update_with_renderer_authority(
+    db: &Database,
+    id: String,
+    patch: ForeshadowPatch,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         patch.base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
     let write_context = resolve_write_context("foreshadow.update", &patch.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &["human-direct", "restore-or-migration"],
+        )?;
+        anyhow::ensure!(
+            context.request_id == patch.context.request_id,
+            "foreshadow update requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == patch.context.event_uid,
+            "foreshadow update eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == patch.context.origin,
+            "foreshadow update origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == patch.context.original_transaction_id,
+            "foreshadow update originalTransactionId does not match canonical authority context"
+        );
+    }
     let requested_project_id = patch.project_id.clone();
     let fingerprint_payload = json!({
         "id": id,
@@ -1277,7 +1311,7 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
                 .map(Value::Object)
                 .unwrap_or(Value::Null);
             let after_feed = load_canonical_foreshadow_snapshot_in_tx(conn, &project_id, &id)?;
-            let transaction_id = append_foreshadow_feed(
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
@@ -1294,6 +1328,7 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
                         changed_paths.clone(),
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
             Ok(attach_maintenance_transaction_id(after, transaction_id))
         },
@@ -1301,11 +1336,41 @@ pub fn update(db: &Database, id: String, patch: ForeshadowPatch) -> anyhow::Resu
 }
 
 pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result<Value> {
+    delete_with_renderer_authority(db, payload, None)
+}
+
+pub fn delete_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowDeletePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     anyhow::ensure!(
         payload.base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
     let write_context = resolve_write_context("foreshadow.delete", &payload.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &["human-direct", "restore-or-migration"],
+        )?;
+        anyhow::ensure!(
+            context.request_id == payload.context.request_id,
+            "foreshadow delete requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.context.event_uid,
+            "foreshadow delete eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.context.origin,
+            "foreshadow delete origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.context.original_transaction_id,
+            "foreshadow delete originalTransactionId does not match canonical authority context"
+        );
+    }
     let fingerprint_payload = json!({
         "id": payload.id,
         "projectId": payload.project_id,
@@ -1383,7 +1448,7 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
                     change_event_uid: Some(&event_uid),
                 },
             )?;
-            let transaction_id = append_foreshadow_feed(
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
@@ -1400,6 +1465,7 @@ pub fn delete(db: &Database, payload: ForeshadowDeletePayload) -> anyhow::Result
                         vec!["/".to_string()],
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
             record_manual_foreshadow_fields(
                 conn,

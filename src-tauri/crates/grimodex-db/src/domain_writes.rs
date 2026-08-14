@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use super::Database;
 use crate::agent_writes::{
     canonical_payload_with_authority_context, validate_renderer_authority_context,
-    RendererCanonicalWriteContext, RendererMutationProvenance,
+    validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
+    RendererMutationProvenance,
 };
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
@@ -2593,7 +2594,15 @@ pub fn tree_node_create_with_authority(
         payload.undo_journal_id.as_deref(),
     )?;
     if let Some(context) = renderer_context.as_ref() {
-        validate_renderer_authority_context(context)?;
+        validate_renderer_authority_context_for_routes(
+            context,
+            &[
+                "human-direct",
+                "import-apply",
+                "history-replay",
+                "restore-or-migration",
+            ],
+        )?;
         anyhow::ensure!(
             context.request_id == payload.request_id,
             "tree node create requestId does not match canonical authority context"
@@ -2763,6 +2772,14 @@ pub fn tree_node_create_with_authority(
 }
 
 pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow::Result<Value> {
+    tree_node_delete_with_authority(db, payload, None)
+}
+
+pub fn tree_node_delete_with_authority(
+    db: &Database,
+    payload: TreeNodeDeletePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
     validate_tree_write_identity(
@@ -2773,6 +2790,37 @@ pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow
         payload.original_transaction_id.as_deref(),
         payload.undo_journal_id.as_deref(),
     )?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &[
+                "human-direct",
+                "import-apply",
+                "history-replay",
+                "restore-or-migration",
+            ],
+        )?;
+        anyhow::ensure!(
+            context.request_id == payload.request_id,
+            "tree node delete requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.event_uid,
+            "tree node delete eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.origin,
+            "tree node delete origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.original_transaction_id,
+            "tree node delete originalTransactionId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.undo_journal_id == payload.undo_journal_id,
+            "tree node delete undoJournalId does not match canonical authority context"
+        );
+    }
     let request_hash = canonical_write_payload_fingerprint("tree_node_delete", &payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: "tree_node_delete",
@@ -2858,6 +2906,21 @@ pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow
                 },
             )?;
         }
+        let canonical_payload = payload
+            .canonical_payload
+            .clone()
+            .unwrap_or_else(|| {
+                json!({
+                    "id": payload.node_id,
+                    "deletedIds": deleted_ids,
+                })
+            })
+            .to_string();
+        let canonical_payload = if let Some(context) = renderer_context.as_ref() {
+            canonical_payload_with_authority_context(&canonical_payload, context)
+        } else {
+            canonical_payload
+        };
         let maintenance_transaction_id = append_tree_feed(
             &tx,
             TreeFeedAppend {
@@ -2869,16 +2932,7 @@ pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow
                 canonical_domain: "tree",
                 canonical_entity_type: "tree_node",
                 entity_id: &payload.node_id,
-                canonical_payload: payload
-                    .canonical_payload
-                    .clone()
-                    .unwrap_or_else(|| {
-                        json!({
-                            "id": payload.node_id,
-                            "deletedIds": deleted_ids,
-                        })
-                    })
-                    .to_string(),
+                canonical_payload,
                 scene_id: is_scene.then(|| payload.node_id.clone()),
                 occurred_at: &occurred_at,
                 timestamp: event_timestamp(&occurred_at),
@@ -2923,6 +2977,14 @@ pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow
 }
 
 pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::Result<Value> {
+    tree_node_patch_with_authority(db, payload, None)
+}
+
+pub fn tree_node_patch_with_authority(
+    db: &Database,
+    payload: TreeNodePatchPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
@@ -2934,6 +2996,37 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
         payload.original_transaction_id.as_deref(),
         payload.undo_journal_id.as_deref(),
     )?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context_for_routes(
+            context,
+            &[
+                "human-direct",
+                "import-apply",
+                "history-replay",
+                "restore-or-migration",
+            ],
+        )?;
+        anyhow::ensure!(
+            context.request_id == payload.request_id,
+            "tree node patch requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.event_uid,
+            "tree node patch eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.origin,
+            "tree node patch origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.original_transaction_id,
+            "tree node patch originalTransactionId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.undo_journal_id == payload.undo_journal_id,
+            "tree node patch undoJournalId does not match canonical authority context"
+        );
+    }
     let columns = [
         ("parentId", "parent_id"),
         ("title", "title"),
@@ -3227,6 +3320,9 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
                 })
             })
             .to_string();
+        let canonical_payload = renderer_context.as_ref().map_or(canonical_payload.clone(), |context| {
+            canonical_payload_with_authority_context(&canonical_payload, context)
+        });
         let journal_id = payload
             .undo_journal_id
             .clone()

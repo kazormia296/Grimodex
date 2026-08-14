@@ -67,14 +67,14 @@ function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
             "semantic-epoch-event",
             "full-rebuild-marker",
           ]
-      : [
-          "runtime-policy",
-          "actor-context",
-          "typed-writer",
-          "occ",
-          "change-event",
-          "change-feed",
-        ],
+        : [
+            "runtime-policy",
+            "actor-context",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+          ],
     provenance: isInteractiveAgent
       ? { requestId, traceId: `${requestId}:trace` }
       : null,
@@ -175,9 +175,71 @@ test("renderer canonical create は未知の caller を mutation 前に拒否す
     /Forbidden caller/,
   );
   assert.equal(
-    await row("SELECT id FROM foreshadows WHERE id = ?", [invalidForeshadow.id]),
+    await row("SELECT id FROM foreshadows WHERE id = ?", [
+      invalidForeshadow.id,
+    ]),
     undefined,
   );
+});
+
+test("tree renderer writes persist canonical authority evidence for every mutation", async () => {
+  const sceneId = "tree-authority-evidence-scene";
+  const created = JSON.parse(
+    await backend.treeNodeCreate({
+      ...mutationIdentity("tree-authority-evidence-create"),
+      id: sceneId,
+      projectId: PROJECT,
+      parentId: null,
+      nodeType: "scene",
+      title: "Authority scene",
+      sortOrder: "authority-scene",
+      synopsis: null,
+      status: null,
+      sourceUri: null,
+      sourceMtime: null,
+      content: "{}",
+    }),
+  );
+  const createdEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-create:event"],
+  );
+  const createdPayload = JSON.parse(createdEvent.payload);
+  assert.equal(createdPayload.authorityRoute, "human-direct");
+  assert.equal(createdPayload.authorityEvidence.validated, true);
+
+  const patched = JSON.parse(
+    await backend.treeNodePatch({
+      ...mutationIdentity("tree-authority-evidence-patch"),
+      projectId: PROJECT,
+      nodeId: sceneId,
+      patch: { title: "Authority scene (patched)" },
+      baseVersion: created.version,
+      bumpVersion: true,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  const patchedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-patch:event"],
+  );
+  const patchedPayload = JSON.parse(patchedEvent.payload);
+  assert.equal(patchedPayload.authorityRoute, "human-direct");
+  assert.equal(patchedPayload.authorityEvidence.validated, true);
+
+  await backend.treeNodeDelete({
+    ...mutationIdentity("tree-authority-evidence-delete"),
+    projectId: PROJECT,
+    nodeId: sceneId,
+  });
+  const deletedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-delete:event"],
+  );
+  const deletedPayload = JSON.parse(deletedEvent.payload);
+  assert.equal(deletedPayload.authorityRoute, "human-direct");
+  assert.equal(deletedPayload.authorityEvidence.validated, true);
+  assert.equal(patched.id, sceneId);
 });
 
 test("foreshadowCreate → update は nullable field の null と欠落を区別する", async () => {
@@ -245,6 +307,13 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
   );
   assert.equal(setted.intent, "改訂した意図");
   assert.equal(setted.title, "刹那の伏線", "title は不変");
+  const updateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-update-intent:event"],
+  );
+  const updateEventPayload = JSON.parse(updateEvent.payload);
+  assert.equal(updateEventPayload.authorityRoute, "human-direct");
+  assert.equal(updateEventPayload.authorityEvidence.validated, true);
 
   // Nullable fields omitted from a patch stay unchanged at the N-API boundary.
   const omitted = JSON.parse(
@@ -324,6 +393,13 @@ test("foreshadowCreate は delete 後も request tombstone を replay し delibe
     }),
   );
   assert.equal(typeof deleted.undoJournalId, "string");
+  const deleteEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-delete:event"],
+  );
+  const deleteEventPayload = JSON.parse(deleteEvent.payload);
+  assert.equal(deleteEventPayload.authorityRoute, "human-direct");
+  assert.equal(deleteEventPayload.authorityEvidence.validated, true);
 
   const replay = JSON.parse(await backend.foreshadowCreate(payload));
   assert.equal(replay.id, payload.id);
