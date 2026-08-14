@@ -12,12 +12,17 @@ import type { PendingProseProposal } from "./proseStagingStore";
 export type ProseStagingMode = "append" | "insert" | "replace";
 
 export interface AgentProposeSceneBodyInput {
+  requestId?: string;
   sceneId: string;
   text: string;
   mode?: ProseStagingMode;
   replaceFrom?: number;
   replaceTo?: number;
   sourceSurface?: "in-app-agent" | "mcp";
+  /** Main-issued capability for the exact interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  chatMessageId?: string;
+  toolCallId?: string;
 }
 
 export interface ProseStageResult {
@@ -91,12 +96,18 @@ export async function agentProposeSceneBody(
 
   return invoke<ProseStageResult>("agent_propose_scene_body", {
     payload: {
+      ...(input.requestId ? { requestId: input.requestId } : {}),
       projectId,
       sessionId: getRecorderSessionId(),
       sceneId: input.sceneId,
       proposedContent: input.text,
       mode,
       sourceSurface: input.sourceSurface ?? "in-app-agent",
+      ...(input.agentAuthorityCapability
+        ? { agentAuthorityCapability: input.agentAuthorityCapability }
+        : {}),
+      ...(input.chatMessageId ? { chatMessageId: input.chatMessageId } : {}),
+      ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
       replaceFrom: input.replaceFrom ?? null,
       replaceTo: input.replaceTo ?? null,
     },

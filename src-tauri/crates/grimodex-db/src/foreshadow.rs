@@ -4183,7 +4183,7 @@ mod tests {
                 "get",
             )
             .expect("load journal count");
-        assert_eq!(journal[0]["count"], 0);
+        assert_eq!(journal[0]["count"], 1);
     }
 
     #[test]

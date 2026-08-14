@@ -12,7 +12,10 @@ import {
 import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
-import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteAuthorityOptions,
+} from "@/features/native-writes/writeContext";
 
 export interface AgentSnippetCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -37,6 +40,10 @@ interface AgentWriteResult {
 export async function agentCreateSnippet(
   input: AgentSnippetCreateInput,
   chatMessageId?: string | null,
+  authority?: Pick<
+    CanonicalWriteAuthorityOptions,
+    "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+  >,
 ): Promise<Snippet> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -69,9 +76,11 @@ export async function agentCreateSnippet(
     {
       provenance: {
         requestId: input.requestId,
-        traceId: input.traceId ?? input.requestId,
+        traceId: input.traceId ?? chatMessageId ?? input.requestId,
         ...(chatMessageId ? { chatMessageId } : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
       },
+      ...authority,
     },
   );
 

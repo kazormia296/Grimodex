@@ -53,6 +53,7 @@ function initialTreePlanSignature(plan: AiTreePlan, ctx: ApplyContext): string {
     plan,
     model: ctx.model,
     traceId: ctx.traceId,
+    requestId: ctx.requestId,
     scope: {
       allowedOps: [...ctx.scope.allowedOps].sort(),
       rootRef: ctx.scope.rootRef,
@@ -195,7 +196,7 @@ async function applyAiTreePlanWithAuthority(
     initialSignature,
     initialSignature,
     (requestId) => ({
-      requestId,
+      requestId: ctx.requestId ?? requestId,
       updatedAt: new Date().toISOString(),
       createdIds: [...v.tempIds].map((tempId) => [tempId, crypto.randomUUID()]),
     }),
@@ -330,6 +331,11 @@ async function applyAiTreePlanWithAuthority(
                   ? payload.requestId
                   : initialRequest.payload.requestId),
             },
+            ...(ctx.agentAuthorityCapability
+              ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
+              : {}),
+            ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
+            ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
           },
     );
     Object.assign(payload, {
@@ -338,6 +344,17 @@ async function applyAiTreePlanWithAuthority(
       caller: authorityContext.caller,
       controls: authorityContext.controls,
       provenance: authorityContext.provenance,
+      ...(authorityContext.agentAuthorityCapability
+        ? {
+            agentAuthorityCapability: authorityContext.agentAuthorityCapability,
+          }
+        : {}),
+      ...(authorityContext.chatMessageId
+        ? { chatMessageId: authorityContext.chatMessageId }
+        : {}),
+      ...(authorityContext.toolCallId
+        ? { toolCallId: authorityContext.toolCallId }
+        : {}),
       writesAuthorityProtectedField:
         authorityContext.writesAuthorityProtectedField,
     });

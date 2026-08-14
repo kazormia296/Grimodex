@@ -2189,6 +2189,7 @@ const CANONICAL_AUTHORITY_POLICIES = {
       "knowledge-write-policy",
       "stable-request-id",
       "agent-provenance",
+      "field-authority",
       "typed-writer",
       "occ",
       "undo-journal",
@@ -7553,7 +7554,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         d,
         "send_agent_message",
       );
-      return parseWire(await sendAgentMessage(a, settings, apiKey));
+      const response = parseWire(await sendAgentMessage(a, settings, apiKey));
+      return d.issueAgentAuthorityCapabilities
+        ? d.issueAgentAuthorityCapabilities(a, response)
+        : response;
     },
   },
   list_ai_models: {
@@ -7833,6 +7837,11 @@ export interface DispatchDeps {
    * 呼出元以外のZustand storeにも即時反映するために使う。
    */
   broadcast?: (channel: string, payload: unknown) => void;
+  /** Main-owned, turn-scoped capabilities are issued only by Electron main. */
+  issueAgentAuthorityCapabilities?: (
+    args: CommandArgs,
+    response: unknown,
+  ) => Promise<unknown> | unknown;
 }
 
 /**

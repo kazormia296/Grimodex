@@ -943,10 +943,8 @@ function createChatTurnStoreActions(
               agentApiVariant,
               aiSettings?.reasoningEffortOverride ?? undefined,
             );
-
           // Accumulate tool calls for live metadata update
           const accToolCalls: ToolCallRecord[] = [];
-
           // 短絡: get_codex_entry が「事前に full body + custom details +
           // aliases が注入されているエントリ」に対して呼ばれた場合は、
           // executor (DB アクセス) を呼ばずスタブを返す。LLM はプロンプト
@@ -954,11 +952,11 @@ function createChatTurnStoreActions(
           const agentControl = getPromptCatalog(
             projectCtx?.language ?? "ja",
           ).agentControl;
-
           const guardedExecuteTool: typeof executeTool = async (
             name,
             toolCallId,
             params,
+            authorization,
           ) => {
             assertTurnAuthority();
             // ask_user: 遅延 Promise を返し、UI の回答で resolve されるまでループを
@@ -1018,7 +1016,6 @@ function createChatTurnStoreActions(
                 };
               }
               subAgentCallCount++;
-
               // 予算分割: 子は親の半分（トークン / 呼び出し）。子の重い文脈は
               // 親予算を消費せず、返す要約のみが親に積まれる。
               const childTokenBudget = Math.max(
@@ -1036,7 +1033,6 @@ function createChatTurnStoreActions(
                 },
                 { role: "user", content: task },
               ];
-
               let researchInputTokenDrift = createInputTokenDriftTotals();
               let researchAuditExecutionId = parentAuditExecutionId;
               let childResult;
@@ -1146,7 +1142,6 @@ function createChatTurnStoreActions(
               } finally {
                 if (isCurrentTurn()) set({ subAgentProgress: null });
               }
-
               // 子の LLM usage（input/output/コスト）は親メッセージと同じ traceId で
               // 台帳に記録する（同一論理ターンにロールアップ）。
               void recordAiUsage({
@@ -1203,7 +1198,12 @@ function createChatTurnStoreActions(
                 };
               }
             }
-            return executeTool(name, toolCallId, params);
+            return authorization
+              ? executeTool(name, toolCallId, params, {
+                  ...authorization,
+                  chatMessageId: assistantMsg.id,
+                })
+              : executeTool(name, toolCallId, params);
           };
 
           // クライアントツールは private Agent のときだけ渡す。Public RAG は

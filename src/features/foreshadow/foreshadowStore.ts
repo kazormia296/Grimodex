@@ -411,9 +411,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     const originalTransactionId = mutationMetadata?.maintenanceTransactionId;
     const undoJournalId = mutationMetadata?.undoJournalId;
     if (!originalTransactionId || !undoJournalId) {
-      throw new Error(
-        "foreshadow update did not return complete undo lineage",
-      );
+      throw new Error("foreshadow update did not return complete undo lineage");
     }
 
     // payoffSceneId を null にした更新の場合、本文の payoff mark を物理削除

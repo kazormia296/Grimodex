@@ -10,7 +10,8 @@ use serde_json::{json, Value};
 
 use super::Database;
 use crate::agent_writes::{
-    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    canonical_payload_with_authority_context, canonical_payload_with_derived_authority_context,
+    validate_and_record_agent_field_authority_for_entity, validate_renderer_authority_context,
     validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
     RendererMutationProvenance,
 };
@@ -3950,6 +3951,46 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
             }
         }
 
+        let mut affected_authority_paths = BTreeSet::new();
+        if authority_context.authority_route == "interactive-agent-command" {
+            for create in &payload.creates {
+                let paths = [
+                    "/parentId".to_string(),
+                    "/nodeType".to_string(),
+                    "/title".to_string(),
+                    "/sortOrder".to_string(),
+                    "/synopsis".to_string(),
+                ];
+                affected_authority_paths.extend(paths.iter().cloned());
+                validate_and_record_agent_field_authority_for_entity(
+                    &tx,
+                    &payload.project_id,
+                    "tree_node",
+                    &create.id,
+                    &paths,
+                    &payload.updated_at,
+                )?;
+            }
+            for update in &payload.updates {
+                let mut paths = Vec::new();
+                if update.placement.is_some() {
+                    paths.extend(["/parentId".to_string(), "/sortOrder".to_string()]);
+                }
+                if update.title.is_some() {
+                    paths.push("/title".to_string());
+                }
+                affected_authority_paths.extend(paths.iter().cloned());
+                validate_and_record_agent_field_authority_for_entity(
+                    &tx,
+                    &payload.project_id,
+                    "tree_node",
+                    &update.id,
+                    &paths,
+                    &payload.updated_at,
+                )?;
+            }
+        }
+
         let mut before = BTreeMap::<String, Value>::new();
         for update in &payload.updates {
             let snapshot = select_tree_node(&tx, &payload.project_id, &update.id)?;
@@ -4174,14 +4215,14 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     .trace_id
                     .as_deref()
                     .unwrap_or_else(|| ids.iter().copied().min().unwrap_or("tree-plan")),
-            canonical_payload: canonical_payload_with_authority_context(&json!({
+            canonical_payload: canonical_payload_with_derived_authority_context(&json!({
                     "requestId": payload.request_id,
                     "model": payload.model,
                     "traceId": payload.trace_id,
                     "createdIds": payload.creates.iter().map(|item| &item.id).collect::<Vec<_>>(),
                     "updatedIds": payload.updates.iter().map(|item| &item.id).collect::<Vec<_>>(),
                     "redo": payload.redo,
-                }).to_string(), &authority_context),
+                }).to_string(), &authority_context, &affected_authority_paths.iter().cloned().collect::<Vec<_>>()),
                 scene_id: None,
                 occurred_at: &payload.updated_at,
                 timestamp,
@@ -4893,6 +4934,7 @@ mod tests {
                 "knowledge-write-policy".to_string(),
                 "stable-request-id".to_string(),
                 "agent-provenance".to_string(),
+                "field-authority".to_string(),
                 "typed-writer".to_string(),
                 "occ".to_string(),
                 "undo-journal".to_string(),

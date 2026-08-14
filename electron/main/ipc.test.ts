@@ -174,6 +174,160 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(otherSenderSession).not.toBe(firstSession);
   });
 
+  it("derives a nested tree change event from the sender-bound identity", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "tree_node_patch",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "tree-request-1",
+          sessionId: "renderer-claimed",
+          eventUid: "tree-event-1",
+          origin: "human",
+          nodeId: "scene-1",
+          patch: { content: "{}" },
+          changeEvent: {
+            eventUid: "renderer-event",
+            sessionId: "renderer-session",
+            timestamp: 123,
+          },
+        },
+      },
+      703,
+    );
+
+    const payload = bound.payload as {
+      eventUid: string;
+      sessionId: string;
+      changeEvent: {
+        eventUid: string;
+        sessionId: string;
+        timestamp: number;
+      };
+    };
+    expect(payload.changeEvent).toEqual({
+      eventUid: payload.eventUid,
+      sessionId: payload.sessionId,
+      timestamp: 123,
+    });
+  });
+
+  it("rejects a renderer agent writer without a main-issued capability", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "agent_foreshadow_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "agent-tool:forged",
+          sessionId: "renderer-claimed",
+          eventUid: "agent-event-1",
+          origin: "ai-apply",
+          chatMessageId: "assistant-1",
+          toolCallId: "call-1",
+          agentAuthorityCapability: "renderer-forged-capability",
+          title: "forged",
+        },
+      },
+      703,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
+  it("issues a tool-scoped capability only for the main chat-agent turn", async () => {
+    const sendAgentMessage = vi.fn(async () =>
+      JSON.stringify({
+        blocks: [
+          {
+            type: "tool_use",
+            id: "call-1",
+            name: "create_foreshadow",
+            input: { title: "from the model" },
+          },
+        ],
+        stopReason: "tool_use",
+      }),
+    );
+    const getAiSettings = vi.fn(async () =>
+      JSON.stringify({ provider: "openai", model: "gpt-test" }),
+    );
+    const dbExecute = vi.fn(async () =>
+      JSON.stringify({
+        rows: [[JSON.stringify({ preset: "full", toggles: { chat: true } })]],
+      }),
+    );
+    registerIpcRouter({
+      dbExecute,
+      getAiSettings,
+      sendAgentMessage,
+    } as unknown as NapiBackendLike, {}, {
+      resolveApiKeyForRequest: vi.fn(() => "test-key"),
+      getApiKeyForRequest: vi.fn(() => null),
+    });
+
+    const envelope = await invokeHandler()(
+      { sender: { id: 704 } },
+      "send_agent_message",
+      {
+        messages: [{ role: "user", content: "write a clue" }],
+        tools: [{ name: "create_foreshadow" }],
+        provider: "openai",
+        auditContext: {
+          expectedWorkspacePath: "/tmp/workspace",
+          projectId: "p1",
+          operationId: "turn-1",
+          executionId: "execution-1",
+          parentExecutionId: null,
+          pathId: "chat_agent_main",
+        },
+      },
+    );
+
+    expect(envelope.ok).toBe(true);
+    if (!envelope.ok) return;
+    expect(envelope.value).toMatchObject({
+      agentAuthorityCapabilities: {
+        "call-1": expect.any(String),
+      },
+    });
+    expect(dbExecute).toHaveBeenCalledWith(
+      "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+      ["p1"],
+      "get",
+    );
+
+    const backgroundEnvelope = await invokeHandler()(
+      { sender: { id: 704 } },
+      "send_agent_message",
+      {
+        messages: [{ role: "user", content: "background" }],
+        tools: [{ name: "create_foreshadow" }],
+        provider: "openai",
+        auditContext: {
+          expectedWorkspacePath: "/tmp/workspace",
+          projectId: "p1",
+          operationId: "research-1",
+          executionId: "execution-research",
+          parentExecutionId: null,
+          pathId: "agent_research_subagent",
+        },
+      },
+    );
+    expect(backgroundEnvelope).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        blocks: expect.any(Array),
+      }),
+    });
+    if (backgroundEnvelope.ok) {
+      expect(backgroundEnvelope.value).not.toHaveProperty(
+        "agentAuthorityCapabilities",
+      );
+    }
+  });
+
   it("binds Chronicle imports to import-apply instead of the legacy writer", () => {
     const bound = bindRendererAuthorityForIpc("agent_event_create", {
       payload: {

@@ -204,17 +204,18 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        assert_eq!(event_keys.len(), 4);
-        assert!(event_keys[0].0.contains("codex-a"));
-        assert!(event_keys[1].0.contains("codex-b"));
-        assert!(event_keys[2].0.contains("snippet-a"));
-        assert!(event_keys[3].0.contains("snippet-b"));
+        assert_eq!(event_keys.len(), 5);
+        assert!(event_keys[0].0.contains("\"kind\":\"project\""));
+        assert!(event_keys[1].0.contains("codex-a"));
+        assert!(event_keys[2].0.contains("codex-b"));
+        assert!(event_keys[3].0.contains("snippet-a"));
+        assert!(event_keys[4].0.contains("snippet-b"));
         assert_eq!(
-            serde_json::from_str::<Vec<String>>(&event_keys[3].1)?,
+            serde_json::from_str::<Vec<String>>(&event_keys[4].1)?,
             vec!["/sceneId", "/sourceChatMessageId"]
         );
         assert_eq!(
-            event_keys[1].2,
+            event_keys[2].2,
             narrative_snapshot_digest(&json!({
                 "id": "codex-b",
                 "sourceChatMessageId": "cross-project-message",
@@ -223,7 +224,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[1].3,
+            event_keys[2].3,
             narrative_snapshot_digest(&json!({
                 "id": "codex-b",
                 "sourceChatMessageId": null,
@@ -232,7 +233,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[3].2,
+            event_keys[4].2,
             narrative_snapshot_digest(&json!({
                 "id": "snippet-b",
                 "sceneId": "cross-project-scene",
@@ -242,7 +243,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[3].3,
+            event_keys[4].3,
             narrative_snapshot_digest(&json!({
                 "id": "snippet-b",
                 "sceneId": null,
@@ -261,7 +262,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
-        assert_eq!(counts, (1, 1, 4, 1));
+        assert_eq!(counts, (1, 1, 5, 1));
         let foreign_authorities: (i64, i64) = conn.query_row(
             "SELECT
                (SELECT COUNT(*) FROM chat_messages message

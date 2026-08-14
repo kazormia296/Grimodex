@@ -76,6 +76,12 @@ export interface WebSearchConfig {
 export interface AgentLLMResponse {
   blocks: ResponseBlock[];
   stopReason: "end_turn" | "tool_use" | "max_tokens";
+  /**
+   * Main-owned, turn-scoped capabilities keyed by the exact Native tool-call
+   * id. Renderer code may forward a capability, but cannot mint or retarget
+   * one to another tool call.
+   */
+  agentAuthorityCapabilities?: Record<string, string>;
   /** Web 検索引用 (RAG 無効時は undefined/空)。 */
   citations?: Citation[];
   /** このリクエストの概算コスト (USD)。OpenRouter のみ実値、他は undefined。 */
@@ -90,6 +96,15 @@ export interface AgentLLMResponse {
   /** Prompt cache usage used for provider-normalized input drift telemetry. */
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+}
+
+export interface AgentToolAuthorization {
+  /** Opaque capability issued by Electron main for this exact tool call. */
+  readonly capability: string;
+  /** Persisted assistant message id for provenance/audit binding. */
+  readonly chatMessageId?: string;
+  /** Exact model tool-call id; filled by the loop before dispatch. */
+  readonly toolCallId?: string;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）

@@ -510,7 +510,9 @@ fn ensure_event_history_continuity(
                 .and_then(Value::as_object)
                 .and_then(|impact| impact.get("event"))
                 .and_then(Value::as_str)
-                == Some("project-restored");
+                .is_some_and(|event| {
+                    matches!(event, "project-restored" | "semantic-epoch-reset")
+                });
         if !is_epoch_reset {
             if let Some(prior_after) = prior_after {
                 let current_before = (event.before_version, event.before_digest.clone());

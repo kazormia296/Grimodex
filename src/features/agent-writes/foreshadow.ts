@@ -12,11 +12,19 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
-import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteAuthorityOptions,
+} from "@/features/native-writes/writeContext";
 import { applyUndoJournal } from "./undoJournal";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
 
 export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
+
+export type AgentAuthorityWriteOptions = Pick<
+  CanonicalWriteAuthorityOptions,
+  "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+>;
 
 export interface AgentForeshadowCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -102,6 +110,7 @@ function pushUndo(label: string, projectId: string, result: AgentWriteResult) {
 
 export async function agentCreateForeshadow(
   input: AgentForeshadowCreateInput,
+  authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -117,6 +126,17 @@ export async function agentCreateForeshadow(
     "ai-apply",
     undefined,
     input.requestId,
+    {
+      ...authority,
+      provenance: {
+        requestId: input.requestId,
+        traceId: authority?.chatMessageId ?? input.requestId,
+        ...(authority?.chatMessageId
+          ? { chatMessageId: authority.chatMessageId }
+          : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+      },
+    },
   );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
     payload: {
@@ -140,6 +160,7 @@ export async function agentCreateForeshadow(
 
 export async function agentUpdateForeshadow(
   input: AgentForeshadowUpdateInput,
+  authority?: AgentAuthorityWriteOptions,
 ): Promise<ForeshadowRow> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -168,6 +189,17 @@ export async function agentUpdateForeshadow(
     "ai-apply",
     undefined,
     input.requestId,
+    {
+      ...authority,
+      provenance: {
+        requestId: input.requestId,
+        traceId: authority?.chatMessageId ?? input.requestId,
+        ...(authority?.chatMessageId
+          ? { chatMessageId: authority.chatMessageId }
+          : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+      },
+    },
   );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_update", {
     payload: {

@@ -936,7 +936,7 @@ fn is_exact_field_path(path: &str) -> bool {
         && !path.ends_with('/')
 }
 
-fn legacy_value_present(
+pub(crate) fn legacy_value_present(
     conn: &Connection,
     project_id: &str,
     entity_kind: &str,

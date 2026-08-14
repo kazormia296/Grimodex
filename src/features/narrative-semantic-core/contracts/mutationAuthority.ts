@@ -102,6 +102,7 @@ const REQUIRED_CONTROLS = {
     "knowledge-write-policy",
     "stable-request-id",
     "agent-provenance",
+    "field-authority",
     "typed-writer",
     "occ",
     "undo-journal",

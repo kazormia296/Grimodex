@@ -12,7 +12,14 @@ import type { ApplyResult } from "@/features/tree/aiScaffold/types";
  */
 export async function agentApplyTreePlan(
   plan: AiTreePlan,
-  opts: { model?: string | null; traceId?: string | null } = {},
+  opts: {
+    model?: string | null;
+    traceId?: string | null;
+    requestId?: string;
+    agentAuthorityCapability?: string;
+    chatMessageId?: string;
+    toolCallId?: string;
+  } = {},
 ): Promise<ApplyResult> {
   if (blockIfPolicyOff("structureWrite")) {
     throw new Error("structureWrite policy is off");
@@ -50,6 +57,10 @@ export async function agentApplyTreePlan(
     source: "ai",
     model: opts.model ?? null,
     traceId: opts.traceId ?? crypto.randomUUID(),
+    requestId: opts.requestId,
+    agentAuthorityCapability: opts.agentAuthorityCapability,
+    chatMessageId: opts.chatMessageId,
+    toolCallId: opts.toolCallId,
     scope: {
       allowedOps: [...scope.allowedOps],
       rootRef: scope.rootRef,

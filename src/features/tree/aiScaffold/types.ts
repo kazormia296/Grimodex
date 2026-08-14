@@ -82,6 +82,11 @@ export interface ApplyContext {
   source: "ai";
   model: string | null;
   traceId: string | null;
+  requestId?: string;
+  /** Main-issued capability for an interactive agent tree-plan tool call. */
+  agentAuthorityCapability?: string;
+  chatMessageId?: string;
+  toolCallId?: string;
   scope: AiTreeScope;
 }
 

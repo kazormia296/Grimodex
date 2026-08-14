@@ -202,6 +202,7 @@ const EVENT_AUTHORITY_FIELDS: &[&str] = &[
     "/detail",
     "/ordinal",
     "/primaryCodexId",
+    "/laneGroup",
     "/locationCodexId",
     "/startTime",
     "/endTime",
@@ -238,6 +239,7 @@ const INTERACTIVE_AGENT_CONTROLS: &[&str] = &[
     "knowledge-write-policy",
     "stable-request-id",
     "agent-provenance",
+    "field-authority",
     "typed-writer",
     "occ",
     "undo-journal",
@@ -402,10 +404,10 @@ pub fn validate_renderer_authority_context(
             context.authority_route
         );
     }
-    if context.writes_authority_protected_field {
+    if context.authority_route == "interactive-agent-command" {
         anyhow::ensure!(
             context.controls.iter().any(|value| value == "field-authority"),
-            "Protected-field mutation requires field-authority control"
+            "Interactive agent mutation requires field-authority control"
         );
     }
     if context.authority_route == "interactive-agent-command" {
@@ -472,6 +474,14 @@ pub(crate) fn canonical_payload_with_authority_context(
     payload: &str,
     context: &RendererCanonicalWriteContext,
 ) -> String {
+    canonical_payload_with_derived_authority_context(payload, context, &[])
+}
+
+pub(crate) fn canonical_payload_with_derived_authority_context(
+    payload: &str,
+    context: &RendererCanonicalWriteContext,
+    affected_authority_paths: &[String],
+) -> String {
     let parsed = serde_json::from_str::<Value>(payload)
         .unwrap_or_else(|_| json!({ "rawPayload": payload }));
     let mut evidence = json!({
@@ -483,8 +493,14 @@ pub(crate) fn canonical_payload_with_authority_context(
         "callerAllowlisted": true,
         "originRouteMatched": true,
         "requiredControlsValidated": true,
-        "fieldAuthorityValidated": !context.writes_authority_protected_field
+        "fieldAuthorityValidated": context.authority_route != "interactive-agent-command"
             || context.controls.iter().any(|control| control == "field-authority"),
+        "fieldAuthorityDecision": if affected_authority_paths.is_empty() {
+            "not-required"
+        } else {
+            "validated"
+        },
+        "affectedAuthorityPaths": affected_authority_paths,
         "replayLineageValidated": context.authority_route == "history-replay",
         "controls": context.controls,
     });
@@ -508,6 +524,266 @@ pub(crate) fn canonical_payload_with_authority_context(
         })
         .to_string()
     }
+}
+
+fn all_authority_paths(entity_type: &str) -> &'static [&'static str] {
+    match entity_type {
+        "codex_entry" | "codex-entry" => &[
+            "/type",
+            "/name",
+            "/summary",
+            "/content",
+            "/aliases",
+            "/excludedAliases",
+            "/readings",
+            "/tagsCache",
+            "/parentId",
+            "/contextMode",
+            "/icon",
+            "/childrenBudget",
+            "/notes",
+        ],
+        "snippet" => &["/title", "/content", "/sceneId"],
+        "foreshadow" => &[
+            "/title",
+            "/intent",
+            "/notes",
+            "/loadBearing",
+            "/payoffConfirmed",
+            "/abandoned",
+            "/secret",
+        ],
+        "event" | "chronicle-event" => EVENT_AUTHORITY_FIELDS,
+        _ => &[],
+    }
+}
+
+fn authority_path_for_field<'a>(
+    entity_type: &str,
+    field: &str,
+    all_paths: &'a [&'a str],
+) -> Option<&'a str> {
+    let field = field.trim_start_matches('/');
+    let alias = match (entity_type, field) {
+        // The typed Codex writer calls the relation used to update the
+        // denormalized cache `tags`; the authority surface owns the cache.
+        ("codex_entry" | "codex-entry", "tags") => Some("/tagsCache"),
+        // Association commands encode their affected collection in the
+        // operation rather than in the `fields` array.
+        ("event" | "chronicle-event", "codexEntryIds") => Some("/participants"),
+        _ => None,
+    };
+    alias.or_else(|| {
+        all_paths
+            .iter()
+            .copied()
+            .find(|path| path.trim_start_matches('/') == field)
+    })
+}
+
+fn paths_from_field_list(
+    entity_type: &str,
+    object: &serde_json::Map<String, Value>,
+    all_paths: &[&str],
+) -> Option<Vec<String>> {
+    let fields = object.get("fields")?.as_array()?;
+    if fields.is_empty() {
+        return None;
+    }
+    let mut paths = Vec::with_capacity(fields.len());
+    for field in fields {
+        let field = field.as_str()?;
+        let Some(path) = authority_path_for_field(entity_type, field, all_paths) else {
+            // An unknown field must not silently turn Field Authority off. A
+            // caller-controlled or future field is handled conservatively by
+            // the all-path fallback in the caller.
+            return None;
+        };
+        paths.push(path.to_string());
+    }
+    paths.sort();
+    paths.dedup();
+    Some(paths)
+}
+
+fn authority_paths_for_canonical_event(event: &AppendChangeEvent) -> Vec<String> {
+    let Some(entity_type) = event.entity_type.as_deref() else {
+        return Vec::new();
+    };
+    let all_paths = all_authority_paths(entity_type);
+    if all_paths.is_empty() {
+        return Vec::new();
+    }
+
+    // Association writes do not carry a `fields` list, but their operation is
+    // itself the Native-owned statement of the affected aggregate path.
+    let operation_paths: &[&str] = match event.op_type.as_str() {
+        "event.participants" => &["/participants"],
+        "event.stamp" | "event.unstamp" => &["/sceneIds"],
+        "event.relation_add" | "event.relation_remove" => &["/relations"],
+        _ => &[],
+    };
+    if !operation_paths.is_empty() {
+        return operation_paths.iter().map(|path| (*path).to_string()).collect();
+    }
+
+    let op_is_create = event.op_type.ends_with(".create")
+        || event.op_type.ends_with(".restore")
+        || event.op_type.ends_with(".delete");
+    if op_is_create {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    }
+
+    let parsed = serde_json::from_str::<Value>(&event.payload).ok();
+    let Some(object) = parsed.as_ref().and_then(Value::as_object) else {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    };
+
+    if let Some(paths) = paths_from_field_list(entity_type, object, all_paths) {
+        return paths;
+    }
+
+    let mut paths = Vec::new();
+    let mut unknown_field = false;
+    for field in object.keys() {
+        if matches!(field.as_str(), "requestHash" | "eventId" | "causeEventId" | "effectEventId")
+        {
+            continue;
+        }
+        if let Some(path) = authority_path_for_field(entity_type, field, all_paths) {
+            paths.push(path.to_string());
+        } else {
+            unknown_field = true;
+        }
+    }
+    if unknown_field || paths.is_empty() {
+        return all_paths.iter().map(|path| (*path).to_string()).collect();
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn authority_entity_kind(entity_type: &str) -> &str {
+    match entity_type {
+        "codex_entry" => "codex-entry",
+        "chronicle-event" => "event",
+        other => other,
+    }
+}
+
+pub(crate) fn validate_and_record_agent_field_authority_for_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        true,
+    )
+}
+
+fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    check_legacy_value: bool,
+) -> anyhow::Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    for path in paths {
+        anyhow::ensure!(
+            path.starts_with('/') && !path.contains('*') && !path.ends_with('/'),
+            "NEX_FIELD_AUTHORITY_PATH_INVALID: Native derived an invalid field path"
+        );
+        let owned: Option<(String, i64)> = conn
+            .query_row(
+                "SELECT owner_kind, explicit_lock
+                   FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = ?2
+                    AND entity_id = ?3 AND field_path = ?4",
+                rusqlite::params![project_id, entity_kind, entity_id, path],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let legacy_human = check_legacy_value
+            && owned.is_none()
+            && crate::narrative_extraction::legacy_value_present(
+                conn,
+                project_id,
+                entity_kind,
+                entity_id,
+                path,
+            )?;
+        let denied = owned
+            .as_ref()
+            .is_some_and(|(owner, lock)| owner == "human" || *lock != 0)
+            || legacy_human;
+        anyhow::ensure!(
+            !denied,
+            "NEX_FIELD_AUTHORITY_DENIED: '{}' on {} '{}' is human-owned or locked",
+            path,
+            entity_kind,
+            entity_id
+        );
+    }
+    for path in paths {
+        conn.execute(
+            "INSERT INTO narrative_field_authority
+                (project_id, entity_kind, entity_id, field_path, owner_kind,
+                 explicit_lock, version, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'ai', 0, 0, ?5)
+             ON CONFLICT(project_id, entity_kind, entity_id, field_path)
+             DO UPDATE SET owner_kind = CASE
+                    WHEN narrative_field_authority.owner_kind = 'human'
+                    THEN 'human' ELSE 'ai' END,
+                 version = narrative_field_authority.version + 1,
+                 updated_at = excluded.updated_at",
+            rusqlite::params![project_id, entity_kind, entity_id, path, updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_and_record_agent_field_authority(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    event: &AppendChangeEvent,
+    paths: &[String],
+) -> anyhow::Result<()> {
+    let Some(entity_type) = event.entity_type.as_deref() else {
+        anyhow::ensure!(paths.is_empty(), "Agent field authority requires an entity type");
+        return Ok(());
+    };
+    let Some(entity_id) = event.entity_id.as_deref() else {
+        anyhow::ensure!(paths.is_empty(), "Agent field authority requires an entity id");
+        return Ok(());
+    };
+    let updated_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp)
+        .unwrap_or_else(chrono::Utc::now)
+        .to_rfc3339();
+    let check_legacy_value = !event.op_type.ends_with(".create");
+    validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+        conn,
+        project_id,
+        authority_entity_kind(entity_type),
+        entity_id,
+        paths,
+        &updated_at,
+        check_legacy_value,
+    )
 }
 
 fn validate_renderer_codex_identity(
@@ -629,10 +905,21 @@ fn append_agent_forward_change_in_tx(
     normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
     let canonical_event = if let Some(context) = renderer_context {
         validate_renderer_authority_context(context)?;
+        let affected_authority_paths =
+            authority_paths_for_canonical_event(canonical_event);
+        if context.authority_route == "interactive-agent-command" {
+            validate_and_record_agent_field_authority(
+                conn,
+                project_id,
+                canonical_event,
+                &affected_authority_paths,
+            )?;
+        }
         let mut annotated = canonical_event.clone();
-        annotated.payload = canonical_payload_with_authority_context(
+        annotated.payload = canonical_payload_with_derived_authority_context(
             &canonical_event.payload,
             context,
+            &affected_authority_paths,
         );
         annotated
     } else {
@@ -2885,11 +3172,15 @@ fn agent_codex_create_internal(
                 )?;
             }
             let mut canonical_event = created.canonical_event.clone();
-            if let Some(audit_payload) = renderer_context
-                .as_ref()
-                .and_then(|context| context.canonical_payload.as_ref())
-            {
-                canonical_event.payload = audit_payload.to_string();
+            if renderer_context.as_ref().is_none_or(|context| {
+                context.authority_route != "interactive-agent-command"
+            }) {
+                if let Some(audit_payload) = renderer_context
+                    .as_ref()
+                    .and_then(|context| context.canonical_payload.as_ref())
+                {
+                    canonical_event.payload = audit_payload.to_string();
+                }
             }
             append_agent_forward_change_in_tx(
                 conn,
@@ -3070,11 +3361,15 @@ fn agent_codex_update_internal(
                 },
             )?;
             let mut canonical_event = patched.canonical_event.clone();
-            if let Some(audit_payload) = renderer_context
-                .as_ref()
-                .and_then(|context| context.canonical_payload.as_ref())
-            {
-                canonical_event.payload = audit_payload.to_string();
+            if renderer_context.as_ref().is_none_or(|context| {
+                context.authority_route != "interactive-agent-command"
+            }) {
+                if let Some(audit_payload) = renderer_context
+                    .as_ref()
+                    .and_then(|context| context.canonical_payload.as_ref())
+                {
+                    canonical_event.payload = audit_payload.to_string();
+                }
             }
             let cause_kind = renderer_context
                 .as_ref()
@@ -8744,6 +9039,22 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 .to_string(),
                 timestamp,
             };
+            if renderer_context.as_ref().is_some_and(|context| {
+                context.authority_route == "interactive-agent-command"
+            }) {
+                // A relation mutates both event aggregates. The canonical
+                // event is rooted at the cause event, so validate the effect
+                // side explicitly in the same transaction as well.
+                let relation_paths = vec!["/relations".to_string()];
+                validate_and_record_agent_field_authority_for_entity(
+                    conn,
+                    &payload.project_id,
+                    "event",
+                    &payload.effect_event_id,
+                    &relation_paths,
+                    &now,
+                )?;
+            }
             append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
@@ -8881,6 +9192,112 @@ mod tests {
         let error = validate_renderer_authority_context(&context)
             .expect_err("an explicit empty controls list must fail closed");
         assert!(error.to_string().contains("Missing required control"));
+    }
+
+    #[test]
+    fn agent_field_authority_denies_human_paths_and_allows_new_ai_ownership() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "authority-entry", "Human seed", 0);
+        let paths = vec!["/name".to_string()];
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry'",
+                rusqlite::params![project_id],
+            )?;
+            validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+                conn,
+                &project_id,
+                "codex-entry",
+                "authority-entry",
+                &paths,
+                "2026-08-15T00:00:00Z",
+                false,
+            )?;
+            let owner: String = conn.query_row(
+                "SELECT owner_kind FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(owner, "ai");
+
+            conn.execute(
+                "UPDATE narrative_field_authority SET owner_kind = 'human'
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'authority-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+            )?;
+            let error = validate_and_record_agent_field_authority_for_entity(
+                conn,
+                &project_id,
+                "codex-entry",
+                "authority-entry",
+                &paths,
+                "2026-08-15T00:00:01Z",
+            )
+            .expect_err("human-owned fields must be rejected");
+            assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+            Ok(())
+        })
+        .expect("field authority transaction");
+    }
+
+    #[test]
+    fn native_field_authority_derives_update_and_association_paths() {
+        let update = AppendChangeEvent {
+            event_uid: "event-update".to_string(),
+            scene_id: None,
+            domain: "codex".to_string(),
+            op_type: "entry.update".to_string(),
+            entity_type: Some("codex_entry".to_string()),
+            entity_id: Some("entry-1".to_string()),
+            payload: json!({ "fields": ["name", "content"] }).to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&update),
+            vec!["/content".to_string(), "/name".to_string()]
+        );
+
+        let participants = AppendChangeEvent {
+            event_uid: "event-participants".to_string(),
+            scene_id: None,
+            domain: "event".to_string(),
+            op_type: "event.participants".to_string(),
+            entity_type: Some("event".to_string()),
+            entity_id: Some("event-1".to_string()),
+            payload: json!({ "eventId": "event-1", "codexEntryIds": ["entry-1"] })
+                .to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&participants),
+            vec!["/participants".to_string()]
+        );
+
+        let relation = AppendChangeEvent {
+            event_uid: "event-relation".to_string(),
+            scene_id: None,
+            domain: "event".to_string(),
+            op_type: "event.relation_add".to_string(),
+            entity_type: Some("event".to_string()),
+            entity_id: Some("event-1".to_string()),
+            payload: json!({
+                "causeEventId": "event-1",
+                "effectEventId": "event-2"
+            })
+            .to_string(),
+            timestamp: 1,
+        };
+        assert_eq!(
+            authority_paths_for_canonical_event(&relation),
+            vec!["/relations".to_string()]
+        );
     }
 
     fn insert_project(db: &Database) -> String {

@@ -45,6 +45,11 @@ export interface TrackedWriteOpts {
   skipPolicyGate?: boolean;
   /** 明示 project スコープ。 */
   projectId?: string;
+  /** Main-issued capability for the exact interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  /** Persisted assistant message and model tool-call identities. */
+  chatMessageId?: string;
+  toolCallId?: string;
 }
 
 export interface AgentCodexUpdateInput {
@@ -82,7 +87,12 @@ function agentCodexWriteContext(
   provenance?: {
     traceId?: string | null;
     chatMessageId?: string | null;
+    toolCallId?: string | null;
   },
+  authority?: Pick<
+    TrackedWriteOpts,
+    "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+  >,
 ) {
   const stableRequestId = requestId ?? crypto.randomUUID();
   return createCanonicalWriteContext(
@@ -98,7 +108,19 @@ function agentCodexWriteContext(
             ...(provenance?.chatMessageId
               ? { chatMessageId: provenance.chatMessageId }
               : {}),
+            ...(provenance?.toolCallId
+              ? { toolCallId: provenance.toolCallId }
+              : {}),
           },
+          ...(authority?.agentAuthorityCapability
+            ? { agentAuthorityCapability: authority.agentAuthorityCapability }
+            : {}),
+          ...(authority?.chatMessageId
+            ? { chatMessageId: authority.chatMessageId }
+            : {}),
+          ...(authority?.toolCallId
+            ? { toolCallId: authority.toolCallId }
+            : {}),
         },
   );
 }
@@ -195,7 +217,12 @@ export async function agentCreateCodexEntry(
   const writeContext = agentCodexWriteContext(
     writeOpts?.surface,
     input.requestId,
-    { traceId: input.traceId, chatMessageId },
+    {
+      traceId: input.traceId ?? chatMessageId,
+      chatMessageId,
+      toolCallId: writeOpts?.toolCallId,
+    },
+    writeOpts,
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
@@ -310,7 +337,12 @@ export async function agentUpdateCodexEntry(
   const writeContext = agentCodexWriteContext(
     options?.restoreHuman ? "manual" : options?.writeOpts?.surface,
     input.requestId,
-    { traceId: input.traceId, chatMessageId },
+    {
+      traceId: input.traceId ?? chatMessageId,
+      chatMessageId,
+      toolCallId: options?.writeOpts?.toolCallId,
+    },
+    options?.writeOpts,
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_update", {

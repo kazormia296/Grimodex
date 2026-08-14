@@ -50,6 +50,11 @@ export interface TrackedWriteOpts {
   requestId?: string;
   /** Registered local draft draining across an active lifecycle lease. */
   preexistingDraft?: boolean;
+  /** Main-issued capability for the exact interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  /** Persisted assistant message and model tool-call identities. */
+  chatMessageId?: string;
+  toolCallId?: string;
 }
 
 function isAiAuthorshipSurface(surface: string | undefined): boolean {
@@ -155,8 +160,22 @@ async function trackedEventWrite(
           ? {
               provenance: {
                 requestId,
-                traceId: (payload.traceId as string | undefined) ?? requestId,
+                traceId:
+                  (payload.traceId as string | undefined) ??
+                  opts?.chatMessageId ??
+                  requestId,
+                ...(opts?.chatMessageId
+                  ? { chatMessageId: opts.chatMessageId }
+                  : {}),
+                ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
               },
+              ...(opts?.agentAuthorityCapability
+                ? { agentAuthorityCapability: opts.agentAuthorityCapability }
+                : {}),
+              ...(opts?.chatMessageId
+                ? { chatMessageId: opts.chatMessageId }
+                : {}),
+              ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
             }
           : undefined,
       )

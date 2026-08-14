@@ -7,6 +7,12 @@ import type {
 export type NarrativePhaseResolutionMode = "reading" | "story" | "auto";
 export type NarrativeDisclosureAxis = "reading" | "story";
 
+/** ADR-002 resolves a temporal reference on the axis selected for this turn. */
+export type NarrativeTemporalRefResolver = (
+  ref: string,
+  axis: NarrativeDisclosureAxis,
+) => number | null;
+
 export interface NarrativeDisclosurePhaseResolution {
   /** These fields are copied from the existing ADR 002 resolver result. */
   readonly axisUsed: ApplicablePhaseResolution["axisUsed"];
@@ -26,7 +32,11 @@ export interface NarrativeDisclosureContext {
   readonly allowSecrets: boolean;
   readonly currentPhase?: number | null;
   readonly currentStoryTime?: number | null;
+  /** Story-axis order used for validFromRef/validUntilRef comparisons. */
+  readonly currentStoryOrder?: number | null;
   readonly currentSceneOrder?: number | null;
+  /** Missing or unresolved refs are deliberately fail-closed. */
+  readonly resolveTemporalRef?: NarrativeTemporalRefResolver;
   readonly worldlineRef?: string | null;
   readonly timelineRef?: string | null;
   readonly narrativeLayer?: string | null;
@@ -52,6 +62,10 @@ export type NarrativeDisclosureRejection =
   | "invalid-resolution"
   | "future-phase"
   | "future-story-time"
+  | "unresolved-valid-from-ref"
+  | "unresolved-valid-until-ref"
+  | "future-valid-from"
+  | "expired-valid-until"
   | "future-scene"
   | "secret-before-reveal"
   | "knowledge-holder-mismatch"
@@ -127,7 +141,11 @@ export function evaluateNarrativeDisclosure(
     addReason(reasons, "unresolved-scope");
   }
 
-  const effectiveMode = context.phaseResolution.axisUsed;
+  const effectiveMode: NarrativeDisclosureAxis | null =
+    context.phaseResolution.axisUsed === "reading" ||
+    context.phaseResolution.axisUsed === "story"
+      ? context.phaseResolution.axisUsed
+      : null;
   if (
     !isValidPhaseResolution(
       context.phaseResolutionMode,
@@ -147,6 +165,7 @@ export function evaluateNarrativeDisclosure(
     addReason(reasons, "future-phase");
   }
   if (
+    effectiveMode === "story" &&
     candidate.storyTime !== null &&
     candidate.storyTime !== undefined &&
     context.currentStoryTime !== null &&
@@ -164,6 +183,81 @@ export function evaluateNarrativeDisclosure(
     candidate.sceneOrder > context.currentSceneOrder
   ) {
     addReason(reasons, "future-scene");
+  }
+
+  const currentAxisOrder =
+    effectiveMode === "reading"
+      ? context.currentSceneOrder
+      : effectiveMode === "story"
+        ? (context.currentStoryOrder ?? context.currentStoryTime)
+        : null;
+  const resolveScopeRef = (
+    ref: string | undefined,
+    rejection: "unresolved-valid-from-ref" | "unresolved-valid-until-ref",
+  ): number | null => {
+    if (!ref) return null;
+    if (!context.resolveTemporalRef) {
+      addReason(reasons, rejection);
+      return null;
+    }
+    if (!effectiveMode) {
+      addReason(reasons, rejection);
+      return null;
+    }
+    const resolved = (() => {
+      try {
+        return context.resolveTemporalRef?.(ref, effectiveMode) ?? null;
+      } catch {
+        return null;
+      }
+    })();
+    if (resolved === null || !Number.isSafeInteger(resolved) || resolved < 0) {
+      addReason(reasons, rejection);
+      return null;
+    }
+    return resolved;
+  };
+  const validFromOrder = resolveScopeRef(
+    scope.validFromRef,
+    "unresolved-valid-from-ref",
+  );
+  if (
+    scope.validFromRef &&
+    validFromOrder !== null &&
+    (currentAxisOrder === null ||
+      currentAxisOrder === undefined ||
+      !Number.isSafeInteger(currentAxisOrder))
+  ) {
+    addReason(reasons, "unresolved-valid-from-ref");
+  } else if (
+    scope.validFromRef &&
+    validFromOrder !== null &&
+    currentAxisOrder !== null &&
+    currentAxisOrder !== undefined &&
+    currentAxisOrder < validFromOrder
+  ) {
+    addReason(reasons, "future-valid-from");
+  }
+  const validUntilOrder = resolveScopeRef(
+    scope.validUntilRef,
+    "unresolved-valid-until-ref",
+  );
+  if (
+    scope.validUntilRef &&
+    validUntilOrder !== null &&
+    (currentAxisOrder === null ||
+      currentAxisOrder === undefined ||
+      !Number.isSafeInteger(currentAxisOrder))
+  ) {
+    addReason(reasons, "unresolved-valid-until-ref");
+  } else if (
+    scope.validUntilRef &&
+    validUntilOrder !== null &&
+    currentAxisOrder !== null &&
+    currentAxisOrder !== undefined &&
+    currentAxisOrder > validUntilOrder
+  ) {
+    addReason(reasons, "expired-valid-until");
   }
 
   const foreshadow = candidate.foreshadow;

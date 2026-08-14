@@ -9,6 +9,7 @@ import {
   agentAddEventRelation,
   agentRemoveEventRelation,
   type AgentEventCreateInput,
+  type TrackedWriteOpts,
 } from "@/features/agent-writes/event";
 import { EVENT_KINDS, EVENT_GRANULARITIES } from "@/db/schema";
 import type { EventKind, EventGranularity } from "@/db/schema";
@@ -24,6 +25,22 @@ import {
 import type { ToolResult } from "./agentTypes";
 
 type ToolReturn = Omit<ToolResult, "toolCallId">;
+
+function agentWriteOptions(
+  requestId: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
+): TrackedWriteOpts {
+  return {
+    requestId,
+    ...(authorization
+      ? {
+          agentAuthorityCapability: authorization.capability,
+          chatMessageId: authorization.chatMessageId,
+          toolCallId: authorization.toolCallId,
+        }
+      : {}),
+  };
+}
 
 const ok = (name: string, content: unknown, summary: string): ToolReturn => ({
   name,
@@ -95,6 +112,7 @@ function coerceGranularity(v: unknown): EventGranularity | undefined {
 export async function createEventTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const title = str(params["title"]);
   if (!title) return fail("create_event", "title is required");
@@ -125,7 +143,12 @@ export async function createEventTool(
       participantCodexIds: strArray(params["participantCodexIds"]),
       sceneIds: strArray(params["sceneIds"]),
     };
-    const ev = await agentCreateEvent(input);
+    const ev = authorization
+      ? await agentCreateEvent(
+          input,
+          agentWriteOptions(requestId, authorization),
+        )
+      : await agentCreateEvent(input);
     return ok(
       "create_event",
       { id: ev.id, title: ev.title },
@@ -143,6 +166,7 @@ export async function createEventTool(
 export async function updateEventTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("update_event", "eventId is required");
@@ -199,7 +223,7 @@ export async function updateEventTool(
             ? str(params["revealSceneId"])
             : undefined,
       },
-      { requestId },
+      agentWriteOptions(requestId, authorization),
     );
     return ok("update_event", { id: eventId }, `Updated event ${eventId}`);
   } catch (e) {
@@ -213,6 +237,7 @@ export async function updateEventTool(
 export async function deleteEventTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("delete_event", "eventId is required");
@@ -224,7 +249,7 @@ export async function deleteEventTool(
   try {
     await agentDeleteEvent(eventId, {
       baseVersion: visibleEvent.version,
-      requestId,
+      ...agentWriteOptions(requestId, authorization),
     });
     return ok("delete_event", { id: eventId }, `Deleted event ${eventId}`);
   } catch (e) {
@@ -238,6 +263,7 @@ export async function deleteEventTool(
 export async function stampSceneEventTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const sceneId = str(params["sceneId"]);
   const eventId = str(params["eventId"]);
@@ -249,7 +275,11 @@ export async function stampSceneEventTool(
     return fail("stamp_scene_event", "request identity is required");
   }
   try {
-    await agentLinkSceneEvent(sceneId, eventId, { requestId });
+    await agentLinkSceneEvent(
+      sceneId,
+      eventId,
+      agentWriteOptions(requestId, authorization),
+    );
     return ok(
       "stamp_scene_event",
       { sceneId, eventId },
@@ -269,6 +299,7 @@ export async function stampSceneEventTool(
 export async function unstampSceneEventTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const sceneId = str(params["sceneId"]);
   const eventId = str(params["eventId"]);
@@ -280,7 +311,11 @@ export async function unstampSceneEventTool(
     return fail("unstamp_scene_event", "request identity is required");
   }
   try {
-    await agentUnlinkSceneEvent(sceneId, eventId, { requestId });
+    await agentUnlinkSceneEvent(
+      sceneId,
+      eventId,
+      agentWriteOptions(requestId, authorization),
+    );
     return ok(
       "unstamp_scene_event",
       { sceneId, eventId },
@@ -300,6 +335,7 @@ export async function unstampSceneEventTool(
 export async function setEventParticipantsTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const eventId = str(params["eventId"]);
   if (!eventId) return fail("set_event_participants", "eventId is required");
@@ -312,7 +348,7 @@ export async function setEventParticipantsTool(
     const codexIds = strArray(params["codexEntryIds"]);
     await agentSetEventParticipants(eventId, codexIds, {
       baseVersion: visibleEvent.version,
-      requestId,
+      ...agentWriteOptions(requestId, authorization),
     });
     return ok(
       "set_event_participants",
@@ -333,6 +369,7 @@ export async function setEventParticipantsTool(
 export async function addEventRelationTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const causeId = str(params["causeEventId"]);
   const effectId = str(params["effectEventId"]);
@@ -350,7 +387,11 @@ export async function addEventRelationTool(
     return fail("add_event_relation", "request identity is required");
   }
   try {
-    await agentAddEventRelation(causeId, effectId, { requestId });
+    await agentAddEventRelation(
+      causeId,
+      effectId,
+      agentWriteOptions(requestId, authorization),
+    );
     return ok(
       "add_event_relation",
       { causeId, effectId },
@@ -370,6 +411,7 @@ export async function addEventRelationTool(
 export async function removeEventRelationTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: import("./agentTypes").AgentToolAuthorization,
 ): Promise<ToolReturn> {
   const causeId = str(params["causeEventId"]);
   const effectId = str(params["effectEventId"]);
@@ -387,7 +429,11 @@ export async function removeEventRelationTool(
     return fail("remove_event_relation", "request identity is required");
   }
   try {
-    await agentRemoveEventRelation(causeId, effectId, { requestId });
+    await agentRemoveEventRelation(
+      causeId,
+      effectId,
+      agentWriteOptions(requestId, authorization),
+    );
     return ok(
       "remove_event_relation",
       { causeId, effectId },

@@ -42,7 +42,7 @@ import {
   isCurrentMutationAuthority,
 } from "@/features/concurrency/mutationAuthority";
 import { listOpenForeshadowsForContext } from "@/features/foreshadow/api";
-import type { ToolResult } from "./agentTypes";
+import type { AgentToolAuthorization, ToolResult } from "./agentTypes";
 import {
   agentCreateCodexEntry,
   agentUpdateCodexEntry,
@@ -1357,6 +1357,7 @@ function optionalAliases(value: unknown): string | undefined {
 async function createCodexEntryTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const type = String(params["type"] ?? "").trim();
   const name = String(params["name"] ?? "").trim();
@@ -1373,15 +1374,25 @@ async function createCodexEntryTool(
     if (!requestId) {
       throw new Error("create_codex_entry request identity is missing");
     }
-    const entry = await agentCreateCodexEntry({
-      requestId,
-      type,
-      name,
-      summary: params["summary"] ? String(params["summary"]) : undefined,
-      content: optionalMarkdownBody(params["content"]),
-      aliases: optionalAliases(params["aliases"]),
-      parentId: params["parentId"] ? String(params["parentId"]) : undefined,
-    });
+    const entry = await agentCreateCodexEntry(
+      {
+        requestId,
+        type,
+        name,
+        summary: params["summary"] ? String(params["summary"]) : undefined,
+        content: optionalMarkdownBody(params["content"]),
+        aliases: optionalAliases(params["aliases"]),
+        parentId: params["parentId"] ? String(params["parentId"]) : undefined,
+      },
+      authorization?.chatMessageId,
+      authorization
+        ? {
+            agentAuthorityCapability: authorization.capability,
+            chatMessageId: authorization.chatMessageId,
+            toolCallId: authorization.toolCallId,
+          }
+        : undefined,
+    );
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
     return {
@@ -1408,6 +1419,7 @@ async function createCodexEntryTool(
 async function updateCodexEntryTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1420,18 +1432,32 @@ async function updateCodexEntryTool(
     };
   }
   try {
-    const entry = await agentUpdateCodexEntry({
-      requestId,
-      entryId: id,
-      name: params["name"] !== undefined ? String(params["name"]) : undefined,
-      summary:
-        params["summary"] !== undefined ? String(params["summary"]) : undefined,
-      content:
-        params["content"] !== undefined
-          ? optionalMarkdownBody(params["content"])
+    const entry = await agentUpdateCodexEntry(
+      {
+        requestId,
+        entryId: id,
+        name: params["name"] !== undefined ? String(params["name"]) : undefined,
+        summary:
+          params["summary"] !== undefined
+            ? String(params["summary"])
+            : undefined,
+        content:
+          params["content"] !== undefined
+            ? optionalMarkdownBody(params["content"])
+            : undefined,
+        aliases: optionalAliases(params["aliases"]),
+      },
+      authorization?.chatMessageId,
+      {
+        writeOpts: authorization
+          ? {
+              agentAuthorityCapability: authorization.capability,
+              chatMessageId: authorization.chatMessageId,
+              toolCallId: authorization.toolCallId,
+            }
           : undefined,
-      aliases: optionalAliases(params["aliases"]),
-    });
+      },
+    );
     const content = { id: entry.id, name: entry.name, type: entry.type };
     const json = JSON.stringify(content);
     return {
@@ -1694,6 +1720,7 @@ async function getThreadScenes(
 type Executor = (
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ) => Promise<Omit<ToolResult, "toolCallId">>;
 
 /**
@@ -1741,6 +1768,7 @@ Object.freeze(READ_ONLY_EXECUTORS);
 async function createSnippetTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1756,12 +1784,22 @@ async function createSnippetTool(
     if (!requestId) {
       throw new Error("create_snippet request identity is missing");
     }
-    const snippet = await agentCreateSnippet({
-      requestId,
-      title,
-      content: optionalMarkdownBody(params["content"]),
-      sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
-    });
+    const snippet = await agentCreateSnippet(
+      {
+        requestId,
+        title,
+        content: optionalMarkdownBody(params["content"]),
+        sceneId: params["sceneId"] ? String(params["sceneId"]) : undefined,
+      },
+      authorization?.chatMessageId,
+      authorization
+        ? {
+            agentAuthorityCapability: authorization.capability,
+            chatMessageId: authorization.chatMessageId,
+            toolCallId: authorization.toolCallId,
+          }
+        : undefined,
+    );
     const content = { id: snippet.id, title: snippet.title };
     const json = JSON.stringify(content);
     return {
@@ -1784,6 +1822,8 @@ async function createSnippetTool(
 
 async function applyAiTreePlanTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const kind = params["kind"];
   const ops = params["ops"];
@@ -1807,7 +1847,12 @@ async function applyAiTreePlanTool(
   }
   try {
     const plan = { kind, ops } as AiTreePlan;
-    const result = await agentApplyTreePlan(plan);
+    const result = await agentApplyTreePlan(plan, {
+      requestId,
+      agentAuthorityCapability: authorization?.capability,
+      chatMessageId: authorization?.chatMessageId,
+      toolCallId: authorization?.toolCallId,
+    });
     const content = result;
     const json = JSON.stringify(content);
     return {
@@ -1833,6 +1878,8 @@ async function applyAiTreePlanTool(
 
 async function proposeSceneBodyTool(
   params: Record<string, unknown>,
+  requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const sceneId = String(params["sceneId"] ?? "").trim();
   const text = String(params["text"] ?? "").trim();
@@ -1848,7 +1895,15 @@ async function proposeSceneBodyTool(
   const rawMode = params["mode"];
   const mode = rawMode === "insert" ? "insert" : "append";
   try {
-    const result = await agentProposeSceneBody({ sceneId, text, mode });
+    const result = await agentProposeSceneBody({
+      requestId,
+      sceneId,
+      text,
+      mode,
+      agentAuthorityCapability: authorization?.capability,
+      chatMessageId: authorization?.chatMessageId,
+      toolCallId: authorization?.toolCallId,
+    });
     useProseStagingStore.getState().enqueue({
       stagingId: result.stagingId,
       sceneId: result.sceneId,
@@ -1882,6 +1937,7 @@ async function proposeSceneBodyTool(
 async function createForeshadowTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const title = String(params["title"] ?? "").trim();
   if (!title) {
@@ -1897,7 +1953,7 @@ async function createForeshadowTool(
     if (!requestId) {
       throw new Error("create_foreshadow request identity is missing");
     }
-    const item = await agentCreateForeshadow({
+    const input = {
       requestId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
@@ -1907,7 +1963,14 @@ async function createForeshadowTool(
         : undefined,
       secret:
         typeof params["secret"] === "boolean" ? params["secret"] : undefined,
-    });
+    };
+    const item = authorization
+      ? await agentCreateForeshadow(input, {
+          agentAuthorityCapability: authorization.capability,
+          chatMessageId: authorization.chatMessageId,
+          toolCallId: authorization.toolCallId,
+        })
+      : await agentCreateForeshadow(input);
     const content = { id: item.id, title: item.title, secret: item.secret };
     const json = JSON.stringify(content);
     return {
@@ -1931,6 +1994,7 @@ async function createForeshadowTool(
 async function updateForeshadowTool(
   params: Record<string, unknown>,
   requestId?: string,
+  authorization?: AgentToolAuthorization,
 ): Promise<Omit<ToolResult, "toolCallId">> {
   const id = String(params["id"] ?? "").trim();
   if (!id) {
@@ -1960,7 +2024,7 @@ async function updateForeshadowTool(
     if (!requestId) {
       throw new Error("update_foreshadow request identity is missing");
     }
-    const item = await agentUpdateForeshadow({
+    const input = {
       requestId,
       foreshadowId: id,
       baseVersion,
@@ -1984,7 +2048,14 @@ async function updateForeshadowTool(
           : undefined,
       secret:
         typeof params["secret"] === "boolean" ? params["secret"] : undefined,
-    });
+    };
+    const item = authorization
+      ? await agentUpdateForeshadow(input, {
+          agentAuthorityCapability: authorization.capability,
+          chatMessageId: authorization.chatMessageId,
+          toolCallId: authorization.toolCallId,
+        })
+      : await agentUpdateForeshadow(input);
     const content = {
       id: item.id,
       title: item.title,
@@ -2051,6 +2122,8 @@ const DURABLE_MUTATION_TOOLS: ReadonlySet<string> = new Set([
   "set_event_participants",
   "add_event_relation",
   "remove_event_relation",
+  "apply_ai_tree_plan",
+  "propose_scene_body",
 ]);
 
 async function toolMutationRequestId(
@@ -2073,6 +2146,7 @@ export async function executeTool(
   name: string,
   toolCallId: string,
   params: Record<string, unknown>,
+  authorization?: AgentToolAuthorization,
 ): Promise<ToolResult> {
   const executor = EXECUTORS[name];
   if (!executor) {
@@ -2102,7 +2176,11 @@ export async function executeTool(
     if (mutationAuthority && !isCurrentMutationAuthority(mutationAuthority)) {
       throw new Error("agent tool mutation authority changed");
     }
-    const result = await executor(params, requestId);
+    const result = await executor(
+      params,
+      requestId,
+      authorization ? { ...authorization, toolCallId } : undefined,
+    );
     return { toolCallId, ...result };
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

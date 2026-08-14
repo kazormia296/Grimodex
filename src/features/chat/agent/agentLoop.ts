@@ -9,6 +9,7 @@ import type {
   ThinkingBlock,
   ToolUseBlock,
   Citation,
+  AgentToolAuthorization,
 } from "./agentTypes";
 import { ensureTokenizer, countTokens } from "../contextBuilder";
 import { beginAgentToolTurn } from "./toolTurnCache";
@@ -47,6 +48,7 @@ export interface AgentLoopOptions {
     name: string,
     toolCallId: string,
     params: Record<string, unknown>,
+    authorization?: AgentToolAuthorization,
   ) => Promise<ToolResult>;
   onProgress: (progress: AgentLoopProgress) => void;
   onToolComplete?: (record: ToolCallRecord) => void;
@@ -307,7 +309,11 @@ export async function runAgentLoop(
       });
 
       // helper `result()` と衝突しないよう ToolResult は toolRes 名で受ける。
-      const toolRes = await executeTool(tu.name, tu.id, tu.input);
+      const capability = response.agentAuthorityCapabilities?.[tu.id];
+      const authorization = capability ? { capability } : undefined;
+      const toolRes = authorization
+        ? await executeTool(tu.name, tu.id, tu.input, authorization)
+        : await executeTool(tu.name, tu.id, tu.input);
 
       // ツール実行中に Stop / セッション切替が入った場合は、tool_result を
       // 積まずに即終了する（積むと次ターンの sendToLLM が再発火し暴走する）。

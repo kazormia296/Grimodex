@@ -8,7 +8,7 @@
  * - fail-soft outcome の main 側ログ（A6 監査の集計ポイント）
  */
 import { BrowserWindow, ipcMain } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import {
   bindCanonicalAuthorityContext,
@@ -73,6 +73,242 @@ const AGENT_CHRONICLE_COMMANDS = new Set([
   "agent_event_relation_add",
   "agent_event_relation_remove",
 ]);
+
+type AgentAuthorityPolicy = "knowledgeWrite" | "structureWrite" | "bodyWrite";
+
+interface AgentAuthorityCapabilityRecord {
+  readonly senderId: number;
+  readonly projectId: string;
+  readonly toolName: string;
+  readonly command: string;
+  readonly requestId: string;
+  readonly toolCallId: string;
+  readonly policy: AgentAuthorityPolicy;
+  readonly executionId: string;
+  readonly issuedAt: number;
+  readonly expiresAt: number;
+}
+
+const AGENT_AUTHORITY_CAPABILITY_TTL_MS = 5 * 60 * 1000;
+const agentAuthorityCapabilities = new Map<
+  string,
+  AgentAuthorityCapabilityRecord
+>();
+
+const AGENT_TOOL_COMMANDS: Readonly<
+  Record<string, { command: string; policy: AgentAuthorityPolicy }>
+> = {
+  create_codex_entry: { command: "agent_codex_create", policy: "knowledgeWrite" },
+  update_codex_entry: { command: "agent_codex_update", policy: "knowledgeWrite" },
+  create_foreshadow: {
+    command: "agent_foreshadow_create",
+    policy: "knowledgeWrite",
+  },
+  update_foreshadow: {
+    command: "agent_foreshadow_update",
+    policy: "knowledgeWrite",
+  },
+  create_snippet: { command: "agent_snippet_create", policy: "knowledgeWrite" },
+  create_event: { command: "agent_event_create", policy: "knowledgeWrite" },
+  update_event: { command: "agent_event_update", policy: "knowledgeWrite" },
+  delete_event: { command: "agent_event_delete", policy: "knowledgeWrite" },
+  stamp_scene_event: {
+    command: "agent_scene_event_link",
+    policy: "knowledgeWrite",
+  },
+  unstamp_scene_event: {
+    command: "agent_scene_event_unlink",
+    policy: "knowledgeWrite",
+  },
+  set_event_participants: {
+    command: "agent_event_set_participants",
+    policy: "knowledgeWrite",
+  },
+  add_event_relation: {
+    command: "agent_event_relation_add",
+    policy: "knowledgeWrite",
+  },
+  remove_event_relation: {
+    command: "agent_event_relation_remove",
+    policy: "knowledgeWrite",
+  },
+  apply_ai_tree_plan: { command: "ai_tree_plan_apply", policy: "structureWrite" },
+  propose_scene_body: {
+    command: "agent_propose_scene_body",
+    policy: "bodyWrite",
+  },
+};
+const AGENT_AUTHORITY_COMMANDS = new Set(
+  [
+    ...Object.values(AGENT_TOOL_COMMANDS).map(({ command }) => command),
+    // These compatibility writers are still allowed to classify an AI
+    // payload as interactive, so they must not become a capability bypass
+    // merely because no current chat tool targets them directly.
+    "agent_codex_mutate",
+    ...AGENT_CHRONICLE_COMMANDS,
+  ],
+);
+
+function isNonEmptyTrimmedString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && value === value.trim();
+}
+
+function agentToolRequestId(
+  toolName: string,
+  projectId: string,
+  toolCallId: string,
+): string {
+  const digest = createHash("sha256")
+    .update(`${toolName}\0${projectId}\0${toolCallId}`)
+    .digest("hex");
+  return `agent-tool:${digest}`;
+}
+
+function parsePolicyAllows(raw: unknown, policy: AgentAuthorityPolicy): boolean {
+  // `parseAiPolicy` treats a legacy NULL policy as the documented default
+  // (full). Keep this main-side gate aligned with that canonical policy
+  // contract while still failing closed for an unknown serialized preset.
+  if (raw === null || raw === undefined) return true;
+  if (typeof raw !== "string" || raw.trim().length === 0) return false;
+  try {
+    const parsed = JSON.parse(raw) as {
+      preset?: unknown;
+      toggles?: Record<string, unknown>;
+    };
+    const preset = parsed.preset;
+    const toggles = parsed.toggles;
+    if (toggles && typeof toggles === "object") {
+      if (typeof toggles[policy] === "boolean") return toggles[policy] === true;
+    }
+    const presetDefaults: Record<
+      string,
+      Record<AgentAuthorityPolicy, boolean>
+    > = {
+      full: { knowledgeWrite: true, structureWrite: true, bodyWrite: true },
+      "assist-off": {
+        knowledgeWrite: true,
+        structureWrite: true,
+        bodyWrite: false,
+      },
+      "review-only": {
+        knowledgeWrite: false,
+        structureWrite: false,
+        bodyWrite: false,
+      },
+      off: { knowledgeWrite: false, structureWrite: false, bodyWrite: false },
+      custom: { knowledgeWrite: false, structureWrite: false, bodyWrite: false },
+    };
+    return typeof preset !== "string"
+      ? false
+      : (presetDefaults[preset]?.[policy] ?? false);
+  } catch {
+    return false;
+  }
+}
+
+function pruneAgentAuthorityCapabilities(now = Date.now()): void {
+  for (const [token, record] of agentAuthorityCapabilities) {
+    if (record.expiresAt <= now) agentAuthorityCapabilities.delete(token);
+  }
+}
+
+async function policyAllowsAgentTool(
+  backend: NapiBackendLike,
+  projectId: string,
+  policy: AgentAuthorityPolicy,
+): Promise<boolean> {
+  const raw = await backend.dbExecute(
+    "SELECT ai_policy FROM projects WHERE id = ? LIMIT 1",
+    [projectId],
+    "get",
+  );
+  const parsed = JSON.parse(raw) as { rows?: unknown };
+  const rows = Array.isArray(parsed.rows) ? parsed.rows : [];
+  if (rows.length === 0) return false;
+  const first = Array.isArray(rows[0]) ? rows[0][0] : undefined;
+  return parsePolicyAllows(first, policy);
+}
+
+function responseBlocks(response: unknown): Array<Record<string, unknown>> {
+  if (!isRecord(response) || !Array.isArray(response.blocks)) return [];
+  return response.blocks.filter(
+    (block): block is Record<string, unknown> => isRecord(block),
+  );
+}
+
+async function issueAgentAuthorityCapabilitiesForSender(
+  senderId: number,
+  args: CommandArgs,
+  response: unknown,
+  backend: NapiBackendLike | null,
+): Promise<unknown> {
+  if (!backend || !isRecord(args.auditContext)) return response;
+  if (args.auditContext.pathId !== "chat_agent_main") return response;
+  const projectId = args.auditContext.projectId;
+  const executionId = args.auditContext.executionId;
+  if (!isNonEmptyTrimmedString(projectId) || !isNonEmptyTrimmedString(executionId)) {
+    return response;
+  }
+
+  pruneAgentAuthorityCapabilities();
+  const issued: Record<string, string> = {};
+  for (const block of responseBlocks(response)) {
+    if (block.type !== "tool_use") continue;
+    const toolCallId = block.id;
+    const toolName = block.name;
+    const definition = AGENT_TOOL_COMMANDS[typeof toolName === "string" ? toolName : ""];
+    if (!definition || !isNonEmptyTrimmedString(toolCallId) || !isNonEmptyTrimmedString(toolName)) {
+      continue;
+    }
+    if (!(await policyAllowsAgentTool(backend, projectId, definition.policy))) {
+      continue;
+    }
+    const now = Date.now();
+    const token = randomUUID();
+    agentAuthorityCapabilities.set(token, {
+      senderId,
+      projectId,
+      toolName,
+      command: definition.command,
+      requestId: agentToolRequestId(toolName, projectId, toolCallId),
+      toolCallId,
+      policy: definition.policy,
+      executionId,
+      issuedAt: now,
+      expiresAt: now + AGENT_AUTHORITY_CAPABILITY_TTL_MS,
+    });
+    issued[toolCallId] = token;
+  }
+  if (Object.keys(issued).length === 0 || !isRecord(response)) return response;
+  return { ...response, agentAuthorityCapabilities: issued };
+}
+
+function consumeAgentAuthorityCapability(
+  cmd: string,
+  payload: CommandArgs,
+  senderId: number,
+): boolean {
+  const capability = payload.agentAuthorityCapability;
+  if (!isNonEmptyTrimmedString(capability)) return false;
+  pruneAgentAuthorityCapabilities();
+  const record = agentAuthorityCapabilities.get(capability);
+  if (!record) return false;
+  // Capabilities are one-shot. A malformed/re-targeted attempt must not leave
+  // a valid token available for replay in a later renderer invocation.
+  agentAuthorityCapabilities.delete(capability);
+  const projectId = payload.projectId;
+  const requestId = payload.requestId;
+  const toolCallId = payload.toolCallId;
+  const chatMessageId = payload.chatMessageId;
+  return (
+    record.senderId === senderId &&
+    record.command === cmd &&
+    projectId === record.projectId &&
+    requestId === record.requestId &&
+    toolCallId === record.toolCallId &&
+    isNonEmptyTrimmedString(chatMessageId)
+  );
+}
 
 function authorityRouteForOrigin(
   origin: unknown,
@@ -151,7 +387,8 @@ function authorityRouteForRendererCommand(
   if (
     cmd === "agent_foreshadow_create" ||
     cmd === "agent_foreshadow_update" ||
-    cmd === "agent_snippet_create"
+    cmd === "agent_snippet_create" ||
+    cmd === "agent_propose_scene_body"
   ) {
     return "interactive-agent-command";
   }
@@ -273,6 +510,7 @@ export function bindRendererAuthorityForIpc(
       cmd === "agent_foreshadow_create" ||
       cmd === "agent_foreshadow_update" ||
       cmd === "agent_snippet_create" ||
+      cmd === "agent_propose_scene_body" ||
       cmd === "foreshadow_create" ||
       cmd === "foreshadow_update" ||
       cmd === "foreshadow_delete" ||
@@ -289,10 +527,31 @@ export function bindRendererAuthorityForIpc(
   }
   const boundPayload = bindCanonicalAuthorityContext(payload, route);
   if (typeof senderId === "number" && Number.isInteger(senderId)) {
+    if (
+      route === "interactive-agent-command" &&
+      AGENT_AUTHORITY_COMMANDS.has(cmd) &&
+      !consumeAgentAuthorityCapability(cmd, payload, senderId)
+    ) {
+      const invalidPayload = { ...payload, authorityRoute: "" };
+      return directPayloadCommand
+        ? invalidPayload
+        : { ...args, [payloadKey]: invalidPayload };
+    }
     const authoritySession =
       rendererAuthoritySessions.get(senderId) ?? randomUUID();
     rendererAuthoritySessions.set(senderId, authoritySession);
     boundPayload.sessionId = authoritySession;
+  }
+  if (cmd === "tree_node_patch" && isRecord(boundPayload.changeEvent)) {
+    // `changeEvent` is part of the typed tree patch, but its identity is not a
+    // second authority boundary. Reconstruct the nested event from the
+    // canonical top-level identity after sender binding so a copied renderer
+    // payload cannot leave two writer identities in one mutation.
+    boundPayload.changeEvent = {
+      ...boundPayload.changeEvent,
+      eventUid: boundPayload.eventUid,
+      sessionId: boundPayload.sessionId,
+    };
   }
   if (
     route === "history-replay" &&
@@ -359,6 +618,13 @@ export function registerIpcRouter(
             shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
             secrets,
             broadcast,
+            issueAgentAuthorityCapabilities: (agentArgs, response) =>
+              issueAgentAuthorityCapabilitiesForSender(
+                event.sender.id,
+                agentArgs,
+                response,
+                backend,
+              ),
           },
         );
         workspaceOpenResult = envelope.ok ? "success" : "failure";

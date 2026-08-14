@@ -73,7 +73,7 @@ export function foreshadowMutationIdentity(
     eventUid: requestId,
     origin: options.origin ?? "human",
     originalTransactionId: options.originalTransactionId ?? null,
-    undoJournalId: options.undoJournalId ?? null,
+    ...(options.undoJournalId ? { undoJournalId: options.undoJournalId } : {}),
   };
   // Direct forward/restore writes now carry the same authority evidence as
   // the other canonical Native writers. History cycles are replayed through

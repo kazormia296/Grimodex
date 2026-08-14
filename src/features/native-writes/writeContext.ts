@@ -25,6 +25,11 @@ export interface CanonicalWriteContext {
   caller: string;
   controls: readonly MutationControl[];
   provenance: MutationProvenance | null;
+  /** Main-issued capability for an interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  /** Duplicated top-level for main-bound request validation. */
+  chatMessageId?: string;
+  toolCallId?: string;
   writesAuthorityProtectedField: boolean;
   originalTransactionId: string | null;
   undoJournalId: string | null;
@@ -35,6 +40,9 @@ export interface CanonicalWriteAuthorityOptions {
   caller?: string;
   controls?: readonly MutationControl[];
   provenance?: MutationProvenance;
+  agentAuthorityCapability?: string;
+  chatMessageId?: string;
+  toolCallId?: string;
   writesAuthorityProtectedField?: boolean;
 }
 
@@ -85,6 +93,15 @@ export function createCanonicalWriteContext(
       authorityOptions?.caller ?? defaultCallerForRoute(authorityRoute, origin),
     controls: [...controls],
     provenance,
+    ...(authorityOptions?.agentAuthorityCapability
+      ? { agentAuthorityCapability: authorityOptions.agentAuthorityCapability }
+      : {}),
+    ...(authorityOptions?.chatMessageId
+      ? { chatMessageId: authorityOptions.chatMessageId }
+      : {}),
+    ...(authorityOptions?.toolCallId
+      ? { toolCallId: authorityOptions.toolCallId }
+      : {}),
     writesAuthorityProtectedField,
     originalTransactionId: lineage?.originalTransactionId ?? null,
     undoJournalId: lineage?.undoJournalId ?? null,

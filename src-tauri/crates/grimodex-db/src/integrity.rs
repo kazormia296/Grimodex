@@ -379,6 +379,34 @@ impl Database {
                 let changed = !codex.is_empty() || !snippets.is_empty();
                 let (change_event_uid, maintenance_transaction_id) = if changed {
                     let mut events = Vec::with_capacity(codex.len() + snippets.len());
+                    let epoch_before = json!({
+                        "projectId": payload.project_id.clone(),
+                        "semanticEpoch": "prior",
+                    });
+                    let epoch_after = json!({
+                        "projectId": payload.project_id.clone(),
+                        "semanticEpoch": "reset",
+                        "requestId": payload.request_id.clone(),
+                    });
+                    events.push(NarrativeChangeEventInput {
+                        object_key: json!({
+                            "kind": "project",
+                            "projectId": payload.project_id.clone(),
+                        }),
+                        change_kind: "schema".to_string(),
+                        mutation_kind: "update".to_string(),
+                        before_version: Some(0),
+                        before_digest: Some(narrative_snapshot_digest(&epoch_before)?),
+                        after_version: Some(1),
+                        after_digest: Some(narrative_snapshot_digest(&epoch_after)?),
+                        changed_paths: vec!["/integrity".to_string()],
+                        text_impact: None,
+                        structural_impact: Some(json!({
+                            "event": "semantic-epoch-reset",
+                            "requiresFullRebuild": true,
+                            "changedPaths": ["/integrity"],
+                        })),
+                    });
                     for target in &codex {
                         let before = json!({
                             "id": target.id.clone(),
@@ -468,6 +496,8 @@ impl Database {
                             "projectId": payload.project_id,
                             "snippetScenesFixed": snippet_scenes_fixed,
                             "snippetSourcesFixed": snippet_sources_fixed,
+                            "semanticEpochReset": true,
+                            "requiresFullRebuild": true,
                         })
                         .to_string(),
                         &authority_context,
