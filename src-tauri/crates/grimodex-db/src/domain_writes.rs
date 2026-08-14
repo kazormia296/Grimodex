@@ -2795,7 +2795,6 @@ pub fn tree_node_delete_with_authority(
             context,
             &[
                 "human-direct",
-                "import-apply",
                 "history-replay",
                 "restore-or-migration",
             ],

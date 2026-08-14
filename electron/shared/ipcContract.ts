@@ -2888,7 +2888,6 @@ function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_delete";
   const payload = requireCanonicalWriterIdentity(args, command, [
     "human-direct",
-    "import-apply",
     "history-replay",
     "restore-or-migration",
   ]);

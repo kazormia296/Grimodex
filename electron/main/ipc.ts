@@ -130,7 +130,7 @@ function authorityRouteForRendererCommand(
     case "human":
       return "human-direct";
     case "import":
-      return "import-apply";
+      return cmd === "tree_node_delete" ? undefined : "import-apply";
     case "undo":
     case "redo":
       return "history-replay";
