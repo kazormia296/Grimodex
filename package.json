@@ -114,7 +114,7 @@
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
     "@gsap/react": "^2.1.2",
-    "@paper-design/shaders": "0.0.77",
+    "@paper-design/shaders": "0.0.80",
     "@paper-design/shaders-react": "0.0.77",
     "@radix-ui/react-checkbox": "^1.3.3",
     "@radix-ui/react-context-menu": "^2.2.16",
