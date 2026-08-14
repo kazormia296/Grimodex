@@ -4375,11 +4375,11 @@ impl Backend {
 
     #[napi]
     pub async fn agent_snippet_create(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_snippet_create_impl,
+            agent_writes::renderer_agent_snippet_create_impl,
         )
         .await
     }

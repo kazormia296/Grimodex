@@ -336,6 +336,7 @@ test("agentCodexMutate creates a Detail Definition and semantic binding atomical
 
 test("snippet / agent foreshadow / event request IDs are idempotent through napi", async () => {
   const snippet = {
+    ...canonical("agent-tool:snippet-napi-request-1", "ai-apply"),
     requestId: "agent-tool:snippet-napi-request-1",
     snippetId: "snippet-napi-entity-attempt-1",
     projectId: PROJECT,
@@ -346,6 +347,15 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   };
   const snippetFirst = JSON.parse(await backend.agentSnippetCreate(snippet));
   assert.equal(snippetFirst.undoJournalId, snippet.requestId);
+  assert.equal(snippetFirst.changeEventUid, snippet.eventUid);
+  const snippetEvent = (
+    await rows("SELECT payload FROM change_events WHERE event_uid = ?", [
+      snippet.eventUid,
+    ])
+  )[0];
+  const snippetEventPayload = JSON.parse(snippetEvent.payload);
+  assert.equal(snippetEventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(snippetEventPayload.authorityEvidence.validated, true);
   assert.notEqual(snippetFirst.entityId, snippet.requestId);
   assert.deepEqual(
     JSON.parse(
@@ -437,10 +447,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     foreshadowUpdateEventPayload.authorityRoute,
     "interactive-agent-command",
   );
-  assert.equal(
-    foreshadowUpdateEventPayload.authorityEvidence.validated,
-    true,
-  );
+  assert.equal(foreshadowUpdateEventPayload.authorityEvidence.validated, true);
   await assert.rejects(
     backend.agentForeshadowUpdate({
       ...foreshadowUpdate,

@@ -83,7 +83,11 @@ function authorityRouteForRendererCommand(
   cmd: string,
   payload: CommandArgs,
 ): CanonicalAuthorityRoute | undefined {
-  if (cmd === "agent_foreshadow_create" || cmd === "agent_foreshadow_update") {
+  if (
+    cmd === "agent_foreshadow_create" ||
+    cmd === "agent_foreshadow_update" ||
+    cmd === "agent_snippet_create"
+  ) {
     return "interactive-agent-command";
   }
 

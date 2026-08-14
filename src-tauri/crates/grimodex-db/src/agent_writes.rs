@@ -3453,9 +3453,34 @@ pub fn agent_write_bundle_impl(
     )
 }
 
+pub fn renderer_agent_snippet_create_impl(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    let request_id = require_agent_request_id(payload.request_id.as_deref())?;
+    validate_renderer_authority_context_for_routes(
+        &context,
+        &["interactive-agent-command"],
+    )?;
+    anyhow::ensure!(
+        request_id == context.request_id,
+        "requestId must match canonical authority context"
+    );
+    agent_snippet_create_with_renderer_context(db, payload, Some(&context))
+}
+
 pub fn agent_snippet_create_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
+) -> anyhow::Result<Value> {
+    agent_snippet_create_with_renderer_context(db, payload, None)
+}
+
+fn agent_snippet_create_with_renderer_context(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     require_agent_request_id(payload.request_id.as_deref())?;
     let request_hash = snippet_create_request_hash(&payload)?;
@@ -3471,7 +3496,9 @@ pub fn agent_snippet_create_impl(
     let undo_id = request_id
         .clone()
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().to_rfc3339();
     let content = payload.content.unwrap_or_else(|| "{}".to_string());
     let timestamp = chrono::Utc::now().timestamp_millis();
@@ -3626,7 +3653,7 @@ pub fn agent_snippet_create_impl(
                 &undo_id,
                 &canonical_event,
                 None,
-                None,
+                renderer_context,
             )?;
 
             Ok(AgentWriteResult {

@@ -1336,7 +1336,9 @@ function requireCanonicalAgentCreatePayload(
   args: CommandArgs,
   command: string,
 ): CommandArgs {
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   for (const key of ["projectId", "requestId", "sessionId"]) {
     requireNonEmptyString(payload, key, command);
   }

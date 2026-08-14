@@ -6340,6 +6340,27 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const payload = {
       requestId: "snippet-create-request-1",
+      eventUid: "snippet-create-request-1:event",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "snippet-create-request-1",
+        traceId: "snippet-create-request-1:trace",
+      },
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       projectId: "p1",
       sessionId: "s1",
       snippetId: "snippet-1",

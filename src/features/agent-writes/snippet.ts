@@ -12,6 +12,7 @@ import {
 import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export interface AgentSnippetCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -61,9 +62,22 @@ export async function agentCreateSnippet(
         traceId: input.traceId,
       })
     : [];
+  const authorityContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+    {
+      provenance: {
+        requestId: input.requestId,
+        traceId: input.traceId ?? input.requestId,
+        ...(chatMessageId ? { chatMessageId } : {}),
+      },
+    },
+  );
 
   const result = await invoke<AgentWriteResult>("agent_snippet_create", {
     payload: {
+      ...authorityContext,
       requestId: input.requestId,
       snippetId,
       projectId,
