@@ -1180,11 +1180,11 @@ pub fn update_with_renderer_authority(
     let payoff_from_patch = patch.payoff_from_pos;
     let payoff_to_patch = patch.payoff_to_pos;
     let now = chrono::Utc::now().timestamp_millis();
+    let writes_forward_journal = write_context.cause_kind == NarrativeChangeCauseKind::Forward;
     let undo_journal_id = write_context
         .undo_journal_id
         .clone()
-        .unwrap_or_else(|| write_context.request_id.clone());
-    let writes_forward_journal = write_context.cause_kind == NarrativeChangeCauseKind::Forward;
+        .or_else(|| writes_forward_journal.then(|| write_context.request_id.clone()));
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -1373,7 +1373,9 @@ pub fn update_with_renderer_authority(
                 insert_undo_journal_in_tx(
                     conn,
                     UndoJournalInsert {
-                        id: &undo_journal_id,
+                        id: undo_journal_id.as_deref().ok_or_else(|| {
+                            anyhow::anyhow!("forward foreshadow update has no undo journal id")
+                        })?,
                         project_id: &project_id,
                         surface: surface_for_origin(write_context.origin),
                         entity_kind: "foreshadow",
@@ -1394,7 +1396,7 @@ pub fn update_with_renderer_authority(
                     operation: "foreshadow.update",
                     entity_id: &id,
                     context: &write_context,
-                    undo_journal_id: Some(undo_journal_id.clone()),
+                    undo_journal_id: undo_journal_id.clone(),
                     events: vec![foreshadow_root_feed_event(
                         &id,
                         "metadata",
@@ -1407,11 +1409,8 @@ pub fn update_with_renderer_authority(
                 renderer_context.as_ref(),
             )?;
             let mut response = attach_maintenance_transaction_id(after, transaction_id);
-            if let Value::Object(row) = &mut response {
-                row.insert(
-                    "undoJournalId".to_string(),
-                    Value::String(undo_journal_id.clone()),
-                );
+            if let (Value::Object(row), Some(undo_journal_id)) = (&mut response, undo_journal_id) {
+                row.insert("undoJournalId".to_string(), Value::String(undo_journal_id));
             }
             Ok(response)
         },
