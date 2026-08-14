@@ -41,6 +41,7 @@ import { deriveLabel } from "./deriveLabel";
 import { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { instantEpochMilliseconds } from "@/lib/time";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export { normalizeForeshadowRow } from "./normalizeForeshadowRow";
 
@@ -64,13 +65,32 @@ export function foreshadowMutationIdentity(
   stableRequestId?: string,
 ): Record<string, unknown> {
   const requestId = options.requestId ?? stableRequestId ?? crypto.randomUUID();
-  return {
+  const identity = {
     projectId,
     requestId,
     sessionId: getRecorderSessionId(),
     eventUid: requestId,
     origin: options.origin ?? "human",
     originalTransactionId: options.originalTransactionId ?? null,
+  };
+  // Direct forward/restore writes now carry the same authority evidence as
+  // the other canonical Native writers. History cycles are replayed through
+  // agent_apply_undo_journal and retain the legacy inverse lineage shape.
+  if (options.origin === "undo" || options.origin === "redo") {
+    return identity;
+  }
+  const authority = createCanonicalWriteContext(
+    options.origin ?? "human",
+    undefined,
+    requestId,
+  );
+  return {
+    ...identity,
+    authorityRoute: authority.authorityRoute,
+    caller: authority.caller,
+    controls: authority.controls,
+    provenance: authority.provenance,
+    writesAuthorityProtectedField: authority.writesAuthorityProtectedField,
   };
 }
 

@@ -2563,6 +2563,14 @@ fn ensure_tree_codex_reference_in_project(
 }
 
 pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow::Result<Value> {
+    tree_node_create_with_authority(db, payload, None)
+}
+
+pub fn tree_node_create_with_authority(
+    db: &Database,
+    payload: TreeNodeCreatePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     for (value, field) in [
         (&payload.id, "id"),
         (&payload.project_id, "projectId"),
@@ -2584,6 +2592,29 @@ pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow
         payload.original_transaction_id.as_deref(),
         payload.undo_journal_id.as_deref(),
     )?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context(context)?;
+        anyhow::ensure!(
+            context.request_id == payload.request_id,
+            "tree node create requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.event_uid,
+            "tree node create eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.origin,
+            "tree node create origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.original_transaction_id,
+            "tree node create originalTransactionId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.undo_journal_id == payload.undo_journal_id,
+            "tree node create undoJournalId does not match canonical authority context"
+        );
+    }
     let request_hash = canonical_write_payload_fingerprint("tree_node_create", &payload)?;
     let idempotency_request = IdempotencyRequest {
         domain: "tree_node_create",
@@ -2674,6 +2705,22 @@ pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow
         } else {
             "metadata"
         };
+        let canonical_payload = payload
+            .canonical_payload
+            .clone()
+            .unwrap_or_else(|| {
+                json!({
+                    "parentId": payload.parent_id,
+                    "sortOrder": payload.sort_order,
+                    "title": payload.title,
+                })
+            })
+            .to_string();
+        let canonical_payload = if let Some(context) = renderer_context.as_ref() {
+            canonical_payload_with_authority_context(&canonical_payload, context)
+        } else {
+            canonical_payload
+        };
         let maintenance_transaction_id = append_tree_feed(
             &tx,
             TreeFeedAppend {
@@ -2685,17 +2732,7 @@ pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow
                 canonical_domain: "tree",
                 canonical_entity_type: "tree_node",
                 entity_id: &payload.id,
-                canonical_payload: payload
-                    .canonical_payload
-                    .clone()
-                    .unwrap_or_else(|| {
-                        json!({
-                            "parentId": payload.parent_id,
-                            "sortOrder": payload.sort_order,
-                            "title": payload.title,
-                        })
-                    })
-                    .to_string(),
+                canonical_payload,
                 scene_id: (payload.node_type == "scene").then(|| payload.id.clone()),
                 occurred_at: &now,
                 timestamp: event_timestamp(&now),

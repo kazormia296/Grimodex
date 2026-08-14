@@ -216,6 +216,47 @@ test("agentCodexCreate: N-API authority rejection leaves write tables unchanged"
   assert.deepEqual(await writeCounts(), beforeMissingControl);
 });
 
+test("agentCodexMutate: N-API authority is enforced and recorded in the canonical event", async () => {
+  const invalidCaller = {
+    ...canonical("napi-codex-mutate-invalid", "human"),
+    caller: "background-maintenance-v2",
+    operation: "detail.definition.create",
+    definitionId: "napi-codex-mutate-invalid-definition",
+    typeSlug: "character",
+    name: "invalid caller",
+    fieldType: "text",
+    sortOrder: 1,
+    includeInContext: 1,
+  };
+  const beforeInvalidCaller = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexMutate(invalidCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidCaller);
+
+  const payload = {
+    ...canonical("napi-codex-mutate-authority", "human"),
+    operation: "detail.definition.create",
+    definitionId: "napi-codex-mutate-authority-definition",
+    typeSlug: "character",
+    name: "authority evidence",
+    fieldType: "text",
+    sortOrder: 2,
+    includeInContext: 1,
+  };
+  const result = JSON.parse(await backend.agentCodexMutate(payload));
+  assert.equal(result.entityId, payload.definitionId);
+  const event = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [payload.eventUid],
+  );
+  const eventPayload = JSON.parse(event[0].payload);
+  assert.equal(eventPayload.authorityRoute, "human-direct");
+  assert.equal(eventPayload.authorityCaller, "manual-wrapper");
+  assert.equal(eventPayload.authorityEvidence.validated, true);
+});
+
 test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {
   const created = JSON.parse(
     await backend.agentCodexMutate({
@@ -321,6 +362,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 
   const foreshadow = {
+    ...canonical("agent-tool:foreshadow-napi-request-1", "ai-apply"),
     requestId: "agent-tool:foreshadow-napi-request-1",
     foreshadowId: "foreshadow-napi-entity-attempt-1",
     projectId: PROJECT,
@@ -331,11 +373,36 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
     loadBearing: "critical",
     secret: true,
   };
+  const invalidForeshadowCaller = {
+    ...foreshadow,
+    ...canonical("agent-tool:foreshadow-napi-invalid", "ai-apply"),
+    requestId: "agent-tool:foreshadow-napi-invalid",
+    foreshadowId: "foreshadow-napi-invalid-caller",
+    caller: "background-maintenance-v2",
+  };
+  const beforeInvalidForeshadow = await writeCounts();
+  await assert.rejects(
+    backend.agentForeshadowCreate(invalidForeshadowCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidForeshadow);
+
   const foreshadowFirst = JSON.parse(
     await backend.agentForeshadowCreate(foreshadow),
   );
   assert.equal(foreshadowFirst.undoJournalId, foreshadow.requestId);
   assert.notEqual(foreshadowFirst.entityId, foreshadow.requestId);
+  const foreshadowEvent = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [foreshadowFirst.changeEventUid],
+  );
+  const foreshadowEventPayload = JSON.parse(foreshadowEvent[0].payload);
+  assert.equal(
+    foreshadowEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(foreshadowEventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(foreshadowEventPayload.authorityEvidence.validated, true);
   assert.deepEqual(
     JSON.parse(
       await backend.agentForeshadowCreate({

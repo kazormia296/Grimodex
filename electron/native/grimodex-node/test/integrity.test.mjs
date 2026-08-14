@@ -40,6 +40,18 @@ function mutationIdentity(requestId) {
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin: "human",
+    authorityRoute: "human-direct",
+    caller: "manual-wrapper",
+    controls: [
+      "runtime-policy",
+      "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
     undoJournalId: null,
   };

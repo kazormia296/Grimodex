@@ -40,8 +40,7 @@ use grimodex_db::chronicle::{self, SetParticipantsPayload, UpsertProjectCalendar
 use grimodex_db::domain_writes::{
     self, ApplyAiTreePlanPayload, CodexRenameApplyPayload, CodexRenameUndoPayload,
     CreateScanStagingProjectPayload, ProjectCreatePayload, ProjectDeletePayload,
-    ProjectPatchPayload,
-    ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
+    ProjectPatchPayload, ReplaceAuthorshipLanePayload, SetEntityTagsPayload, TreeNodeCreatePayload,
     TreeNodeDeletePayload, TreeNodePatchPayload, UndoAiTreePlanPayload,
 };
 use grimodex_db::editor_stickies;
@@ -2064,15 +2063,14 @@ impl Backend {
 
     #[napi]
     pub async fn tree_node_create(&self, payload: serde_json::Value) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: TreeNodeCreatePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&domain_writes::tree_node_create(
-                    db, payload,
-                )?)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: TreeNodeCreatePayload, context| {
+                domain_writes::tree_node_create_with_authority(db, payload, Some(context))
+            },
+        )
         .await
     }
 
@@ -3974,14 +3972,14 @@ impl Backend {
     /// ForeshadowCreatePayload。返り値: 作成行 (snake_case) の JSON 文字列。
     #[napi]
     pub async fn foreshadow_create(&self, payload: serde_json::Value) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowCreatePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::create(db, payload)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: ForeshadowCreatePayload, context| {
+                foreshadow::create_with_renderer_authority(db, payload, Some(context))
+            },
+        )
         .await
     }
 
@@ -4311,11 +4309,11 @@ impl Backend {
 
     #[napi]
     pub async fn agent_codex_mutate(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            grimodex_db::codex_writes::agent_codex_mutate_impl,
+            grimodex_db::codex_writes::renderer_agent_codex_mutate_impl,
         )
         .await
     }
@@ -4426,11 +4424,11 @@ impl Backend {
 
     #[napi]
     pub async fn agent_foreshadow_create(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_foreshadow_create_impl,
+            agent_writes::renderer_agent_foreshadow_create_impl,
         )
         .await
     }

@@ -1217,6 +1217,9 @@ function requireForeshadowMutationIdentity(
       `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
     );
   }
+  if (Object.hasOwn(payload, "authorityRoute")) {
+    requireCanonicalAuthorityContext(payload, command);
+  }
 }
 
 function requireForeshadowPayload(
@@ -1291,10 +1294,7 @@ function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
 
 function requireAgentForeshadowCreatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_create";
-  const payload = requireRecord(args, "payload", command);
-  requireNonEmptyString(payload, "requestId", command);
-  requireNonEmptyString(payload, "projectId", command);
-  requireNonEmptyString(payload, "sessionId", command);
+  const payload = requireCanonicalWriterIdentity(args, command);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireNonEmptyString(payload, "title", command);
   return payload;
@@ -2083,20 +2083,207 @@ function requireCanonicalWriterIdentity(
       `invalid canonical lineage for command \`${command}\`: undo/redo requires originalTransactionId and undoJournalId`,
     );
   }
+  requireCanonicalAuthorityContext(payload, command);
   return payload;
+}
+
+const CANONICAL_AUTHORITY_POLICIES = {
+  "human-direct": {
+    allowedOrigins: ["human"],
+    allowedCallers: ["human-ui", "manual-wrapper", "typed-domain-api"],
+    requiredControls: [
+      "runtime-policy",
+      "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "interactive-agent-command": {
+    allowedOrigins: ["ai-apply"],
+    allowedCallers: [
+      "chat-tool-executor",
+      "manual-wrapper",
+      "registered-agent-surface",
+    ],
+    requiredControls: [
+      "knowledge-write-policy",
+      "stable-request-id",
+      "agent-provenance",
+      "typed-writer",
+      "occ",
+      "undo-journal",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "interpreter-projection": {
+    allowedOrigins: ["ai-apply"],
+    allowedCallers: [
+      "interpreter",
+      "reconciler",
+      "proposal-review",
+      "prepared-commit-runner",
+    ],
+    requiredControls: [
+      "proposal-revision",
+      "decision",
+      "prepared-commit",
+      "application-id",
+      "source-basis-occ",
+      "field-authority",
+      "typed-writer",
+    ],
+  },
+  "import-apply": {
+    allowedOrigins: ["import"],
+    allowedCallers: ["import-session", "import-review"],
+    requiredControls: [
+      "import-policy",
+      "source-package-evidence",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "history-replay": {
+    allowedOrigins: ["undo", "redo"],
+    allowedCallers: ["history-controller", "undo-redo-command"],
+    requiredControls: [
+      "original-transaction",
+      "journal-lineage",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "restore-or-migration": {
+    allowedOrigins: ["restore", "migration"],
+    allowedCallers: [
+      "restore-controller",
+      "migration-runner",
+      "integrity-repair",
+    ],
+    requiredControls: [
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+    ],
+  },
+} as const;
+
+const KNOWN_CANONICAL_AUTHORITY_CONTROLS = new Set([
+  "runtime-policy",
+  "actor-context",
+  "knowledge-write-policy",
+  "stable-request-id",
+  "agent-provenance",
+  "typed-writer",
+  "occ",
+  "source-basis-occ",
+  "field-authority",
+  "proposal-revision",
+  "decision",
+  "prepared-commit",
+  "application-id",
+  "undo-journal",
+  "journal-lineage",
+  "original-transaction",
+  "change-event",
+  "change-feed",
+  "import-policy",
+  "source-package-evidence",
+  "exclusive-system-operation",
+  "semantic-epoch-event",
+  "full-rebuild-marker",
+]);
+
+function requireCanonicalAuthorityContext(
+  payload: CommandArgs,
+  command: string,
+): void {
+  const route = requireNonEmptyString(payload, "authorityRoute", command);
+  const policy =
+    CANONICAL_AUTHORITY_POLICIES[
+      route as keyof typeof CANONICAL_AUTHORITY_POLICIES
+    ];
+  if (!policy) {
+    throw new Error(
+      `invalid args \`authorityRoute\` for command \`${command}\`: unknown mutation authority route`,
+    );
+  }
+  const origin = requireString(payload, "origin", command);
+  if (!policy.allowedOrigins.includes(origin as never)) {
+    throw new Error(
+      `invalid authority origin for command \`${command}\`: ${origin} is not valid for ${route}`,
+    );
+  }
+  const caller = requireNonEmptyString(payload, "caller", command);
+  if (!policy.allowedCallers.includes(caller as never)) {
+    throw new Error(
+      `invalid authority caller for command \`${command}\`: ${caller} is not allowed for ${route}`,
+    );
+  }
+  const controls = requireArray(payload, "controls", command);
+  controls.forEach((control, index) => {
+    if (typeof control !== "string" || control.length === 0) {
+      throw new Error(
+        `invalid args \`controls[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+    if (!KNOWN_CANONICAL_AUTHORITY_CONTROLS.has(control)) {
+      throw new Error(
+        `invalid authority control for command \`${command}\`: unknown control ${control}`,
+      );
+    }
+  });
+  for (const control of policy.requiredControls) {
+    if (!controls.includes(control)) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: missing ${control}`,
+      );
+    }
+  }
+  if (Object.hasOwn(payload, "writesAuthorityProtectedField")) {
+    const protectedField = requireBoolean(
+      payload,
+      "writesAuthorityProtectedField",
+      command,
+    );
+    if (protectedField && !controls.includes("field-authority")) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: protected-field writes require field-authority`,
+      );
+    }
+  }
+  if (route === "interactive-agent-command") {
+    const provenance = requireRecord(payload, "provenance", command);
+    requireNonEmptyString(provenance, "requestId", command);
+    requireNonEmptyString(provenance, "traceId", command);
+    if (provenance.requestId !== payload.requestId) {
+      throw new Error(
+        `invalid authority provenance for command \`${command}\`: requestId must match canonical requestId`,
+      );
+    }
+  }
 }
 
 function requireSnippetWriterPayload(
   args: CommandArgs,
   command: "snippet_create" | "snippet_update" | "snippet_delete",
 ): CommandArgs {
-  const payload = requireCanonicalWriterIdentity(args, command);
-  requireNonEmptyString(payload, "snippetId", command);
-  if (payload.origin === "undo" || payload.origin === "redo") {
+  const rawPayload = requireRecord(args, "payload", command);
+  if (rawPayload.origin === "undo" || rawPayload.origin === "redo") {
     throw new Error(
       `invalid args \`origin\` for command \`${command}\`: Snippet history must replay its Native Undo Journal`,
     );
   }
+
+  const payload = requireCanonicalWriterIdentity(args, command);
+  requireNonEmptyString(payload, "snippetId", command);
 
   if (command === "snippet_create") {
     requireString(payload, "title", command);

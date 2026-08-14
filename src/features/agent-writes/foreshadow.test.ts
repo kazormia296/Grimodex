@@ -92,6 +92,27 @@ describe("agentCreateForeshadow", () => {
     expect(h.invoke).toHaveBeenCalledWith("agent_foreshadow_create", {
       payload: {
         requestId: "agent-tool:foreshadow-request",
+        eventUid: "agent-tool:foreshadow-request",
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: {
+          requestId: "agent-tool:foreshadow-request",
+          traceId: "agent-tool:foreshadow-request",
+        },
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
         foreshadowId: "f1",
         projectId: "p1",
         sessionId: "sess-1",

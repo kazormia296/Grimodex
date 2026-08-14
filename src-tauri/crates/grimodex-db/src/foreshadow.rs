@@ -22,6 +22,10 @@ use super::{
     Database,
 };
 use crate::change_events::AppendChangeEvent;
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext,
+};
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
     require_typed_inverse_lineage_in_project, AppendNarrativeChangeTransactionInput,
@@ -257,6 +261,14 @@ fn append_foreshadow_feed(
     conn: &Connection,
     input: ForeshadowFeedAppend<'_>,
 ) -> anyhow::Result<String> {
+    append_foreshadow_feed_with_authority(conn, input, None)
+}
+
+fn append_foreshadow_feed_with_authority(
+    conn: &Connection,
+    input: ForeshadowFeedAppend<'_>,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<String> {
     if let Some(original_transaction_id) = input.context.original_transaction_id.as_deref() {
         require_typed_inverse_lineage_in_project(
             conn,
@@ -274,6 +286,13 @@ fn append_foreshadow_feed(
         .to_rfc3339();
     let mut events = input.events;
     normalize_foreshadow_feed_events_in_tx(conn, input.project_id, &mut events)?;
+    let base_payload = serde_json::to_string(&json!({
+        "requestId": input.context.request_id,
+        "origin": input.context.origin,
+    }))?;
+    let canonical_payload = renderer_context.map_or(base_payload.clone(), |context| {
+        canonical_payload_with_authority_context(&base_payload, context)
+    });
     let canonical = AppendChangeEvent {
         event_uid: input.context.event_uid.clone(),
         scene_id: None,
@@ -281,10 +300,7 @@ fn append_foreshadow_feed(
         op_type: input.operation.to_string(),
         entity_type: Some("foreshadow".to_string()),
         entity_id: Some(input.entity_id.to_string()),
-        payload: serde_json::to_string(&json!({
-            "requestId": input.context.request_id,
-            "origin": input.context.origin,
-        }))?,
+        payload: canonical_payload,
         timestamp,
     };
     let result = append_canonical_and_narrative_change_in_tx(
@@ -799,7 +815,34 @@ fn fetch_setup_label_rows(db: &Database, foreshadow_ids: &[String]) -> anyhow::R
 // ─────────────────────────── foreshadow CRUD ───────────────────────────
 
 pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result<Value> {
+    create_with_renderer_authority(db, payload, None)
+}
+
+pub fn create_with_renderer_authority(
+    db: &Database,
+    payload: ForeshadowCreatePayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     let write_context = resolve_write_context("foreshadow.create", &payload.context)?;
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_authority_context(context)?;
+        anyhow::ensure!(
+            context.request_id == payload.context.request_id,
+            "foreshadow create requestId does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.event_uid == payload.context.event_uid,
+            "foreshadow create eventUid does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.origin == payload.context.origin,
+            "foreshadow create origin does not match canonical authority context"
+        );
+        anyhow::ensure!(
+            context.original_transaction_id == payload.context.original_transaction_id,
+            "foreshadow create originalTransactionId does not match canonical authority context"
+        );
+    }
     // The request id selects the ledger entry and is therefore not semantic
     // payload. Excluding it lets undo/redo deliberately restore the same entity
     // under a fresh request without weakening same-request conflict detection.
@@ -975,7 +1018,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                 FORESHADOW_AUTHORITY_FIELDS,
                 now,
             )?;
-            let transaction_id = append_foreshadow_feed(
+            let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
                     project_id: &project_id,
@@ -992,6 +1035,7 @@ pub fn create(db: &Database, payload: ForeshadowCreatePayload) -> anyhow::Result
                         vec!["/".to_string()],
                     )?],
                 },
+                renderer_context.as_ref(),
             )?;
             Ok((
                 project_id.clone(),

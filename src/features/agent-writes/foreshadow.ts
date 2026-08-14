@@ -12,6 +12,7 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { useForeshadowStore } from "@/features/foreshadow/foreshadowStore";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import { applyUndoJournal } from "./undoJournal";
 import type { ForeshadowRow } from "@/features/foreshadow/types";
 
@@ -112,8 +113,14 @@ export async function agentCreateForeshadow(
 
   const projectId = getCurrentProjectId();
   const foreshadowId = input.foreshadowId ?? crypto.randomUUID();
+  const writeContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+  );
   const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
     payload: {
+      ...writeContext,
       requestId: input.requestId,
       foreshadowId,
       projectId,

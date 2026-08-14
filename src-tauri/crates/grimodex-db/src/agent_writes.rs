@@ -4863,13 +4863,37 @@ pub fn agent_foreshadow_create_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
 ) -> anyhow::Result<Value> {
-    agent_foreshadow_create_with_surface_impl(db, payload, "in-app-agent")
+    agent_foreshadow_create_with_context_impl(db, payload, "in-app-agent", None)
+}
+
+pub fn renderer_agent_foreshadow_create_impl(
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!payload.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!payload.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "agent foreshadow requestId does not match canonical authority context"
+    );
+    validate_renderer_authority_context(&context)?;
+    agent_foreshadow_create_with_context_impl(db, payload, "in-app-agent", Some(context))
 }
 
 pub fn agent_foreshadow_create_with_surface_impl(
     db: &Database,
     payload: AgentForeshadowCreatePayload,
     surface: &str,
+) -> anyhow::Result<Value> {
+    agent_foreshadow_create_with_context_impl(db, payload, surface, None)
+}
+
+fn agent_foreshadow_create_with_context_impl(
+    db: &Database,
+    payload: AgentForeshadowCreatePayload,
+    surface: &str,
+    renderer_context: Option<RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
@@ -4907,7 +4931,7 @@ pub fn agent_foreshadow_create_with_surface_impl(
                     undo_journal_id,
                     &canonical_event,
                     None,
-                    None,
+                    renderer_context.as_ref(),
                 )
                 .map(|_| ())
             },

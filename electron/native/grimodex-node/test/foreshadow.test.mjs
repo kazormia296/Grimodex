@@ -139,6 +139,47 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
   );
 });
 
+test("renderer canonical create は未知の caller を mutation 前に拒否する", async () => {
+  const invalidTree = {
+    ...mutationIdentity("renderer-authority-invalid-tree"),
+    undoJournalId: null,
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-tree",
+    parentId: null,
+    nodeType: "scene",
+    title: "拒否されるシーン",
+    sortOrder: "authority-invalid-tree",
+    synopsis: null,
+    status: null,
+    sourceUri: null,
+    sourceMtime: null,
+    content: "{}",
+  };
+  await assert.rejects(backend.treeNodeCreate(invalidTree), /Forbidden caller/);
+  assert.equal(
+    await row("SELECT id FROM tree_nodes WHERE id = ?", [invalidTree.id]),
+    undefined,
+  );
+
+  const invalidForeshadow = {
+    ...mutationIdentity("renderer-authority-invalid-foreshadow"),
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-foreshadow",
+    title: "拒否される伏線",
+    intent: null,
+    notes: null,
+    loadBearing: null,
+  };
+  await assert.rejects(
+    backend.foreshadowCreate(invalidForeshadow),
+    /Forbidden caller/,
+  );
+  assert.equal(
+    await row("SELECT id FROM foreshadows WHERE id = ?", [invalidForeshadow.id]),
+    undefined,
+  );
+});
+
 test("foreshadowCreate → update は nullable field の null と欠落を区別する", async () => {
   await createScene("foreshadow-payoff-scene");
   const createPayload = {
@@ -175,6 +216,14 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
     replayed: false,
     entityPresent: true,
   });
+  const createEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [createPayload.eventUid],
+  );
+  const createEventPayload = JSON.parse(createEvent.payload);
+  assert.equal(createEventPayload.authorityRoute, "human-direct");
+  assert.equal(createEventPayload.authorityCaller, "manual-wrapper");
+  assert.equal(createEventPayload.authorityEvidence.validated, true);
   const replay = JSON.parse(await backend.foreshadowCreate(createPayload));
   assert.equal(replay.id, created.id);
   assert.deepEqual(replay.__idempotency, {
