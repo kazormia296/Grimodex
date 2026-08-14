@@ -2204,6 +2204,53 @@ fn validate_tree_replay_lineage_in_tx(
     Ok(())
 }
 
+fn validate_tree_replay_target_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    origin: NarrativeChangeOrigin,
+    undo_journal_id: Option<&str>,
+    node_id: &str,
+    operation: &str,
+) -> anyhow::Result<()> {
+    let Some(undo_journal_id) = undo_journal_id else {
+        return Ok(());
+    };
+    let expected_op_kind = match (operation, origin) {
+        ("create", NarrativeChangeOrigin::Undo) => "delete",
+        ("create", NarrativeChangeOrigin::Redo) => "create",
+        ("delete", NarrativeChangeOrigin::Undo) => "create",
+        ("delete", NarrativeChangeOrigin::Redo) => "delete",
+        ("patch", NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo) => "update",
+        _ => return Ok(()),
+    };
+    let journal_target = conn
+        .query_row(
+            "SELECT entity_kind, entity_id, op_kind
+               FROM undo_journal
+              WHERE id = ?1 AND project_id = ?2",
+            params![undo_journal_id, project_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((entity_kind, entity_id, op_kind)) = journal_target else {
+        anyhow::bail!(
+            "tree replay Undo Journal '{}' is not in the active project",
+            undo_journal_id
+        );
+    };
+    anyhow::ensure!(
+        entity_kind == "tree_node" && entity_id == node_id && op_kind == expected_op_kind,
+        "tree replay target does not match the named Undo Journal"
+    );
+    Ok(())
+}
+
 fn tree_write_response(
     mut row: Value,
     change_event_uid: &str,
@@ -2645,6 +2692,14 @@ pub fn tree_node_create_with_authority(
             payload.original_transaction_id.as_deref(),
             payload.undo_journal_id.as_deref(),
         )?;
+        validate_tree_replay_target_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.undo_journal_id.as_deref(),
+            &payload.id,
+            "create",
+        )?;
         if let Some(parent_id) = payload.parent_id.as_deref() {
             anyhow::ensure!(
                 parent_id != payload.id,
@@ -2840,6 +2895,14 @@ pub fn tree_node_delete_with_authority(
             payload.origin,
             payload.original_transaction_id.as_deref(),
             payload.undo_journal_id.as_deref(),
+        )?;
+        validate_tree_replay_target_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.undo_journal_id.as_deref(),
+            &payload.node_id,
+            "delete",
         )?;
         let before_nodes = select_tree_subtree(&tx, &payload.project_id, &payload.node_id)?;
         let before = before_nodes
@@ -3168,6 +3231,14 @@ pub fn tree_node_patch_with_authority(
             payload.origin,
             payload.original_transaction_id.as_deref(),
             payload.undo_journal_id.as_deref(),
+        )?;
+        validate_tree_replay_target_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.undo_journal_id.as_deref(),
+            &payload.node_id,
+            "patch",
         )?;
         let before = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
         if payload.change_event.is_some() {
@@ -3581,6 +3652,175 @@ fn validate_ai_tree_lineage(
     Ok(())
 }
 
+fn snapshot_field(snapshot: &Value, field: &str) -> Value {
+    snapshot
+        .get(field)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+fn snapshot_id<'a>(snapshot: &'a Value, label: &str) -> anyhow::Result<&'a str> {
+    snapshot
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("{label} snapshot has no id"))
+}
+
+fn validate_ai_tree_redo_plan_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    undo_journal_id: &str,
+    kind: &str,
+    creates: &[AiTreePlanCreateInput],
+    updates: &[AiTreePlanUpdateInput],
+) -> anyhow::Result<()> {
+    let expected_op_type = match kind {
+        "scaffold" => "tree.aiScaffold",
+        "reorganize" => "tree.aiReorganize",
+        _ => anyhow::bail!("AI tree plan kind is invalid for redo"),
+    };
+    let (entity_kind, op_kind, before_json, after_json): (
+        String,
+        String,
+        String,
+        String,
+    ) = conn.query_row(
+        "SELECT entity_kind, op_kind, before_json, after_json
+           FROM undo_journal
+          WHERE id = ?1 AND project_id = ?2",
+        params![undo_journal_id, project_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    anyhow::ensure!(
+        entity_kind == "tree_batch" && op_kind == expected_op_type,
+        "AI tree plan redo journal does not match the requested kind"
+    );
+    let journal: AiTreePlanJournal = serde_json::from_str(&before_json)?;
+    let after: Value = serde_json::from_str(&after_json)?;
+    let after_object = after
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("AI tree plan redo journal after state is invalid"))?;
+    let after_created_ids = after_object
+        .get("createdIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("AI tree plan redo journal has no createdIds"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("AI tree plan redo createdIds contains a non-string"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let after_updated = after_object
+        .get("updated")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("AI tree plan redo journal has no updated snapshots"))?;
+
+    let payload_created_ids = creates
+        .iter()
+        .map(|create| create.id.clone())
+        .collect::<Vec<_>>();
+    let payload_updated_ids = updates
+        .iter()
+        .map(|update| update.id.clone())
+        .collect::<Vec<_>>();
+    let sorted_unique = |mut ids: Vec<String>| {
+        ids.sort();
+        ids.dedup();
+        ids
+    };
+    anyhow::ensure!(
+        sorted_unique(payload_created_ids) == sorted_unique(journal.created_ids.clone())
+            && sorted_unique(journal.created_ids.clone()) == sorted_unique(after_created_ids),
+        "AI tree plan redo creates do not match the forward journal"
+    );
+    let journal_updated_ids = journal
+        .updated_before
+        .iter()
+        .map(|snapshot| snapshot_id(snapshot, "AI tree plan before") .map(str::to_owned))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let after_updated_ids = after_updated
+        .iter()
+        .map(|snapshot| snapshot_id(snapshot, "AI tree plan after").map(str::to_owned))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        sorted_unique(payload_updated_ids) == sorted_unique(journal_updated_ids.clone())
+            && sorted_unique(journal_updated_ids.clone()) == sorted_unique(after_updated_ids),
+        "AI tree plan redo updates do not match the forward journal"
+    );
+
+    for create in creates {
+        let after_snapshot = after_updated
+            .iter()
+            .chain(
+                after_object
+                    .get("created")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+            .find(|snapshot| snapshot_id(snapshot, "AI tree plan after").ok() == Some(create.id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo create '{}' is missing", create.id))?;
+        anyhow::ensure!(
+            snapshot_field(after_snapshot, "parentId")
+                == create.parent_id.clone().map_or(Value::Null, Value::String)
+                && snapshot_field(after_snapshot, "nodeType") == Value::String(create.node_type.clone())
+                && snapshot_field(after_snapshot, "title") == Value::String(create.title.clone())
+                && snapshot_field(after_snapshot, "sortOrder") == Value::String(create.sort_order.clone())
+                && snapshot_field(after_snapshot, "synopsis")
+                    == create.synopsis.clone().map_or(Value::Null, Value::String),
+            "AI tree plan redo create '{}' does not match the forward snapshot",
+            create.id
+        );
+    }
+
+    for update in updates {
+        let before_snapshot = journal
+            .updated_before
+            .iter()
+            .find(|snapshot| snapshot_id(snapshot, "AI tree plan before").ok() == Some(update.id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo update '{}' has no before snapshot", update.id))?;
+        let after_snapshot = after_updated
+            .iter()
+            .find(|snapshot| snapshot_id(snapshot, "AI tree plan after").ok() == Some(update.id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo update '{}' has no after snapshot", update.id))?;
+        if let Some(placement) = &update.placement {
+            anyhow::ensure!(
+                snapshot_field(after_snapshot, "parentId")
+                    == placement.parent_id.clone().map_or(Value::Null, Value::String)
+                    && snapshot_field(after_snapshot, "sortOrder")
+                        == Value::String(placement.sort_order.clone()),
+                "AI tree plan redo update '{}' placement does not match the forward snapshot",
+                update.id
+            );
+        } else {
+            anyhow::ensure!(
+                snapshot_field(after_snapshot, "parentId")
+                    == snapshot_field(before_snapshot, "parentId")
+                    && snapshot_field(after_snapshot, "sortOrder")
+                        == snapshot_field(before_snapshot, "sortOrder"),
+                "AI tree plan redo update '{}' changes placement without a placement input",
+                update.id
+            );
+        }
+        if let Some(title) = &update.title {
+            anyhow::ensure!(
+                snapshot_field(after_snapshot, "title") == Value::String(title.clone()),
+                "AI tree plan redo update '{}' title does not match the forward snapshot",
+                update.id
+            );
+        } else {
+            anyhow::ensure!(
+                snapshot_field(after_snapshot, "title") == snapshot_field(before_snapshot, "title"),
+                "AI tree plan redo update '{}' changes title without a title input",
+                update.id
+            );
+        }
+    }
+    Ok(())
+}
+
 fn ai_tree_version_rows(rows: &BTreeMap<String, Value>) -> Value {
     Value::Array(
         rows.iter()
@@ -3698,6 +3938,16 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 original_transaction_id,
                 undo_journal_id,
             )?;
+            if payload.redo {
+                validate_ai_tree_redo_plan_in_tx(
+                    &tx,
+                    &payload.project_id,
+                    undo_journal_id,
+                    &payload.kind,
+                    &payload.creates,
+                    &payload.updates,
+                )?;
+            }
         }
 
         let mut before = BTreeMap::<String, Value>::new();
@@ -3837,7 +4087,16 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
             let before_json = serde_json::to_string(&journal)?;
             let after_json = serde_json::to_string(&json!({
                 "createdIds": created_ids,
-                "updated": after.values().cloned().collect::<Vec<_>>(),
+                "created": payload
+                    .creates
+                    .iter()
+                    .filter_map(|create| after.get(&create.id).cloned())
+                    .collect::<Vec<_>>(),
+                "updated": payload
+                    .updates
+                    .iter()
+                    .filter_map(|update| after.get(&update.id).cloned())
+                    .collect::<Vec<_>>(),
             }))?;
             crate::undo_journal::insert_undo_journal_in_tx(
                 &tx,
@@ -4774,6 +5033,29 @@ mod tests {
         assert_eq!(undo["versions"][0]["id"], "moved");
         assert_eq!(undo["versions"][0]["version"], 2);
 
+        let mut forged_redo = payload.clone();
+        forged_redo.request_id = "ai-tree-forged-redo-request".to_string();
+        forged_redo.updated_at = "2026-08-13T01:01:30Z".to_string();
+        forged_redo.updates[0].base_version = 2;
+        forged_redo.updates[0].title = Some("Forged redo title".to_string());
+        forged_redo.redo = true;
+        forged_redo.original_transaction_id = Some(original_transaction_id.clone());
+        forged_redo.undo_journal_id = Some(undo_journal_id.clone());
+        forged_redo.authority_route = "history-replay".to_string();
+        forged_redo.caller = "history-controller".to_string();
+        forged_redo.controls = vec![
+            "original-transaction".to_string(),
+            "journal-lineage".to_string(),
+            "typed-writer".to_string(),
+            "occ".to_string(),
+            "change-event".to_string(),
+            "change-feed".to_string(),
+        ];
+        forged_redo.provenance = None;
+        let error = apply_ai_tree_plan(&db, forged_redo)
+            .expect_err("redo must replay the exact forward plan");
+        assert!(error.to_string().contains("redo"));
+
         let mut redo = payload;
         redo.request_id = "ai-tree-redo-request".to_string();
         redo.updated_at = "2026-08-13T01:02:00Z".to_string();
@@ -5681,6 +5963,53 @@ mod tests {
             Ok(())
         })
         .expect("inspect tree replay");
+    }
+
+    #[test]
+    fn tree_replay_binds_the_target_to_the_named_undo_journal() {
+        let db = fixture();
+        let first = tree_node_create(
+            &db,
+            tree_create_payload("replay-target-a", "scene", "b0", None),
+        )
+        .expect("create first replay target");
+        let second = tree_node_create(
+            &db,
+            tree_create_payload("replay-target-b", "scene", "b1", None),
+        )
+        .expect("create second replay target");
+        let first_transaction = first["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .expect("first maintenance transaction")
+            .to_string();
+        let first_journal = first["__writeReceipt"]["undoJournalId"]
+            .as_str()
+            .expect("first undo journal")
+            .to_string();
+        let mut forged_delete = tree_delete_payload("replay-target-b");
+        forged_delete.request_id = "replay-target-forged-delete".to_string();
+        forged_delete.event_uid = "replay-target-forged-delete-event".to_string();
+        forged_delete.origin = NarrativeChangeOrigin::Undo;
+        forged_delete.original_transaction_id = Some(first_transaction);
+        forged_delete.undo_journal_id = Some(first_journal);
+
+        let error = tree_node_delete(&db, forged_delete)
+            .expect_err("a replay journal must not be reusable for another node");
+        assert!(error.to_string().contains("replay target"));
+        let second_after = db
+            .with_conn(|conn| select_tree_node(conn, "p1", "replay-target-b"))
+            .expect("second target remains");
+        assert_eq!(
+            second_after["id"],
+            second["id"]
+        );
+        let first_after = db
+            .with_conn(|conn| select_tree_node(conn, "p1", "replay-target-a"))
+            .expect("first target remains");
+        assert_eq!(
+            first_after["id"],
+            "replay-target-a"
+        );
     }
 
     #[test]

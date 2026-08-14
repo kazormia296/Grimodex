@@ -151,7 +151,12 @@ export async function deleteProject(id: string): Promise<void> {
   // refresh can become latest, fail on the deleted DB row, and leave the old
   // plaintext snapshot behind.
   cancelScheduledImeExports(id);
-  await invoke("project_delete", { payload: { projectId: id } });
+  await invoke("project_delete", {
+    payload: {
+      ...createCanonicalWriteContext("human"),
+      projectId: id,
+    },
+  });
   // The DB delete is authoritative; cleanup has a bounded background retry so
   // a transient filesystem failure cannot leave plaintext indefinitely.
   // Cancel again after the awaited DB work: another window/local mutation may

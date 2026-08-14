@@ -2579,6 +2579,18 @@
       "id": "agent.codex.create",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex creation already emits a canonical Change Event and must append the linked Feed row.",
@@ -2612,6 +2624,18 @@
       "id": "agent.codex.update",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex update already emits a canonical Change Event and must append the linked Feed row.",
@@ -2645,6 +2669,18 @@
       "id": "agent.codex.delete",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Codex deletion invalidates the entity and every linked derived artifact.",
@@ -2683,6 +2719,18 @@
       "id": "agent.codex.mutate",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Typed aggregate Codex mutation changes entries, relations, phases, or details.",
@@ -3098,6 +3146,23 @@
       "id": "agent.event.create",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event creation changes Chronicle dependencies.",
@@ -3131,6 +3196,23 @@
       "id": "agent.event.update",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event update changes Chronicle dependencies.",
@@ -3164,6 +3246,23 @@
       "id": "agent.event.delete",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent Chronicle event deletion invalidates the event and its associations.",
@@ -3197,6 +3296,18 @@
       "id": "agent.chronicle.bulk",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Chronicle bulk mutation changes events, associations, and temporal scene state in one transaction.",
@@ -3230,6 +3341,23 @@
       "id": "agent.event.participants",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Agent participant replacement changes Chronicle and Codex dependency edges.",
@@ -3263,6 +3391,23 @@
       "id": "agent.event.scene-link",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Linking a Chronicle event to a scene changes dependency topology.",
@@ -3306,6 +3451,23 @@
       "id": "agent.event.scene-link-batch",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Batch scene linking changes multiple Chronicle dependency edges atomically.",
@@ -3339,6 +3501,23 @@
       "id": "agent.event.relation",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "interactive-agent-command",
+          "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","typed-writer","occ","undo-journal","change-event","change-feed"],
+          "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
+        },
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        }
+      ],
       "feedPolicy": "required",
       "coverageStatus": "verified",
       "reason": "Adding or removing a causal relation changes Chronicle dependency topology.",

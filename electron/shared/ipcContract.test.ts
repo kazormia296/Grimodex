@@ -54,6 +54,7 @@ function mutationIdentity(requestId: string, projectId = "p1") {
     provenance: null,
     writesAuthorityProtectedField: false,
     originalTransactionId: null,
+    undoJournalId: null,
   } as const;
 }
 
@@ -2160,7 +2161,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ],
       [
         "project_delete",
-        { payload: { projectId: "project-1" } },
+        {
+          payload: {
+            ...mutationIdentity("project-delete-request-1", "project-1"),
+          },
+        },
         projectDelete,
       ],
       [
@@ -2410,7 +2415,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                     },
                   }
                 : command === "project_delete"
-                  ? { payload: { projectId: "project-1" } }
+                  ? {
+                      payload: mutationIdentity(
+                        "project-delete-request-2",
+                        "project-1",
+                      ),
+                    }
                   : {
                       payload: {
                         kind: "erase-ai-branch",

@@ -27,6 +27,7 @@ fn delete_payload(
             event_uid: format!("{request_id}-event"),
             origin: NarrativeChangeOrigin::Human,
             original_transaction_id: None,
+            undo_journal_id: None,
         },
     }
 }

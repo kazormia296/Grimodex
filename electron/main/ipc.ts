@@ -8,6 +8,7 @@
  * - fail-soft outcome の main 側ログ（A6 監査の集計ポイント）
  */
 import { BrowserWindow, ipcMain } from "electron";
+import { randomUUID } from "node:crypto";
 
 import {
   bindCanonicalAuthorityContext,
@@ -35,18 +36,70 @@ import {
 } from "./windows.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
-  "agent_codex_create",
-  "agent_codex_update",
-  "agent_codex_delete",
-  "agent_codex_mutate",
   "snippet_create",
   "snippet_update",
   "snippet_delete",
+]);
+
+const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
   "entity_tags_set",
   "project_create",
   "project_patch",
+  "project_delete",
   "temporal_scene_patch",
+  "foreshadow_link_codex",
+  "foreshadow_unlink_codex",
+  "foreshadow_set_setup_strength",
+  "foreshadow_resolve_orphan",
+  "foreshadow_save_anchors_for_scene",
 ]);
+
+// The renderer-provided recorder session is input, not authority. Keep a
+// main-owned session capability per WebContents and replace the session on
+// every canonical writer payload before it reaches the shared contract. This
+// prevents a payload copied from another renderer window from reusing that
+// window's identity while preserving one stable session for retries.
+const rendererAuthoritySessions = new Map<number, string>();
+
+const AGENT_CHRONICLE_COMMANDS = new Set([
+  "agent_event_create",
+  "agent_event_update",
+  "agent_event_delete",
+  "agent_chronicle_bulk_mutate",
+  "agent_event_set_participants",
+  "agent_scene_event_link",
+  "agent_scene_event_link_batch",
+  "agent_scene_event_unlink",
+  "agent_event_relation_add",
+  "agent_event_relation_remove",
+]);
+
+function authorityRouteForOrigin(
+  origin: unknown,
+  allowedRoutes?: readonly CanonicalAuthorityRoute[],
+): CanonicalAuthorityRoute | undefined {
+  const route = (() => {
+    switch (origin) {
+      case "human":
+        return "human-direct";
+      case "ai-apply":
+        return "interactive-agent-command";
+      case "import":
+        return "import-apply";
+      case "undo":
+      case "redo":
+        return "history-replay";
+      case "restore":
+      case "migration":
+        return "restore-or-migration";
+      default:
+        return undefined;
+    }
+  })();
+  return route && (!allowedRoutes || allowedRoutes.includes(route))
+    ? route
+    : undefined;
+}
 
 export type ExtraShellHandlers =
   | ShellCommandHandlers
@@ -84,6 +137,18 @@ function authorityRouteForRendererCommand(
   payload: CommandArgs,
 ): CanonicalAuthorityRoute | undefined {
   if (
+    cmd === "agent_codex_create" ||
+    cmd === "agent_codex_update" ||
+    cmd === "agent_codex_delete" ||
+    cmd === "agent_codex_mutate"
+  ) {
+    return authorityRouteForOrigin(payload.origin, [
+      "human-direct",
+      "interactive-agent-command",
+    ]);
+  }
+
+  if (
     cmd === "agent_foreshadow_create" ||
     cmd === "agent_foreshadow_update" ||
     cmd === "agent_snippet_create"
@@ -91,31 +156,64 @@ function authorityRouteForRendererCommand(
     return "interactive-agent-command";
   }
 
+  if (AGENT_CHRONICLE_COMMANDS.has(cmd)) {
+    const origin =
+      payload.origin ?? (payload.surface === "manual" ? "human" : "ai-apply");
+    return authorityRouteForOrigin(
+      origin,
+      cmd === "agent_chronicle_bulk_mutate"
+        ? ["human-direct", "interactive-agent-command"]
+        : ["human-direct", "interactive-agent-command", "import-apply"],
+    );
+  }
+
   if (
     cmd === "foreshadow_create" ||
     cmd === "foreshadow_update" ||
     cmd === "foreshadow_delete"
   ) {
-    return payload.origin === "human" ? "human-direct" : undefined;
+    return authorityRouteForOrigin(payload.origin, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
+  }
+
+  if (cmd === "foreshadow_update_setup") {
+    return authorityRouteForOrigin(payload.origin, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
+  }
+
+  if (cmd === "foreshadow_setup_create_ai") {
+    return authorityRouteForOrigin(payload.origin, [
+      "human-direct",
+      "interactive-agent-command",
+    ]);
   }
 
   if (GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd)) {
-    switch (payload.origin) {
-      case "human":
-        return "human-direct";
-      case "ai-apply":
-        return "interactive-agent-command";
-      case "import":
-        return "import-apply";
-      case "undo":
-      case "redo":
-        return "history-replay";
-      case "restore":
-      case "migration":
-        return "restore-or-migration";
-      default:
-        return undefined;
-    }
+    return authorityRouteForOrigin(
+      payload.origin,
+      cmd === "snippet_create"
+        ? ["human-direct", "import-apply", "restore-or-migration"]
+        : ["human-direct"],
+    );
+  }
+
+  if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
+    return payload.origin === "human" ? "human-direct" : undefined;
+  }
+
+  if (
+    cmd === "ai_tree_plan_apply" ||
+    cmd === "ai_tree_plan_undo"
+  ) {
+    return cmd === "ai_tree_plan_undo" || payload.redo === true
+      ? "history-replay"
+      : "interactive-agent-command";
   }
 
   if (
@@ -153,16 +251,69 @@ function authorityRouteForRendererCommand(
 export function bindRendererAuthorityForIpc(
   cmd: string,
   args: CommandArgs,
+  senderId?: number,
 ): CommandArgs {
-  const payloadKey = cmd === "foreshadow_update" ? "patch" : "payload";
-  const payload = args[payloadKey];
+  const directPayloadCommand = cmd === "foreshadow_setup_create_ai";
+  const payloadKey =
+    cmd === "foreshadow_update" || cmd === "foreshadow_update_setup"
+      ? "patch"
+      : "payload";
+  const payload = directPayloadCommand ? args : args[payloadKey];
   if (!isRecord(payload)) return args;
   const route = authorityRouteForRendererCommand(cmd, payload);
-  if (!route) return args;
-  return {
-    ...args,
-    [payloadKey]: bindCanonicalAuthorityContext(payload, route),
-  };
+  if (!route) {
+    const requiresAuthority =
+      GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      AGENT_CHRONICLE_COMMANDS.has(cmd) ||
+      cmd === "agent_codex_create" ||
+      cmd === "agent_codex_update" ||
+      cmd === "agent_codex_delete" ||
+      cmd === "agent_codex_mutate" ||
+      cmd === "agent_foreshadow_create" ||
+      cmd === "agent_foreshadow_update" ||
+      cmd === "agent_snippet_create" ||
+      cmd === "foreshadow_create" ||
+      cmd === "foreshadow_update" ||
+      cmd === "foreshadow_delete" ||
+      cmd === "tree_node_create" ||
+      cmd === "tree_node_patch" ||
+      cmd === "tree_node_delete" ||
+      cmd === "ai_tree_plan_apply" ||
+      cmd === "ai_tree_plan_undo";
+    if (!requiresAuthority) return args;
+    const invalidPayload = { ...payload, authorityRoute: "" };
+    return directPayloadCommand
+      ? invalidPayload
+      : { ...args, [payloadKey]: invalidPayload };
+  }
+  const boundPayload = bindCanonicalAuthorityContext(payload, route);
+  if (typeof senderId === "number" && Number.isInteger(senderId)) {
+    const authoritySession =
+      rendererAuthoritySessions.get(senderId) ?? randomUUID();
+    rendererAuthoritySessions.set(senderId, authoritySession);
+    boundPayload.sessionId = authoritySession;
+  }
+  if (
+    route === "history-replay" &&
+    cmd.startsWith("foreshadow_") &&
+    (typeof boundPayload.undoJournalId !== "string" ||
+      boundPayload.undoJournalId.trim().length === 0)
+  ) {
+    // Typed Foreshadow inverses (for example create -> delete) may allocate
+    // their new journal inside Native. Reserve an opaque lineage id at the
+    // main boundary so the strict route is complete before dispatch.
+    boundPayload.undoJournalId = randomUUID();
+  }
+  if (cmd === "ai_tree_plan_apply" && payload.redo === true) {
+    boundPayload.origin = "redo";
+  }
+  return directPayloadCommand
+    ? boundPayload
+    : {
+        ...args,
+        [payloadKey]: boundPayload,
+      };
 }
 
 /**
@@ -202,7 +353,7 @@ export function registerIpcRouter(
         const rawArgs = isRecord(args) ? args : {};
         const envelope = await dispatchInvoke(
           cmd,
-          bindRendererAuthorityForIpc(cmd, rawArgs),
+          bindRendererAuthorityForIpc(cmd, rawArgs, event.sender.id),
           {
             backend,
             shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },

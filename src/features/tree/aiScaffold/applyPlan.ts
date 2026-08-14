@@ -333,6 +333,7 @@ async function applyAiTreePlanWithAuthority(
           },
     );
     Object.assign(payload, {
+      eventUid: authorityContext.eventUid,
       authorityRoute: authorityContext.authorityRoute,
       caller: authorityContext.caller,
       controls: authorityContext.controls,
@@ -390,6 +391,7 @@ async function applyAiTreePlanWithAuthority(
       );
       return {
         requestId,
+        eventUid: authorityContext.eventUid,
         projectId: ctx.projectId,
         sessionId: getRecorderSessionId(),
         updatedAt: new Date().toISOString(),

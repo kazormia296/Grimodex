@@ -4161,6 +4161,22 @@ impl Backend {
         id: String,
         patch: serde_json::Value,
     ) -> Result<String> {
+        if patch.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "patch",
+                patch,
+                move |db, patch: ForeshadowSetupPatch, context| {
+                    foreshadow::update_setup_with_renderer_authority(
+                        db,
+                        id,
+                        patch,
+                        context,
+                    )
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let patch: ForeshadowSetupPatch = from_wire("patch", patch)?;
@@ -4189,6 +4205,15 @@ impl Backend {
     /// 伏線↔codex リンク作成 (INSERT OR IGNORE)。
     #[napi]
     pub async fn foreshadow_link_codex(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                foreshadow::link_codex_with_renderer_authority,
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
@@ -4203,6 +4228,15 @@ impl Backend {
     /// 伏線↔codex リンク削除。
     #[napi]
     pub async fn foreshadow_unlink_codex(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                foreshadow::unlink_codex_with_renderer_authority,
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
@@ -4234,6 +4268,15 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                foreshadow::set_setup_strength_with_renderer_authority,
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ForeshadowSetupStrengthPayload = from_wire("payload", payload)?;
@@ -4249,6 +4292,15 @@ impl Backend {
     /// (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
     #[napi]
     pub async fn foreshadow_setup_create_ai(&self, input: serde_json::Value) -> Result<String> {
+        if input.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "input",
+                input,
+                foreshadow::setup_create_ai_with_renderer_authority,
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let input: SetupCreateAiInput = from_wire("input", input)?;
@@ -4265,6 +4317,15 @@ impl Backend {
     /// 返り値: setup id と authoritative Foreshadow 行を含む receipt の JSON 文字列。
     #[napi]
     pub async fn foreshadow_resolve_orphan(&self, payload: serde_json::Value) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                foreshadow::resolve_orphan_with_renderer_authority,
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: OrphanResolvePayload = from_wire("payload", payload)?;
@@ -4284,6 +4345,22 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
+        if payload.get("authorityRoute").is_some() {
+            return canonical_agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, payload, context| {
+                    foreshadow::save_anchors_for_scene_with_renderer_authority(
+                        db,
+                        payload,
+                        context,
+                    )
+                    .map(serde_json::Value::Array)
+                },
+            )
+            .await;
+        }
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ForeshadowAnchorSavePayload = from_wire("payload", payload)?;
@@ -4492,94 +4569,167 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_create(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                agent_writes::agent_event_create_impl,
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_event_create_impl,
+            |db, payload, context| {
+                agent_writes::agent_event_create_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
         )
         .await
     }
 
     #[napi]
     pub async fn agent_event_update(&self, payload: serde_json::Value) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-            request.validate()?;
-            let payload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(
-                    &agent_writes::agent_event_update_with_request_impl(
-                        db,
-                        payload,
-                        Some(&request.request_id),
-                    )?,
-                )?)
+        if payload.get("authorityRoute").is_none() {
+            let state = Arc::clone(&self.state);
+            return run_blocking(move || {
+                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+                request.validate()?;
+                let payload = from_wire("payload", payload)?;
+                with_db_state(&state.ws, |db| {
+                    Ok(serde_json::to_string(
+                        &agent_writes::agent_event_update_with_request_impl(
+                            db,
+                            payload,
+                            Some(&request.request_id),
+                        )?,
+                    )?)
+                })
             })
-        })
+            .await;
+        }
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_update_with_authority_impl,
+        )
         .await
     }
 
     #[napi]
     pub async fn agent_event_delete(&self, payload: serde_json::Value) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-            request.validate()?;
-            let payload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(
-                    &agent_writes::agent_event_delete_with_request_impl(
-                        db,
-                        payload,
-                        Some(&request.request_id),
-                    )?,
-                )?)
+        if payload.get("authorityRoute").is_none() {
+            let state = Arc::clone(&self.state);
+            return run_blocking(move || {
+                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+                request.validate()?;
+                let payload = from_wire("payload", payload)?;
+                with_db_state(&state.ws, |db| {
+                    Ok(serde_json::to_string(
+                        &agent_writes::agent_event_delete_with_request_impl(
+                            db,
+                            payload,
+                            Some(&request.request_id),
+                        )?,
+                    )?)
+                })
             })
-        })
+            .await;
+        }
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_delete_with_authority_impl,
+        )
         .await
     }
 
     #[napi]
     pub async fn agent_chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_impl,
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_impl,
+            |db, payload, context| {
+                grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
         )
         .await
     }
 
     #[napi]
     pub async fn agent_event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-            request.validate()?;
-            let payload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(
-                    &agent_writes::agent_event_set_participants_with_request_impl(
-                        db,
-                        payload,
-                        Some(&request.request_id),
-                    )?,
-                )?)
+        if payload.get("authorityRoute").is_none() {
+            let state = Arc::clone(&self.state);
+            return run_blocking(move || {
+                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
+                request.validate()?;
+                let payload = from_wire("payload", payload)?;
+                with_db_state(&state.ws, |db| {
+                    Ok(serde_json::to_string(
+                        &agent_writes::agent_event_set_participants_with_request_impl(
+                            db,
+                            payload,
+                            Some(&request.request_id),
+                        )?,
+                    )?)
+                })
             })
-        })
+            .await;
+        }
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_set_participants_with_authority_impl,
+        )
         .await
     }
 
     #[napi]
     pub async fn agent_scene_event_link(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
+                    agent_writes::agent_scene_event_mutate_impl(db, p, true)
+                },
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
-                agent_writes::agent_scene_event_mutate_impl(db, p, true)
+            |db, p, context| {
+                agent_writes::agent_scene_event_mutate_with_authority_impl(
+                    db,
+                    p,
+                    true,
+                    Some(context),
+                )
             },
         )
         .await
@@ -4587,23 +4737,54 @@ impl Backend {
 
     #[napi]
     pub async fn agent_scene_event_link_batch(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                agent_writes::agent_scene_event_link_batch_impl,
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            agent_writes::agent_scene_event_link_batch_impl,
+            |db, payload, context| {
+                agent_writes::agent_scene_event_link_batch_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
         )
         .await
     }
 
     #[napi]
     pub async fn agent_scene_event_unlink(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
+                    agent_writes::agent_scene_event_mutate_impl(db, p, false)
+                },
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
-                agent_writes::agent_scene_event_mutate_impl(db, p, false)
+            |db, p, context| {
+                agent_writes::agent_scene_event_mutate_with_authority_impl(
+                    db,
+                    p,
+                    false,
+                    Some(context),
+                )
             },
         )
         .await
@@ -4611,12 +4792,28 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_relation_add(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
+                    agent_writes::agent_event_relation_mutate_impl(db, p, true)
+                },
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
-                agent_writes::agent_event_relation_mutate_impl(db, p, true)
+            |db, p, context| {
+                agent_writes::agent_event_relation_mutate_with_authority_impl(
+                    db,
+                    p,
+                    true,
+                    Some(context),
+                )
             },
         )
         .await
@@ -4624,12 +4821,28 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_relation_remove(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
+        if payload.get("authorityRoute").is_none() {
+            return agent_write_cmd(
+                Arc::clone(&self.state),
+                "payload",
+                payload,
+                |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
+                    agent_writes::agent_event_relation_mutate_impl(db, p, false)
+                },
+            )
+            .await;
+        }
+        canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
             payload,
-            |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
-                agent_writes::agent_event_relation_mutate_impl(db, p, false)
+            |db, p, context| {
+                agent_writes::agent_event_relation_mutate_with_authority_impl(
+                    db,
+                    p,
+                    false,
+                    Some(context),
+                )
             },
         )
         .await

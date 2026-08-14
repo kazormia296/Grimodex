@@ -11,6 +11,7 @@ import { applyUndoJournal } from "./undoJournal";
 import type { EventKind, EventPrecision, EventGranularity } from "@/db/schema";
 import { getEventVersion } from "@/features/chronicle/version";
 import { notifySameRendererDocumentWrite } from "@/features/concurrency/documentWriteNotification";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -53,6 +54,14 @@ export interface TrackedWriteOpts {
 
 function isAiAuthorshipSurface(surface: string | undefined): boolean {
   return surface !== "manual" && surface !== "import";
+}
+
+function eventWriteAuthorityOrigin(
+  surface: string | undefined,
+): "human" | "import" | "ai-apply" {
+  if (surface === "manual") return "human";
+  if (surface === "import") return "import";
+  return "ai-apply";
 }
 
 function bump(): void {
@@ -136,6 +145,22 @@ async function trackedEventWrite(
   if (requiresRequestId && !requestId) {
     throw new Error(`${command}: requestId is required`);
   }
+  const authorityOrigin = eventWriteAuthorityOrigin(opts?.surface);
+  const authorityContext = requestId
+    ? createCanonicalWriteContext(
+        authorityOrigin,
+        undefined,
+        requestId,
+        authorityOrigin === "ai-apply"
+          ? {
+              provenance: {
+                requestId,
+                traceId: (payload.traceId as string | undefined) ?? requestId,
+              },
+            }
+          : undefined,
+      )
+    : null;
   const outcome = await runAuthoritativeMutation(
     authority,
     async () => {
@@ -146,6 +171,7 @@ async function trackedEventWrite(
           ...(opts?.surface ? { surface: opts.surface } : {}),
           ...payload,
           ...(requestId ? { requestId } : {}),
+          ...(authorityContext ?? {}),
         },
       });
       // An idempotent create replay deliberately returns its original journal

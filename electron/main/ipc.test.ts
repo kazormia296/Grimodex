@@ -112,6 +112,213 @@ describe("registerIpcRouter fail-soft logging", () => {
     });
   });
 
+  it("replaces renderer session claims with a sender-bound main session", () => {
+    const first = bindRendererAuthorityForIpc(
+      "tree_node_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "sender-request-1",
+          sessionId: "renderer-claimed-a",
+          eventUid: "sender-event-1",
+          origin: "human",
+          id: "node-1",
+          nodeType: "scene",
+          title: "Scene",
+          sortOrder: "a0",
+        },
+      },
+      701,
+    );
+    const second = bindRendererAuthorityForIpc(
+      "tree_node_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "sender-request-2",
+          sessionId: "renderer-claimed-b",
+          eventUid: "sender-event-2",
+          origin: "human",
+          id: "node-2",
+          nodeType: "scene",
+          title: "Scene 2",
+          sortOrder: "a1",
+        },
+      },
+      701,
+    );
+    const otherSender = bindRendererAuthorityForIpc(
+      "tree_node_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "sender-request-3",
+          sessionId: "renderer-claimed-c",
+          eventUid: "sender-event-3",
+          origin: "human",
+          id: "node-3",
+          nodeType: "scene",
+          title: "Scene 3",
+          sortOrder: "a2",
+        },
+      },
+      702,
+    );
+
+    const firstSession = (first.payload as { sessionId: string }).sessionId;
+    const secondSession = (second.payload as { sessionId: string }).sessionId;
+    const otherSenderSession = (otherSender.payload as { sessionId: string })
+      .sessionId;
+    expect(firstSession).not.toBe("renderer-claimed-a");
+    expect(secondSession).toBe(firstSession);
+    expect(otherSenderSession).not.toBe(firstSession);
+  });
+
+  it("binds Chronicle imports to import-apply instead of the legacy writer", () => {
+    const bound = bindRendererAuthorityForIpc("agent_event_create", {
+      payload: {
+        projectId: "p1",
+        requestId: "import-request-1",
+        sessionId: "import-session-1",
+        eventUid: "import-event-1",
+        origin: "import",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: ["runtime-policy"],
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+        eventId: "event-1",
+        title: "Imported event",
+      },
+    });
+
+    expect(bound.payload).toMatchObject({
+      origin: "import",
+      authorityRoute: "import-apply",
+      caller: "import-session",
+      controls: [
+        "import-policy",
+        "source-package-evidence",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+    });
+  });
+
+  it("selects history-replay for an AI tree redo and preserves the event identity", () => {
+    const bound = bindRendererAuthorityForIpc("ai_tree_plan_apply", {
+      payload: {
+        projectId: "p1",
+        requestId: "redo-request-1",
+        eventUid: "redo-event-1",
+        origin: "ai-apply",
+        redo: true,
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: ["knowledge-write-policy"],
+        provenance: { requestId: "redo-request-1", traceId: "forged" },
+      },
+    });
+
+    expect(bound.payload).toMatchObject({
+      eventUid: "redo-event-1",
+      origin: "redo",
+      authorityRoute: "history-replay",
+      caller: "history-controller",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+    });
+  });
+
+  it("rejects renderer routes that are absent from the operation manifest", async () => {
+    const agentCodexCreate = vi.fn();
+    const snippetUpdate = vi.fn();
+    const agentChronicleBulkMutate = vi.fn();
+    registerIpcRouter({
+      agentCodexCreate,
+      snippetUpdate,
+      agentChronicleBulkMutate,
+    } as unknown as NapiBackendLike);
+
+    const importAuthority = {
+      projectId: "p1",
+      requestId: "request-1",
+      sessionId: "session-1",
+      eventUid: "event-1",
+      origin: "import",
+      authorityRoute: "import-apply",
+      caller: "import-session",
+      controls: [
+        "import-policy",
+        "source-package-evidence",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+
+    const cases = [
+      {
+        cmd: "agent_codex_create",
+        method: agentCodexCreate,
+        payload: {
+          ...importAuthority,
+          entryId: "entry-1",
+          typeSlug: "character",
+          name: "Imported",
+        },
+      },
+      {
+        cmd: "snippet_update",
+        method: snippetUpdate,
+        payload: {
+          ...importAuthority,
+          snippetId: "snippet-1",
+          baseVersion: 1,
+          title: "Imported",
+        },
+      },
+      {
+        cmd: "agent_chronicle_bulk_mutate",
+        method: agentChronicleBulkMutate,
+        payload: {
+          ...importAuthority,
+          operations: [{ type: "event.create", eventId: "event-1" }],
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const envelope = await invokeHandler()(
+        { sender: {} },
+        testCase.cmd,
+        { payload: testCase.payload },
+      );
+      expect(envelope.ok).toBe(false);
+      expect(String(envelope.ok ? "" : envelope.error)).toMatch(
+        /authorityRoute|authority route/,
+      );
+      expect(testCase.method).not.toHaveBeenCalled();
+    }
+  });
+
   it("passes the bound authority to the native strict writer", async () => {
     const agentForeshadowCreate = vi.fn(async () =>
       JSON.stringify({
@@ -159,6 +366,45 @@ describe("registerIpcRouter fail-soft logging", () => {
         ]),
         provenance: { requestId: "request-1", traceId: "request-1" },
         writesAuthorityProtectedField: false,
+      }),
+    );
+  });
+
+  it("fills forward Chronicle bulk lineage before strict dispatch", async () => {
+    const agentChronicleBulkMutate = vi.fn(async () =>
+      JSON.stringify({
+        eventResults: [],
+        sceneResults: [],
+        changeEventUid: "bulk-event-1",
+        undoJournalId: "bulk-journal-1",
+      }),
+    );
+    registerIpcRouter({ agentChronicleBulkMutate } as unknown as NapiBackendLike);
+
+    const envelope = await invokeHandler()(
+      { sender: {} },
+      "agent_chronicle_bulk_mutate",
+      {
+        payload: {
+          requestId: "bulk-request-1",
+          projectId: "p1",
+          sessionId: "session-1",
+          surface: "manual",
+          operations: [
+            { kind: "eventDelete", eventId: "event-1", baseVersion: 0 },
+          ],
+        },
+      },
+    );
+
+    expect(envelope.ok).toBe(true);
+    expect(agentChronicleBulkMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventUid: "bulk-request-1",
+        origin: "human",
+        authorityRoute: "human-direct",
+        originalTransactionId: null,
+        undoJournalId: null,
       }),
     );
   });

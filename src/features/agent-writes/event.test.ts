@@ -84,14 +84,17 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     // skipPolicyGate:true の短絡で knowledgeWrite ゲートは参照されない。
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
     expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link", {
-      payload: {
+      payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
         sceneId: "s1",
         eventId: "e1",
-      },
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
     });
     expect(h.bumpRevision).toHaveBeenCalled();
     expect(h.push).toHaveBeenCalledTimes(1);
@@ -108,14 +111,17 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     await uiUnlinkSceneEvent("s1", "e1");
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
     expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_unlink", {
-      payload: {
+      payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
         sceneId: "s1",
         eventId: "e1",
-      },
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
     });
   });
 
@@ -164,14 +170,17 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
 
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link_batch", {
-      payload: {
+      payload: expect.objectContaining({
         requestId: "batch-request-1",
         projectId: "p1",
         sessionId: "sess-1",
         surface: "manual",
         eventId: "e1",
         sceneIds: ["s1", "s2", "s1"],
-      },
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+      }),
     });
     expect(h.push).toHaveBeenCalledTimes(1);
   });

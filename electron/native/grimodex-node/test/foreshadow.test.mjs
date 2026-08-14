@@ -456,6 +456,18 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
     }),
   );
 
+  const setupCreateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-create-ai:event"],
+  );
+  const setupCreateEventPayload = JSON.parse(setupCreateEvent.payload);
+  assert.equal(
+    setupCreateEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(setupCreateEventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(setupCreateEventPayload.authorityEvidence.validated, true);
+
   // DB に i64 がそのまま入っている（REAL 混入していない）。
   const r = await row(
     "SELECT from_pos, to_pos, last_evaluated_at FROM foreshadow_setups WHERE id = 'setup-ai-1'",
@@ -507,6 +519,14 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
   assert.equal(setupRow.ai_strength, null);
   assert.equal(setupRow.ai_reasoning, null);
   assert.equal(setupRow.last_evaluated_at, null);
+
+  const setupUpdateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-update-clear:event"],
+  );
+  const setupUpdateEventPayload = JSON.parse(setupUpdateEvent.payload);
+  assert.equal(setupUpdateEventPayload.authorityRoute, "human-direct");
+  assert.equal(setupUpdateEventPayload.authorityEvidence.validated, true);
 });
 
 test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50）", async () => {

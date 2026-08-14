@@ -40,25 +40,28 @@ export async function restoreForeshadow(
   }
 
   try {
-    const created = await createForeshadow({
-      id: newId,
-      projectId: options.projectId,
-      title: payload.title,
-      intent: payload.intent ?? null,
-      notes: payload.notes ?? null,
-      payoffSceneId,
-      payoffFromPos: payoffSceneId ? (payload.payoffFromPos ?? null) : null,
-      payoffToPos: payoffSceneId ? (payload.payoffToPos ?? null) : null,
-      payoffConfirmed: payload.payoffConfirmed,
-      abandoned: payload.abandoned,
-      secret: payload.secret ?? true,
-      loadBearing:
-        (payload.loadBearing as ForeshadowLoadBearing | null) ?? null,
-      codexLinkDirtyAt:
-        payload.codexLinkDirtyAt == null
-          ? null
-          : new Date(payload.codexLinkDirtyAt),
-    });
+    const created = await createForeshadow(
+      {
+        id: newId,
+        projectId: options.projectId,
+        title: payload.title,
+        intent: payload.intent ?? null,
+        notes: payload.notes ?? null,
+        payoffSceneId,
+        payoffFromPos: payoffSceneId ? (payload.payoffFromPos ?? null) : null,
+        payoffToPos: payoffSceneId ? (payload.payoffToPos ?? null) : null,
+        payoffConfirmed: payload.payoffConfirmed,
+        abandoned: payload.abandoned,
+        secret: payload.secret ?? true,
+        loadBearing:
+          (payload.loadBearing as ForeshadowLoadBearing | null) ?? null,
+        codexLinkDirtyAt:
+          payload.codexLinkDirtyAt == null
+            ? null
+            : new Date(payload.codexLinkDirtyAt),
+      },
+      { origin: "restore" },
+    );
     if (!isCreateResultEntityPresent(created)) {
       throw new Error("foreshadow restore replay refers to a deleted entity");
     }

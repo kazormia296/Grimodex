@@ -1175,8 +1175,15 @@ function requireForeshadowVersionedPatch(
 ): CommandArgs {
   const patch = requireRecord(args, "patch", command);
   requireForeshadowMutationIdentity(patch, command);
-  if (command === "foreshadow_update") {
-    requireForeshadowRendererAuthority(patch, command, ["human-direct"]);
+  if (
+    command === "foreshadow_update" ||
+    command === "foreshadow_update_setup"
+  ) {
+    requireForeshadowRendererAuthority(patch, command, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
   }
   const baseVersion = requireSafeInteger(patch, "baseVersion", command);
   if (baseVersion < 0) {
@@ -1230,8 +1237,11 @@ function requireForeshadowRendererAuthority(
   command: string,
   allowedRoutes: readonly string[],
 ): void {
-  if (payload.origin === "undo" || payload.origin === "redo") return;
   if (!Object.hasOwn(payload, "authorityRoute")) {
+    // Keep the legacy direct replay payload compatible with the history
+    // controller. Main-bound replay payloads still carry and validate the
+    // canonical route below.
+    if (payload.origin === "undo" || payload.origin === "redo") return;
     throw new Error(
       `invalid authority route for command \`${command}\`: renderer forward writes require canonical authority context`,
     );
@@ -1250,8 +1260,20 @@ function requireForeshadowPayload(
 ): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   requireForeshadowMutationIdentity(payload, command);
-  if (command === "foreshadow_create") {
-    requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
+  if (
+    command === "foreshadow_create" ||
+    command === "foreshadow_save_anchors_for_scene" ||
+    command === "foreshadow_link_codex" ||
+    command === "foreshadow_unlink_codex" ||
+    command === "foreshadow_set_setup_strength"
+  ) {
+    requireForeshadowRendererAuthority(
+      payload,
+      command,
+      command === "foreshadow_create"
+        ? ["human-direct", "history-replay", "restore-or-migration"]
+        : ["human-direct"],
+    );
   }
   return payload;
 }
@@ -1262,7 +1284,11 @@ function requireForeshadowDeletePayload(
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
   if (command === "foreshadow_delete") {
-    requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
+    requireForeshadowRendererAuthority(payload, command, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
   }
   requireNonEmptyString(payload, "id", command);
   requireForeshadowBaseVersion(payload, command);
@@ -1274,6 +1300,7 @@ function requireForeshadowAssociationPayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireNonEmptyString(payload, "codexId", command);
   requireForeshadowBaseVersion(payload, command);
@@ -1285,6 +1312,7 @@ function requireForeshadowSetupStrengthPayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
   requireNonEmptyString(payload, "setupId", command);
   requirePresent(payload, "strength", command);
   if (payload.strength !== null && typeof payload.strength !== "string") {
@@ -2333,19 +2361,55 @@ export function bindCanonicalAuthorityContext(
     : policy.allowedOrigins[0];
   const requestId =
     typeof payload.requestId === "string" ? payload.requestId : "";
+  const eventUid =
+    typeof payload.eventUid === "string" && payload.eventUid.trim().length > 0
+      ? payload.eventUid
+      : requestId;
+  const originalTransactionId =
+    typeof payload.originalTransactionId === "string" &&
+    payload.originalTransactionId.trim().length > 0
+      ? payload.originalTransactionId
+      : null;
+  const undoJournalId =
+    typeof payload.undoJournalId === "string" &&
+    payload.undoJournalId.trim().length > 0
+      ? payload.undoJournalId
+      : null;
   const caller =
     route === "restore-or-migration" && origin === "migration"
       ? "migration-runner"
       : policy.allowedCallers[0];
+  const traceId =
+    typeof payload.traceId === "string" && payload.traceId.trim().length > 0
+      ? payload.traceId
+      : requestId;
+  const chatMessageId =
+    typeof payload.chatMessageId === "string" &&
+    payload.chatMessageId.trim().length > 0
+      ? payload.chatMessageId
+      : undefined;
+  const toolCallId =
+    typeof payload.toolCallId === "string" &&
+    payload.toolCallId.trim().length > 0
+      ? payload.toolCallId
+      : undefined;
   return {
     ...payload,
+    eventUid,
+    originalTransactionId,
+    undoJournalId,
     origin,
     authorityRoute: route,
     caller,
     controls: [...policy.requiredControls],
     provenance:
       route === "interactive-agent-command"
-        ? { requestId, traceId: requestId }
+        ? {
+            requestId,
+            traceId,
+            ...(chatMessageId ? { chatMessageId } : {}),
+            ...(toolCallId ? { toolCallId } : {}),
+          }
         : null,
     writesAuthorityProtectedField: false,
   };
@@ -2362,7 +2426,13 @@ function requireSnippetWriterPayload(
     );
   }
 
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(
+    args,
+    command,
+    command === "snippet_create"
+      ? ["human-direct", "import-apply", "restore-or-migration"]
+      : ["human-direct"],
+  );
   requireNonEmptyString(payload, "snippetId", command);
 
   if (command === "snippet_create") {
@@ -2469,7 +2539,9 @@ function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
 
 function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {
     throw new Error(
@@ -2642,7 +2714,9 @@ function requireScanStagingProjectCreatePayload(
 
 function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
   const command = "project_create";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   if (payload.origin === "undo" || payload.origin === "redo") {
     throw new Error(
       `invalid args \`origin\` for command \`${command}\`: project creation is forward-only`,
@@ -2668,7 +2742,9 @@ function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
 
 function requireProjectPatchPayload(args: CommandArgs): CommandArgs {
   const command = "project_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "baseUpdatedAt", command);
   requireNonEmptyString(payload, "updatedAt", command);
   const patch = requireRecord(payload, "patch", command);
@@ -2704,14 +2780,22 @@ function requireProjectPatchPayload(args: CommandArgs): CommandArgs {
 
 function requireProjectDeletePayload(args: CommandArgs): CommandArgs {
   const command = "project_delete";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   return payload;
 }
 
 function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   const command = "ai_tree_plan_apply";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const redo = requireBoolean(rawPayload, "redo", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, [
+        redo ? "history-replay" : "interactive-agent-command",
+      ])
+    : rawPayload;
   for (const key of [
     "requestId",
     "projectId",
@@ -2793,12 +2877,6 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   if (creates.length === 0 && updates.length === 0) {
     throw new Error(`invalid args for command \`${command}\`: empty plan`);
   }
-  const redo = requirePresent(payload, "redo", command);
-  if (typeof redo !== "boolean") {
-    throw new Error(
-      `invalid args \`redo\` for command \`${command}\`: expected a boolean`,
-    );
-  }
   const originalTransactionId = requireNullableStringField(
     payload,
     "originalTransactionId",
@@ -2820,7 +2898,10 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
 
 function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
   const command = "ai_tree_plan_undo";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, ["history-replay"])
+    : rawPayload;
   for (const key of [
     "requestId",
     "projectId",
@@ -2979,7 +3060,9 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
 
 function requireTemporalScenePatchPayload(args: CommandArgs): CommandArgs {
   const command = "temporal_scene_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "targetId", command);
   const baseVersion = requireSafeInteger(payload, "baseVersion", command);
   if (baseVersion < 0) {
@@ -4254,7 +4337,20 @@ function requireAgentChroniclePayload(
   args: CommandArgs,
   cmd: string,
 ): CommandArgs {
-  const payload = requireRecord(args, "payload", cmd);
+  const rawPayload = requireRecord(args, "payload", cmd);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(
+        args,
+        cmd,
+        cmd === "agent_chronicle_bulk_mutate"
+          ? ["human-direct", "interactive-agent-command"]
+          : [
+              "human-direct",
+              "interactive-agent-command",
+              "import-apply",
+            ],
+      )
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", cmd);
   requireNonEmptyString(payload, "projectId", cmd);
   requireNonEmptyString(payload, "sessionId", cmd);
@@ -4292,7 +4388,14 @@ const MAX_SCENE_EVENT_LINK_BATCH_SIZE = 10_000;
 
 function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
   const command = "agent_scene_event_link_batch";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, [
+        "human-direct",
+        "interactive-agent-command",
+        "import-apply",
+      ])
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -4323,7 +4426,13 @@ const MAX_CHRONICLE_BULK_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
 function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
   const command = "agent_chronicle_bulk_mutate";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, [
+        "human-direct",
+        "interactive-agent-command",
+      ])
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -6663,6 +6772,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       requireForeshadowBaseVersion(a, "foreshadow_setup_create_ai");
       requireForeshadowMutationIdentity(a, "foreshadow_setup_create_ai");
+      requireForeshadowRendererAuthority(a, "foreshadow_setup_create_ai", [
+        "human-direct",
+        "interactive-agent-command",
+      ]);
       return parseWire(await b.foreshadowSetupCreateAi(a));
     },
   },
@@ -6672,6 +6785,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       const payload = requireRecord(a, "payload", "foreshadow_resolve_orphan");
       requireForeshadowBaseVersion(payload, "foreshadow_resolve_orphan");
       requireForeshadowMutationIdentity(payload, "foreshadow_resolve_orphan");
+      requireForeshadowRendererAuthority(payload, "foreshadow_resolve_orphan", [
+        "human-direct",
+      ]);
       return parseWire(await b.foreshadowResolveOrphan(payload));
     },
   },
@@ -6710,7 +6826,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexCreate(
-          requireCanonicalWriterIdentity(a, "agent_codex_create"),
+          requireCanonicalWriterIdentity(a, "agent_codex_create", [
+            "human-direct",
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },
@@ -6718,7 +6837,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexUpdate(
-          requireCanonicalWriterIdentity(a, "agent_codex_update"),
+          requireCanonicalWriterIdentity(a, "agent_codex_update", [
+            "human-direct",
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },
@@ -6726,7 +6848,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexDelete(
-          requireCanonicalWriterIdentity(a, "agent_codex_delete"),
+          requireCanonicalWriterIdentity(a, "agent_codex_delete", [
+            "human-direct",
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },
@@ -6734,7 +6859,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexMutate(
-          requireCanonicalWriterIdentity(a, "agent_codex_mutate"),
+          requireCanonicalWriterIdentity(a, "agent_codex_mutate", [
+            "human-direct",
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },

@@ -596,6 +596,47 @@ test("manual Snippet CRUD crosses napi through one canonical transaction per wri
   );
 });
 
+test("agentEventSetParticipants preserves canonical authority evidence through napi", async () => {
+  const codex = JSON.parse(
+    await backend.agentCodexCreate({
+      ...canonical("agent-tool:participant-codex", "ai-apply"),
+      entryId: "participant-codex-napi",
+      typeSlug: "character",
+      name: "参加者",
+      summary: null,
+      content: "{}",
+      authorshipSpans: [],
+    }),
+  );
+  const event = JSON.parse(
+    await backend.agentEventCreate({
+      ...canonical("agent-tool:participant-event", "ai-apply"),
+      eventId: "participant-event-napi",
+      title: "参加者証跡",
+    }),
+  );
+  const updated = JSON.parse(
+    await backend.agentEventSetParticipants({
+      ...canonical("agent-tool:participant-set", "ai-apply"),
+      eventId: event.entityId,
+      baseVersion: event.version,
+      codexEntryIds: [codex.entityId],
+      participantRoles: ["lead"],
+    }),
+  );
+  assert.equal(updated.entityId, event.entityId);
+  assert.equal(updated.version, event.version + 1);
+
+  const eventRow = await rows(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["agent-tool:participant-set:event"],
+  );
+  const eventPayload = JSON.parse(eventRow[0].payload);
+  assert.equal(eventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(eventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(eventPayload.authorityEvidence.validated, true);
+});
+
 test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
   const created = JSON.parse(
     await backend.agentEventCreate({
