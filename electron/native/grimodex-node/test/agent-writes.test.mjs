@@ -81,6 +81,17 @@ async function rows(sql, params = []) {
   return JSON.parse(await backend.dbExecute(sql, params, "all")).rows;
 }
 
+async function writeCounts() {
+  const result = await rows(`
+    SELECT
+      (SELECT COUNT(*) FROM codex_entries) AS codex_entries,
+      (SELECT COUNT(*) FROM undo_journal) AS undo_journal,
+      (SELECT COUNT(*) FROM change_events) AS change_events,
+      (SELECT COUNT(*) FROM narrative_change_transactions) AS feed_transactions
+  `);
+  return result[0];
+}
+
 test("workspace 未オープンの agentCodexCreate は 'No workspace is open' で reject", async () => {
   await assert.rejects(
     backend.agentCodexCreate({
@@ -169,6 +180,40 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
     backend.agentCodexCreate({ ...payload, name: "別人" }),
     /AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT/,
   );
+});
+
+test("agentCodexCreate: N-API authority rejection leaves write tables unchanged", async () => {
+  const invalidCaller = {
+    ...canonical("napi-invalid-authority-caller", "human"),
+    caller: "background-maintenance-v2",
+    entryId: "napi-invalid-authority-caller-entry",
+    typeSlug: "character",
+    name: "invalid caller",
+    content: "{}",
+    authorshipSpans: [],
+  };
+  const beforeInvalidCaller = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexCreate(invalidCaller),
+    /Forbidden caller/,
+  );
+  assert.deepEqual(await writeCounts(), beforeInvalidCaller);
+
+  const missingControl = {
+    ...canonical("napi-missing-authority-control", "human"),
+    controls: [],
+    entryId: "napi-missing-authority-control-entry",
+    typeSlug: "character",
+    name: "missing control",
+    content: "{}",
+    authorshipSpans: [],
+  };
+  const beforeMissingControl = await writeCounts();
+  await assert.rejects(
+    backend.agentCodexCreate(missingControl),
+    /Missing required control/,
+  );
+  assert.deepEqual(await writeCounts(), beforeMissingControl);
 });
 
 test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {

@@ -79,4 +79,13 @@ test("initial JS budget never lets the ratchet cross the absolute ceiling", () =
       }),
     /absolute ceiling/,
   );
+  assert.throws(
+    () =>
+      resolveRatchetedBudget({
+        baseline: { rawBytes: 4_200_000, gzipBytes: 1_400_000 },
+        allowance: { rawBytes: 0, gzipBytes: 0 },
+        absoluteMax: { rawBytes: 4_250_000, gzipBytes: 1_350_000 },
+      }),
+    /absolute ceiling/,
+  );
 });
