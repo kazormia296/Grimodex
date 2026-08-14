@@ -208,6 +208,52 @@ describe("Project metadata write quiescence", () => {
     expect(h.updateProject).toHaveBeenCalledTimes(2);
   });
 
+  it("does not notify a superseded failure when the value returns in a newer generation", async () => {
+    const first = deferred<unknown>();
+    const firstFailure = vi.fn();
+    const latestPersist = vi.fn();
+    h.updateProject
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ id: "project-a" });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "B",
+      onFailure: firstFailure,
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.waitFor(() => expect(h.updateProject).toHaveBeenCalledTimes(1));
+
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "C",
+    });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "B",
+      onPersist: latestPersist,
+    });
+    const flush = flushQuiescenceProviderStage("scoped-mutations");
+    first.reject(new Error("superseded B failed"));
+    await flush;
+
+    expect(h.updateProject).toHaveBeenCalledTimes(2);
+    expect(h.updateProject.mock.calls[1]).toEqual([
+      "project-a",
+      { title: "B" },
+    ]);
+    expect(firstFailure).not.toHaveBeenCalled();
+    expect(latestPersist).toHaveBeenCalledOnce();
+    expect(collectQuiescenceProviderRecovery()).not.toContainEqual(
+      expect.objectContaining({
+        field: "title",
+        value: "B",
+      }),
+    );
+  });
+
   it("retains only unchanged fields from a failed multi-field generation", async () => {
     const first = deferred<unknown>();
     h.updateProject

@@ -234,10 +234,10 @@ function startLane(lane: ProjectMetadataWriteLane): Promise<void> {
       if (recoverable) {
         lane.failed = mergeWrites(lane.failed, recoverable);
         lane.failure = error;
+        notifyWriteFailure(recoverable, error);
       } else if (!lane.failed) {
         lane.failure = undefined;
       }
-      notifyWriteFailure(write, error);
       throw error;
     })
     .finally(() => {
