@@ -407,11 +407,12 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
     }
 
     if (useGlobalHistoryStore.getState().isReplaying) return;
-    const originalTransactionId =
-      getNativeMutationMetadata(updated)?.maintenanceTransactionId;
-    if (!originalTransactionId) {
+    const mutationMetadata = getNativeMutationMetadata(updated);
+    const originalTransactionId = mutationMetadata?.maintenanceTransactionId;
+    const undoJournalId = mutationMetadata?.undoJournalId;
+    if (!originalTransactionId || !undoJournalId) {
       throw new Error(
-        "foreshadow update did not return maintenance transaction lineage",
+        "foreshadow update did not return complete undo lineage",
       );
     }
 
@@ -444,7 +445,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           undoPatch,
           getForeshadowHistoryVersion(projectId, id, undoBaseVersion),
           projectId,
-          { origin: "undo", originalTransactionId },
+          { origin: "undo", originalTransactionId, undoJournalId },
         );
         redoBaseVersion = restored.version;
         setForeshadowHistoryVersion(restored);
@@ -484,7 +485,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
           patch,
           getForeshadowHistoryVersion(projectId, id, redoBaseVersion),
           projectId,
-          { origin: "redo", originalTransactionId },
+          { origin: "redo", originalTransactionId, undoJournalId },
         );
         undoBaseVersion = reapplied.version;
         setForeshadowHistoryVersion(reapplied);

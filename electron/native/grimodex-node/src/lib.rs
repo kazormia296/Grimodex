@@ -46,9 +46,8 @@ use grimodex_db::domain_writes::{
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
-    self, ForeshadowAnchorSavePayload, ForeshadowCodexLinkPayload, ForeshadowCreatePayload,
-    ForeshadowDeletePayload, ForeshadowPatch, ForeshadowSetupPatch, ForeshadowSetupStrengthPayload,
-    OrphanResolvePayload, SetupCreateAiInput,
+    self, ForeshadowCreatePayload, ForeshadowDeletePayload, ForeshadowPatch,
+    ForeshadowSetupPatch,
 };
 use grimodex_db::ime_export::{
     clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
@@ -725,8 +724,28 @@ where
     F: FnOnce(&grimodex_db::Database, T) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
     run_blocking(move || {
+        let authority_context = if payload.get("authorityRoute").is_some() {
+            let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
+                from_wire(label, payload.clone())?;
+            agent_writes::validate_renderer_authority_context(&context)?;
+            Some(
+                serde_json::to_value(context)
+                    .map_err(|error| AppError::Anyhow(error.into()))?,
+            )
+        } else {
+            None
+        };
         let dto: T = from_wire(label, payload)?;
-        with_db_state(&state.ws, |db| Ok(serde_json::to_string(&f(db, dto)?)?))
+        with_db_state(&state.ws, |db| {
+            let result = match authority_context {
+                Some(context) => grimodex_db::change_events::with_renderer_authority_context(
+                    context,
+                    || f(db, dto),
+                )?,
+                None => f(db, dto)?,
+            };
+            Ok(serde_json::to_string(&result)?)
+        })
     })
     .await
 }
@@ -753,8 +772,14 @@ where
     run_blocking(move || {
         let dto: T = from_wire(label, payload.clone())?;
         let context = from_wire(label, payload)?;
+        agent_writes::validate_renderer_authority_context(&context)?;
+        let context_json = serde_json::to_value(&context)
+            .map_err(|error| AppError::Anyhow(error.into()))?;
         with_db_state(&state.ws, |db| {
-            Ok(serde_json::to_string(&f(db, dto, context)?)?)
+            grimodex_db::change_events::with_renderer_authority_context(
+                context_json,
+                || Ok(serde_json::to_string(&f(db, dto, context)?)?),
+            )
         })
     })
     .await
@@ -765,22 +790,6 @@ where
 struct ChatMsgDto {
     role: String,
     content: String,
-}
-
-/// Renderer-owned non-create mutations must carry a stable logical request
-/// identity. Decode it independently from the shared domain DTO so MCP can
-/// keep supplying the same identity through its explicit `with_request` API.
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RendererRequestIdentity {
-    request_id: String,
-}
-
-impl RendererRequestIdentity {
-    fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.request_id.trim().is_empty(), "requestId is required");
-        Ok(())
-    }
 }
 
 /// Renderer が request.prepared を durable append した実行との相関だけを渡す。
@@ -2076,51 +2085,27 @@ impl Backend {
 
     #[napi]
     pub async fn tree_node_delete(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, payload: TreeNodeDeletePayload, context| {
-                    domain_writes::tree_node_delete_with_authority(db, payload, Some(context))
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: TreeNodeDeletePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&domain_writes::tree_node_delete(
-                    db, payload,
-                )?)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: TreeNodeDeletePayload, context| {
+                domain_writes::tree_node_delete_with_authority(db, payload, Some(context))
+            },
+        )
         .await
     }
 
     #[napi]
     pub async fn tree_node_patch(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, payload: TreeNodePatchPayload, context| {
-                    domain_writes::tree_node_patch_with_authority(db, payload, Some(context))
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: TreeNodePatchPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&domain_writes::tree_node_patch(
-                    db, payload,
-                )?)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: TreeNodePatchPayload, context| {
+                domain_writes::tree_node_patch_with_authority(db, payload, Some(context))
+            },
+        )
         .await
     }
 
@@ -4009,25 +3994,14 @@ impl Backend {
     /// Option<Option<T>>)。返り値: 更新後行の JSON 文字列。
     #[napi]
     pub async fn foreshadow_update(&self, id: String, patch: serde_json::Value) -> Result<String> {
-        if patch.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "patch",
-                patch,
-                move |db, patch: ForeshadowPatch, context| {
-                    foreshadow::update_with_renderer_authority(db, id, patch, Some(context))
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let patch: ForeshadowPatch = from_wire("patch", patch)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::update(db, id, patch)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "patch",
+            patch,
+            move |db, patch: ForeshadowPatch, context| {
+                foreshadow::update_with_renderer_authority(db, id, patch, Some(context))
+            },
+        )
         .await
     }
 
@@ -4035,25 +4009,14 @@ impl Backend {
     /// 削除した aggregate の receipt を返す。
     #[napi]
     pub async fn foreshadow_delete(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, payload: ForeshadowDeletePayload, context| {
-                    foreshadow::delete_with_renderer_authority(db, payload, Some(context))
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowDeletePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let receipt = foreshadow::delete(db, payload)?;
-                Ok(serde_json::to_string(&receipt)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload: ForeshadowDeletePayload, context| {
+                foreshadow::delete_with_renderer_authority(db, payload, Some(context))
+            },
+        )
         .await
     }
 
@@ -4161,30 +4124,14 @@ impl Backend {
         id: String,
         patch: serde_json::Value,
     ) -> Result<String> {
-        if patch.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "patch",
-                patch,
-                move |db, patch: ForeshadowSetupPatch, context| {
-                    foreshadow::update_setup_with_renderer_authority(
-                        db,
-                        id,
-                        patch,
-                        context,
-                    )
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let patch: ForeshadowSetupPatch = from_wire("patch", patch)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::update_setup(db, id, patch)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "patch",
+            patch,
+            move |db, patch: ForeshadowSetupPatch, context| {
+                foreshadow::update_setup_with_renderer_authority(db, id, patch, context)
+            },
+        )
         .await
     }
 
@@ -4205,46 +4152,24 @@ impl Backend {
     /// 伏線↔codex リンク作成 (INSERT OR IGNORE)。
     #[napi]
     pub async fn foreshadow_link_codex(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                foreshadow::link_codex_with_renderer_authority,
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::link_codex(db, payload)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            foreshadow::link_codex_with_renderer_authority,
+        )
         .await
     }
 
     /// 伏線↔codex リンク削除。
     #[napi]
     pub async fn foreshadow_unlink_codex(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                foreshadow::unlink_codex_with_renderer_authority,
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowCodexLinkPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::unlink_codex(db, payload)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            foreshadow::unlink_codex_with_renderer_authority,
+        )
         .await
     }
 
@@ -4268,23 +4193,12 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                foreshadow::set_setup_strength_with_renderer_authority,
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowSetupStrengthPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::set_setup_strength(db, payload)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            foreshadow::set_setup_strength_with_renderer_authority,
+        )
         .await
     }
 
@@ -4292,23 +4206,12 @@ impl Backend {
     /// (fromPos/toPos は i64、lastEvaluatedAt は Option<i64> — from_wire が正規化)。
     #[napi]
     pub async fn foreshadow_setup_create_ai(&self, input: serde_json::Value) -> Result<String> {
-        if input.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "input",
-                input,
-                foreshadow::setup_create_ai_with_renderer_authority,
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let input: SetupCreateAiInput = from_wire("input", input)?;
-            with_db_state(&state.ws, |db| {
-                let row = foreshadow::setup_create_ai(db, input)?;
-                Ok(serde_json::to_string(&row)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "input",
+            input,
+            foreshadow::setup_create_ai_with_renderer_authority,
+        )
         .await
     }
 
@@ -4317,23 +4220,12 @@ impl Backend {
     /// 返り値: setup id と authoritative Foreshadow 行を含む receipt の JSON 文字列。
     #[napi]
     pub async fn foreshadow_resolve_orphan(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                foreshadow::resolve_orphan_with_renderer_authority,
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: OrphanResolvePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let out = foreshadow::resolve_orphan(db, payload)?;
-                Ok(serde_json::to_string(&out)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            foreshadow::resolve_orphan_with_renderer_authority,
+        )
         .await
     }
 
@@ -4345,30 +4237,19 @@ impl Backend {
         &self,
         payload: serde_json::Value,
     ) -> Result<String> {
-        if payload.get("authorityRoute").is_some() {
-            return canonical_agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, payload, context| {
-                    foreshadow::save_anchors_for_scene_with_renderer_authority(
-                        db,
-                        payload,
-                        context,
-                    )
-                    .map(serde_json::Value::Array)
-                },
-            )
-            .await;
-        }
-        let state = Arc::clone(&self.state);
-        run_blocking(move || {
-            let payload: ForeshadowAnchorSavePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let rows = foreshadow::save_anchors_for_scene(db, payload)?;
-                Ok(serde_json::to_string(&rows)?)
-            })
-        })
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                foreshadow::save_anchors_for_scene_with_renderer_authority(
+                    db,
+                    payload,
+                    context,
+                )
+                .map(serde_json::Value::Array)
+            },
+        )
         .await
     }
 
@@ -4569,15 +4450,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_create(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                agent_writes::agent_event_create_impl,
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4595,24 +4467,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_update(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            let state = Arc::clone(&self.state);
-            return run_blocking(move || {
-                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-                request.validate()?;
-                let payload = from_wire("payload", payload)?;
-                with_db_state(&state.ws, |db| {
-                    Ok(serde_json::to_string(
-                        &agent_writes::agent_event_update_with_request_impl(
-                            db,
-                            payload,
-                            Some(&request.request_id),
-                        )?,
-                    )?)
-                })
-            })
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4624,24 +4478,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_delete(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            let state = Arc::clone(&self.state);
-            return run_blocking(move || {
-                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-                request.validate()?;
-                let payload = from_wire("payload", payload)?;
-                with_db_state(&state.ws, |db| {
-                    Ok(serde_json::to_string(
-                        &agent_writes::agent_event_delete_with_request_impl(
-                            db,
-                            payload,
-                            Some(&request.request_id),
-                        )?,
-                    )?)
-                })
-            })
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4653,15 +4489,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_impl,
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4679,24 +4506,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_set_participants(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            let state = Arc::clone(&self.state);
-            return run_blocking(move || {
-                let request: RendererRequestIdentity = from_wire("payload", payload.clone())?;
-                request.validate()?;
-                let payload = from_wire("payload", payload)?;
-                with_db_state(&state.ws, |db| {
-                    Ok(serde_json::to_string(
-                        &agent_writes::agent_event_set_participants_with_request_impl(
-                            db,
-                            payload,
-                            Some(&request.request_id),
-                        )?,
-                    )?)
-                })
-            })
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4708,17 +4517,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_scene_event_link(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
-                    agent_writes::agent_scene_event_mutate_impl(db, p, true)
-                },
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4737,15 +4535,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_scene_event_link_batch(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                agent_writes::agent_scene_event_link_batch_impl,
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4763,17 +4552,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_scene_event_unlink(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, p: grimodex_db::agent_writes::AgentSceneEventPayload| {
-                    agent_writes::agent_scene_event_mutate_impl(db, p, false)
-                },
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4792,17 +4570,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_relation_add(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
-                    agent_writes::agent_event_relation_mutate_impl(db, p, true)
-                },
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",
@@ -4821,17 +4588,6 @@ impl Backend {
 
     #[napi]
     pub async fn agent_event_relation_remove(&self, payload: serde_json::Value) -> Result<String> {
-        if payload.get("authorityRoute").is_none() {
-            return agent_write_cmd(
-                Arc::clone(&self.state),
-                "payload",
-                payload,
-                |db, p: grimodex_db::agent_writes::AgentEventRelationPayload| {
-                    agent_writes::agent_event_relation_mutate_impl(db, p, false)
-                },
-            )
-            .await;
-        }
         canonical_agent_write_cmd(
             Arc::clone(&self.state),
             "payload",

@@ -1117,14 +1117,25 @@ function requirePlotMutationIdentity(
     "originalTransactionId",
     command,
   );
+  const undoJournalId = optionalString(payload, "undoJournalId", command);
   if ((origin === "undo" || origin === "redo") && !originalTransactionId) {
     throw new Error(
       `invalid args \`originalTransactionId\` for command \`${command}\`: undo/redo requires lineage`,
     );
   }
+  if ((origin === "undo" || origin === "redo") && !undoJournalId) {
+    throw new Error(
+      `invalid args \`undoJournalId\` for command \`${command}\`: undo/redo requires journal lineage`,
+    );
+  }
   if (origin !== "undo" && origin !== "redo" && originalTransactionId) {
     throw new Error(
       `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
+    );
+  }
+  if (origin !== "undo" && origin !== "redo" && undoJournalId) {
+    throw new Error(
+      `invalid args \`undoJournalId\` for command \`${command}\`: forward mutation cannot name lineage`,
     );
   }
 }
@@ -1238,12 +1249,8 @@ function requireForeshadowRendererAuthority(
   allowedRoutes: readonly string[],
 ): void {
   if (!Object.hasOwn(payload, "authorityRoute")) {
-    // Keep the legacy direct replay payload compatible with the history
-    // controller. Main-bound replay payloads still carry and validate the
-    // canonical route below.
-    if (payload.origin === "undo" || payload.origin === "redo") return;
     throw new Error(
-      `invalid authority route for command \`${command}\`: renderer forward writes require canonical authority context`,
+      `invalid authority route for command \`${command}\`: every Foreshadow mutation requires canonical authority context`,
     );
   }
   requireCanonicalAuthorityContext(payload, command);

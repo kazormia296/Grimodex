@@ -132,6 +132,7 @@ vi.mock("@/features/timelapse/recorder", () => ({
 vi.mock("@/lib/nativeMutationMetadata", () => ({
   getNativeMutationMetadata: vi.fn(() => ({
     maintenanceTransactionId: "foreshadow-test-transaction",
+    undoJournalId: "foreshadow-test-journal",
   })),
 }));
 vi.mock("@/features/agent-writes/undoJournal", () => ({

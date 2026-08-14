@@ -360,7 +360,7 @@ fn origin_allowed_for_route(route: &str, origin: NarrativeChangeOrigin) -> bool 
 /// allowed to append an audit event. The caller allowlist is deliberately
 /// exact; a versioned or otherwise unknown background caller must not inherit
 /// a route by merely avoiding a blacklist entry.
-pub(crate) fn validate_renderer_authority_context(
+pub fn validate_renderer_authority_context(
     context: &RendererCanonicalWriteContext,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -440,7 +440,7 @@ pub(crate) fn validate_renderer_authority_context(
     Ok(())
 }
 
-pub(crate) fn validate_renderer_authority_context_for_routes(
+pub fn validate_renderer_authority_context_for_routes(
     context: &RendererCanonicalWriteContext,
     allowed_routes: &[&str],
 ) -> anyhow::Result<()> {

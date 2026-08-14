@@ -57,6 +57,7 @@ struct ResolvedWriteContext {
     cause_kind: NarrativeChangeCauseKind,
     origin: NarrativeChangeOrigin,
     original_transaction_id: Option<String>,
+    undo_journal_id: Option<String>,
 }
 
 fn resolve_write_context(
@@ -98,6 +99,7 @@ fn resolve_write_context(
         cause_kind,
         origin: context.origin,
         original_transaction_id: context.original_transaction_id.clone(),
+        undo_journal_id: context.undo_journal_id.clone(),
     })
 }
 
@@ -124,7 +126,22 @@ fn validate_foreshadow_renderer_context(
         renderer_context.original_transaction_id == payload_context.original_transaction_id,
         "{operation} originalTransactionId does not match canonical authority context"
     );
+    anyhow::ensure!(
+        renderer_context.undo_journal_id == payload_context.undo_journal_id,
+        "{operation} undoJournalId does not match canonical authority context"
+    );
     Ok(())
+}
+
+fn surface_for_origin(origin: NarrativeChangeOrigin) -> &'static str {
+    match origin {
+        NarrativeChangeOrigin::Human => "manual",
+        NarrativeChangeOrigin::AiApply => "ai-apply",
+        NarrativeChangeOrigin::Import => "import",
+        NarrativeChangeOrigin::Restore => "restore",
+        NarrativeChangeOrigin::Migration => "migration",
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo => "history",
+    }
 }
 
 #[cfg(test)]
@@ -1163,6 +1180,11 @@ pub fn update_with_renderer_authority(
     let payoff_from_patch = patch.payoff_from_pos;
     let payoff_to_patch = patch.payoff_to_pos;
     let now = chrono::Utc::now().timestamp_millis();
+    let undo_journal_id = write_context
+        .undo_journal_id
+        .clone()
+        .unwrap_or_else(|| write_context.request_id.clone());
+    let writes_forward_journal = write_context.cause_kind == NarrativeChangeCauseKind::Forward;
     let mut sets: Vec<&str> = Vec::new();
     let mut params: Vec<Value> = Vec::new();
 
@@ -1341,6 +1363,30 @@ pub fn update_with_renderer_authority(
                 .map(Value::Object)
                 .unwrap_or(Value::Null);
             let after_feed = load_canonical_foreshadow_snapshot_in_tx(conn, &project_id, &id)?;
+            if writes_forward_journal {
+                let before_json = before_feed.to_string();
+                let after_json = after_feed.to_string();
+                let result_version = after_feed
+                    .get("version")
+                    .and_then(Value::as_i64)
+                    .ok_or_else(|| anyhow::anyhow!("foreshadow update snapshot has no version"))?;
+                insert_undo_journal_in_tx(
+                    conn,
+                    UndoJournalInsert {
+                        id: &undo_journal_id,
+                        project_id: &project_id,
+                        surface: surface_for_origin(write_context.origin),
+                        entity_kind: "foreshadow",
+                        entity_id: &id,
+                        op_kind: "update",
+                        before_json: Some(&before_json),
+                        after_json: Some(&after_json),
+                        base_version,
+                        result_version,
+                        change_event_uid: Some(&write_context.event_uid),
+                    },
+                )?;
+            }
             let transaction_id = append_foreshadow_feed_with_authority(
                 conn,
                 ForeshadowFeedAppend {
@@ -1348,7 +1394,7 @@ pub fn update_with_renderer_authority(
                     operation: "foreshadow.update",
                     entity_id: &id,
                     context: &write_context,
-                    undo_journal_id: None,
+                    undo_journal_id: Some(undo_journal_id.clone()),
                     events: vec![foreshadow_root_feed_event(
                         &id,
                         "metadata",
@@ -1360,7 +1406,14 @@ pub fn update_with_renderer_authority(
                 },
                 renderer_context.as_ref(),
             )?;
-            Ok(attach_maintenance_transaction_id(after, transaction_id))
+            let mut response = attach_maintenance_transaction_id(after, transaction_id);
+            if let Value::Object(row) = &mut response {
+                row.insert(
+                    "undoJournalId".to_string(),
+                    Value::String(undo_journal_id.clone()),
+                );
+            }
+            Ok(response)
         },
     )
 }

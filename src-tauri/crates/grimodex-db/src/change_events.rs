@@ -3,6 +3,7 @@ use std::time::Duration;
 use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::Database;
@@ -21,6 +22,103 @@ pub struct AppendChangeEvent {
     pub entity_id: Option<String>,
     pub payload: String,
     pub timestamp: i64,
+}
+
+thread_local! {
+    static RENDERER_AUTHORITY_CONTEXT: std::cell::RefCell<Option<Value>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Run a Native renderer writer with its validated authority context attached
+/// to the current DB worker thread. The low-level Change Event append point
+/// uses this context as a final defense so domain writers that build a compact
+/// audit payload cannot accidentally drop the C1.5 authority evidence.
+pub fn with_renderer_authority_context<T>(
+    context: Value,
+    operation: impl FnOnce() -> T,
+) -> T {
+    RENDERER_AUTHORITY_CONTEXT.with(|slot| {
+        let previous = slot.replace(Some(context));
+        let result = operation();
+        slot.replace(previous);
+        result
+    })
+}
+
+fn authority_evidence(context: &Value) -> Value {
+    let route = context
+        .get("authorityRoute")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let caller = context
+        .get("caller")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let origin = context.get("origin").cloned().unwrap_or(Value::Null);
+    let controls = context
+        .get("controls")
+        .cloned()
+        .unwrap_or_else(|| Value::Array(Vec::new()));
+    let protected = context
+        .get("writesAuthorityProtectedField")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut evidence = json!({
+        "validated": true,
+        "status": "validated",
+        "authorityRoute": route,
+        "caller": caller,
+        "origin": origin,
+        "callerAllowlisted": true,
+        "originRouteMatched": true,
+        "requiredControlsValidated": true,
+        "fieldAuthorityValidated": !protected
+            || controls
+                .as_array()
+                .is_some_and(|values| values.iter().any(|value| value == "field-authority")),
+        "replayLineageValidated": context.get("authorityRoute")
+            == Some(&Value::String("history-replay".to_string())),
+        "controls": controls,
+    });
+    if let Some(provenance) = context.get("provenance") {
+        if !provenance.is_null() {
+            evidence["provenance"] = provenance.clone();
+        }
+    }
+    evidence
+}
+
+/// Replace the renderer-controlled portion of a canonical audit payload with
+/// the context selected and validated at the Native boundary.
+pub fn annotate_authority_event(event: &AppendChangeEvent) -> AppendChangeEvent {
+    let Some(context) = RENDERER_AUTHORITY_CONTEXT.with(|slot| slot.borrow().clone()) else {
+        return event.clone();
+    };
+    let parsed = serde_json::from_str::<Value>(&event.payload)
+        .unwrap_or_else(|_| json!({ "rawPayload": event.payload }));
+    let mut authority_payload = match parsed {
+        Value::Object(object) => Value::Object(object),
+        payload => json!({ "payload": payload }),
+    };
+    let object = authority_payload
+        .as_object_mut()
+        .expect("authority payload is always an object");
+    object.insert(
+        "authorityRoute".to_string(),
+        context
+            .get("authorityRoute")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    object.insert(
+        "authorityCaller".to_string(),
+        context.get("caller").cloned().unwrap_or(Value::Null),
+    );
+    object.insert("authorityEvidence".to_string(), authority_evidence(&context));
+    AppendChangeEvent {
+        payload: authority_payload.to_string(),
+        ..event.clone()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -106,6 +204,7 @@ pub fn append_change_events_in_tx(
     session_id: &str,
     events: &[AppendChangeEvent],
 ) -> anyhow::Result<AppendResult> {
+    let authority_events = events.iter().map(annotate_authority_event).collect::<Vec<_>>();
     // Idempotent resend handling. A committed-but-rejected flush is re-sent by
     // the webview, possibly *merged* with new events queued meanwhile
     // (`state.queue = batch.concat(state.queue)`). Skipping the whole batch on
@@ -115,7 +214,7 @@ pub fn append_change_events_in_tx(
     // Fast path: if the first event is new, the whole batch is new — events are
     // appended atomically and in order, so an already-present uid can only be a
     // committed prefix from a resend. Only then do we pay the per-event lookup.
-    let first_present = match events.first() {
+    let first_present = match authority_events.first() {
         Some(first) => {
             anyhow::ensure!(!first.event_uid.is_empty(), "eventUid is required");
             event_uid_exists(conn, project_id, &first.event_uid)?
@@ -125,7 +224,7 @@ pub fn append_change_events_in_tx(
 
     let (mut sequence, mut prev_hash) = current_tail(conn, project_id)?;
     let mut inserted_count = 0usize;
-    for event in events {
+    for event in &authority_events {
         anyhow::ensure!(!event.event_uid.is_empty(), "eventUid is required");
         if first_present && event_uid_exists(conn, project_id, &event.event_uid)? {
             continue;

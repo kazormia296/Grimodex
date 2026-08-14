@@ -477,10 +477,8 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 
   const event = {
-    requestId: "agent-tool:event-napi-request-1",
+    ...canonical("agent-tool:event-napi-request-1", "human"),
     eventId: "event-napi-entity-attempt-1",
-    projectId: PROJECT,
-    sessionId: "sess-1",
     title: "到着",
   };
   const eventFirst = JSON.parse(await backend.agentEventCreate(event));
@@ -640,9 +638,7 @@ test("agentEventSetParticipants preserves canonical authority evidence through n
 test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
   const created = JSON.parse(
     await backend.agentEventCreate({
-      requestId: "agent-tool:event-napi-chronicle-boundaries-1",
-      projectId: PROJECT,
-      sessionId: "sess-chronicle-boundaries",
+      ...canonical("agent-tool:event-napi-chronicle-boundaries-1", "human"),
       title: "境界日時",
       startTime: 10,
       startMinute: 0,
@@ -668,9 +664,7 @@ test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越�
 
   const updated = JSON.parse(
     await backend.agentEventUpdate({
-      requestId: "agent-tool:event-napi-chronicle-update-1",
-      projectId: PROJECT,
-      sessionId: "sess-chronicle-boundaries",
+      ...canonical("agent-tool:event-napi-chronicle-update-1", "human"),
       eventId: created.entityId,
       baseVersion: created.version,
       endTime: 10,
@@ -716,10 +710,8 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   const sceneId = "chronicle-bulk-napi-scene-1";
   const datedSceneId = "chronicle-bulk-napi-scene-2";
   await backend.agentEventCreate({
-    requestId: `fixture:${eventId}`,
+    ...canonical(`fixture:${eventId}`, "human"),
     eventId,
-    projectId: PROJECT,
-    sessionId: "sess-bulk-fixture",
     surface: "manual",
     title: "Bulk event",
     ordinal: "z-bulk",
@@ -731,10 +723,8 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     kind: "generic",
   });
   await backend.agentEventCreate({
-    requestId: `fixture:${datedEventId}`,
+    ...canonical(`fixture:${datedEventId}`, "human"),
     eventId: datedEventId,
-    projectId: PROJECT,
-    sessionId: "sess-bulk-fixture",
     surface: "manual",
     title: "Dated bulk event",
     ordinal: "z-bulk-2",
@@ -799,9 +789,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
 
   const result = JSON.parse(
     await backend.agentChronicleBulkMutate({
-      requestId: "chronicle-bulk-napi-forward-1",
-      projectId: PROJECT,
-      sessionId: "sess-bulk",
+      ...canonical("chronicle-bulk-napi-forward-1", "human"),
       surface: "manual",
       operations: [
         { kind: "eventDelete", eventId, baseVersion: 1 },

@@ -1440,6 +1440,7 @@ pub fn append_canonical_and_narrative_change_in_tx(
     canonical_event: &AppendChangeEvent,
     narrative_input: &AppendNarrativeChangeTransactionInput,
 ) -> anyhow::Result<AppendCanonicalNarrativeChangeResult> {
+    let canonical_event = crate::change_events::annotate_authority_event(canonical_event);
     anyhow::ensure!(
         !conn.is_autocommit(),
         "canonical Change Event + Narrative Change Feed append requires a caller-owned transaction"
@@ -1474,12 +1475,12 @@ pub fn append_canonical_and_narrative_change_in_tx(
         }
     }
 
-    validate_existing_canonical_event(conn, project_id, session_id, canonical_event)?;
+    validate_existing_canonical_event(conn, project_id, session_id, &canonical_event)?;
     let canonical = append_change_events_in_tx(
         conn,
         project_id,
         session_id,
-        std::slice::from_ref(canonical_event),
+        std::slice::from_ref(&canonical_event),
     )?;
     let narrative = append_narrative_change_transaction_in_tx(conn, narrative_input)?;
     Ok(AppendCanonicalNarrativeChangeResult {

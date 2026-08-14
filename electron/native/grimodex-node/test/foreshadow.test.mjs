@@ -80,6 +80,7 @@ function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
       : null,
     writesAuthorityProtectedField: false,
     originalTransactionId: null,
+    undoJournalId: null,
   };
 }
 

@@ -1,5 +1,6 @@
 export interface NativeMutationMetadata {
   maintenanceTransactionId: string;
+  undoJournalId?: string;
 }
 
 const NATIVE_MUTATION_METADATA = Symbol("grimodex.nativeMutationMetadata");
@@ -24,8 +25,17 @@ export function attachNativeMutationMetadata<T extends object>(
   if (typeof transactionId !== "string" || transactionId.length === 0) {
     return normalized;
   }
+  const undoJournalId =
+    raw && typeof raw === "object"
+      ? (raw as Record<string, unknown>).undoJournalId
+      : undefined;
   Object.defineProperty(normalized, NATIVE_MUTATION_METADATA, {
-    value: { maintenanceTransactionId: transactionId },
+    value: {
+      maintenanceTransactionId: transactionId,
+      ...(typeof undoJournalId === "string" && undoJournalId.length > 0
+        ? { undoJournalId }
+        : {}),
+    },
     enumerable: false,
   });
   return normalized;
