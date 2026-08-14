@@ -30,12 +30,15 @@ vi.mock("@/features/project/projectStore", () => ({
 function deferred<T>(): {
   promise: Promise<T>;
   resolve: (value: T) => void;
+  reject: (error: unknown) => void;
 } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 beforeEach(() => {
@@ -165,6 +168,89 @@ describe("Project metadata write quiescence", () => {
       "project-a",
       { title: "Latest" },
     ]);
+  });
+
+  it("does not recover an in-flight old generation after a newer value succeeds", async () => {
+    const first = deferred<unknown>();
+    h.updateProject
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ id: "project-a" });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "First",
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.waitFor(() => expect(h.updateProject).toHaveBeenCalledTimes(1));
+
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "Latest",
+    });
+    const flush = flushQuiescenceProviderStage("scoped-mutations");
+    first.reject(new Error("old write failed"));
+    await flush;
+
+    expect(h.updateProject).toHaveBeenCalledTimes(2);
+    expect(h.updateProject.mock.calls[1]).toEqual([
+      "project-a",
+      { title: "Latest" },
+    ]);
+    expect(collectQuiescenceProviderRecovery()).not.toContainEqual(
+      expect.objectContaining({
+        field: "title",
+        value: "First",
+      }),
+    );
+
+    await flushQuiescenceProviderStage("scoped-mutations");
+    expect(h.updateProject).toHaveBeenCalledTimes(2);
+  });
+
+  it("retains only unchanged fields from a failed multi-field generation", async () => {
+    const first = deferred<unknown>();
+    h.updateProject
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ id: "project-a" });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "First",
+    });
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "genre",
+      value: "Old",
+    });
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.waitFor(() => expect(h.updateProject).toHaveBeenCalledTimes(1));
+
+    scheduleProjectMetadataWrite({
+      projectId: "project-a",
+      field: "title",
+      value: "Latest",
+    });
+    first.reject(new Error("partially superseded write failed"));
+    await vi.waitFor(() => expect(h.updateProject).toHaveBeenCalledTimes(2));
+
+    expect(h.updateProject.mock.calls[1]).toEqual([
+      "project-a",
+      { title: "Latest" },
+    ]);
+    const recovery = collectQuiescenceProviderRecovery();
+    expect(recovery).toContainEqual({
+      kind: "project-metadata",
+      projectId: "project-a",
+      field: "genre",
+      value: "Old",
+    });
+    expect(recovery).not.toContainEqual(
+      expect.objectContaining({
+        field: "title",
+        value: "First",
+      }),
+    );
   });
 
   it("serializes a second field behind an in-flight Project patch", async () => {

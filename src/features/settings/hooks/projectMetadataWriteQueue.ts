@@ -32,11 +32,13 @@ type PersistCallbacks = Partial<Record<ProjectMetadataField, () => void>>;
 type FailureCallbacks = Partial<
   Record<ProjectMetadataField, (error: unknown) => void>
 >;
+type GenerationByField = Partial<Record<ProjectMetadataField, number>>;
 
 interface PendingProjectMetadataWrite {
   authority: MutationAuthority;
   projectId: string;
   patch: ProjectMetadataPatch;
+  generationByField: GenerationByField;
   onPersistByField: PersistCallbacks;
   onFailureByField: FailureCallbacks;
 }
@@ -46,6 +48,7 @@ interface ProjectMetadataWriteLane {
   projectId: string;
   pending: PendingProjectMetadataWrite | null;
   failed: PendingProjectMetadataWrite | null;
+  latestGenerationByField: Map<ProjectMetadataField, number>;
   failure: unknown;
   timer: ReturnType<typeof setTimeout> | null;
   running: Promise<void> | null;
@@ -69,6 +72,7 @@ function getLane(key: string, projectId: string): ProjectMetadataWriteLane {
       projectId,
       pending: null,
       failed: null,
+      latestGenerationByField: new Map(),
       failure: undefined,
       timer: null,
       running: null,
@@ -89,6 +93,10 @@ function mergeWrites(
       ...(base?.patch ?? {}),
       ...overlay.patch,
     },
+    generationByField: {
+      ...(base?.generationByField ?? {}),
+      ...overlay.generationByField,
+    },
     onPersistByField: {
       ...(base?.onPersistByField ?? {}),
       ...overlay.onPersistByField,
@@ -106,12 +114,56 @@ function withoutField(
 ): PendingProjectMetadataWrite | null {
   const patch = { ...write.patch };
   delete patch[field];
+  const generationByField = { ...write.generationByField };
+  delete generationByField[field];
   const onPersistByField = { ...write.onPersistByField };
   delete onPersistByField[field];
   const onFailureByField = { ...write.onFailureByField };
   delete onFailureByField[field];
   if (!hasPatch(patch)) return null;
-  return { ...write, patch, onPersistByField, onFailureByField };
+  return {
+    ...write,
+    patch,
+    generationByField,
+    onPersistByField,
+    onFailureByField,
+  };
+}
+
+function retainLatestGenerations(
+  lane: ProjectMetadataWriteLane,
+  write: PendingProjectMetadataWrite,
+): PendingProjectMetadataWrite | null {
+  let retained: PendingProjectMetadataWrite | null = write;
+  for (const field of patchFields(write.patch)) {
+    const generation = write.generationByField[field];
+    if (
+      generation === undefined ||
+      lane.latestGenerationByField.get(field) !== generation
+    ) {
+      retained = retained ? withoutField(retained, field) : null;
+    }
+  }
+  return retained;
+}
+
+function clearSuccessfulFieldsFromFailure(
+  lane: ProjectMetadataWriteLane,
+  write: PendingProjectMetadataWrite,
+): void {
+  for (const field of patchFields(write.patch)) {
+    const failedGeneration = lane.failed?.generationByField[field];
+    const successfulGeneration = write.generationByField[field];
+    if (
+      lane.failed &&
+      failedGeneration !== undefined &&
+      successfulGeneration !== undefined &&
+      successfulGeneration >= failedGeneration
+    ) {
+      lane.failed = withoutField(lane.failed, field);
+    }
+  }
+  if (!lane.failed) lane.failure = undefined;
 }
 
 function cleanupLaneIfIdle(lane: ProjectMetadataWriteLane): void {
@@ -168,9 +220,23 @@ function startLane(lane: ProjectMetadataWriteLane): Promise<void> {
 
   const execution = executeProjectMetadataWrite(write);
   const tracked = execution
+    .then(() => {
+      // A successful newer generation makes any same-field failed generation
+      // obsolete. Keep unrelated failed fields recoverable.
+      clearSuccessfulFieldsFromFailure(lane, write);
+    })
     .catch((error: unknown): never => {
-      lane.failed = mergeWrites(lane.failed, write);
-      lane.failure = error;
+      // An in-flight write may have become stale while Native OCC was
+      // running. Only fields whose generation is still current belong in
+      // lifecycle recovery; otherwise a later successful value could be
+      // overwritten by this old failure on the next flush.
+      const recoverable = retainLatestGenerations(lane, write);
+      if (recoverable) {
+        lane.failed = mergeWrites(lane.failed, recoverable);
+        lane.failure = error;
+      } else if (!lane.failed) {
+        lane.failure = undefined;
+      }
       notifyWriteFailure(write, error);
       throw error;
     })
@@ -206,6 +272,8 @@ export function scheduleProjectMetadataWrite(options: {
     options.projectId,
   ].join("\u0000");
   const lane = getLane(key, options.projectId);
+  const generation = (lane.latestGenerationByField.get(options.field) ?? 0) + 1;
+  lane.latestGenerationByField.set(options.field, generation);
 
   // A newer value for the same field supersedes a failed value, but a failed
   // value for another field remains recoverable and will be retried with the
@@ -220,6 +288,7 @@ export function scheduleProjectMetadataWrite(options: {
     authority,
     projectId: options.projectId,
     patch: { [options.field]: options.value } as ProjectMetadataPatch,
+    generationByField: { [options.field]: generation },
     onPersistByField: { [options.field]: options.onPersist },
     onFailureByField: { [options.field]: options.onFailure },
   };
@@ -234,13 +303,17 @@ export async function flushProjectMetadataWrites(): Promise<void> {
   while (true) {
     const lanes = [...lanesByKey.values()];
     for (const lane of lanes) {
-      if (lane.failed) {
+      const recoverable = lane.failed
+        ? retainLatestGenerations(lane, lane.failed)
+        : null;
+      lane.failed = recoverable;
+      if (recoverable) {
         // A lifecycle retry is a real persistence retry, not just a replay of
         // the previously reported error. Merge it with pending fields so one
         // Project transaction carries the newest values for every field.
         lane.pending = lane.pending
-          ? mergeWrites(lane.failed, lane.pending)
-          : lane.failed;
+          ? mergeWrites(recoverable, lane.pending)
+          : recoverable;
         lane.failed = null;
         lane.failure = undefined;
       }
@@ -291,10 +364,13 @@ registerQuiescenceProvider({
   discard: discardProjectMetadataWrites,
   recovery: () =>
     [...lanesByKey.values()].flatMap((lane) => {
-      const write = lane.failed
+      const failed = lane.failed
+        ? retainLatestGenerations(lane, lane.failed)
+        : null;
+      const write = failed
         ? lane.pending
-          ? mergeWrites(lane.failed, lane.pending)
-          : lane.failed
+          ? mergeWrites(failed, lane.pending)
+          : failed
         : lane.pending;
       if (!write) return [];
       return patchFields(write.patch).map((field) => ({
