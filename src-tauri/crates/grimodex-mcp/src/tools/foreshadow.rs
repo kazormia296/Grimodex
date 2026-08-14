@@ -62,6 +62,8 @@ pub async fn get_foreshadow_detail(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct CreateForeshadowParams {
+    /// Stable logical request id. Reuse it only when retrying this create.
+    pub request_id: String,
     /// Title of the foreshadowing item (required).
     pub title: String,
     /// Author intent: what this foreshadow is meant to set up / pay off (optional).
@@ -125,29 +127,39 @@ pub async fn create_foreshadow(
 
     // Tracked write: one tx = entity row + undo_journal(surface='mcp') +
     // change_event(domain 'foreshadow'), closing the last untracked AI write.
-    let id = uuid::Uuid::new_v4().to_string();
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let write = grimodex_core::writes::foreshadow::tracked_foreshadow_create(
-        &conn,
-        grimodex_core::writes::foreshadow::TrackedForeshadowCreateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            surface: "mcp",
-            foreshadow_id: &id,
-            title: &title,
-            intent: intent.as_deref(),
-            notes: notes.as_deref(),
-            load_bearing: params.load_bearing.as_deref(),
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let write = grimodex_db::agent_writes::agent_foreshadow_create_with_surface_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentForeshadowCreatePayload {
+            request_id: request_id.to_string(),
+            foreshadow_id: None,
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            title: title.clone(),
+            intent,
+            notes,
+            load_bearing: params.load_bearing,
             secret,
-            request_id: None,
-            request_hash: None,
         },
+        "mcp",
     )
     .map_err(internal_err)?;
+    let id = write["entityId"]
+        .as_str()
+        .ok_or_else(|| internal_err("Foreshadow writer returned no entityId"))?
+        .to_string();
 
     let result = CreateForeshadowResult {
         id: id.clone(),
-        version: write.version,
+        version: write["version"]
+            .as_i64()
+            .ok_or_else(|| internal_err("Foreshadow writer returned no version"))?,
         secret,
         message: format!("Foreshadow '{title}' created with id {id}"),
     };
@@ -159,6 +171,8 @@ pub async fn create_foreshadow(
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct UpdateForeshadowParams {
+    /// Stable logical request id. Reuse it only when retrying this update.
+    pub request_id: String,
     /// ID of the foreshadow to update (required).
     pub id: String,
     /// Version returned by create/list/detail/the previous update.
@@ -206,7 +220,7 @@ pub async fn update_foreshadow(
         ));
     }
 
-    let id = params.id.trim();
+    let id = params.id.trim().to_string();
     if id.is_empty() {
         return Err(ErrorData::invalid_params("id must not be empty", None));
     }
@@ -251,34 +265,39 @@ pub async fn update_foreshadow(
         .transpose()
         .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
 
-    let conn = server.conn.lock().map_err(internal_err)?;
-    let result = grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version(
-        &conn,
-        grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
-            project_id: &server.project_id(),
-            session_id: &server.session_id,
-            surface: "mcp",
-            foreshadow_id: id,
-            patch: grimodex_core::writes::foreshadow::ForeshadowPatch {
-                title: title.as_deref(),
-                intent: intent.as_deref(),
-                notes: notes.as_deref(),
-                load_bearing: params.load_bearing.as_deref(),
-                payoff_confirmed: params.payoff_confirmed,
-                abandoned: params.abandoned,
-                secret: params.secret,
-            },
+    let request_id = params.request_id.trim();
+    if request_id.is_empty() {
+        return Err(ErrorData::invalid_params(
+            "request_id must not be empty",
+            None,
+        ));
+    }
+    let write = grimodex_db::agent_writes::agent_foreshadow_update_with_request_impl(
+        &server.conn,
+        grimodex_db::agent_writes::AgentForeshadowUpdatePayload {
+            request_id: request_id.to_string(),
+            project_id: server.project_id(),
+            session_id: server.session_id.clone(),
+            foreshadow_id: id.clone(),
+            base_version: params.base_version,
+            title,
+            intent,
+            notes,
+            load_bearing: params.load_bearing,
+            payoff_confirmed: params.payoff_confirmed,
+            abandoned: params.abandoned,
+            secret: params.secret,
         },
-        params.base_version,
+        request_id,
+        "mcp",
     )
     .map_err(internal_err)?;
 
-    let write = result
-        .ok_or_else(|| ErrorData::invalid_params("Foreshadow not found in this project", None))?;
-
     let result = UpdateForeshadowResult {
         id: id.to_string(),
-        version: write.version,
+        version: write["version"]
+            .as_i64()
+            .ok_or_else(|| internal_err("Foreshadow writer returned no version"))?,
         updated: true,
         message: format!("Foreshadow {id} updated"),
     };
@@ -334,6 +353,7 @@ mod tests {
         create_foreshadow(
             &server,
             CreateForeshadowParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 title: "Planted clue".to_string(),
                 intent: Some("sets up the reveal".to_string()),
                 notes: None,
@@ -384,6 +404,7 @@ mod tests {
         update_foreshadow(
             &server,
             UpdateForeshadowParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 id: "f1".to_string(),
                 base_version: 0,
                 title: Some("Renamed".to_string()),
@@ -426,6 +447,7 @@ mod tests {
         }
 
         let params = |title: &str| UpdateForeshadowParams {
+            request_id: uuid::Uuid::new_v4().to_string(),
             id: "f-stale".to_string(),
             base_version: 0,
             title: Some(title.to_string()),
@@ -468,6 +490,7 @@ mod tests {
         let res = update_foreshadow(
             &server,
             UpdateForeshadowParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
                 id: "ghost".to_string(),
                 base_version: 0,
                 title: Some("X".to_string()),

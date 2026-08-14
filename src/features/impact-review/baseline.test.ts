@@ -141,7 +141,9 @@ describe("impact review baseline", () => {
   });
 
   it("executes a guarded first-baseline insert against the browser SQLite connection", async () => {
-    const browser = await createBrowserMock();
+    const browser = await createBrowserMock({
+      allowProtectedWriterTestFixtures: true,
+    });
     const now = new Date().toISOString();
     await browser.invoke("db_execute", {
       sql: `INSERT INTO codex_entries

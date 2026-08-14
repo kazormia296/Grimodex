@@ -24,6 +24,7 @@ import {
   createTrashItem,
   deleteTrashItem,
   pruneTrashItems,
+  restoreStructuralTrashItem,
   supportsTrashBin,
 } from "./api";
 import type { TrashItemInput } from "./types";
@@ -134,6 +135,64 @@ describe("trash_bin API（Electron シェル）", () => {
     expect(getCreateResultMetadata(created)).toEqual({
       replayed: true,
       entityPresent: false,
+    });
+  });
+
+  it("構造復元を安定requestIdとproject/session identity付きNative commandへ送る", async () => {
+    installElectronBridge();
+    invokeMock.mockResolvedValue({
+      newId: "restored-scene:t1",
+      brokenLinks: ["folder"],
+    });
+    const item = {
+      id: "t1",
+      projectId: "p1",
+      kind: "structure-item" as const,
+      subKind: "scene" as const,
+      originSceneId: null,
+      originCodexId: null,
+      previewText: "Scene",
+      previewMeta: null,
+      payload: {
+        originalId: "old-scene",
+        title: "Scene",
+        body: "{}",
+        beats: "[]",
+        povCharacterId: null,
+        folderHintId: null,
+        folderHintName: null,
+        metadata: {
+          synopsis: null,
+          status: null,
+          nodeType: "scene" as const,
+          locationId: null,
+          sortOrder: "a0",
+          storyTimeOrder: null,
+          storyTimeLabel: null,
+        },
+        charCount: 0,
+      },
+      charCount: 5,
+      isInteresting: true,
+      deletedAt: "2026-08-13T00:00:00.000Z",
+    };
+
+    await expect(
+      restoreStructuralTrashItem(item, { dropX: 10, dropY: 20 }),
+    ).resolves.toEqual({
+      newId: "restored-scene:t1",
+      brokenLinks: ["folder"],
+    });
+    expect(invokeMock).toHaveBeenCalledWith("trash_bin_restore", {
+      payload: {
+        requestId: "trash-restore:t1",
+        sessionId: expect.any(String),
+        projectId: "p1",
+        itemId: "t1",
+        boardIdOverride: null,
+        dropX: 10,
+        dropY: 20,
+      },
     });
   });
 

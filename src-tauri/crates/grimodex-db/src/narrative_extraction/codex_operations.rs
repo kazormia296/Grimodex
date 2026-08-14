@@ -11,24 +11,22 @@ use crate::agent_writes::{
     CodexEntryCreateTxInput, CodexEntryCreateTxResult, CodexEntryPatchTxInput,
     CodexEntryPatchTxResult,
 };
-use crate::codex_relation_keys::{
-    build_codex_relation_semantic_key, normalize_relation_label,
-};
+use crate::codex_relation_keys::{build_codex_relation_semantic_key, normalize_relation_label};
 
 use super::detail_operations::OP_KIND_DETAIL_VALUE_SET;
 use super::foreshadow_operations::{
     OP_KIND_FORESHADOW_AGGREGATE_CREATE, OP_KIND_FORESHADOW_AGGREGATE_PATCH,
 };
 use super::phase_operations::{OP_KIND_PHASE_CREATE, OP_KIND_PHASE_PATCH};
+use super::plot_thread_operations::{
+    OP_KIND_PLOT_BRANCH_CREATE, OP_KIND_PLOT_MARKER_CREATE, OP_KIND_PLOT_THREAD_CREATE,
+    OP_KIND_PLOT_THREAD_PATCH,
+};
 use super::semantic_bindings::OP_KIND_SEMANTIC_BINDING_UPSERT;
 use super::temporal_constraints::OP_KIND_CONSTRAINT_CREATE;
 use super::temporal_nodes::OP_KIND_NODE_ENSURE;
 use super::temporal_operations::{
     OP_KIND_EVENT_METADATA_PATCH, OP_KIND_SCENE_METADATA_PATCH, OP_KIND_STORY_ORDER_MATERIALIZE,
-};
-use super::plot_thread_operations::{
-    OP_KIND_PLOT_BRANCH_CREATE, OP_KIND_PLOT_MARKER_CREATE, OP_KIND_PLOT_THREAD_CREATE,
-    OP_KIND_PLOT_THREAD_PATCH,
 };
 use super::temporal_projections::OP_KIND_PROJECTION_RECORD;
 
@@ -151,7 +149,11 @@ pub(crate) struct PlotThreadBinding {
     pub source: String,
 }
 #[derive(Debug, Clone)]
-pub(crate) struct ForeshadowBinding { pub hypothesis_id: String, pub foreshadow_id: String, pub source: String }
+pub(crate) struct ForeshadowBinding {
+    pub hypothesis_id: String,
+    pub foreshadow_id: String,
+    pub source: String,
+}
 
 impl CommitMap {
     pub fn new() -> Self {
@@ -185,7 +187,8 @@ impl CommitMap {
             .insert(binding.hypothesis_id.clone(), binding);
     }
     pub fn insert_foreshadow_binding(&mut self, binding: ForeshadowBinding) {
-        self.foreshadow_bindings.insert(binding.hypothesis_id.clone(), binding);
+        self.foreshadow_bindings
+            .insert(binding.hypothesis_id.clone(), binding);
     }
 
     pub fn resolve(&self, narrative_entity_id: &str) -> anyhow::Result<&CodexEntityBinding> {
@@ -232,7 +235,10 @@ impl CommitMap {
         for (hypothesis_id, binding) in &self.foreshadow_bindings {
             foreshadow_obj.insert(hypothesis_id.clone(), json!({"hypothesisId": binding.hypothesis_id, "foreshadowId": binding.foreshadow_id, "source": binding.source}));
         }
-        obj.insert("foreshadowBindings".to_string(), Value::Object(foreshadow_obj));
+        obj.insert(
+            "foreshadowBindings".to_string(),
+            Value::Object(foreshadow_obj),
+        );
         Value::Object(obj)
     }
 }
@@ -272,7 +278,9 @@ pub(crate) fn is_chronicle_op(kind: &str) -> bool {
     kind == OP_KIND_EVENT_CREATE
 }
 
-pub(crate) fn parse_entry_create_payload(payload: &Value) -> anyhow::Result<CodexEntryCreatePayload> {
+pub(crate) fn parse_entry_create_payload(
+    payload: &Value,
+) -> anyhow::Result<CodexEntryCreatePayload> {
     serde_json::from_value(payload.clone())
         .map_err(|err| anyhow::anyhow!("invalid codex.entry.create payload: {err}"))
 }
@@ -304,8 +312,8 @@ fn parse_aliases_json(raw: Option<&str>) -> anyhow::Result<Vec<String>> {
     let Some(raw) = raw.filter(|value| !value.trim().is_empty()) else {
         return Ok(Vec::new());
     };
-    let parsed: Value = serde_json::from_str(raw)
-        .map_err(|err| anyhow::anyhow!("invalid aliases json: {err}"))?;
+    let parsed: Value =
+        serde_json::from_str(raw).map_err(|err| anyhow::anyhow!("invalid aliases json: {err}"))?;
     match parsed {
         Value::Array(items) => {
             let mut out = Vec::with_capacity(items.len());
@@ -401,6 +409,7 @@ pub(crate) fn apply_codex_entry_create(
             excluded_aliases: None,
             readings: None,
             tags_cache: None,
+            tags: None,
             parent_id: None,
             source_chat_message_id: None,
             authorship_spans: &[],
@@ -520,6 +529,7 @@ pub(crate) fn apply_codex_entry_patch(
             excluded_aliases: None,
             readings: None,
             tags_cache: None,
+            tags: None,
             parent_id: None,
             context_mode: None,
             icon: None,
@@ -691,10 +701,7 @@ pub(crate) fn apply_codex_entity_bind_existing(
         ensure_codex_in_project(conn, project_id, &payload.entry_id)?;
     }
     let snapshot = collect_codex_entry_snapshot(conn, &payload.entry_id)?;
-    let version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(1);
+    let version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(1);
     Ok((payload.entry_id.clone(), version, snapshot))
 }
 
@@ -719,21 +726,14 @@ pub(crate) fn collect_codex_relation_snapshot(
     conn: &Connection,
     relation_id: &str,
 ) -> anyhow::Result<Value> {
-    let raw: String = conn.query_row(
-        "SELECT json_object(
-            'id', id,
-            'projectId', project_id,
-            'fromCodexId', from_codex_id,
-            'toCodexId', to_codex_id,
-            'relationType', relation_type,
-            'label', label,
-            'directionality', directionality,
-            'inverseLabel', inverse_label,
-            'semanticKey', semantic_key,
-            'version', version
-         ) FROM codex_relations WHERE id = ?1",
+    let project_id: String = conn.query_row(
+        "SELECT project_id FROM codex_relations WHERE id = ?1",
         params![relation_id],
         |row| row.get(0),
     )?;
-    serde_json::from_str(&raw).map_err(Into::into)
+    crate::canonical_feed_snapshots::canonical_codex_relation_snapshot(
+        conn,
+        &project_id,
+        relation_id,
+    )
 }

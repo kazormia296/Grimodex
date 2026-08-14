@@ -60,18 +60,21 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-function deferNextDelete() {
-  const durableDelete = deferred<void>();
-  const where = vi.fn(() => durableDelete.promise);
-  deleteFromDb.mockReturnValueOnce({ where });
-  return { durableDelete, where };
-}
-
 function deferNextTypedDelete() {
-  const durableDelete = deferred<void>();
+  const durableDelete = deferred<{
+    changeEventUid: string;
+    maintenanceTransactionId: string;
+    undoJournalId: string;
+  }>();
   invokeTypedWriter.mockReturnValueOnce(durableDelete.promise);
   return { durableDelete };
 }
+
+const DELETE_RECEIPT = {
+  changeEventUid: "delete-change-event",
+  maintenanceTransactionId: "delete-maintenance-transaction",
+  undoJournalId: "delete-undo-journal",
+};
 
 describe("Chat anchor deletion admission", () => {
   beforeEach(() => {
@@ -113,7 +116,7 @@ describe("Chat anchor deletion admission", () => {
       }),
     });
 
-    durableDelete.resolve(undefined);
+    durableDelete.resolve(DELETE_RECEIPT);
     await deleting;
 
     expect(notified).toHaveBeenCalledWith("codex-1");
@@ -139,7 +142,7 @@ describe("Chat anchor deletion admission", () => {
   });
 
   it("holds Snippet deletion authority through DB deletion and scope reconciliation", async () => {
-    const { durableDelete, where } = deferNextDelete();
+    const { durableDelete } = deferNextTypedDelete();
     const notified = vi.fn();
     let admissionDuringNotification:
       | ReturnType<typeof tryAcquireChatTurnAdmissionLease>
@@ -150,10 +153,19 @@ describe("Chat anchor deletion admission", () => {
     });
 
     const deleting = deleteSnippet("project-1", "snippet-1");
-    expect(where).toHaveBeenCalledOnce();
     expect(tryAcquireChatTurnAdmissionLease()).toBeNull();
+    await vi.waitFor(() => expect(invokeTypedWriter).toHaveBeenCalledOnce());
+    expect(selectFromDb).toHaveBeenCalledOnce();
+    expect(selectWhere).toHaveBeenCalledOnce();
+    expect(invokeTypedWriter).toHaveBeenCalledWith("snippet_delete", {
+      payload: expect.objectContaining({
+        projectId: "project-1",
+        snippetId: "snippet-1",
+        baseVersion: 7,
+      }),
+    });
 
-    durableDelete.resolve(undefined);
+    durableDelete.resolve(DELETE_RECEIPT);
     await deleting;
 
     expect(notified).toHaveBeenCalledWith("snippet-1");

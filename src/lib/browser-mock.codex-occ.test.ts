@@ -1,7 +1,12 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+import {
+  browserNarrativeStateDigest,
+  createBrowserMock,
+  type PersistentBrowserMock,
+} from "./browser-mock";
+import { withCanonicalWriterTestContext } from "./browser-mock.canonical-test-context";
 
 async function rows(
   mock: PersistentBrowserMock,
@@ -77,7 +82,12 @@ describe("browser mock Agent Codex entry OCC and journal replay", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     onDatabaseDirty.mockClear();
   });
 
@@ -314,6 +324,10 @@ describe("browser mock Agent Codex entry OCC and journal replay", () => {
       readings: null,
       tagsCache: null,
       parentId: null,
+      contextMode: "always",
+      icon: "star",
+      childrenBudget: "standard",
+      notes: "private",
       sourceChatMessageId: null,
       model: "fallback-model",
       chatMessageId: "chat-message",
@@ -371,6 +385,32 @@ describe("browser mock Agent Codex entry OCC and journal replay", () => {
     expect(
       await rows(
         mock,
+        `SELECT context_mode, icon, children_budget, notes
+           FROM codex_entries WHERE id = ?`,
+        [first.entityId],
+      ),
+    ).toEqual([
+      {
+        context_mode: "always",
+        icon: "star",
+        children_budget: "standard",
+        notes: "private",
+      },
+    ]);
+    const [journal] = await rows(
+      mock,
+      "SELECT after_json FROM undo_journal WHERE id = ?",
+      [requestId],
+    );
+    expect(JSON.parse(String(journal?.after_json))).toMatchObject({
+      contextMode: "always",
+      icon: "star",
+      childrenBudget: "standard",
+      notes: "private",
+    });
+    expect(
+      await rows(
+        mock,
         `SELECT project_id, tombstone_json
            FROM idempotency_requests
           WHERE domain = 'agent_codex_create' AND request_id = ?`,
@@ -414,6 +454,63 @@ describe("browser mock Agent Codex entry OCC and journal replay", () => {
     ).toEqual(countsAfterFirst);
     expect(onDatabaseDirty).toHaveBeenCalledTimes(dirtyAfterFirst);
   });
+
+  it.each([
+    ["contextMode", "mentioned"],
+    ["icon", "moon"],
+    ["childrenBudget", "generous"],
+    ["notes", "changed private notes"],
+  ] as const)(
+    "rejects a same-request create retry when %s changes",
+    async (field, changedValue) => {
+      const requestId = `codex-create-semantic-conflict:${field}`;
+      const payload = {
+        requestId,
+        projectId: "default-project",
+        sessionId: "codex-create-semantic-session",
+        surface: "manual",
+        typeSlug: "character",
+        name: "Semantic character",
+        summary: "",
+        content: "{}",
+        contextMode: "always",
+        icon: "star",
+        childrenBudget: "standard",
+        notes: "private",
+        authorshipSpans: [],
+      };
+      const first = await mock.invoke<{ entityId: string }>(
+        "agent_codex_create",
+        { payload },
+      );
+
+      await expect(
+        mock.invoke("agent_codex_create", {
+          payload: {
+            ...payload,
+            sessionId: "codex-create-semantic-retry-session",
+            [field]: changedValue,
+          },
+        }),
+      ).rejects.toThrow("AGENT_CODEX_CREATE_IDEMPOTENCY_CONFLICT");
+
+      expect(
+        await rows(
+          mock,
+          `SELECT context_mode, icon, children_budget, notes
+             FROM codex_entries WHERE id = ?`,
+          [first.entityId],
+        ),
+      ).toEqual([
+        {
+          context_mode: "always",
+          icon: "star",
+          children_budget: "standard",
+          notes: "private",
+        },
+      ]);
+    },
+  );
 
   it("replays create results from the journal across update, undo/redo, and delete state", async () => {
     const historyCounts = () =>
@@ -1283,7 +1380,9 @@ describe("browser mock Detail writer OCC and tracked-event audit", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({ onDatabaseDirty }),
+    );
     onDatabaseDirty.mockClear();
     await createEntry(mock, "detail-owner");
     onDatabaseDirty.mockClear();
@@ -1539,5 +1638,95 @@ describe("browser mock Detail writer OCC and tracked-event audit", () => {
       await rows(mock, "SELECT COUNT(*) AS count FROM change_events"),
     ).toEqual(eventsBeforeStale);
     expect(onDatabaseDirty).toHaveBeenCalledTimes(dirtyBeforeStale);
+  });
+
+  it("digests a null Detail Value as JSON null and preserves continuity", async () => {
+    await mock.invoke("agent_codex_mutate", {
+      payload: {
+        operation: "detail.definition.create",
+        projectId: "default-project",
+        sessionId: "detail-session",
+        definitionId: "detail-null-definition",
+        typeSlug: "character",
+        name: "Nullable",
+      },
+    });
+    await mock.invoke("agent_codex_mutate", {
+      payload: {
+        operation: "detail.value.upsert",
+        projectId: "default-project",
+        sessionId: "detail-session",
+        valueId: "detail-null-value",
+        entryId: "detail-owner",
+        definitionId: "detail-null-definition",
+        value: "Before null",
+      },
+    });
+    const nullWrite = await mock.invoke<{ changeEventUid: string }>(
+      "agent_codex_mutate",
+      {
+        payload: {
+          operation: "detail.value.upsert",
+          projectId: "default-project",
+          sessionId: "detail-session",
+          entryId: "detail-owner",
+          definitionId: "detail-null-definition",
+          value: null,
+          baseVersion: 1,
+        },
+      },
+    );
+    const [persisted] = await rows(
+      mock,
+      `SELECT id, entry_id, definition_id, value, version, created_at, updated_at
+         FROM codex_detail_values
+        WHERE entry_id = 'detail-owner'
+          AND definition_id = 'detail-null-definition'`,
+    );
+    const expectedNullDigest = browserNarrativeStateDigest({
+      id: persisted.id,
+      entryId: persisted.entry_id,
+      definitionId: persisted.definition_id,
+      value: null,
+      version: persisted.version,
+      createdAt: persisted.created_at,
+      updatedAt: persisted.updated_at,
+    });
+    const [nullFeed] = await rows(
+      mock,
+      `SELECT event.after_digest
+         FROM narrative_change_events event
+         JOIN narrative_change_transactions tx
+           ON tx.id = event.transaction_id
+        WHERE tx.source_change_event_uid = ?`,
+      [nullWrite.changeEventUid],
+    );
+    expect(nullFeed.after_digest).toBe(expectedNullDigest);
+
+    const nextWrite = await mock.invoke<{ changeEventUid: string }>(
+      "agent_codex_mutate",
+      {
+        payload: {
+          operation: "detail.value.upsert",
+          projectId: "default-project",
+          sessionId: "detail-session",
+          entryId: "detail-owner",
+          definitionId: "detail-null-definition",
+          value: "After null",
+          baseVersion: 2,
+        },
+      },
+    );
+    expect(
+      await rows(
+        mock,
+        `SELECT event.before_digest
+           FROM narrative_change_events event
+           JOIN narrative_change_transactions tx
+             ON tx.id = event.transaction_id
+          WHERE tx.source_change_event_uid = ?`,
+        [nextWrite.changeEventUid],
+      ),
+    ).toEqual([{ before_digest: expectedNullDigest }]);
   });
 });

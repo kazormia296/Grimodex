@@ -119,9 +119,9 @@ fn same_schema_opens_without_migration_snapshot() {
 }
 
 #[test]
-fn schema_20_shadow_migrates_to_21_and_preserves_existing_rows() {
-    assert_eq!(SCHEMA_VERSION, 21, "Gate C0 owns the SCHEMA 20 -> 21 step");
-    let ws = temp_workspace("schema-20-to-21");
+fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
+    assert_eq!(SCHEMA_VERSION, 22, "Gate C1 owns the SCHEMA 21 -> 22 step");
+    let ws = temp_workspace("schema-20-through-22");
     let db_path = ws.join("grimodex.db");
 
     // Start from the complete current physical schema, remove only the Gate C0
@@ -160,13 +160,13 @@ fn schema_20_shadow_migrates_to_21_and_preserves_existing_rows() {
             ..
         } => {
             assert_eq!(from_schema, 20);
-            assert_eq!(to_schema, 21);
+            assert_eq!(to_schema, 22);
             drop(opened);
         }
         other => panic!("expected Migrated for SCHEMA 20, got {other:?}"),
     }
 
-    assert_eq!(live_user_version(&ws), 21);
+    assert_eq!(live_user_version(&ws), 22);
     for table in [
         "narrative_change_transactions",
         "narrative_change_events",
@@ -189,6 +189,171 @@ fn schema_20_shadow_migrates_to_21_and_preserves_existing_rows() {
         })
         .expect("preserved row");
     assert_eq!(title, "Preserve Me");
+}
+
+#[test]
+fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
+    assert_eq!(SCHEMA_VERSION, 22, "Gate C1 owns the SCHEMA 21 -> 22 step");
+    let ws = temp_workspace("schema-21-to-22");
+    let db_path = ws.join("grimodex.db");
+
+    // Seed a complete current database, then replace only the SCHEMA 22 parent
+    // table with the exact SCHEMA 21 shape. Keeping its child event proves the
+    // parent rebuild preserves both rows and foreign-key identity.
+    {
+        let db = Database::new(&db_path).expect("new");
+        db.migrate().expect("migrate current");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('project-from-21', 'Preserve Me');
+                 INSERT INTO change_events
+                    (event_uid, project_id, domain, op_type, payload, session_id,
+                     sequence, timestamp, prev_hash, hash)
+                 VALUES
+                    ('event-forward', 'project-from-21', 'narrative.commit.apply',
+                     'narrative.commit.apply', '{}', 'session-1', 1, 1, '', 'hash-1'),
+                    ('event-undo', 'project-from-21', 'narrative.commit.undo',
+                     'narrative.commit.undo', '{}', 'session-1', 2, 2, 'hash-1', 'hash-2'),
+                    ('event-redo', 'project-from-21', 'narrative.commit.redo',
+                     'narrative.commit.redo', '{}', 'session-1', 3, 3, 'hash-2', 'hash-3');
+                 INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain,
+                     source_change_event_uid, source_change_event_sequence,
+                     cause_kind, origin, original_transaction_id, commit_id,
+                     journal_id, application_ids_json, payload_digest, created_at)
+                 VALUES
+                    ('tx-forward', 'project-from-21', 'request-forward',
+                     'narrative.commit.apply', 'event-forward', 1, 'forward',
+                     'ai-apply', NULL, NULL, NULL, '[]', 'digest-forward', '2026-08-13T00:00:00Z'),
+                    ('tx-undo', 'project-from-21', 'request-undo',
+                     'narrative.commit.undo', 'event-undo', 2, 'undo',
+                     'undo', 'tx-forward', NULL, NULL, '[]', 'digest-undo', '2026-08-13T00:01:00Z'),
+                    ('tx-redo', 'project-from-21', 'request-redo',
+                     'narrative.commit.redo', 'event-redo', 3, 'redo',
+                     'redo', 'tx-forward', NULL, NULL, '[]', 'digest-redo', '2026-08-13T00:02:00Z');
+                 INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json,
+                     change_kind, mutation_kind, changed_paths_json, occurred_at)
+                 VALUES
+                    ('feed-event-forward', 'project-from-21', 'tx-forward',
+                     'event-forward', 1, 0, '{\"kind\":\"project\"}',
+                     'metadata', 'update', '[]', '2026-08-13T00:00:00Z');
+
+                 PRAGMA foreign_keys = OFF;
+                 CREATE TABLE narrative_change_transactions_v21 (
+                    id                           TEXT NOT NULL,
+                    project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    request_id                   TEXT NOT NULL CHECK(length(request_id) > 0),
+                    source_domain                TEXT NOT NULL CHECK(length(source_domain) > 0),
+                    source_change_event_uid      TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                    source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                    cause_kind                   TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')),
+                    original_transaction_id      TEXT,
+                    commit_id                    TEXT,
+                    journal_id                   TEXT,
+                    application_ids_json         TEXT NOT NULL DEFAULT '[]'
+                        CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'),
+                    payload_digest               TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                    created_at                   TEXT NOT NULL,
+                    PRIMARY KEY(id),
+                    UNIQUE(project_id, id),
+                    UNIQUE(project_id, source_domain, request_id),
+                    UNIQUE(project_id, source_change_event_uid),
+                    FOREIGN KEY(project_id, source_change_event_uid)
+                        REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                    FOREIGN KEY(project_id, original_transaction_id)
+                        REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+                 );
+                 INSERT INTO narrative_change_transactions_v21
+                    (id, project_id, request_id, source_domain,
+                     source_change_event_uid, source_change_event_sequence,
+                     cause_kind, original_transaction_id, commit_id, journal_id,
+                     application_ids_json, payload_digest, created_at)
+                 SELECT id, project_id, request_id, source_domain,
+                        source_change_event_uid, source_change_event_sequence,
+                        cause_kind, original_transaction_id, commit_id, journal_id,
+                        application_ids_json, payload_digest, created_at
+                   FROM narrative_change_transactions;
+                 DROP TABLE narrative_change_transactions;
+                 ALTER TABLE narrative_change_transactions_v21
+                    RENAME TO narrative_change_transactions;
+                 CREATE INDEX idx_narrative_change_transactions_project_sequence
+                    ON narrative_change_transactions(project_id, source_change_event_sequence);
+                 PRAGMA user_version = 21;
+                 PRAGMA foreign_keys = ON;",
+            )?;
+            Ok(())
+        })
+        .expect("shape schema 21 fixture");
+    }
+
+    assert_eq!(live_user_version(&ws), 21);
+    let outcome = migration_supervisor::open_or_migrate_workspace_db(&ws).expect("migrate 21");
+    match outcome {
+        WorkspaceOpenDbOutcome::Migrated {
+            from_schema,
+            to_schema,
+            opened,
+            ..
+        } => {
+            assert_eq!(from_schema, 21);
+            assert_eq!(to_schema, 22);
+            drop(opened);
+        }
+        other => panic!("expected Migrated for SCHEMA 21, got {other:?}"),
+    }
+
+    let db = Database::new(&db_path).expect("reopen migrated");
+    db.with_conn(|conn| {
+        let origins = conn
+            .prepare("SELECT id, origin FROM narrative_change_transactions ORDER BY id")?
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            origins,
+            vec![
+                // SCHEMA 21 did not retain the forward writer origin. Do not
+                // fabricate human/AI/import provenance during the rebuild;
+                // mark that historical ambiguity as a migration backfill.
+                ("tx-forward".to_string(), "migration".to_string()),
+                ("tx-redo".to_string(), "redo".to_string()),
+                ("tx-undo".to_string(), "undo".to_string()),
+            ]
+        );
+        let undo_journal_column: (String, i64, Option<String>) = conn.query_row(
+            "SELECT type, \"notnull\", dflt_value
+               FROM pragma_table_info('narrative_change_transactions')
+              WHERE name = 'undo_journal_id'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(undo_journal_column, ("TEXT".to_string(), 0, None));
+        let correlated_undo_journals: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE undo_journal_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(correlated_undo_journals, 0);
+        let child_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_events
+              WHERE transaction_id = 'tx-forward'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(child_count, 1, "parent rebuild must preserve child events");
+        let fk_errors: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(fk_errors, 0);
+        assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?);
+        Ok(())
+    })
+    .expect("verify SCHEMA 22 origin migration");
 }
 
 #[test]

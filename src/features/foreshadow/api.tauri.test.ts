@@ -298,6 +298,12 @@ describe("foreshadow api tauri mapping", () => {
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update_setup", {
       id: "s1",
       patch: {
+        projectId: "default-project",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        originalTransactionId: null,
         aiStrength: "subtle",
         aiReasoning: "{}",
         lastEvaluatedAt: 1714000000000,
@@ -305,8 +311,22 @@ describe("foreshadow api tauri mapping", () => {
       },
     });
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_resolve_orphan", {
-      payload: { setupId: "s1", action: "delete", baseVersion: 8 },
+      payload: {
+        projectId: "default-project",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        originalTransactionId: null,
+        setupId: "s1",
+        action: "delete",
+        baseVersion: 8,
+      },
     });
+    const setupPatch = mockInvoke.mock.calls.find(
+      ([command]) => command === "foreshadow_update_setup",
+    )?.[1]?.patch;
+    expect(setupPatch).not.toHaveProperty("undoJournalId");
   });
 
   it("preserves omitted fields and explicit null in update payload", async () => {
@@ -326,11 +346,18 @@ describe("foreshadow api tauri mapping", () => {
         payoffToPos: null,
       },
       4,
+      "p1",
     );
 
     expect(mockInvoke).toHaveBeenCalledWith("foreshadow_update", {
       id: "f1",
       patch: {
+        projectId: "p1",
+        requestId: expect.any(String),
+        sessionId: expect.any(String),
+        eventUid: expect.any(String),
+        origin: "human",
+        originalTransactionId: null,
         title: "更新タイトル",
         payoffSceneId: null,
         payoffFromPos: null,

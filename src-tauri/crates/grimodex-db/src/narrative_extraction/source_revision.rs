@@ -30,9 +30,7 @@ pub(crate) fn resolve_source_revision(
         "codex-catalog" => resolve_codex_catalog(conn, project_id, source_key),
         "narrative-artifact" => resolve_narrative_artifact(conn, project_id, source_key),
         "import-capture" => resolve_import_capture(conn, source_key),
-        "evidence-anchor" | "evidence" => {
-            resolve_evidence_anchor(conn, project_id, source_key)
-        }
+        "evidence-anchor" | "evidence" => resolve_evidence_anchor(conn, project_id, source_key),
         other => anyhow::bail!(
             "NEX_SOURCE_KIND_UNSUPPORTED: no source revision resolver is registered for '{other}'"
         ),

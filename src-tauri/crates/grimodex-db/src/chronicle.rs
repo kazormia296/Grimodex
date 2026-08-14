@@ -16,13 +16,36 @@ use std::time::Duration;
 
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::Database;
+use crate::agent_writes::collect_event_snapshot;
+use crate::change_events::AppendChangeEvent;
+use crate::idempotency::{
+    insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
+};
+use crate::narrative_extraction::change_feed::{
+    append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeOrigin,
+};
 
-#[derive(Debug, Deserialize)]
+const PARTICIPANTS_IDEMPOTENCY_DOMAIN: &str = "event_set_participants";
+const CALENDAR_IDEMPOTENCY_DOMAIN: &str = "project_calendar_upsert";
+
+fn event_timestamp(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| value.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetParticipantsPayload {
     pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
     pub event_id: String,
     pub codex_entry_ids: Vec<String>,
     pub base_version: i64,
@@ -30,7 +53,7 @@ pub struct SetParticipantsPayload {
 }
 
 fn require_non_empty(value: &str, field: &str) -> anyhow::Result<()> {
-    if value.is_empty() {
+    if value.trim().is_empty() {
         anyhow::bail!("chronicle {field} must not be empty");
     }
     Ok(())
@@ -77,6 +100,9 @@ pub fn set_event_participants(
     payload: SetParticipantsPayload,
 ) -> anyhow::Result<Option<i64>> {
     require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.request_id, "requestId")?;
+    require_non_empty(&payload.session_id, "sessionId")?;
+    require_non_empty(&payload.event_uid, "eventUid")?;
     require_non_empty(&payload.event_id, "eventId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
     for codex_entry_id in &payload.codex_entry_ids {
@@ -86,9 +112,25 @@ pub fn set_event_participants(
         .base_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("chronicle event version overflow"))?;
+    let mut fingerprint_payload = payload.clone();
+    fingerprint_payload.session_id.clear();
+    fingerprint_payload.event_uid.clear();
+    let request_hash = payload_fingerprint(PARTICIPANTS_IDEMPOTENCY_DOMAIN, &fingerprint_payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: PARTICIPANTS_IDEMPOTENCY_DOMAIN,
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "EVENT_SET_PARTICIPANTS_IDEMPOTENCY_CONFLICT",
+    };
+    let timestamp = event_timestamp(&payload.updated_at);
 
     db.with_conn(|conn| {
         let transaction = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&transaction, &idempotency_request)? {
+            transaction.commit()?;
+            return Ok(serde_json::from_value(response)?);
+        }
+        let before = collect_event_snapshot(&transaction, &payload.event_id)?;
         let current_version: Option<i64> = transaction
             .query_row(
                 "SELECT version FROM events WHERE id = ?1 AND project_id = ?2",
@@ -139,15 +181,72 @@ pub fn set_event_participants(
             &["/participants"],
             &payload.updated_at,
         )?;
+        let after = collect_event_snapshot(&transaction, &payload.event_id)?;
+        append_canonical_and_narrative_change_in_tx(
+            &transaction,
+            &payload.project_id,
+            &payload.session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: "chronicle".to_string(),
+                op_type: "chronicle.participants.set".to_string(),
+                entity_type: Some("event".to_string()),
+                entity_id: Some(payload.event_id.clone()),
+                payload: json!({ "eventId": payload.event_id }).to_string(),
+                timestamp,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: payload.project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: "chronicle.participants.set".to_string(),
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: payload.updated_at.clone(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "chronicle-event",
+                        "eventId": payload.event_id,
+                    }),
+                    change_kind: "association".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: before["eventData"]["version"].as_i64(),
+                    before_digest: Some(narrative_snapshot_digest(&before)?),
+                    after_version: Some(result_version),
+                    after_digest: Some(narrative_snapshot_digest(&after)?),
+                    changed_paths: vec!["/participants".to_string()],
+                    text_impact: None,
+                    structural_impact: Some(json!({
+                        "changedPaths": ["/participants"],
+                    })),
+                }],
+            },
+        )?;
+        let response = Some(result_version);
+        insert_idempotent_response(
+            &transaction,
+            &idempotency_request,
+            &payload.project_id,
+            &serde_json::to_value(response)?,
+        )?;
         transaction.commit()?;
-        Ok(Some(result_version))
+        Ok(response)
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpsertProjectCalendarPayload {
     pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
     pub days_per_year: i64,
     pub season_boundaries: String,
     pub start_year: i64,
@@ -166,7 +265,7 @@ pub struct UpsertProjectCalendarPayload {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectCalendarRow {
     pub project_id: String,
@@ -234,23 +333,35 @@ pub fn upsert_project_calendar(
     payload: UpsertProjectCalendarPayload,
 ) -> anyhow::Result<Option<ProjectCalendarRow>> {
     require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.request_id, "requestId")?;
+    require_non_empty(&payload.session_id, "sessionId")?;
+    require_non_empty(&payload.event_uid, "eventUid")?;
     require_non_empty(&payload.season_boundaries, "seasonBoundaries")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
     if payload.base_version.is_some_and(|version| version < 0) {
         anyhow::bail!("chronicle calendar baseVersion must be non-negative");
     }
+    let mut fingerprint_payload = payload.clone();
+    fingerprint_payload.session_id.clear();
+    fingerprint_payload.event_uid.clear();
+    let request_hash = payload_fingerprint(CALENDAR_IDEMPOTENCY_DOMAIN, &fingerprint_payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: CALENDAR_IDEMPOTENCY_DOMAIN,
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "PROJECT_CALENDAR_UPSERT_IDEMPOTENCY_CONFLICT",
+    };
+    let timestamp = event_timestamp(&payload.updated_at);
 
     db.with_conn(|conn| {
         conn.busy_timeout(Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Option<ProjectCalendarRow>> {
-            let existing_version: Option<i64> = conn
-                .query_row(
-                    "SELECT version FROM project_calendar WHERE project_id = ?1",
-                    params![payload.project_id],
-                    |row| row.get(0),
-                )
-                .optional()?;
+            if load_idempotent_response(conn, &idempotency_request)?.is_some() {
+                return calendar_row(conn, &payload.project_id);
+            }
+            let before = calendar_row(conn, &payload.project_id)?;
+            let existing_version = before.as_ref().map(|row| row.version);
 
             match (payload.base_version, existing_version) {
                 (None, Some(_)) => return Ok(None),
@@ -338,7 +449,69 @@ pub fn upsert_project_calendar(
                 &["/calendar"],
                 &payload.updated_at,
             )?;
-            calendar_row(conn, &payload.project_id)
+            let after = calendar_row(conn, &payload.project_id)?
+                .ok_or_else(|| anyhow::anyhow!("project calendar disappeared during upsert"))?;
+            let before_value = before.as_ref().map(serde_json::to_value).transpose()?;
+            let after_value = serde_json::to_value(&after)?;
+            append_canonical_and_narrative_change_in_tx(
+                conn,
+                &payload.project_id,
+                &payload.session_id,
+                &AppendChangeEvent {
+                    event_uid: payload.event_uid.clone(),
+                    scene_id: None,
+                    domain: "chronicle".to_string(),
+                    op_type: "chronicle.calendar.upsert".to_string(),
+                    entity_type: Some("project_calendar".to_string()),
+                    entity_id: Some(payload.project_id.clone()),
+                    payload: json!({ "projectId": payload.project_id }).to_string(),
+                    timestamp,
+                },
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: "chronicle.calendar.upsert".to_string(),
+                    source_change_event_uid: payload.event_uid.clone(),
+                    cause_kind: NarrativeChangeCauseKind::Forward,
+                    origin: NarrativeChangeOrigin::Human,
+                    original_transaction_id: None,
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: None,
+                    application_ids: Vec::new(),
+                    occurred_at: payload.updated_at.clone(),
+                    events: vec![NarrativeChangeEventInput {
+                        object_key: json!({
+                            "kind": "calendar",
+                            "calendarRef": payload.project_id,
+                        }),
+                        change_kind: "calendar".to_string(),
+                        mutation_kind: if before.is_some() {
+                            "update".to_string()
+                        } else {
+                            "create".to_string()
+                        },
+                        before_version: before.as_ref().map(|row| row.version),
+                        before_digest: before_value
+                            .as_ref()
+                            .map(narrative_snapshot_digest)
+                            .transpose()?,
+                        after_version: Some(after.version),
+                        after_digest: Some(narrative_snapshot_digest(&after_value)?),
+                        changed_paths: vec!["/".to_string()],
+                        text_impact: None,
+                        structural_impact: Some(json!({ "changedPaths": ["/"] })),
+                    }],
+                },
+            )?;
+            let response = Some(after);
+            insert_idempotent_response(
+                conn,
+                &idempotency_request,
+                &payload.project_id,
+                &json!({ "completed": true }),
+            )?;
+            Ok(response)
         })();
 
         match result {
@@ -401,8 +574,12 @@ mod tests {
     }
 
     fn payload(base_version: i64, codex_entry_ids: &[&str]) -> SetParticipantsPayload {
+        let request_id = uuid::Uuid::new_v4().to_string();
         SetParticipantsPayload {
             project_id: "p1".to_string(),
+            event_uid: request_id.clone(),
+            request_id,
+            session_id: "chronicle-test-session".to_string(),
             event_id: "e1".to_string(),
             codex_entry_ids: codex_entry_ids
                 .iter()
@@ -470,11 +647,25 @@ mod tests {
             Ok(())
         })
         .expect("read participant");
+        db.with_conn(|conn| {
+            let tracked: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(tracked, 0);
+            Ok(())
+        })
+        .expect("foreign participant must not emit feed");
     }
 
     fn calendar_payload(base_version: Option<i64>) -> UpsertProjectCalendarPayload {
+        let request_id = uuid::Uuid::new_v4().to_string();
         UpsertProjectCalendarPayload {
             project_id: "p1".to_string(),
+            event_uid: request_id.clone(),
+            request_id,
+            session_id: "chronicle-test-session".to_string(),
             days_per_year: 360,
             season_boundaries: "[]".to_string(),
             start_year: 0,
@@ -568,5 +759,278 @@ mod tests {
             .expect("row");
         assert_eq!(created_other.project_id, "p2");
         assert_eq!(created_other.version, 0);
+    }
+
+    #[test]
+    fn participants_and_calendar_append_project_scoped_feed_roots() {
+        let db = fixture();
+        let mut participants = payload(0, &["c2", "c1"]);
+        participants.request_id = "participants-request".to_string();
+        participants.event_uid = "participants-event".to_string();
+        participants.session_id = "chronicle-session".to_string();
+        set_event_participants(&db, participants)
+            .expect("set participants")
+            .expect("participant version");
+
+        let mut calendar = calendar_payload(None);
+        calendar.request_id = "calendar-request".to_string();
+        calendar.event_uid = "calendar-event".to_string();
+        calendar.session_id = "chronicle-session".to_string();
+        upsert_project_calendar(&db, calendar)
+            .expect("upsert calendar")
+            .expect("calendar row");
+
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT feed_tx.request_id, feed_tx.source_domain,
+                            event.object_key_json, event.change_kind,
+                            event.mutation_kind, event.changed_paths_json
+                       FROM narrative_change_transactions feed_tx
+                       JOIN narrative_change_events event
+                         ON event.transaction_id = feed_tx.id
+                      ORDER BY feed_tx.source_change_event_sequence, event.event_ordinal",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(2)?)
+                            .expect("valid object key"),
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        serde_json::from_str::<serde_json::Value>(&row.get::<_, String>(5)?)
+                            .expect("valid changed paths"),
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0].0, "participants-request");
+            assert_eq!(rows[0].1, "chronicle.participants.set");
+            assert_eq!(
+                rows[0].2,
+                serde_json::json!({ "kind": "chronicle-event", "eventId": "e1" })
+            );
+            assert_eq!(
+                (&rows[0].3, &rows[0].4),
+                (&"association".to_string(), &"update".to_string())
+            );
+            assert_eq!(rows[0].5, serde_json::json!(["/participants"]));
+            assert_eq!(rows[1].0, "calendar-request");
+            assert_eq!(rows[1].1, "chronicle.calendar.upsert");
+            assert_eq!(
+                rows[1].2,
+                serde_json::json!({ "kind": "calendar", "calendarRef": "p1" })
+            );
+            assert_eq!(
+                (&rows[1].3, &rows[1].4),
+                (&"calendar".to_string(), &"create".to_string())
+            );
+            Ok(())
+        })
+        .expect("inspect Chronicle feed");
+    }
+
+    #[test]
+    fn chronicle_writers_require_caller_owned_identity() {
+        let db = fixture();
+        for missing in ["request", "session", "event"] {
+            let mut participants = payload(0, &["c2"]);
+            let mut calendar = calendar_payload(None);
+            match missing {
+                "request" => {
+                    participants.request_id.clear();
+                    calendar.request_id.clear();
+                }
+                "session" => {
+                    participants.session_id.clear();
+                    calendar.session_id.clear();
+                }
+                "event" => {
+                    participants.event_uid.clear();
+                    calendar.event_uid.clear();
+                }
+                _ => unreachable!(),
+            }
+            assert!(set_event_participants(&db, participants).is_err());
+            assert!(upsert_project_calendar(&db, calendar).is_err());
+        }
+        assert_eq!(
+            get_event_version(&db, "p1".to_string(), "e1".to_string()).expect("version"),
+            Some(0)
+        );
+        db.with_conn(|conn| {
+            assert_eq!(calendar_row(conn, "p1")?, None);
+            Ok(())
+        })
+        .expect("calendar remains absent");
+    }
+
+    #[test]
+    fn participant_cross_session_retry_is_idempotent_and_changed_payload_conflicts() {
+        let db = fixture();
+        let input = payload(0, &["c2"]);
+        assert_eq!(
+            set_event_participants(&db, input.clone()).expect("first set"),
+            Some(1)
+        );
+        let mut replay = input.clone();
+        replay.session_id = "chronicle-session-after-restart".to_string();
+        replay.event_uid = "participant-event-after-restart".to_string();
+        assert_eq!(
+            set_event_participants(&db, replay).expect("cross-session retry"),
+            Some(1)
+        );
+
+        let mut conflict = input;
+        conflict.codex_entry_ids = vec!["c1".to_string()];
+        let error = set_event_participants(&db, conflict)
+            .expect_err("changed payload must conflict for the same request");
+        assert!(error
+            .to_string()
+            .contains("EVENT_SET_PARTICIPANTS_IDEMPOTENCY_CONFLICT"));
+
+        db.with_conn(|conn| {
+            let state: (i64, String, i64, i64, i64) = conn.query_row(
+                "SELECT (SELECT version FROM events WHERE id = 'e1'),
+                        (SELECT codex_entry_id FROM event_participants WHERE event_id = 'e1'),
+                        (SELECT COUNT(*) FROM change_events),
+                        (SELECT COUNT(*) FROM narrative_change_transactions),
+                        (SELECT COUNT(*) FROM idempotency_requests
+                          WHERE domain = 'event_set_participants')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(state, (1, "c2".to_string(), 1, 1, 1));
+            Ok(())
+        })
+        .expect("inspect participant retry");
+    }
+
+    #[test]
+    fn calendar_cross_session_retry_is_idempotent_and_changed_payload_conflicts() {
+        let db = fixture();
+        let input = calendar_payload(None);
+        let first = upsert_project_calendar(&db, input.clone())
+            .expect("first upsert")
+            .expect("calendar");
+        let mut replay = input.clone();
+        replay.session_id = "chronicle-session-after-restart".to_string();
+        replay.event_uid = "calendar-event-after-restart".to_string();
+        let retry = upsert_project_calendar(&db, replay)
+            .expect("cross-session retry")
+            .expect("calendar");
+        assert_eq!(retry, first);
+
+        let mut conflict = input;
+        conflict.days_per_year = 365;
+        let error = upsert_project_calendar(&db, conflict)
+            .expect_err("changed payload must conflict for the same request");
+        assert!(error
+            .to_string()
+            .contains("PROJECT_CALENDAR_UPSERT_IDEMPOTENCY_CONFLICT"));
+
+        db.with_conn(|conn| {
+            let state: (i64, i64, i64, i64) = conn.query_row(
+                "SELECT days_per_year,
+                        (SELECT COUNT(*) FROM change_events),
+                        (SELECT COUNT(*) FROM narrative_change_transactions),
+                        (SELECT COUNT(*) FROM idempotency_requests
+                          WHERE domain = 'project_calendar_upsert')
+                   FROM project_calendar WHERE project_id = 'p1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(state, (360, 1, 1, 1));
+            Ok(())
+        })
+        .expect("inspect calendar retry");
+    }
+
+    #[test]
+    fn participant_feed_failure_rolls_back_domain_and_idempotency() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_participant_feed
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced participant feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install trigger");
+
+        let error = set_event_participants(&db, payload(0, &["c2"]))
+            .expect_err("feed failure must roll back participant replacement");
+        assert!(error
+            .to_string()
+            .contains("forced participant feed failure"));
+        db.with_conn(|conn| {
+            let state: (i64, String, i64, i64, i64) = conn.query_row(
+                "SELECT (SELECT version FROM events WHERE id = 'e1'),
+                        (SELECT codex_entry_id FROM event_participants WHERE event_id = 'e1'),
+                        (SELECT COUNT(*) FROM change_events),
+                        (SELECT COUNT(*) FROM narrative_change_transactions),
+                        (SELECT COUNT(*) FROM idempotency_requests
+                          WHERE domain = 'event_set_participants')",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?;
+            assert_eq!(state, (0, "c1".to_string(), 0, 0, 0));
+            Ok(())
+        })
+        .expect("inspect participant rollback");
+    }
+
+    #[test]
+    fn calendar_feed_failure_rolls_back_domain_and_idempotency() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_calendar_feed
+                 BEFORE INSERT ON narrative_change_events
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced calendar feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("install trigger");
+
+        let error = upsert_project_calendar(&db, calendar_payload(None))
+            .expect_err("feed failure must roll back calendar upsert");
+        assert!(error.to_string().contains("forced calendar feed failure"));
+        db.with_conn(|conn| {
+            let state: (i64, i64, i64, i64) = conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM project_calendar WHERE project_id = 'p1'),
+                        (SELECT COUNT(*) FROM change_events),
+                        (SELECT COUNT(*) FROM narrative_change_transactions),
+                        (SELECT COUNT(*) FROM idempotency_requests
+                          WHERE domain = 'project_calendar_upsert')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(state, (0, 0, 0, 0));
+            Ok(())
+        })
+        .expect("inspect calendar rollback");
     }
 }

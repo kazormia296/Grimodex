@@ -44,10 +44,7 @@ impl ProtectedWriterEntry {
     fn effective_protected_columns(&self) -> Vec<&str> {
         let mut names: Vec<&str> = self.columns.iter().map(String::as_str).collect();
         if let Some(version) = self.version_column.as_deref() {
-            if !names
-                .iter()
-                .any(|name| name.eq_ignore_ascii_case(version))
-            {
+            if !names.iter().any(|name| name.eq_ignore_ascii_case(version)) {
                 names.push(version);
             }
         }
@@ -215,10 +212,60 @@ mod tests {
         assert_eq!(foreshadow.enforcement, WriterEnforcement::Active);
         let events = registry.get("events").expect("events");
         assert_eq!(events.enforcement, WriterEnforcement::Active);
+        let tree_nodes = registry.get("tree_nodes").expect("tree_nodes");
+        assert_eq!(tree_nodes.protection, WriterProtection::Table);
         let fixture = registry
             .get("narrative_protected_fixture")
             .expect("fixture");
         assert_eq!(fixture.enforcement, WriterEnforcement::Active);
+    }
+
+    #[test]
+    fn bundled_tree_writer_rejects_every_untrusted_mutation() {
+        let registry = bundled_protected_writer_registry();
+        for rejection in [
+            untrusted_mutation_rejection(registry, "tree_nodes", Some("title"), false, false, None),
+            untrusted_mutation_rejection(
+                registry,
+                "tree_nodes",
+                None,
+                true,
+                false,
+                Some(&["id".into(), "title".into()]),
+            ),
+            untrusted_mutation_rejection(registry, "tree_nodes", None, false, true, None),
+        ] {
+            assert!(
+                rejection
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("protected narrative table")),
+                "unexpected rejection: {rejection:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn project_lifecycle_rejects_generic_insert_delete_and_metadata_update() {
+        let registry = bundled_protected_writer_registry();
+        let project = registry.get("projects").expect("project lifecycle");
+        assert_eq!(project.protection, WriterProtection::Columns);
+        assert!(project.columns.iter().any(|column| column == "title"));
+        assert!(untrusted_mutation_rejection(
+            registry,
+            "projects",
+            None,
+            true,
+            false,
+            Some(&["id".into(), "title".into()]),
+        )
+        .is_some());
+        assert!(
+            untrusted_mutation_rejection(registry, "projects", None, false, true, None,).is_some()
+        );
+        assert_eq!(
+            untrusted_mutation_rejection(registry, "projects", Some("title"), false, false, None,),
+            Some("update of protected column projects.title (writer project.lifecycle)".into())
+        );
     }
 
     #[test]
@@ -313,15 +360,10 @@ mod tests {
             Some(&["id".into(), "title".into()]),
         )
         .is_some());
-        assert!(untrusted_mutation_rejection(
-            &registry,
-            "tree_nodes",
-            None,
-            false,
-            true,
-            None,
-        )
-        .is_some());
+        assert!(
+            untrusted_mutation_rejection(&registry, "tree_nodes", None, false, true, None,)
+                .is_some()
+        );
     }
 
     #[test]
@@ -335,7 +377,9 @@ mod tests {
             false,
             Some(&["id".into(), "title".into()]),
         );
-        assert!(insert.unwrap().contains("insert into protected shared table"));
+        assert!(insert
+            .unwrap()
+            .contains("insert into protected shared table"));
 
         let delete = untrusted_mutation_rejection(
             registry,
@@ -345,7 +389,9 @@ mod tests {
             true,
             None,
         );
-        assert!(delete.unwrap().contains("delete from protected shared table"));
+        assert!(delete
+            .unwrap()
+            .contains("delete from protected shared table"));
     }
 
     #[test]

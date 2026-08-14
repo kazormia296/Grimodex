@@ -6702,10 +6702,8 @@ mod runtime_contract_tests {
     }
 
     fn seeded_db() -> PinnedWorkspaceDb {
-        let path = std::env::temp_dir().join(format!(
-            "grimodex-post-effect-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("grimodex-post-effect-{}", uuid::Uuid::new_v4()));
         let db = Database::new(Path::new(":memory:")).expect("in-memory db");
         db.migrate().expect("migrate");
         db.with_conn(|conn| {
@@ -7268,8 +7266,9 @@ mod runtime_contract_tests {
         ));
         let db = Database::new(&path).expect("file database");
         db.migrate().expect("migrate file database");
-        let db = WorkspaceAuthority::from_database_for_test(db, path.parent().unwrap().to_path_buf())
-            .expect("authority");
+        let db =
+            WorkspaceAuthority::from_database_for_test(db, path.parent().unwrap().to_path_buf())
+                .expect("authority");
         let runtime = FakeRuntime {
             db: Arc::clone(&db),
             events: Arc::new(Mutex::new(Vec::new())),

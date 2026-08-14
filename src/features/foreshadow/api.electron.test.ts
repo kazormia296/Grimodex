@@ -25,6 +25,7 @@ vi.mock("@/features/chat/chatApi", () => ({
   sendChatMessageWithThinking: vi.fn(),
 }));
 vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: () => "foreshadow-test-session",
   recordChangeEvent: recordChangeEventMock,
 }));
 
@@ -81,6 +82,10 @@ describe("foreshadow api は Electron でネイティブ backend (napi) へ invo
       payload: {
         id: "local-id",
         requestId: "local-id",
+        sessionId: "foreshadow-test-session",
+        eventUid: "local-id",
+        origin: "human",
+        originalTransactionId: null,
         projectId: "p1",
         title: "伏線A",
         intent: null,
@@ -107,7 +112,7 @@ describe("foreshadow api は Electron でネイティブ backend (napi) へ invo
       secret: false,
       codexLinkDirtyAt: new Date(1713999999000),
     });
-    expect(recordChangeEventMock).toHaveBeenCalledTimes(1);
+    expect(recordChangeEventMock).not.toHaveBeenCalled();
   });
 
   it("deliberate restore requestId と削除済み replay metadata を保持する", async () => {

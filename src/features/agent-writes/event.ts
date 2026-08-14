@@ -45,10 +45,14 @@ export interface TrackedWriteOpts {
   baseVersion?: number;
   /** Suppress only when the originating Editor session owns this exact save. */
   suppressDocumentNotification?: boolean;
-  /** Reuse for association mutations whose tables only have natural keys. */
+  /** Stable logical request identity; reuse when retrying the same mutation. */
   requestId?: string;
   /** Registered local draft draining across an active lifecycle lease. */
   preexistingDraft?: boolean;
+}
+
+function isAiAuthorshipSurface(surface: string | undefined): boolean {
+  return surface !== "manual" && surface !== "import";
 }
 
 function bump(): void {
@@ -109,6 +113,29 @@ async function trackedEventWrite(
   }
   const authority = capturedAuthority ?? captureEventWriteAuthority(opts);
   const { projectId } = authority;
+  const requiresRequestId =
+    command === "agent_event_create" ||
+    command === "agent_event_update" ||
+    command === "agent_event_delete" ||
+    command === "agent_event_set_participants" ||
+    command === "agent_scene_event_link" ||
+    command === "agent_scene_event_link_batch" ||
+    command === "agent_scene_event_unlink" ||
+    command === "agent_event_relation_add" ||
+    command === "agent_event_relation_remove";
+  const suppliedRequestId =
+    opts?.requestId ??
+    (typeof payload.requestId === "string" &&
+    payload.requestId.trim().length > 0
+      ? payload.requestId
+      : undefined);
+  const requestId = requiresRequestId
+    ? (suppliedRequestId ??
+      (command === "agent_event_create" ? undefined : crypto.randomUUID()))
+    : undefined;
+  if (requiresRequestId && !requestId) {
+    throw new Error(`${command}: requestId is required`);
+  }
   const outcome = await runAuthoritativeMutation(
     authority,
     async () => {
@@ -118,6 +145,7 @@ async function trackedEventWrite(
           sessionId: getRecorderSessionId(),
           ...(opts?.surface ? { surface: opts.surface } : {}),
           ...payload,
+          ...(requestId ? { requestId } : {}),
         },
       });
       // An idempotent create replay deliberately returns its original journal
@@ -185,7 +213,7 @@ async function trackedEventWrite(
 
 export interface AgentEventCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
-  requestId?: string;
+  requestId: string;
   /** Reuse this domain ID when retrying the same logical create. */
   eventId?: string;
   title?: string;
@@ -224,14 +252,14 @@ export async function agentCreateEvent(
   // 人間帰属マークを持つため対象外（markCodexContentAsAi は既存 authorship
   // マークを冪等にスキップするが、二重処理を避けるため明示ガードする）。
   const detail =
-    input.detail && opts?.surface !== "manual"
+    input.detail && isAiAuthorshipSurface(opts?.surface)
       ? markCodexContentAsAi(input.detail)
       : (input.detail ?? null);
   const eventId = input.eventId ?? crypto.randomUUID();
   const result = await trackedEventWrite(
     "agent_event_create",
     {
-      requestId: input.requestId ?? null,
+      requestId: input.requestId,
       eventId,
       title: input.title ?? "",
       note: input.note ?? null,
@@ -308,7 +336,7 @@ export async function agentUpdateEvent(
   }
   // create と同じ理由で AI 経路の detail 更新に AI 帰属マークを焼き込む
   // （set-if-present なので detail 未指定の更新は触らない）。
-  if (patch.detail && opts?.surface !== "manual") {
+  if (patch.detail && isAiAuthorshipSurface(opts?.surface)) {
     patch.detail = markCodexContentAsAi(patch.detail);
   }
   return trackedEventWrite(
@@ -454,9 +482,16 @@ const UI_WRITE_OPTS: TrackedWriteOpts = {
 };
 
 export function uiCreateEvent(
-  input: AgentEventCreateInput,
+  input: Omit<AgentEventCreateInput, "requestId"> & { requestId?: string },
 ): Promise<{ id: string; title: string }> {
-  return agentCreateEvent(input, UI_WRITE_OPTS);
+  const requestId = input.requestId ?? crypto.randomUUID();
+  return agentCreateEvent(
+    { ...input, requestId },
+    {
+      ...UI_WRITE_OPTS,
+      requestId,
+    },
+  );
 }
 
 export function uiUpdateEvent(
@@ -468,6 +503,7 @@ export function uiUpdateEvent(
 ): Promise<AgentWriteResult> {
   return agentUpdateEvent(input, {
     ...UI_WRITE_OPTS,
+    requestId: crypto.randomUUID(),
     suppressDocumentNotification: options?.suppressDocumentNotification,
     preexistingDraft: options?.preexistingDraft,
   });
@@ -477,12 +513,14 @@ export function uiDeleteEvent(
   eventId: string,
   options?: {
     baseVersion?: number;
+    requestId?: string;
     suppressDocumentNotification?: boolean;
   },
 ): Promise<AgentWriteResult> {
   return agentDeleteEvent(eventId, {
     ...UI_WRITE_OPTS,
     baseVersion: options?.baseVersion,
+    requestId: options?.requestId ?? crypto.randomUUID(),
     suppressDocumentNotification: options?.suppressDocumentNotification,
   });
 }
@@ -493,12 +531,14 @@ export function uiSetEventParticipants(
   codexEntryIds: string[],
   options?: {
     baseVersion?: number;
+    requestId?: string;
     suppressDocumentNotification?: boolean;
   },
 ): Promise<AgentWriteResult> {
   return agentSetEventParticipants(eventId, codexEntryIds, {
     ...UI_WRITE_OPTS,
     baseVersion: options?.baseVersion,
+    requestId: options?.requestId ?? crypto.randomUUID(),
     suppressDocumentNotification: options?.suppressDocumentNotification,
   });
 }
@@ -507,14 +547,20 @@ export function uiAddEventRelation(
   causeEventId: string,
   effectEventId: string,
 ): Promise<void> {
-  return agentAddEventRelation(causeEventId, effectEventId, UI_WRITE_OPTS);
+  return agentAddEventRelation(causeEventId, effectEventId, {
+    ...UI_WRITE_OPTS,
+    requestId: crypto.randomUUID(),
+  });
 }
 
 export function uiRemoveEventRelation(
   causeEventId: string,
   effectEventId: string,
 ): Promise<void> {
-  return agentRemoveEventRelation(causeEventId, effectEventId, UI_WRITE_OPTS);
+  return agentRemoveEventRelation(causeEventId, effectEventId, {
+    ...UI_WRITE_OPTS,
+    requestId: crypto.randomUUID(),
+  });
 }
 
 /** シーン⇔出来事の手動リンク（undo 連動・surface="manual"）。 */
@@ -522,12 +568,18 @@ export function uiLinkSceneEvent(
   sceneId: string,
   eventId: string,
 ): Promise<void> {
-  return agentLinkSceneEvent(sceneId, eventId, UI_WRITE_OPTS);
+  return agentLinkSceneEvent(sceneId, eventId, {
+    ...UI_WRITE_OPTS,
+    requestId: crypto.randomUUID(),
+  });
 }
 
 export function uiUnlinkSceneEvent(
   sceneId: string,
   eventId: string,
 ): Promise<void> {
-  return agentUnlinkSceneEvent(sceneId, eventId, UI_WRITE_OPTS);
+  return agentUnlinkSceneEvent(sceneId, eventId, {
+    ...UI_WRITE_OPTS,
+    requestId: crypto.randomUUID(),
+  });
 }

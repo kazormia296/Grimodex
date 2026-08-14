@@ -46,7 +46,9 @@ pub struct UpdateCaptureSelectionInput {
 }
 
 pub fn create_capture(db: &Database, input: CreateCaptureInput) -> anyhow::Result<Value> {
-    let capture_id = input.capture_id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let capture_id = input
+        .capture_id
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let now = now();
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
@@ -148,7 +150,10 @@ pub fn update_selection(
             [&input.capture_id],
             |row| row.get(0),
         )?;
-        anyhow::ensure!(state != STATE_SEALED, "sealed import captures cannot change selection");
+        anyhow::ensure!(
+            state != STATE_SEALED,
+            "sealed import captures cannot change selection"
+        );
         for entry_id in &input.selected_entry_ids {
             let changed = conn.execute(
                 "UPDATE import_capture_entries
@@ -204,7 +209,10 @@ pub fn seal_capture(db: &Database, capture_id: String) -> anyhow::Result<Value> 
                 [&capture_id],
                 |row| row.get(0),
             )?;
-            anyhow::ensure!(state != STATE_SEALED, "import capture '{capture_id}' is already sealed");
+            anyhow::ensure!(
+                state != STATE_SEALED,
+                "import capture '{capture_id}' is already sealed"
+            );
             let mut statement = conn.prepare(
                 "SELECT raw_digest
                    FROM import_capture_entries
@@ -232,14 +240,18 @@ pub fn seal_capture(db: &Database, capture_id: String) -> anyhow::Result<Value> 
                   WHERE id = ?4",
                 params![STATE_SEALED, sealed_digest, now, capture_id],
             )?;
-            get_capture_value(conn, &capture_id)?
-                .ok_or_else(|| anyhow::anyhow!("sealed import capture '{capture_id}' was not found"))
+            get_capture_value(conn, &capture_id)?.ok_or_else(|| {
+                anyhow::anyhow!("sealed import capture '{capture_id}' was not found")
+            })
         })();
         complete_transaction(conn, result)
     })
 }
 
-fn get_capture_value(conn: &rusqlite::Connection, capture_id: &str) -> anyhow::Result<Option<Value>> {
+fn get_capture_value(
+    conn: &rusqlite::Connection,
+    capture_id: &str,
+) -> anyhow::Result<Option<Value>> {
     conn.query_row(
         "SELECT id, state, source_kind, sealed_digest, budget_json, version, created_at, updated_at
            FROM import_captures WHERE id = ?1",

@@ -12,7 +12,10 @@ import {
   DetailValueVersionConflictError,
 } from "./detailOcc";
 import { invoke } from "@/lib/tauri";
-import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteContext,
+} from "@/features/native-writes/writeContext";
 import type {
   DetailBindingSource,
   DetailProjectionKind,
@@ -131,29 +134,32 @@ export async function getDefinition(
   return rows[0];
 }
 
-export async function createDefinition(data: {
-  id: string;
-  projectId: string;
-  typeSlug: string;
-  name: string;
-  fieldType?: string;
-  fieldConfig?: string | null;
-  sortOrder?: number;
-  includeInContext?: number;
-  semanticBinding?: {
+export async function createDefinition(
+  data: {
     id: string;
-    facetKey: StateFacet;
-    projectionKind: DetailProjectionKind;
-    temporalPolicy: DetailTemporalPolicy;
-    source: DetailBindingSource;
-    confirmed: boolean;
-  };
-}): Promise<CodexDetailDefinition> {
+    projectId: string;
+    typeSlug: string;
+    name: string;
+    fieldType?: string;
+    fieldConfig?: string | null;
+    sortOrder?: number;
+    includeInContext?: number;
+    semanticBinding?: {
+      id: string;
+      facetKey: StateFacet;
+      projectionKind: DetailProjectionKind;
+      temporalPolicy: DetailTemporalPolicy;
+      source: DetailBindingSource;
+      confirmed: boolean;
+    };
+  },
+  opts?: { writeContext?: CanonicalWriteContext },
+): Promise<CodexDetailDefinition> {
   await invoke("agent_codex_mutate", {
     payload: {
       operation: "detail.definition.create",
       projectId: data.projectId,
-      sessionId: getRecorderSessionId(),
+      ...(opts?.writeContext ?? createCanonicalWriteContext()),
       surface: "manual",
       definitionId: data.id,
       typeSlug: data.typeSlug,
@@ -192,7 +198,7 @@ export async function updateDefinition(
       payload: {
         operation: "detail.definition.update",
         projectId: current.projectId,
-        sessionId: getRecorderSessionId(),
+        ...createCanonicalWriteContext(),
         surface: "manual",
         definitionId: id,
         baseVersion: opts.baseVersion,
@@ -215,7 +221,7 @@ export async function deleteDefinition(id: string): Promise<void> {
     payload: {
       operation: "detail.definition.delete",
       projectId: definition.projectId,
-      sessionId: getRecorderSessionId(),
+      ...createCanonicalWriteContext(),
       surface: "manual",
       definitionId: id,
     },
@@ -273,7 +279,11 @@ export async function upsertValue(
   entryId: string,
   definitionId: string,
   value: string | null,
-  opts?: { baseVersion?: number; raw?: boolean },
+  opts?: {
+    baseVersion?: number;
+    raw?: boolean;
+    writeContext?: CanonicalWriteContext;
+  },
 ): Promise<CodexDetailValue> {
   const definition = await getDefinition(definitionId);
   if (!definition) {
@@ -303,7 +313,7 @@ export async function upsertValue(
       payload: {
         operation: "detail.value.upsert",
         projectId: entry[0].projectId,
-        sessionId: getRecorderSessionId(),
+        ...(opts?.writeContext ?? createCanonicalWriteContext()),
         surface: "manual",
         valueId: crypto.randomUUID(),
         entryId,
@@ -338,7 +348,7 @@ export async function upsertValue(
       payload: {
         operation: "detail.value.upsert",
         projectId: entry[0].projectId,
-        sessionId: getRecorderSessionId(),
+        ...(opts?.writeContext ?? createCanonicalWriteContext()),
         surface: "manual",
         entryId,
         definitionId,

@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setCodexEditConflictHandler, useCodexStore } from "./codexStore";
-import type { CodexEntry, CodexMatchRow } from "./api";
+import type { CodexEntry, CodexEntryWriteResult, CodexMatchRow } from "./api";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useProjectStore } from "@/features/project/projectStore";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
-const mockEntry: CodexEntry = {
+const TEST_WRITE_RECEIPT = {
+  changeEventUid: "change-event-test",
+  maintenanceTransactionId: "maintenance-transaction-test",
+  undoJournalId: "undo-journal-test",
+} as const;
+
+const mockEntry: CodexEntryWriteResult = {
   id: "codex-1",
   projectId: "proj-1",
   parentId: null,
@@ -26,9 +32,10 @@ const mockEntry: CodexEntry = {
   version: 0,
   createdAt: "2024-01-01T00:00:00Z",
   updatedAt: "2024-01-01T00:00:00Z",
+  __writeReceipt: TEST_WRITE_RECEIPT,
 };
 
-const mockEntry2: CodexEntry = {
+const mockEntry2: CodexEntryWriteResult = {
   id: "codex-2",
   projectId: "proj-1",
   parentId: null,
@@ -48,6 +55,7 @@ const mockEntry2: CodexEntry = {
   version: 0,
   createdAt: "2024-01-02T00:00:00Z",
   updatedAt: "2024-01-02T00:00:00Z",
+  __writeReceipt: TEST_WRITE_RECEIPT,
 };
 
 const { mockBlockIfUnlicensed } = vi.hoisted(() => ({
@@ -76,6 +84,7 @@ vi.mock("./search", () => ({
 
 vi.mock("@/features/timelapse/recorder", () => ({
   recordChangeEvent: vi.fn(),
+  getRecorderSessionId: () => "codex-test-session",
 }));
 
 vi.mock("@/lib/a11y/announcer", () => ({
@@ -464,14 +473,14 @@ describe("codexStore", () => {
         projectId: "project-b",
         summary: "新 scope の entry",
       };
-      let resolveCreate: ((entry: CodexEntry) => void) | undefined;
+      let resolveCreate: ((entry: CodexEntryWriteResult) => void) | undefined;
       setCurrentWorkspaceIdentity({
         path: "/workspace/a.sqlite",
         openRevision: 1,
       });
       mockCreateCodexEntry.mockImplementationOnce(
         () =>
-          new Promise<CodexEntry>((resolve) => {
+          new Promise<CodexEntryWriteResult>((resolve) => {
             resolveCreate = resolve;
           }),
       );
@@ -704,26 +713,7 @@ describe("codexStore", () => {
       );
       expect(useGlobalHistoryStore.getState().past).toHaveLength(1);
 
-      const event = findCodexUpdateEvent();
-      expect(event).toBeTruthy();
-      const payload = event![0].payload as {
-        fields: string[];
-        diffs: Record<string, { segments: [number, string][] }>;
-      };
-      expect(payload.fields).toEqual(["type", "summary"]);
-      const summarySegments = payload.diffs.summary.segments;
-      expect(
-        summarySegments
-          .filter(([operation]) => operation !== 1)
-          .map(([, text]) => text)
-          .join(""),
-      ).toBe("古い要約");
-      expect(
-        summarySegments
-          .filter(([operation]) => operation !== -1)
-          .map(([, text]) => text)
-          .join(""),
-      ).toBe("新しい要約");
+      expect(findCodexUpdateEvent()).toBeFalsy();
     });
 
     it("undo と redo でも entries・selectedEntry・completionTargets を同期する", async () => {
@@ -785,10 +775,12 @@ describe("codexStore", () => {
         projectId: "project-b",
         summary: "新 project の要約",
       };
-      let resolveWrite: ((entry: CodexEntry | undefined) => void) | undefined;
+      let resolveWrite:
+        | ((entry: CodexEntryWriteResult | undefined) => void)
+        | undefined;
       mockUpdateCodexEntry.mockImplementationOnce(
         () =>
-          new Promise<CodexEntry | undefined>((resolve) => {
+          new Promise<CodexEntryWriteResult | undefined>((resolve) => {
             resolveWrite = resolve;
           }),
       );
@@ -879,14 +871,28 @@ describe("codexStore", () => {
         "project-a",
         "codex-1",
         { type: "character", summary: "旧要約" },
-        { baseVersion: 4 },
+        {
+          baseVersion: 4,
+          writeContext: expect.objectContaining({
+            origin: "undo",
+            originalTransactionId: "maintenance-transaction-test",
+            undoJournalId: "undo-journal-test",
+          }),
+        },
       );
       expect(mockUpdateCodexEntry).toHaveBeenNthCalledWith(
         3,
         "project-a",
         "codex-1",
         { type: "location", summary: "新要約" },
-        { baseVersion: 5 },
+        {
+          baseVersion: 5,
+          writeContext: expect.objectContaining({
+            origin: "redo",
+            originalTransactionId: "maintenance-transaction-test",
+            undoJournalId: "undo-journal-test",
+          }),
+        },
       );
       expect(useCodexStore.getState().entries).toEqual([currentProjectEntry]);
       expect(useCodexStore.getState().selectedEntry).toEqual(
@@ -914,14 +920,16 @@ describe("codexStore", () => {
         projectId: "default-project",
         summary: "新 workspace の要約",
       };
-      let resolveWrite: ((entry: CodexEntry | undefined) => void) | undefined;
+      let resolveWrite:
+        | ((entry: CodexEntryWriteResult | undefined) => void)
+        | undefined;
       setCurrentWorkspaceIdentity({
         path: "/workspace/a.sqlite",
         openRevision: 1,
       });
       mockUpdateCodexEntry.mockImplementationOnce(
         () =>
-          new Promise<CodexEntry | undefined>((resolve) => {
+          new Promise<CodexEntryWriteResult | undefined>((resolve) => {
             resolveWrite = resolve;
           }),
       );
@@ -1201,14 +1209,14 @@ describe("codexStore", () => {
   });
 
   describe("updateText timelapse capture", () => {
-    const baseEntry: CodexEntry = {
+    const baseEntry: CodexEntryWriteResult = {
       ...mockEntry,
       content: pmDoc("old body"),
       summary: "old sum",
       notes: "old notes",
     };
 
-    it("records entry.update with content + summary diffs, excluding notes", async () => {
+    it("does not duplicate the Native entry.update event in the renderer", async () => {
       useCodexStore.setState({ entries: [baseEntry] });
       mockUpdateCodexEntry.mockResolvedValue({
         ...baseEntry,
@@ -1223,42 +1231,7 @@ describe("codexStore", () => {
         notes: "new notes",
       });
 
-      const call = findCodexUpdateEvent();
-      expect(call).toBeTruthy();
-      const payload = call![0].payload as {
-        fields: string[];
-        diffs: Record<string, { segments: [number, string][] }>;
-      };
-      expect([...payload.fields].sort()).toEqual(["content", "summary"]);
-      expect(payload.diffs.notes).toBeUndefined();
-
-      // content diff is over extracted text, not raw JSON
-      const cseg = payload.diffs.content.segments;
-      const cjoined = cseg.map(([, t]) => t).join("");
-      expect(cjoined).not.toContain("paragraph");
-      const cBefore = cseg
-        .filter(([op]) => op !== 1)
-        .map(([, t]) => t)
-        .join("");
-      const cAfter = cseg
-        .filter(([op]) => op !== -1)
-        .map(([, t]) => t)
-        .join("");
-      expect(cBefore).toBe("old body");
-      expect(cAfter).toBe("new body");
-
-      // summary diff is over plain text
-      const sseg = payload.diffs.summary.segments;
-      const sBefore = sseg
-        .filter(([op]) => op !== 1)
-        .map(([, t]) => t)
-        .join("");
-      const sAfter = sseg
-        .filter(([op]) => op !== -1)
-        .map(([, t]) => t)
-        .join("");
-      expect(sBefore).toBe("old sum");
-      expect(sAfter).toBe("new sum");
+      expect(findCodexUpdateEvent()).toBeFalsy();
     });
 
     it("records nothing when only notes change", async () => {

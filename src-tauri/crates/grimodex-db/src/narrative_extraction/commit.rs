@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
-    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
 };
 use super::chronicle_operations::{
     apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
@@ -29,8 +29,7 @@ use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
 };
 use super::field_authority::{
-    load_decision_authority, record_operation_field_authority,
-    validate_operation_field_authority,
+    load_decision_authority, record_operation_field_authority, validate_operation_field_authority,
 };
 use super::foreshadow_operations::{
     apply_create as apply_foreshadow_create, apply_patch as apply_foreshadow_patch,
@@ -623,10 +622,9 @@ fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, 
         OP_KIND_RELATION_CREATE => ("codex_relation", "codex.relation.retract"),
         OP_KIND_DETAIL_VALUE_SET => ("codex_detail_value", "codex.detail-value.retract"),
         OP_KIND_PHASE_CREATE | OP_KIND_PHASE_PATCH => ("codex_phase", "codex.phase.retract"),
-        OP_KIND_SEMANTIC_BINDING_UPSERT => (
-            "codex_semantic_binding",
-            "codex.semantic-binding.retract",
-        ),
+        OP_KIND_SEMANTIC_BINDING_UPSERT => {
+            ("codex_semantic_binding", "codex.semantic-binding.retract")
+        }
         OP_KIND_NODE_ENSURE => ("temporal_node", "temporal.node.retract"),
         OP_KIND_CONSTRAINT_CREATE => ("temporal_constraint", "temporal.constraint.retract"),
         OP_KIND_SCENE_METADATA_PATCH => (
@@ -637,10 +635,9 @@ fn compensation_strategy(operation_kind: &str) -> anyhow::Result<(&'static str, 
             "temporal_event_chronicle",
             "temporal.event-metadata.retract",
         ),
-        OP_KIND_STORY_ORDER_MATERIALIZE => (
-            "temporal_scene_story_order",
-            "temporal.story-order.retract",
-        ),
+        OP_KIND_STORY_ORDER_MATERIALIZE => {
+            ("temporal_scene_story_order", "temporal.story-order.retract")
+        }
         OP_KIND_PROJECTION_RECORD => ("temporal_projection", "temporal.projection.retract"),
         OP_KIND_PLOT_THREAD_CREATE | OP_KIND_PLOT_THREAD_PATCH => {
             ("plot_thread", "plot.thread.retract")
@@ -789,7 +786,7 @@ pub fn narrative_extraction_apply_commit(
         with_immediate_transaction(conn, |conn| {
             let existing =
                 load_commit_by_id(conn, &payload.project_id, &payload.prepared_commit_id)?
-            .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
+                    .ok_or_else(|| anyhow::anyhow!("prepared commit not found"))?;
             anyhow::ensure!(
                 existing.request_id == payload.request_id,
                 "NEX_COMMIT_REQUEST_MISMATCH: request id does not match prepared commit"
@@ -821,8 +818,8 @@ pub fn narrative_extraction_apply_commit(
                 );
             }
             let sealed_plan_raw = existing
-                    .prepared_plan_json
-                    .as_deref()
+                .prepared_plan_json
+                .as_deref()
                 .ok_or_else(|| anyhow::anyhow!("prepared commit has no sealed plan"))?;
             let sealed_plan_value: Value = serde_json::from_str(sealed_plan_raw)?;
             let sealed_source_contract: SealedSourceContract = sealed_plan_value
@@ -855,10 +852,8 @@ pub fn narrative_extraction_apply_commit(
                 &sealed_plan.proposal_set_id,
                 &applications,
             )?;
-            let validation_commit_map = build_validation_commit_map(
-                &sealed_plan.entity_bindings,
-                &sealed_plan.operations,
-            )?;
+            let validation_commit_map =
+                build_validation_commit_map(&sealed_plan.entity_bindings, &sealed_plan.operations)?;
             validate_operation_field_authority(
                 conn,
                 &sealed_plan.project_id,
@@ -943,398 +938,398 @@ pub fn narrative_extraction_apply_commit(
                     .kind
                     .as_str()
                 {
-                        OP_KIND_EVENT_CREATE => {
-                            let event_payload = parse_event_create_payload(&op.payload)?;
-                            let ordinal = &ordinals[ordinal_index];
-                            ordinal_index += 1;
-                            let result = apply_chronicle_event_create(ChronicleEventCreateContext {
-                                conn,
-                                project_id: &payload.project_id,
-                                session_id: &payload.session_id,
-                                surface: payload.surface.as_deref(),
-                                payload: &event_payload,
-                                ordinal,
-                                now: &now,
-                                timestamp,
-                            })?;
-                            (
-                                "event",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
+                    OP_KIND_EVENT_CREATE => {
+                        let event_payload = parse_event_create_payload(&op.payload)?;
+                        let ordinal = &ordinals[ordinal_index];
+                        ordinal_index += 1;
+                        let result = apply_chronicle_event_create(ChronicleEventCreateContext {
+                            conn,
+                            project_id: &payload.project_id,
+                            session_id: &payload.session_id,
+                            surface: payload.surface.as_deref(),
+                            payload: &event_payload,
+                            ordinal,
+                            now: &now,
+                            timestamp,
+                        })?;
+                        (
+                            "event",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
 
-                        OP_KIND_ENTRY_CREATE => {
-                            let entry_payload = parse_entry_create_payload(&op.payload)?;
-                            let result = apply_codex_entry_create(
-                                conn,
-                                &payload.project_id,
-                                &payload.session_id,
-                                payload.surface.as_deref(),
-                                &entry_payload,
-                                &now,
-                                timestamp,
-                            )?;
-                            if let Some(narrative_entity_id) =
-                                entry_payload.narrative_entity_id.as_ref()
-                            {
-                                commit_map.insert_binding(CodexEntityBinding {
-                                    narrative_entity_id: narrative_entity_id.clone(),
-                                    codex_entry_id: result.entity_id.clone(),
-                                    source: "created".to_string(),
-                                })?;
-                            }
-                            (
-                                "codex_entry",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_ENTRY_PATCH => {
-                            let patch_payload = parse_entry_patch_payload(&op.payload)?;
-                            let result = apply_codex_entry_patch(
-                                conn,
-                                &payload.project_id,
-                                &payload.session_id,
-                                payload.surface.as_deref(),
-                                &patch_payload,
-                                &now,
-                                timestamp,
-                            )?;
-                            if let Some(narrative_entity_id) =
-                                patch_payload.narrative_entity_id.as_ref()
-                            {
-                                commit_map.insert_binding(CodexEntityBinding {
-                                    narrative_entity_id: narrative_entity_id.clone(),
-                                    codex_entry_id: result.entity_id.clone(),
-                                    source: "existing".to_string(),
-                                })?;
-                            }
-                            (
-                                "codex_entry",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_ENTITY_BIND_EXISTING => {
-                            let bind_payload = parse_entity_bind_existing_payload(&op.payload)?;
-                            let (entity_id, version, snapshot) = apply_codex_entity_bind_existing(
-                                conn,
-                                &payload.project_id,
-                                &bind_payload,
-                            )?;
+                    OP_KIND_ENTRY_CREATE => {
+                        let entry_payload = parse_entry_create_payload(&op.payload)?;
+                        let result = apply_codex_entry_create(
+                            conn,
+                            &payload.project_id,
+                            &payload.session_id,
+                            payload.surface.as_deref(),
+                            &entry_payload,
+                            &now,
+                            timestamp,
+                        )?;
+                        if let Some(narrative_entity_id) =
+                            entry_payload.narrative_entity_id.as_ref()
+                        {
                             commit_map.insert_binding(CodexEntityBinding {
-                                narrative_entity_id: bind_payload.narrative_entity_id.clone(),
-                                codex_entry_id: entity_id.clone(),
+                                narrative_entity_id: narrative_entity_id.clone(),
+                                codex_entry_id: result.entity_id.clone(),
+                                source: "created".to_string(),
+                            })?;
+                        }
+                        (
+                            "codex_entry",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_ENTRY_PATCH => {
+                        let patch_payload = parse_entry_patch_payload(&op.payload)?;
+                        let result = apply_codex_entry_patch(
+                            conn,
+                            &payload.project_id,
+                            &payload.session_id,
+                            payload.surface.as_deref(),
+                            &patch_payload,
+                            &now,
+                            timestamp,
+                        )?;
+                        if let Some(narrative_entity_id) =
+                            patch_payload.narrative_entity_id.as_ref()
+                        {
+                            commit_map.insert_binding(CodexEntityBinding {
+                                narrative_entity_id: narrative_entity_id.clone(),
+                                codex_entry_id: result.entity_id.clone(),
                                 source: "existing".to_string(),
                             })?;
-                            (
-                                "codex_entry",
-                                entity_id,
-                                version,
-                                snapshot.clone(),
-                                Some(snapshot),
-                                "bind",
-                            )
                         }
-                        OP_KIND_RELATION_CREATE => {
-                            let relation_payload = parse_relation_create_payload(&op.payload)?;
-                            let result = apply_codex_relation_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &relation_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_relation",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_DETAIL_VALUE_SET => {
-                            let detail_payload = parse_detail_value_set_payload(&op.payload)?;
-                            let result = apply_detail_value_set_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &detail_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_detail_value",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PHASE_CREATE => {
-                            let phase_payload = parse_phase_create_payload(&op.payload)?;
-                            let result = apply_phase_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &phase_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "codex_phase",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PHASE_PATCH => {
-                            let phase_payload = parse_phase_patch_payload(&op.payload)?;
-                            let result = apply_phase_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &phase_payload,
-                                &now,
-                            )?;
-                            (
-                                "codex_phase",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_SEMANTIC_BINDING_UPSERT => {
+                        (
+                            "codex_entry",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_ENTITY_BIND_EXISTING => {
+                        let bind_payload = parse_entity_bind_existing_payload(&op.payload)?;
+                        let (entity_id, version, snapshot) = apply_codex_entity_bind_existing(
+                            conn,
+                            &payload.project_id,
+                            &bind_payload,
+                        )?;
+                        commit_map.insert_binding(CodexEntityBinding {
+                            narrative_entity_id: bind_payload.narrative_entity_id.clone(),
+                            codex_entry_id: entity_id.clone(),
+                            source: "existing".to_string(),
+                        })?;
+                        (
+                            "codex_entry",
+                            entity_id,
+                            version,
+                            snapshot.clone(),
+                            Some(snapshot),
+                            "bind",
+                        )
+                    }
+                    OP_KIND_RELATION_CREATE => {
+                        let relation_payload = parse_relation_create_payload(&op.payload)?;
+                        let result = apply_codex_relation_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &relation_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_relation",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_DETAIL_VALUE_SET => {
+                        let detail_payload = parse_detail_value_set_payload(&op.payload)?;
+                        let result = apply_detail_value_set_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &detail_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_detail_value",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PHASE_CREATE => {
+                        let phase_payload = parse_phase_create_payload(&op.payload)?;
+                        let result = apply_phase_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &phase_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "codex_phase",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PHASE_PATCH => {
+                        let phase_payload = parse_phase_patch_payload(&op.payload)?;
+                        let result = apply_phase_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &phase_payload,
+                            &now,
+                        )?;
+                        (
+                            "codex_phase",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_SEMANTIC_BINDING_UPSERT => {
                         let binding_payload = parse_semantic_binding_upsert_payload(&op.payload)?;
-                            let result = apply_semantic_binding_upsert_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &binding_payload,
-                                &now,
-                            )?;
-                            (
-                                "codex_semantic_binding",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_NODE_ENSURE => {
-                            let node_payload = parse_node_ensure_payload(&op.payload)?;
-                            let result = apply_node_ensure_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &node_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_node",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                if result.created {
-                                    "create"
-                                } else {
-                                    "ensure-existing"
-                                },
-                            )
-                        }
-                        OP_KIND_CONSTRAINT_CREATE => {
+                        let result = apply_semantic_binding_upsert_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &binding_payload,
+                            &now,
+                        )?;
+                        (
+                            "codex_semantic_binding",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_NODE_ENSURE => {
+                        let node_payload = parse_node_ensure_payload(&op.payload)?;
+                        let result = apply_node_ensure_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &node_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_node",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            if result.created {
+                                "create"
+                            } else {
+                                "ensure-existing"
+                            },
+                        )
+                    }
+                    OP_KIND_CONSTRAINT_CREATE => {
                         let constraint_payload = parse_constraint_create_payload(&op.payload)?;
-                            let result = apply_constraint_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &constraint_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_constraint",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                None,
-                                "create",
-                            )
-                        }
-                        OP_KIND_SCENE_METADATA_PATCH => {
+                        let result = apply_constraint_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &constraint_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_constraint",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            None,
+                            "create",
+                        )
+                    }
+                    OP_KIND_SCENE_METADATA_PATCH => {
                         let scene_payload = parse_scene_metadata_patch_payload(&op.payload)?;
-                            let result = apply_scene_metadata_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &scene_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_scene_chronicle",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_EVENT_METADATA_PATCH => {
+                        let result = apply_scene_metadata_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &scene_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_scene_chronicle",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_EVENT_METADATA_PATCH => {
                         let event_payload = parse_event_metadata_patch_payload(&op.payload)?;
-                            let result = apply_event_metadata_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &event_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_event_chronicle",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_STORY_ORDER_MATERIALIZE => {
-                            let story_order_payload =
-                                parse_story_order_materialize_payload(&op.payload)?;
-                            let result = apply_story_order_materialize_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &story_order_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_scene_story_order",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                Some(result.before_snapshot),
-                                "patch",
-                            )
-                        }
-                        OP_KIND_PROJECTION_RECORD => {
+                        let result = apply_event_metadata_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &event_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_event_chronicle",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_STORY_ORDER_MATERIALIZE => {
+                        let story_order_payload =
+                            parse_story_order_materialize_payload(&op.payload)?;
+                        let result = apply_story_order_materialize_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &story_order_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_scene_story_order",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            Some(result.before_snapshot),
+                            "patch",
+                        )
+                    }
+                    OP_KIND_PROJECTION_RECORD => {
                         let projection_payload = parse_projection_record_payload(&op.payload)?;
-                            let result = apply_projection_record_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &projection_payload,
-                                &now,
-                            )?;
-                            (
-                                "temporal_projection",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
+                        let result = apply_projection_record_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &projection_payload,
+                            &now,
+                        )?;
+                        (
+                            "temporal_projection",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
 
-                        OP_KIND_PLOT_THREAD_CREATE => {
+                    OP_KIND_PLOT_THREAD_CREATE => {
                         let thread_payload = parse_plot_thread_create_payload(&op.payload)?;
-                            let result = apply_plot_thread_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &thread_payload,
-                                &now,
-                            )?;
-                            commit_map.insert_plot_thread_binding(PlotThreadBinding {
-                                hypothesis_id: thread_payload.hypothesis_id.clone(),
-                                plot_thread_id: result.entity_id.clone(),
-                                source: "created".to_string(),
-                            });
-                            (
-                                "plot_thread",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_THREAD_PATCH => {
+                        let result = apply_plot_thread_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &thread_payload,
+                            &now,
+                        )?;
+                        commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                            hypothesis_id: thread_payload.hypothesis_id.clone(),
+                            plot_thread_id: result.entity_id.clone(),
+                            source: "created".to_string(),
+                        });
+                        (
+                            "plot_thread",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_THREAD_PATCH => {
                         let thread_payload = parse_plot_thread_patch_payload(&op.payload)?;
-                            let result = apply_plot_thread_patch_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &thread_payload,
-                                &now,
-                            )?;
-                            commit_map.insert_plot_thread_binding(PlotThreadBinding {
-                                hypothesis_id: thread_payload.hypothesis_id.clone(),
-                                plot_thread_id: result.entity_id.clone(),
-                                source: "existing".to_string(),
-                            });
-                            (
-                                "plot_thread",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_MARKER_CREATE => {
+                        let result = apply_plot_thread_patch_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &thread_payload,
+                            &now,
+                        )?;
+                        commit_map.insert_plot_thread_binding(PlotThreadBinding {
+                            hypothesis_id: thread_payload.hypothesis_id.clone(),
+                            plot_thread_id: result.entity_id.clone(),
+                            source: "existing".to_string(),
+                        });
+                        (
+                            "plot_thread",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_MARKER_CREATE => {
                         let marker_payload = parse_plot_marker_create_payload(&op.payload)?;
-                            let result = apply_plot_marker_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &marker_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "plot_thread_marker",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_PLOT_BRANCH_CREATE => {
+                        let result = apply_plot_marker_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &marker_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "plot_thread_marker",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_PLOT_BRANCH_CREATE => {
                         let branch_payload = parse_plot_branch_create_payload(&op.payload)?;
-                            let result = apply_plot_branch_create_in_tx(
-                                conn,
-                                &payload.project_id,
-                                &branch_payload,
-                                &commit_map,
-                                &now,
-                            )?;
-                            (
-                                "plot_thread_branch",
-                                result.entity_id,
-                                result.version,
-                                result.after_snapshot,
-                                result.before_snapshot,
-                                result.op_kind,
-                            )
-                        }
-                        OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
-                            let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
+                        let result = apply_plot_branch_create_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &branch_payload,
+                            &commit_map,
+                            &now,
+                        )?;
+                        (
+                            "plot_thread_branch",
+                            result.entity_id,
+                            result.version,
+                            result.after_snapshot,
+                            result.before_snapshot,
+                            result.op_kind,
+                        )
+                    }
+                    OP_KIND_FORESHADOW_AGGREGATE_CREATE => {
+                        let foreshadow_payload = parse_foreshadow_create(&op.payload)?;
                         let result = apply_foreshadow_create(
                             conn,
                             &payload.project_id,
                             &foreshadow_payload,
                             &now,
                         )?;
-                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
-                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                        commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                            hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
                             foreshadow_id: result.entity_id.clone(),
                             source: "created".to_string(),
-                            });
+                        });
                         (
                             "foreshadow",
                             result.entity_id,
@@ -1343,20 +1338,20 @@ pub fn narrative_extraction_apply_commit(
                             result.before_snapshot,
                             result.op_kind,
                         )
-                        }
-                        OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
-                            let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
+                    }
+                    OP_KIND_FORESHADOW_AGGREGATE_PATCH => {
+                        let foreshadow_payload = parse_foreshadow_patch(&op.payload)?;
                         let result = apply_foreshadow_patch(
                             conn,
                             &payload.project_id,
                             &foreshadow_payload,
                             &now,
                         )?;
-                            commit_map.insert_foreshadow_binding(ForeshadowBinding {
-                                hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
+                        commit_map.insert_foreshadow_binding(ForeshadowBinding {
+                            hypothesis_id: foreshadow_payload.hypothesis_id.clone(),
                             foreshadow_id: result.entity_id.clone(),
                             source: "existing".to_string(),
-                            });
+                        });
                         (
                             "foreshadow",
                             result.entity_id,
@@ -1365,9 +1360,9 @@ pub fn narrative_extraction_apply_commit(
                             result.before_snapshot,
                             result.op_kind,
                         )
-                        }
-                        other => anyhow::bail!("unsupported commit operation kind: {other}"),
-                    };
+                    }
+                    other => anyhow::bail!("unsupported commit operation kind: {other}"),
+                };
 
                 conn.execute(
                     "INSERT INTO narrative_apply_operations
@@ -1420,16 +1415,17 @@ pub fn narrative_extraction_apply_commit(
                     .and_then(Value::as_str)
                     .unwrap_or("event");
                 let application_id = Uuid::new_v4().to_string();
+                let (application_kind, compensates_application_id) = load_retraction_metadata(
+                    conn,
+                    &application.proposal_id,
+                    &application.revision_id,
+                )?;
                 let (application_kind, compensates_application_id) =
-                    load_retraction_metadata(conn, &application.proposal_id, &application.revision_id)?;
-                let (application_kind, compensates_application_id) = if application_kind == "retract" {
-                    (
-                        "compensation",
-                        compensates_application_id,
-                    )
-                } else {
-                    ("normal", None)
-                };
+                    if application_kind == "retract" {
+                        ("compensation", compensates_application_id)
+                    } else {
+                        ("normal", None)
+                    };
                 conn.execute(
                     "INSERT INTO narrative_proposal_applications
                         (id, commit_id, proposal_id, revision_id,
@@ -1552,9 +1548,11 @@ pub fn narrative_extraction_apply_commit(
                         source_domain: "narrative.commit.apply".to_string(),
                         source_change_event_uid: change_uid.clone(),
                         cause_kind: NarrativeChangeCauseKind::Forward,
+                        origin: NarrativeChangeOrigin::AiApply,
                         original_transaction_id: None,
                         commit_id: Some(commit_id.clone()),
                         journal_id: Some(journal_id.clone()),
+                        undo_journal_id: None,
                         application_ids,
                         occurred_at: now.clone(),
                         events: maintenance_events,

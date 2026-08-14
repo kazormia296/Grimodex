@@ -293,14 +293,37 @@ async function prepareSecondProject(
       .getByTestId("project-menu-trigger")
       .waitFor({ state: "visible", timeout: 30_000 });
     const projectA = await currentProjectRow(harness, prepared.page);
-    const now = new Date().toISOString();
-    await harness.invokeOk(prepared.page, "db_execute", {
-      sql: `INSERT OR IGNORE INTO projects
-        (id, title, created_at, updated_at)
-        VALUES (?, ?, ?, ?)`,
-      params: [id, title, now, now],
-      method: "run",
-    });
+    const existing = await queryRows(
+      harness,
+      prepared.page,
+      "SELECT id FROM projects WHERE id = ?",
+      [id],
+    );
+    if (existing.length === 0) {
+      const now = new Date().toISOString();
+      await harness.invokeOk(prepared.page, "project_create", {
+        payload: {
+          requestId: `product-project-create:${id}`,
+          projectId: id,
+          sessionId: "electron-product-journey",
+          eventUid: `product-project-create-event:${id}`,
+          origin: "human",
+          originalTransactionId: null,
+          undoJournalId: null,
+          title,
+          genre: null,
+          pov: null,
+          tense: null,
+          language: "ja",
+          styleGuide: null,
+          aiInstructions: null,
+          outline: null,
+          targetReaders: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+    }
     for (const [key, value] of Object.entries(projectSettings)) {
       await harness.invokeOk(prepared.page, "db_execute", {
         sql: `INSERT OR REPLACE INTO project_settings
@@ -501,17 +524,25 @@ async function prepareCodexContextEntry(harness) {
       return id || null;
     }, "authoring workspace and project authority");
     const entryId = `product-codex-${Date.now()}`;
-    const now = new Date().toISOString();
-    await harness.invokeOk(prepared.page, "db_execute", {
-      sql: `INSERT OR IGNORE INTO codex_types
-        (id, project_id, slug, label, color, is_builtin, sort_order, created_at)
-        VALUES (?, ?, 'character', 'Character', '#888888', 1, 0, ?)`,
-      params: [`product-character-${projectId}`, projectId, now],
-      method: "run",
-    });
+    const builtinCharacter = await queryRows(
+      harness,
+      prepared.page,
+      `SELECT id FROM codex_types
+        WHERE project_id = ? AND slug = 'character' LIMIT 1`,
+      [projectId],
+    );
+    if (builtinCharacter.length !== 1) {
+      throw new Error(
+        `project '${projectId}' is missing its canonical character type`,
+      );
+    }
     await harness.invokeOk(prepared.page, "agent_codex_create", {
       payload: {
         requestId: `product-codex-create-${entryId}`,
+        eventUid: `product-codex-create-event:${entryId}`,
+        origin: "human",
+        originalTransactionId: null,
+        undoJournalId: null,
         entryId,
         projectId,
         sessionId: "electron-product-journey",
@@ -588,6 +619,12 @@ async function commitExternalSceneWrite(
   await harness.invokeOk(page, "tree_node_patch", {
     payload: {
       projectId,
+      requestId: eventUid,
+      sessionId: "external-product-journey",
+      eventUid,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
       nodeId: sceneId,
       updatedAt: new Date(now).toISOString(),
       patch: {

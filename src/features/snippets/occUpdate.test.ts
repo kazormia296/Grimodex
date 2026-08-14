@@ -2,12 +2,13 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { eq } from "drizzle-orm";
 import { db } from "@/db/client";
 import { projects, snippets } from "@/db/schema";
-import { updateSnippet } from "./api";
+import { createSnippet, updateSnippet } from "./api";
 import { SnippetVersionConflictError } from "./occ";
 
 // updateSnippet の OCC (baseVersion) を browser-mock の実 SQLite で検証する。
 // codex の occUpdate.test.ts と対になるが、こちらは mock ではなく実 DB で
-// 「条件付き UPDATE の WHERE version=? が本当に効く」ことまで担保する。
+// typed Native writer の「条件付き UPDATE + fresh generation」が本当に効く
+// ことまで担保する。
 
 const PROJECT = "snippet-occ-project";
 
@@ -24,10 +25,18 @@ beforeAll(async () => {
   await db
     .insert(projects)
     .values({ id: PROJECT, title: PROJECT, createdAt: now, updatedAt: now });
-  await db.insert(snippets).values([
-    { id: "sn-occ", projectId: PROJECT, title: "occ", content: "{}" },
-    { id: "sn-blind", projectId: PROJECT, title: "blind", content: "{}" },
-  ]);
+  await createSnippet({
+    id: "sn-occ",
+    projectId: PROJECT,
+    title: "occ",
+    content: "{}",
+  });
+  await createSnippet({
+    id: "sn-auto-occ",
+    projectId: PROJECT,
+    title: "auto-occ",
+    content: "{}",
+  });
 });
 
 describe("updateSnippet OCC (base_version)", () => {
@@ -36,21 +45,21 @@ describe("updateSnippet OCC (base_version)", () => {
       PROJECT,
       "sn-occ",
       { content: "v1" },
-      { baseVersion: 0 },
+      { baseVersion: 1 },
     );
     expect(r?.content).toBe("v1");
-    expect(r?.version).toBe(1);
-    await expect(versionOf("sn-occ")).resolves.toBe(1);
+    expect(r?.version).toBe(2);
+    await expect(versionOf("sn-occ")).resolves.toBe(2);
   });
 
   it("baseVersion 不一致かつ行は存在 → SnippetVersionConflictError (非破壊)", async () => {
-    // 直前のテストで version は 1 に進んでいる。古い base (0) での保存は衝突。
+    // 直前のテストで version は 2 に進んでいる。古い base (1) での保存は衝突。
     await expect(
       updateSnippet(
         PROJECT,
         "sn-occ",
         { content: "stale" },
-        { baseVersion: 0 },
+        { baseVersion: 1 },
       ),
     ).rejects.toBeInstanceOf(SnippetVersionConflictError);
     // 本文は上書きされていない
@@ -66,16 +75,16 @@ describe("updateSnippet OCC (base_version)", () => {
       "other-project",
       "sn-occ",
       { content: "x" },
-      { baseVersion: 1 },
+      { baseVersion: 2 },
     );
     expect(r).toBeUndefined();
   });
 
-  it("baseVersion 省略 → blind UPDATE (version 非加算・後方互換)", async () => {
-    const r = await updateSnippet(PROJECT, "sn-blind", { content: "b1" });
+  it("baseVersion 省略 → Native境界直前にfresh rowを読みOCC更新する", async () => {
+    const r = await updateSnippet(PROJECT, "sn-auto-occ", { content: "b1" });
     expect(r?.content).toBe("b1");
-    expect(r?.version).toBe(0);
-    await expect(versionOf("sn-blind")).resolves.toBe(0);
+    expect(r?.version).toBe(2);
+    await expect(versionOf("sn-auto-occ")).resolves.toBe(2);
   });
 
   it("連続保存は返り値の version を base に引き継げば自己衝突しない", async () => {
@@ -83,15 +92,15 @@ describe("updateSnippet OCC (base_version)", () => {
       PROJECT,
       "sn-occ",
       { content: "v2" },
-      { baseVersion: 1 },
+      { baseVersion: 2 },
     );
-    expect(first?.version).toBe(2);
+    expect(first?.version).toBe(3);
     const second = await updateSnippet(
       PROJECT,
       "sn-occ",
       { content: "v3" },
       { baseVersion: first!.version },
     );
-    expect(second?.version).toBe(3);
+    expect(second?.version).toBe(4);
   });
 });

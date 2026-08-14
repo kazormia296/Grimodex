@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 21,
+  "schemaVersion": 22,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6565,6 +6565,101 @@
       ],
       "createSql": "CREATE TABLE narrative_change_events ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, transaction_id TEXT NOT NULL, canonical_change_event_uid TEXT NOT NULL, canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0), event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0), object_key_json TEXT NOT NULL CHECK(json_valid(object_key_json)), change_kind TEXT NOT NULL CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')), mutation_kind TEXT NOT NULL CHECK(mutation_kind IN ('create','update','delete','restore')), before_version INTEGER, before_digest TEXT, after_version INTEGER, after_digest TEXT, changed_paths_json TEXT NOT NULL CHECK(json_valid(changed_paths_json) AND json_type(changed_paths_json) = 'array'), text_impact_json TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)), structural_impact_json TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)), occurred_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, canonical_change_event_uid, event_ordinal), FOREIGN KEY(project_id, transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE, FOREIGN KEY(project_id, canonical_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT )"
     },
+    "narrative_change_object_heads": {
+      "kind": "table",
+      "columns": {
+        "after_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "after_version": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "canonical_sequence": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "event_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "event_ordinal": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "object_identity": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_change_events",
+          "from": "project_id",
+          "to": "project_id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 0,
+          "sequence": 1,
+          "table": "narrative_change_events",
+          "from": "event_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_change_object_heads ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, object_identity TEXT NOT NULL, after_version INTEGER, after_digest TEXT, event_id TEXT NOT NULL, canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0), event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0), updated_at TEXT NOT NULL, PRIMARY KEY(project_id, object_identity), FOREIGN KEY(project_id, event_id) REFERENCES narrative_change_events(project_id, id) ON DELETE CASCADE )"
+    },
     "narrative_change_sets": {
       "kind": "table",
       "columns": {
@@ -6653,7 +6748,7 @@
       "kind": "table",
       "columns": {
         "application_ids_json": {
-          "ordinal": 10,
+          "ordinal": 12,
           "declaredType": "TEXT",
           "notNull": true,
           "default": "'[]'",
@@ -6667,14 +6762,14 @@
           "primaryKey": 0
         },
         "commit_id": {
-          "ordinal": 8,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "created_at": {
-          "ordinal": 12,
+          "ordinal": 14,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6688,21 +6783,28 @@
           "primaryKey": 1
         },
         "journal_id": {
-          "ordinal": 9,
+          "ordinal": 10,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
-        "original_transaction_id": {
+        "origin": {
           "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "original_transaction_id": {
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "payload_digest": {
-          "ordinal": 11,
+          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6740,6 +6842,13 @@
           "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "undo_journal_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         }
@@ -6817,7 +6926,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE narrative_change_transactions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, request_id TEXT NOT NULL CHECK(length(request_id) > 0), source_domain TEXT NOT NULL CHECK(length(source_domain) > 0), source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0), source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0), cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')), original_transaction_id TEXT, commit_id TEXT, journal_id TEXT, application_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, source_domain, request_id), UNIQUE(project_id, source_change_event_uid), FOREIGN KEY(project_id, source_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT, FOREIGN KEY(project_id, original_transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE )"
+      "createSql": "CREATE TABLE \"narrative_change_transactions\" ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, request_id TEXT NOT NULL CHECK(length(request_id) > 0), source_domain TEXT NOT NULL CHECK(length(source_domain) > 0), source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0), source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0), cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')), origin TEXT NOT NULL CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')), original_transaction_id TEXT, commit_id TEXT, journal_id TEXT, undo_journal_id TEXT, application_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, source_domain, request_id), UNIQUE(project_id, source_change_event_uid), FOREIGN KEY(project_id, source_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT, FOREIGN KEY(project_id, original_transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE )"
     },
     "narrative_commit_journals": {
       "kind": "table",
@@ -13109,6 +13218,26 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_change_events_project_sequence ON narrative_change_events(project_id, canonical_sequence, event_ordinal)"
+    },
+    "idx_narrative_change_object_heads_project_sequence": {
+      "table": "narrative_change_object_heads",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "canonical_sequence"
+        },
+        {
+          "ordinal": 2,
+          "column": "event_ordinal"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_change_object_heads_project_sequence ON narrative_change_object_heads(project_id, canonical_sequence, event_ordinal)"
     },
     "idx_narrative_change_sets_project_range": {
       "table": "narrative_change_sets",

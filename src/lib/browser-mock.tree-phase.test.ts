@@ -5,6 +5,7 @@ import {
   type EventForVerify,
 } from "@/features/timelapse/hashChain";
 import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+import { withCanonicalWriterTestContext } from "./browser-mock.canonical-test-context";
 
 async function rows(
   mock: PersistentBrowserMock,
@@ -62,7 +63,12 @@ describe("browser mock typed Tree writes", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
   });
 
   afterEach(() => mock.close());
@@ -440,7 +446,12 @@ describe("browser mock Phase aggregate CAS and undo journal", () => {
 
   beforeEach(async () => {
     onDatabaseDirty = vi.fn<() => void>();
-    mock = await createBrowserMock({ onDatabaseDirty });
+    mock = withCanonicalWriterTestContext(
+      await createBrowserMock({
+        onDatabaseDirty,
+        allowProtectedWriterTestFixtures: true,
+      }),
+    );
     await seedPhaseAggregate(mock);
   });
 

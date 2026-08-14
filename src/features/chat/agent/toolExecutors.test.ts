@@ -11,6 +11,13 @@ const {
   mockAgentUpdateCodexEntry,
   mockAgentCreateSnippet,
   mockAgentCreateEvent,
+  mockAgentUpdateEvent,
+  mockAgentDeleteEvent,
+  mockAgentSetEventParticipants,
+  mockAgentLinkSceneEvent,
+  mockAgentUnlinkSceneEvent,
+  mockAgentAddEventRelation,
+  mockAgentRemoveEventRelation,
   mockProjectId,
   mockDbRows,
 } = vi.hoisted(() => ({
@@ -23,6 +30,13 @@ const {
   mockAgentUpdateCodexEntry: vi.fn(),
   mockAgentCreateSnippet: vi.fn(),
   mockAgentCreateEvent: vi.fn(),
+  mockAgentUpdateEvent: vi.fn(),
+  mockAgentDeleteEvent: vi.fn(),
+  mockAgentSetEventParticipants: vi.fn(),
+  mockAgentLinkSceneEvent: vi.fn(),
+  mockAgentUnlinkSceneEvent: vi.fn(),
+  mockAgentAddEventRelation: vi.fn(),
+  mockAgentRemoveEventRelation: vi.fn(),
   mockProjectId: vi.fn<() => string>(),
   mockDbRows: vi.fn<() => unknown[]>(),
 }));
@@ -43,13 +57,13 @@ vi.mock("@/features/agent-writes/foreshadow", () => ({
 
 vi.mock("@/features/agent-writes/event", () => ({
   agentCreateEvent: mockAgentCreateEvent,
-  agentUpdateEvent: vi.fn(),
-  agentDeleteEvent: vi.fn(),
-  agentSetEventParticipants: vi.fn(),
-  agentLinkSceneEvent: vi.fn(),
-  agentUnlinkSceneEvent: vi.fn(),
-  agentAddEventRelation: vi.fn(),
-  agentRemoveEventRelation: vi.fn(),
+  agentUpdateEvent: mockAgentUpdateEvent,
+  agentDeleteEvent: mockAgentDeleteEvent,
+  agentSetEventParticipants: mockAgentSetEventParticipants,
+  agentLinkSceneEvent: mockAgentLinkSceneEvent,
+  agentUnlinkSceneEvent: mockAgentUnlinkSceneEvent,
+  agentAddEventRelation: mockAgentAddEventRelation,
+  agentRemoveEventRelation: mockAgentRemoveEventRelation,
 }));
 
 vi.mock("@/lib/tauri", () => ({ invoke: mockInvoke }));
@@ -113,6 +127,7 @@ import {
   READ_ONLY_TOOL_NAMES,
 } from "./toolDefinitions";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { invalidateChronicleToolCache } from "./chronicleToolCache";
 
 const TOOL_TEST_WORKSPACE_PATH = "/workspace/tool-executors-test";
 
@@ -398,6 +413,7 @@ describe("foreshadow write executors", () => {
     expect(result.error).toBeUndefined();
     expect(mockAgentUpdateForeshadow).toHaveBeenCalledWith(
       expect.objectContaining({
+        requestId: expect.stringMatching(/^agent-tool:[0-9a-f]{64}$/),
         foreshadowId: "f1",
         baseVersion: 3,
         payoffConfirmed: true,
@@ -487,12 +503,20 @@ describe("Codex and Snippet rich-text write executors", () => {
   });
 });
 
-describe("create-tool request identity", () => {
+describe("durable mutation tool request identity", () => {
   beforeEach(() => {
     mockAgentCreateCodexEntry.mockReset();
     mockAgentCreateSnippet.mockReset();
     mockAgentCreateForeshadow.mockReset();
+    mockAgentUpdateForeshadow.mockReset();
     mockAgentCreateEvent.mockReset();
+    mockAgentUpdateEvent.mockReset();
+    mockAgentDeleteEvent.mockReset();
+    mockAgentSetEventParticipants.mockReset();
+    mockAgentLinkSceneEvent.mockReset();
+    mockAgentUnlinkSceneEvent.mockReset();
+    mockAgentAddEventRelation.mockReset();
+    mockAgentRemoveEventRelation.mockReset();
     mockProjectId.mockReset();
     mockProjectId.mockReturnValue("project-1");
   });
@@ -511,6 +535,12 @@ describe("create-tool request identity", () => {
       id: "foreshadow-1",
       title: "The seal",
       secret: true,
+    });
+    mockAgentUpdateForeshadow.mockResolvedValue({
+      id: "foreshadow-1",
+      title: "The opened seal",
+      payoffConfirmed: false,
+      abandoned: false,
     });
     mockAgentCreateEvent.mockResolvedValue({
       id: "event-1",
@@ -532,6 +562,15 @@ describe("create-tool request identity", () => {
         name: "create_foreshadow",
         params: { title: "The seal" },
         writer: mockAgentCreateForeshadow,
+      },
+      {
+        name: "update_foreshadow",
+        params: {
+          id: "foreshadow-1",
+          baseVersion: 0,
+          title: "The opened seal",
+        },
+        writer: mockAgentUpdateForeshadow,
       },
       {
         name: "create_event",
@@ -570,6 +609,87 @@ describe("create-tool request identity", () => {
     expect(mockAgentCreateCodexEntry.mock.calls[3]![0].requestId).not.toBe(
       mockAgentCreateCodexEntry.mock.calls[0]![0].requestId,
     );
+  });
+
+  it("propagates the stable tool-call requestId to every Chronicle mutation", async () => {
+    invalidateChronicleToolCache();
+    mockTreeProjectId.mockReturnValue("project-1");
+    mockDbRows.mockReturnValue([
+      { id: "event-1", project_id: "project-1", version: 4, secret: 0 },
+      { id: "event-a", project_id: "project-1", version: 2, secret: 0 },
+      { id: "event-b", project_id: "project-1", version: 3, secret: 0 },
+    ]);
+    const cases = [
+      {
+        name: "update_event",
+        params: { eventId: "event-1", title: "After" },
+        writer: mockAgentUpdateEvent,
+        requestIdAt: (call: unknown[]) =>
+          (call[1] as { requestId: string }).requestId,
+      },
+      {
+        name: "delete_event",
+        params: { eventId: "event-1" },
+        writer: mockAgentDeleteEvent,
+        requestIdAt: (call: unknown[]) =>
+          (call[1] as { requestId: string }).requestId,
+      },
+      {
+        name: "stamp_scene_event",
+        params: { sceneId: "scene-1", eventId: "event-1" },
+        writer: mockAgentLinkSceneEvent,
+        requestIdAt: (call: unknown[]) =>
+          (call[2] as { requestId: string }).requestId,
+      },
+      {
+        name: "unstamp_scene_event",
+        params: { sceneId: "scene-1", eventId: "event-1" },
+        writer: mockAgentUnlinkSceneEvent,
+        requestIdAt: (call: unknown[]) =>
+          (call[2] as { requestId: string }).requestId,
+      },
+      {
+        name: "set_event_participants",
+        params: { eventId: "event-1", codexEntryIds: [] },
+        writer: mockAgentSetEventParticipants,
+        requestIdAt: (call: unknown[]) =>
+          (call[2] as { requestId: string }).requestId,
+      },
+      {
+        name: "add_event_relation",
+        params: {
+          causeEventId: "event-a",
+          effectEventId: "event-b",
+        },
+        writer: mockAgentAddEventRelation,
+        requestIdAt: (call: unknown[]) =>
+          (call[2] as { requestId: string }).requestId,
+      },
+      {
+        name: "remove_event_relation",
+        params: {
+          causeEventId: "event-a",
+          effectEventId: "event-b",
+        },
+        writer: mockAgentRemoveEventRelation,
+        requestIdAt: (call: unknown[]) =>
+          (call[2] as { requestId: string }).requestId,
+      },
+    ] as const;
+
+    const requestIds = new Set<string>();
+    for (const { name, params, writer, requestIdAt } of cases) {
+      const first = await executeTool(name, "stable-chronicle-call", params);
+      const retry = await executeTool(name, "stable-chronicle-call", params);
+      expect(first.error).toBeUndefined();
+      expect(retry.error).toBeUndefined();
+      const firstRequestId = requestIdAt(writer.mock.calls[0] as unknown[]);
+      const retryRequestId = requestIdAt(writer.mock.calls[1] as unknown[]);
+      expect(firstRequestId).toMatch(/^agent-tool:[0-9a-f]{64}$/);
+      expect(retryRequestId).toBe(firstRequestId);
+      requestIds.add(firstRequestId);
+    }
+    expect(requestIds.size).toBe(cases.length);
   });
 
   it("rejects a create when Project authority changes during request hashing", async () => {

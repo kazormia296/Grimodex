@@ -194,10 +194,8 @@ mod tests {
     use std::path::Path;
 
     fn workspace_state_with_db() -> WorkspaceState {
-        let path = std::env::temp_dir().join(format!(
-            "grimodex-state-test-ws-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("grimodex-state-test-ws-{}", uuid::Uuid::new_v4()));
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         let authority =
             WorkspaceAuthority::from_database_for_test(db, path).expect("test authority");

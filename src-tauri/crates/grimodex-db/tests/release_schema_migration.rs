@@ -26,8 +26,8 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
         "the published v2.0.10 fixture must remain the public migration floor"
     );
     assert_eq!(
-        SCHEMA_VERSION, 21,
-        "Gate C0 migration target must be SCHEMA 21"
+        SCHEMA_VERSION, 22,
+        "Gate C1 migration target must be SCHEMA 22"
     );
     let workspace = temp_workspace("release-shaped");
     let db_path = seed_previous_release_workspace(&workspace);
@@ -70,10 +70,7 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
         manifest["sourceSchemaVersion"],
         Value::from(LAST_PUBLIC_RELEASE_SCHEMA_VERSION)
     );
-    assert_eq!(
-        manifest["targetSchemaVersion"],
-        Value::from(SCHEMA_VERSION)
-    );
+    assert_eq!(manifest["targetSchemaVersion"], Value::from(SCHEMA_VERSION));
 
     assert_release_fixture_rows(&db_path);
 }

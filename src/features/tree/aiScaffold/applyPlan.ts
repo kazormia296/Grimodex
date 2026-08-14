@@ -1,29 +1,23 @@
 /**
  * AiTreePlan のアトミック適用 executor。
  *
- *   validate → idMap 採番 → placement 算出 → forward statements(.toSQL())
- *   → db_execute_batch(1 tx) → throwing reload → recordChangeEvent
- *   → 単一 composite HistoryCommand を push
+ *   validate → stable request/domain IDs → typed Native apply (one tx)
+ *   → best-effort projection reload → single composite HistoryCommand
  *
- * 正準パターンは attribution/api.ts:replaceAuthorshipSpansAtomic
- * (drizzle .toSQL() を statements[] に積み invoke('db_execute_batch'))。
- *
- * undo は ON DELETE CASCADE による既存ノード巻き添え削除を防ぐため
- * 「(先) 既存ノードの parentId/sortOrder/title を復元 → (後) 作成ノードを
- * leaf-first で削除」の非対称順序を厳守する(Codex/Plan agent 指摘の最重要点)。
+ * Forward/undo/redo all cross the typed Native writer boundary. The renderer
+ * never materializes tree_nodes DML, and unresolved Native outcomes retain the
+ * exact request identity so retries are idempotent.
  */
 import i18next from "i18next";
-import { db } from "@/db/client";
-import { treeNodes } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
 import { invoke } from "@/lib/tauri";
+import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
 import { useGlobalHistoryStore } from "@/store/globalHistoryStore";
 import { useTabStore } from "@/features/editor/tabStore";
-import { agentWriteBundle } from "@/features/agent-writes/bundle";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { useTreeStore } from "../treeStore";
 import { validateAiTreePlan, type ValidationError } from "./validate";
-import { assignNodePlacements, type NodePlacement } from "./placement";
-import type { AiTreePlan, ApplyContext, ApplyResult, CreateOp } from "./types";
+import { assignNodePlacements } from "./placement";
+import type { AiTreePlan, ApplyContext, ApplyResult } from "./types";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
 
 export class AiTreePlanError extends Error {
@@ -35,123 +29,80 @@ export class AiTreePlanError extends Error {
   }
 }
 
-type BatchStatement = { sql: string; params: unknown[]; method: string };
-
 interface BeforeState {
   id: string;
   parentId: string | null;
   sortOrder: string;
   title: string;
+  version: number;
 }
 
-function toStatement(query: {
-  sql: string;
-  params: unknown[];
-}): BatchStatement {
-  return { sql: query.sql, params: query.params, method: "run" };
+interface InitialTreePlanAttempt {
+  requestId: string;
+  updatedAt: string;
+  createdIds: Array<[string, string]>;
 }
 
-/** create=INSERT(topo順) → move=UPDATE → rename=UPDATE。FK 安全順。 */
-export function buildForwardStatements(
-  plan: AiTreePlan,
-  orderedCreates: CreateOp[],
-  idMap: Map<string, string>,
-  placements: Map<string, NodePlacement>,
-  projectId: string,
-): BatchStatement[] {
-  const now = new Date().toISOString();
-  const stmts: BatchStatement[] = [];
+const pendingInitialTreePlanAttempts =
+  createPendingCreateRequestRegistry<InitialTreePlanAttempt>();
 
-  for (const c of orderedCreates) {
-    const id = idMap.get(c.tempId);
-    const pl = id ? placements.get(id) : undefined;
-    if (!id || !pl) continue;
-    const q = db
-      .insert(treeNodes)
-      .values({
-        id,
-        projectId,
-        parentId: pl.parentId,
-        nodeType: c.nodeType,
-        title: c.title,
-        sortOrder: pl.sortOrder,
-        ...(c.synopsis != null ? { synopsis: c.synopsis } : {}),
-        createdAt: now,
-        updatedAt: now,
-      })
-      .toSQL();
-    stmts.push(toStatement(q));
-  }
-
-  for (const op of plan.ops) {
-    if (op.op !== "move") continue;
-    const pl = placements.get(op.nodeId);
-    if (!pl) continue;
-    // parentId は解決値を直接渡す。`?? undefined` 禁止(undefined は SET から
-    // 落ち move-to-root が黙って無効化される — moveNode の教訓)。
-    // WHERE に projectId を併記し、validate を唯一の cross-project guard にしない(N1)。
-    const q = db
-      .update(treeNodes)
-      .set({ parentId: pl.parentId, sortOrder: pl.sortOrder, updatedAt: now })
-      .where(
-        and(eq(treeNodes.id, op.nodeId), eq(treeNodes.projectId, projectId)),
-      )
-      .toSQL();
-    stmts.push(toStatement(q));
-  }
-
-  for (const op of plan.ops) {
-    if (op.op !== "rename") continue;
-    const q = db
-      .update(treeNodes)
-      .set({ title: op.title, updatedAt: now })
-      .where(
-        and(eq(treeNodes.id, op.nodeId), eq(treeNodes.projectId, projectId)),
-      )
-      .toSQL();
-    stmts.push(toStatement(q));
-  }
-
-  return stmts;
+function initialTreePlanSignature(plan: AiTreePlan, ctx: ApplyContext): string {
+  return JSON.stringify({
+    projectId: ctx.projectId,
+    plan,
+    model: ctx.model,
+    traceId: ctx.traceId,
+    scope: {
+      allowedOps: [...ctx.scope.allowedOps].sort(),
+      rootRef: ctx.scope.rootRef,
+      editableIds: [...ctx.scope.editableIds].sort(),
+    },
+  });
 }
 
-/** (先) 既存ノード復元 → (後) 作成ノードを leaf-first で削除。順序が cascade 防止の要。 */
-export function buildUndoStatements(
-  beforeStates: BeforeState[],
-  createdIdsTopo: string[],
-  projectId: string,
-): BatchStatement[] {
-  const now = new Date().toISOString();
-  const stmts: BatchStatement[] = [];
+function isDefiniteIpcFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "outcome" in error &&
+    error.outcome === "failed"
+  );
+}
 
-  for (const bs of beforeStates) {
-    const q = db
-      .update(treeNodes)
-      .set({
-        parentId: bs.parentId,
-        sortOrder: bs.sortOrder,
-        title: bs.title,
-        updatedAt: now,
-      })
-      .where(and(eq(treeNodes.id, bs.id), eq(treeNodes.projectId, projectId)))
-      .toSQL();
-    stmts.push(toStatement(q));
+interface NativeTreePlanReceipt {
+  versions: Array<{ id: string; version: number }>;
+  changeEventUid: string;
+  maintenanceTransactionId: string;
+  undoJournalId: string;
+}
+
+function readNativeTreePlanReceipt(value: unknown): NativeTreePlanReceipt {
+  if (value === null || typeof value !== "object") {
+    throw new Error("AI tree plan Native receipt is missing");
   }
-
-  for (let i = createdIdsTopo.length - 1; i >= 0; i--) {
-    const q = db
-      .delete(treeNodes)
-      .where(
-        and(
-          eq(treeNodes.id, createdIdsTopo[i]),
-          eq(treeNodes.projectId, projectId),
-        ),
-      )
-      .toSQL();
-    stmts.push(toStatement(q));
+  const receipt = value as Partial<NativeTreePlanReceipt>;
+  if (
+    !Array.isArray(receipt.versions) ||
+    !receipt.versions.every(
+      (entry) =>
+        entry !== null &&
+        typeof entry === "object" &&
+        typeof entry.id === "string" &&
+        entry.id.length > 0 &&
+        typeof entry.version === "number" &&
+        Number.isSafeInteger(entry.version) &&
+        entry.version >= 0,
+    ) ||
+    typeof receipt.changeEventUid !== "string" ||
+    receipt.changeEventUid.length === 0 ||
+    typeof receipt.maintenanceTransactionId !== "string" ||
+    receipt.maintenanceTransactionId.length === 0 ||
+    typeof receipt.undoJournalId !== "string" ||
+    receipt.undoJournalId.length === 0
+  ) {
+    throw new Error("AI tree plan Native receipt is incomplete");
   }
-
-  return stmts;
+  return receipt as NativeTreePlanReceipt;
 }
 
 export async function applyAiTreePlan(
@@ -169,11 +120,13 @@ async function applyAiTreePlanWithAuthority(
   const v = validateAiTreePlan(plan, nodes, ctx.projectId, ctx.scope);
   if (!v.ok) throw new AiTreePlanError(v.errors);
 
-  // tempId → UUID 採番(validate は mixed namespace のため、ここで一括採番)。
-  const idMap = new Map<string, string>();
-  for (const tempId of v.tempIds) idMap.set(tempId, crypto.randomUUID());
-
-  const placements = assignNodePlacements(plan, nodes, idMap);
+  // A deterministic placeholder pass proves that every placement is resolvable
+  // before reserving a durable request identity. No Native call can have run at
+  // this point, so validation failures must not leave a pending retry lease.
+  const preflightIdMap = new Map(
+    [...v.tempIds].map((tempId) => [tempId, `preflight:${tempId}`]),
+  );
+  const preflightPlacements = assignNodePlacements(plan, nodes, preflightIdMap);
 
   // before-state capture(apply 前のスナップショットから)。move/rename 対象の
   // parentId/sortOrder/title をまとめて保持し、undo で一括復元する。
@@ -184,13 +137,32 @@ async function applyAiTreePlanWithAuthority(
   }
   const beforeStates: BeforeState[] = [...affected].flatMap((id) => {
     const n = byId.get(id);
-    return n
-      ? [{ id, parentId: n.parentId, sortOrder: n.sortOrder, title: n.title }]
-      : [];
+    if (!n) return [];
+    if (
+      typeof n.version !== "number" ||
+      !Number.isSafeInteger(n.version) ||
+      n.version < 0
+    ) {
+      throw new AiTreePlanError([
+        {
+          code: "stale",
+          message: `versionを取得できないnodeがあります: ${id}`,
+        },
+      ]);
+    }
+    return [
+      {
+        id,
+        parentId: n.parentId,
+        sortOrder: n.sortOrder,
+        title: n.title,
+        version: n.version,
+      },
+    ];
   });
 
-  const createdIds = v.orderedCreates.flatMap((c) => {
-    const id = idMap.get(c.tempId);
+  const preflightCreatedIds = v.orderedCreates.flatMap((c) => {
+    const id = preflightIdMap.get(c.tempId);
     return id ? [id] : [];
   });
   const movedIds = plan.ops.flatMap((o) => (o.op === "move" ? [o.nodeId] : []));
@@ -202,8 +174,8 @@ async function applyAiTreePlanWithAuthority(
   // op が残れば、DB に触る前に弾く。validate.after_cycle が一次防壁だが、ここは
   // 「validate 通過 ⟺ 全 create/move が配置済み」を保証する belt-and-suspenders
   // (silent drop / dangling-parent による FK rollback を未然に防ぐ)。
-  const unplaceable = [...createdIds, ...movedIds].filter(
-    (id) => !placements.has(id),
+  const unplaceable = [...preflightCreatedIds, ...movedIds].filter(
+    (id) => !preflightPlacements.has(id),
   );
   if (unplaceable.length > 0) {
     throw new AiTreePlanError([
@@ -213,6 +185,26 @@ async function applyAiTreePlanWithAuthority(
       },
     ]);
   }
+
+  // Initial retries can outlive this function invocation. Preserve both the
+  // request/event identity and every created domain ID until Native confirms
+  // success or explicitly reports a definite failure.
+  const initialSignature = initialTreePlanSignature(plan, ctx);
+  const initialRequest = pendingInitialTreePlanAttempts.acquire(
+    initialSignature,
+    initialSignature,
+    (requestId) => ({
+      requestId,
+      updatedAt: new Date().toISOString(),
+      createdIds: [...v.tempIds].map((tempId) => [tempId, crypto.randomUUID()]),
+    }),
+  );
+  const idMap = new Map(initialRequest.payload.createdIds);
+  const placements = assignNodePlacements(plan, nodes, idMap);
+  const createdIds = v.orderedCreates.flatMap((create) => {
+    const id = idMap.get(create.tempId);
+    return id ? [id] : [];
+  });
 
   // store 再同期は cosmetic。commit 後の reload 失敗で確定変更や undo entry を失わない
   // よう best-effort で握りつぶす。isLoading は reloadTreeOrThrow の catch で解除される。
@@ -227,62 +219,156 @@ async function applyAiTreePlanWithAuthority(
     }
   };
 
-  const runForwardBatch = async () => {
-    const stmts = buildForwardStatements(
-      plan,
-      v.orderedCreates,
-      idMap,
-      placements,
-      ctx.projectId,
+  const creates = v.orderedCreates.map((create) => {
+    const id = idMap.get(create.tempId);
+    const placement = id ? placements.get(id) : undefined;
+    if (!id || !placement) {
+      throw new Error("AI tree plan placement disappeared after validation");
+    }
+    return {
+      id,
+      parentId: placement.parentId,
+      nodeType: create.nodeType,
+      title: create.title,
+      sortOrder: placement.sortOrder,
+      synopsis: create.synopsis ?? null,
+    };
+  });
+  const updateTemplates = [...affected].map((id) => {
+    const move = plan.ops.find((op) => op.op === "move" && op.nodeId === id);
+    const rename = plan.ops.find(
+      (op) => op.op === "rename" && op.nodeId === id,
     );
-    const eventUid = crypto.randomUUID();
-    const traceEntityId = ctx.traceId ?? eventUid;
-    await agentWriteBundle({
-      projectId: ctx.projectId,
-      statements: stmts,
-      undoJournal: {
-        entityKind: "tree_batch",
-        entityId: traceEntityId,
-        opKind: plan.kind === "scaffold" ? "tree.scaffold" : "tree.reorganize",
-        beforeJson: JSON.stringify({ beforeStates, createdIds }),
-        afterJson: JSON.stringify({ createdIds, movedIds, renamedIds }),
-        baseVersion: 0,
-        resultVersion: 1,
-      },
-      changeEvent: {
-        eventUid,
-        sceneId: null,
-        domain: "grid",
-        opType:
-          plan.kind === "scaffold" ? "tree.aiScaffold" : "tree.aiReorganize",
-        entityType: "tree_batch",
-        entityId: traceEntityId,
-        payload: JSON.stringify({
-          source: ctx.source,
+    const placement = move ? placements.get(id) : undefined;
+    if (move && !placement) {
+      throw new Error(
+        "AI tree plan move placement disappeared after validation",
+      );
+    }
+    return {
+      id,
+      placement: placement
+        ? { parentId: placement.parentId, sortOrder: placement.sortOrder }
+        : null,
+      title: rename?.op === "rename" ? rename.title : null,
+    };
+  });
+  let currentVersions = new Map(
+    beforeStates.map((state) => [state.id, state.version]),
+  );
+  let originalMaintenanceTransactionId: string | null = null;
+  let originalUndoJournalId: string | null = null;
+  const redoRequests =
+    createPendingCreateRequestRegistry<Record<string, unknown>>();
+  const undoRequests =
+    createPendingCreateRequestRegistry<Record<string, unknown>>();
+
+  const runForwardBatch = async () => {
+    const redo = originalMaintenanceTransactionId !== null;
+    const updates = updateTemplates.map((update) => {
+      const baseVersion = currentVersions.get(update.id);
+      if (baseVersion === undefined) {
+        throw new Error(`AI tree plan OCC token is missing for ${update.id}`);
+      }
+      return { ...update, baseVersion };
+    });
+    const redoRequest = redo
+      ? redoRequests.acquire("redo", "redo", (requestId) => ({
+          requestId,
+          projectId: ctx.projectId,
+          sessionId: getRecorderSessionId(),
+          surface: "in-app-agent",
+          kind: plan.kind,
+          updatedAt: new Date().toISOString(),
           model: ctx.model,
           traceId: ctx.traceId,
-          createdIds,
-          movedIds,
-          renamedIds,
-          synopsisGenerated: plan.ops.some(
-            (o) => o.op === "create" && o.synopsis != null,
-          ),
-        }),
-        timestamp: Date.now(),
-      },
-    });
+          creates,
+          updates,
+          redo: true,
+          originalTransactionId: originalMaintenanceTransactionId,
+          undoJournalId: originalUndoJournalId,
+        }))
+      : null;
+    const payload = redoRequest?.payload ?? {
+      requestId: initialRequest.payload.requestId,
+      projectId: ctx.projectId,
+      sessionId: getRecorderSessionId(),
+      surface: "in-app-agent",
+      kind: plan.kind,
+      updatedAt: initialRequest.payload.updatedAt,
+      model: ctx.model,
+      traceId: ctx.traceId,
+      creates,
+      updates,
+      redo: false,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+    let nativeResponseReceived = false;
+    try {
+      const rawReceipt = await invoke("ai_tree_plan_apply", { payload });
+      nativeResponseReceived = true;
+      const receipt = readNativeTreePlanReceipt(rawReceipt);
+      if (!redo) {
+        originalMaintenanceTransactionId = receipt.maintenanceTransactionId;
+        originalUndoJournalId = receipt.undoJournalId;
+        pendingInitialTreePlanAttempts.release(initialRequest);
+      } else if (redoRequest) {
+        redoRequests.release(redoRequest);
+      }
+      currentVersions = new Map(
+        receipt.versions.map((entry) => [entry.id, entry.version]),
+      );
+    } catch (error) {
+      if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
+        if (redoRequest) {
+          redoRequests.release(redoRequest);
+        } else {
+          pendingInitialTreePlanAttempts.release(initialRequest);
+        }
+      }
+      throw error;
+    }
     await resyncTree();
   };
 
   const runUndoBatch = async () => {
-    await invoke("tree_plan_undo", {
-      payload: {
-        projectId: ctx.projectId,
-        beforeStates,
-        createdIds,
-        updatedAt: new Date().toISOString(),
-      },
+    if (!originalMaintenanceTransactionId || !originalUndoJournalId) {
+      throw new Error("AI tree plan Native lineage is unavailable");
+    }
+    const expectedVersions = [...createdIds, ...affected].map((id) => {
+      const version = currentVersions.get(id);
+      if (version === undefined) {
+        throw new Error(`AI tree plan OCC token is missing for ${id}`);
+      }
+      return { id, version };
     });
+    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => ({
+      requestId,
+      projectId: ctx.projectId,
+      sessionId: getRecorderSessionId(),
+      updatedAt: new Date().toISOString(),
+      originalTransactionId: originalMaintenanceTransactionId,
+      undoJournalId: originalUndoJournalId,
+      expectedVersions,
+    }));
+    let nativeResponseReceived = false;
+    try {
+      const rawReceipt = await invoke("ai_tree_plan_undo", {
+        payload: undoRequest.payload,
+      });
+      nativeResponseReceived = true;
+      const receipt = readNativeTreePlanReceipt(rawReceipt);
+      undoRequests.release(undoRequest);
+      currentVersions = new Map(
+        receipt.versions.map((entry) => [entry.id, entry.version]),
+      );
+    } catch (error) {
+      if (!nativeResponseReceived && isDefiniteIpcFailure(error)) {
+        undoRequests.release(undoRequest);
+      }
+      throw error;
+    }
     await resyncTree();
     const tab = useTabStore.getState();
     for (const id of createdIds) {
@@ -294,7 +380,7 @@ async function applyAiTreePlanWithAuthority(
   // ── forward 適用 ─────────────────────────────────────────────────
   await runForwardBatch();
 
-  // change_event + undo_journal は agentWriteBundle で同一 tx 済み。
+  // Domain更新 + change_event + undo_journal + Change Feed は Native writer で同一 tx 済み。
   // reload の成否に依存せず composite undo push を必ず行う(M1)。
 
   // ── 単一 composite undo を push(redo は forward を直接再実行=二重 push 回避) ──

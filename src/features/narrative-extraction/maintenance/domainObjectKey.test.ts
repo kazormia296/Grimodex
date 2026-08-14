@@ -31,6 +31,20 @@ describe("domainObjectKeyToString", () => {
     );
   });
 
+  it("keeps child identities independent from aggregate roots", () => {
+    expect(
+      domainObjectKeyToString({ kind: "plot-marker", markerId: "marker-1" }),
+    ).toBe('["plot-marker","marker-1"]');
+    expect(
+      domainObjectKeyToString({
+        kind: "foreshadow-setup",
+        setupId: "setup-1",
+      }),
+    ).not.toBe(
+      domainObjectKeyToString({ kind: "foreshadow", foreshadowId: "setup-1" }),
+    );
+  });
+
   it("rejects missing identities instead of coalescing malformed keys", () => {
     expect(() =>
       assertValidDomainObjectKey({ kind: "scene", sceneId: "" }),

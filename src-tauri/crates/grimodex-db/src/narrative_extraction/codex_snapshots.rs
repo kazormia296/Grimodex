@@ -67,9 +67,7 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         "codex_detail_values",
     )?;
     if detail_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_detail_values"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_detail_values");
     }
 
     let phase_count = query_dependency_count(
@@ -79,9 +77,7 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         "codex_entry_phases",
     )?;
     if phase_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_phases"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_phases");
     }
 
     let tag_count = query_dependency_count(
@@ -91,9 +87,7 @@ pub(crate) fn ensure_no_external_codex_dependencies(
         "codex_entry_tags",
     )?;
     if tag_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_tags"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: entry '{entry_id}' has codex_entry_tags");
     }
 
     Ok(())
@@ -152,7 +146,10 @@ pub(crate) fn restore_codex_entry_patch(
         );
     }
 
-    let aliases = before_snapshot.get("aliases").cloned().unwrap_or(Value::Null);
+    let aliases = before_snapshot
+        .get("aliases")
+        .cloned()
+        .unwrap_or(Value::Null);
     let summary = before_snapshot
         .get("summary")
         .and_then(Value::as_str)
@@ -204,9 +201,7 @@ pub(crate) fn undo_created_codex_entry(
         .and_then(Value::as_i64)
         .ok_or_else(|| anyhow::anyhow!("codex entry snapshot missing version"))?;
     if live_version != expected_version {
-        anyhow::bail!(
-            "NEX_COMMIT_ENTRY_EDITED: entry '{entry_id}' was modified after commit"
-        );
+        anyhow::bail!("NEX_COMMIT_ENTRY_EDITED: entry '{entry_id}' was modified after commit");
     }
     delete_codex_entry_cascade(conn, project_id, entry_id, Some(expected_version))
 }

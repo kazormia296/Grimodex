@@ -11,19 +11,30 @@ vi.mock("@/db/client", () => ({
 }));
 
 vi.mock("@/lib/tauri", () => ({
-  invoke: vi.fn().mockResolvedValue([]),
+  invoke: vi.fn().mockResolvedValue({
+    changeEventUid: "map-change-event",
+    maintenanceTransactionId: "map-maintenance-transaction",
+    undoJournalId: "map-undo-journal",
+  }),
 }));
 
 vi.mock("@/features/timelapse/recorder", () => ({
+  getRecorderSessionId: vi.fn(() => "map-test-session"),
   recordChangeEvent: vi.fn(),
 }));
 
+vi.mock("@/features/codex/codexRelationEvents", () => ({
+  notifyCodexRelationsChanged: vi.fn(),
+}));
+
 import { db } from "@/db/client";
+import { notifyCodexRelationsChanged } from "@/features/codex/codexRelationEvents";
 import { recordChangeEvent } from "@/features/timelapse/recorder";
 import { invoke } from "@/lib/tauri";
 
 const mockRecord = vi.mocked(recordChangeEvent);
 const mockInvoke = vi.mocked(invoke);
+const mockNotifyCodexRelationsChanged = vi.mocked(notifyCodexRelationsChanged);
 
 function pmDoc(text: string): string {
   return JSON.stringify({
@@ -57,6 +68,37 @@ function makeMock(returnValue: unknown) {
   ) => Promise.resolve(returnValue).then(resolve, reject);
   return chain;
 }
+
+describe("mapApi — canonical history context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("undo/redo lineage を必須化し、retry中は同じrequest identityを維持する", async () => {
+    const { createMapHistoryWriteLease, createMapWriteContext } =
+      await import("./mapApi");
+    expect(() => createMapWriteContext("undo")).toThrow(
+      "canonical transaction lineage",
+    );
+
+    const receipt = {
+      changeEventUid: "forward-event",
+      maintenanceTransactionId: "forward-transaction",
+      undoJournalId: "forward-journal",
+    };
+    const lease = createMapHistoryWriteLease("undo", receipt);
+    const first = lease.acquire();
+    expect(lease.acquire()).toEqual(first);
+    expect(first).toMatchObject({
+      origin: "undo",
+      originalTransactionId: "forward-transaction",
+      undoJournalId: "forward-journal",
+    });
+
+    lease.committed();
+    expect(lease.acquire().requestId).not.toBe(first.requestId);
+  });
+});
 
 describe("mapApi — getOrCreateBoard", () => {
   beforeEach(() => {
@@ -248,12 +290,10 @@ describe("mapApi — promoteUserEdgeToCodexRelation", () => {
     const deleteChain = makeMock([]);
     (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(deleteChain);
 
-    const createCodexRelation = vi.fn();
     const findCodexRelationByEdgeEndpoints = vi
       .fn()
       .mockResolvedValue({ id: "rel-existing" });
     vi.doMock("@/features/codex/codexRelationApi", () => ({
-      createCodexRelation,
       findCodexRelationByEdgeEndpoints,
     }));
 
@@ -264,8 +304,21 @@ describe("mapApi — promoteUserEdgeToCodexRelation", () => {
     ]);
 
     expect(result).toEqual({ relationId: "rel-existing" });
-    expect(createCodexRelation).not.toHaveBeenCalled();
-    expect(db.delete).toHaveBeenCalled();
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "map_write_bundle",
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          kind: "promote-user-edge-to-codex-relation",
+          projectId: "proj",
+          edgeId: "edge-1",
+          relationId: "rel-existing",
+          reuseExistingRelation: true,
+        }),
+      }),
+    );
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockNotifyCodexRelationsChanged).not.toHaveBeenCalled();
   });
 
   it("新規 relation を作って user edge を削除する", async () => {
@@ -281,12 +334,10 @@ describe("mapApi — promoteUserEdgeToCodexRelation", () => {
     const deleteChain = makeMock([]);
     (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(deleteChain);
 
-    const createCodexRelation = vi.fn().mockResolvedValue({ id: "rel-new" });
     const findCodexRelationByEdgeEndpoints = vi
       .fn()
       .mockResolvedValue(undefined);
     vi.doMock("@/features/codex/codexRelationApi", () => ({
-      createCodexRelation,
       findCodexRelationByEdgeEndpoints,
     }));
 
@@ -296,17 +347,26 @@ describe("mapApi — promoteUserEdgeToCodexRelation", () => {
       makePosition({ id: "pos-b", nodeRefType: "codex", codexEntryId: "c-b" }),
     ]);
 
-    expect(result).toEqual({ relationId: "rel-new" });
-    expect(createCodexRelation).toHaveBeenCalledWith(
+    expect(result?.relationId).toEqual(expect.any(String));
+    expect(mockInvoke).toHaveBeenCalledWith(
+      "map_write_bundle",
       expect.objectContaining({
-        projectId: "proj",
-        fromCodexId: "c-a",
-        toCodexId: "c-b",
-        sourceMapEdgeId: "edge-1",
-        label: "師匠",
+        payload: expect.objectContaining({
+          kind: "promote-user-edge-to-codex-relation",
+          projectId: "proj",
+          fromCodexId: "c-a",
+          toCodexId: "c-b",
+          edgeId: "edge-1",
+          label: "師匠",
+          reuseExistingRelation: false,
+        }),
       }),
     );
-    expect(db.delete).toHaveBeenCalled();
+    expect(db.delete).not.toHaveBeenCalled();
+    expect(mockRecord).not.toHaveBeenCalled();
+    expect(mockNotifyCodexRelationsChanged).toHaveBeenCalledExactlyOnceWith(
+      "proj",
+    );
   });
 });
 
@@ -760,6 +820,60 @@ describe("mapApi — createAiBranch", () => {
         edges: [],
         spans: [],
       }),
+    });
+  });
+});
+
+describe("mapApi — deleteAiBranch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("orphan化の単純削除も Native erase bundle からreceiptを返す", async () => {
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([{ id: "branch-1", boardId: "board-1" }]))
+      .mockReturnValueOnce(
+        makeMock([{ id: "board-1", projectId: "project-1" }]),
+      );
+
+    const { deleteAiBranch } = await import("./mapApi");
+    await expect(deleteAiBranch("branch-1")).resolves.toMatchObject({
+      maintenanceTransactionId: "map-maintenance-transaction",
+      undoJournalId: "map-undo-journal",
+    });
+    expect(mockInvoke).toHaveBeenCalledWith("map_write_bundle", {
+      payload: expect.objectContaining({
+        kind: "erase-ai-branch",
+        projectId: "project-1",
+        branchId: "branch-1",
+        origin: "human",
+        spanIds: [],
+        stickyPositionIds: [],
+        stickyIds: [],
+      }),
+    });
+    expect(db.delete).not.toHaveBeenCalled();
+  });
+
+  it("redo contextをNative bundleへそのまま渡す", async () => {
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([{ id: "branch-1", boardId: "board-1" }]))
+      .mockReturnValueOnce(
+        makeMock([{ id: "board-1", projectId: "project-1" }]),
+      );
+    const context = {
+      requestId: "redo-request",
+      sessionId: "redo-session",
+      eventUid: "redo-event",
+      origin: "redo" as const,
+      originalTransactionId: "forward-transaction",
+      undoJournalId: "forward-journal",
+    };
+
+    const { deleteAiBranch } = await import("./mapApi");
+    await deleteAiBranch("branch-1", context);
+    expect(mockInvoke).toHaveBeenCalledWith("map_write_bundle", {
+      payload: expect.objectContaining(context),
     });
   });
 });

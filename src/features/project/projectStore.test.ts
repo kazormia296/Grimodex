@@ -103,6 +103,7 @@ vi.mock("@/features/agent-writes/autoAcceptFeed", () => ({
 
 vi.mock("@/features/timelapse/recorder", () => ({
   flushNow: backgroundH.flushTimelapse,
+  getRecorderSessionId: vi.fn(() => "project-store-test-session"),
   setRecorderEnabled: backgroundH.setRecorderEnabled,
   initRecorderForProject: backgroundH.initRecorderForProject,
 }));

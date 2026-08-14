@@ -232,7 +232,7 @@ fn undo_payload(commit_id: &str) -> UndoCommitPayload {
         session_id: "sess-foreshadow".to_string(),
         surface: None,
         commit_id: Some(commit_id.to_string()),
-        request_id: None,
+        request_id: Some(format!("foreshadow-replay:{commit_id}")),
     }
 }
 

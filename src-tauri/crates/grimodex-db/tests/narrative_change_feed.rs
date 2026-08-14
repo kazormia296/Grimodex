@@ -3,7 +3,7 @@ use grimodex_db::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use grimodex_db::narrative_extraction::change_feed::{
     acknowledge_cursor_in_tx, append_narrative_change_transaction_in_tx,
     events_from_journal_entities, get_changes_since, AppendNarrativeChangeTransactionInput,
-    NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 use grimodex_db::Database;
 use rusqlite::Connection;
@@ -82,6 +82,12 @@ fn append_canonical_in_tx(
     entity_id: &str,
     timestamp: i64,
 ) -> i64 {
+    conn.execute(
+        "INSERT OR IGNORE INTO codex_entries (id, project_id, type, name)
+         VALUES (?1, ?2, 'character', ?1)",
+        [entity_id, project_id],
+    )
+    .expect("seed project-owned Feed object");
     append_change_events_in_tx(
         conn,
         project_id,
@@ -104,9 +110,11 @@ fn transaction_input(
         source_domain: "narrative.commit.apply".to_string(),
         source_change_event_uid: source_change_event_uid.to_string(),
         cause_kind: NarrativeChangeCauseKind::Forward,
+        origin: NarrativeChangeOrigin::Human,
         original_transaction_id: None,
         commit_id: None,
         journal_id: None,
+        undo_journal_id: None,
         application_ids: vec![],
         occurred_at: "2026-08-13T00:00:00.000Z".to_string(),
         events,
@@ -123,6 +131,21 @@ fn append_committed(
 ) -> grimodex_db::narrative_extraction::change_feed::AppendNarrativeChangeTransactionResult {
     db.with_conn(|conn| {
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        for event in &events {
+            if event.mutation_kind != "delete" {
+                if let Some(entry_id) = event
+                    .object_key
+                    .get("entryId")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    conn.execute(
+                        "INSERT OR IGNORE INTO codex_entries (id, project_id, type, name)
+                         VALUES (?1, ?2, 'character', ?1)",
+                        [entry_id, project_id],
+                    )?;
+                }
+            }
+        }
         append_canonical_in_tx(conn, project_id, event_uid, entity_id, 1_786_579_200_000);
         let result = append_narrative_change_transaction_in_tx(
             conn,
@@ -142,11 +165,169 @@ fn count(conn: &Connection, table: &str) -> i64 {
 }
 
 #[test]
-fn fresh_schema_21_contains_only_the_foundation_feed_tables() {
+fn object_head_lookup_is_index_backed_after_a_large_head_fixture() {
+    let db = migrated_db();
+    append_committed(
+        &db,
+        PROJECT_ONE,
+        "head-anchor-request",
+        "head-anchor-event",
+        "head-anchor",
+        vec![narrative_event("head-anchor", "create")],
+    );
+
+    db.with_conn(|conn| {
+        let anchor_event_id: String = conn.query_row(
+            "SELECT id FROM narrative_change_events
+              WHERE project_id = ?1
+              LIMIT 1",
+            [PROJECT_ONE],
+            |row| row.get(0),
+        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        for index in 0..10_000_i64 {
+            conn.execute(
+                "INSERT INTO narrative_change_object_heads (
+                    project_id, object_identity, after_version, after_digest,
+                    event_id, canonical_sequence, event_ordinal, updated_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)",
+                rusqlite::params![
+                    PROJECT_ONE,
+                    format!("{{\"kind\":\"scene\",\"sceneId\":\"scene-{index}\"}}"),
+                    index,
+                    format!("sha256:head-{index}"),
+                    anchor_event_id,
+                    index + 1,
+                    "2026-08-13T00:00:00.000Z",
+                ],
+            )?;
+        }
+        conn.execute_batch("COMMIT")?;
+
+        let details = conn
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                   SELECT after_version, after_digest
+                     FROM narrative_change_object_heads
+                    WHERE project_id = ?1
+                      AND object_identity = ?2",
+            )?
+            .query_map(
+                [PROJECT_ONE, "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}"],
+                |row| row.get::<_, String>(3),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(
+            details.iter().any(|detail| detail.contains("USING INDEX")),
+            "object head lookup lost its identity index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains("narrative_change_events")),
+            "continuity lookup must not scan the historical feed: {details:?}"
+        );
+        Ok(())
+    })
+    .expect("large object-head fixture remains indexed");
+}
+
+#[test]
+fn continuity_guard_rejects_a_mismatched_head_and_rolls_back_domain_state() {
+    let db = migrated_db();
+    append_committed(
+        &db,
+        PROJECT_ONE,
+        "continuity-create",
+        "continuity-create-event",
+        "continuity-entry",
+        vec![narrative_event("continuity-entry", "create")],
+    );
+
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        conn.execute(
+            "UPDATE codex_entries SET name = 'must-roll-back' WHERE id = 'continuity-entry'",
+            [],
+        )?;
+        append_canonical_in_tx(
+            conn,
+            PROJECT_ONE,
+            "continuity-bad-event",
+            "continuity-entry",
+            1_786_579_200_100,
+        );
+        let error = append_narrative_change_transaction_in_tx(
+            conn,
+            &transaction_input(
+                PROJECT_ONE,
+                "continuity-bad",
+                "continuity-bad-event",
+                vec![narrative_event("continuity-entry", "update")],
+            ),
+        )
+        .expect_err("mismatched prior after/current before must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NARRATIVE_CHANGE_FEED_DISCONTINUITY"));
+        conn.execute_batch("ROLLBACK")?;
+        let name: String = conn.query_row(
+            "SELECT name FROM codex_entries WHERE id = 'continuity-entry'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(name, "continuity-entry");
+        Ok(())
+    })
+    .expect("continuity rollback");
+}
+
+#[test]
+fn continuity_guard_chains_repeated_roots_in_event_ordinal_order() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        append_canonical_in_tx(
+            conn,
+            PROJECT_ONE,
+            "continuity-chain-event",
+            "continuity-chain",
+            1_786_579_200_101,
+        );
+        let first = NarrativeChangeEventInput {
+            after_version: Some(1),
+            after_digest: Some("sha256:one".to_string()),
+            ..narrative_event("continuity-chain", "create")
+        };
+        let second = NarrativeChangeEventInput {
+            before_version: Some(1),
+            before_digest: Some("sha256:one".to_string()),
+            after_version: Some(2),
+            after_digest: Some("sha256:two".to_string()),
+            ..narrative_event("continuity-chain", "update")
+        };
+        let result = append_narrative_change_transaction_in_tx(
+            conn,
+            &transaction_input(
+                PROJECT_ONE,
+                "continuity-chain",
+                "continuity-chain-event",
+                vec![first, second],
+            ),
+        )?;
+        assert_eq!(result.event_ids.len(), 2);
+        conn.execute_batch("COMMIT")?;
+        Ok(())
+    })
+    .expect("same-root event chain");
+}
+
+#[test]
+fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
     let db = migrated_db();
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(SCHEMA_VERSION, 21);
+        assert_eq!(SCHEMA_VERSION, 22);
         assert_eq!(version, SCHEMA_VERSION);
 
         for table in [
@@ -160,11 +341,48 @@ fn fresh_schema_21_contains_only_the_foundation_feed_tables() {
                 [table],
                 |row| row.get(0),
             )?;
-            assert_eq!(exists, 1, "missing SCHEMA 21 table {table}");
+            assert_eq!(exists, 1, "missing SCHEMA 22 table {table}");
         }
+        let (not_null, default_value): (i64, Option<String>) = conn.query_row(
+            "SELECT \"notnull\", dflt_value FROM pragma_table_info('narrative_change_transactions')
+              WHERE name = 'origin'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(not_null, 1);
+        assert_eq!(default_value, None);
         Ok(())
     })
     .expect("inspect schema");
+}
+
+#[test]
+fn origin_is_persisted_and_must_match_undo_redo_cause() {
+    let db = migrated_db();
+    let mut input = transaction_input(
+        PROJECT_ONE,
+        "request-origin",
+        "canonical-origin",
+        vec![narrative_event("entry-origin", "update")],
+    );
+    input.origin = NarrativeChangeOrigin::Undo;
+
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        append_canonical_in_tx(
+            conn,
+            PROJECT_ONE,
+            "canonical-origin",
+            "entry-origin",
+            1_786_579_200_010,
+        );
+        let error = append_narrative_change_transaction_in_tx(conn, &input)
+            .expect_err("forward cause cannot claim undo origin");
+        assert!(error.to_string().contains("origin"));
+        conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    })
+    .expect("validate origin");
 }
 
 #[test]
@@ -337,6 +555,7 @@ fn source_event_and_original_transaction_references_are_project_scoped() {
             vec![narrative_event("entry-two", "restore")],
         );
         wrong_original.cause_kind = NarrativeChangeCauseKind::Redo;
+        wrong_original.origin = NarrativeChangeOrigin::Redo;
         wrong_original.original_transaction_id = Some(first.transaction_id.clone());
         let error = append_narrative_change_transaction_in_tx(conn, &wrong_original)
             .expect_err("cross-project original transaction");
@@ -349,9 +568,200 @@ fn source_event_and_original_transaction_references_are_project_scoped() {
         let project_one = get_changes_since(conn, PROJECT_ONE, 0, 50)?;
         assert_eq!(project_one.len(), 1);
         assert_eq!(project_one[0].project_id, PROJECT_ONE);
+        assert_eq!(project_one[0].origin, NarrativeChangeOrigin::Human);
         Ok(())
     })
     .expect("project isolation");
+}
+
+#[test]
+fn existing_feed_object_from_another_project_is_rejected() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name)
+             VALUES ('foreign-entry', 'project-2', 'character', 'Foreign')",
+            [],
+        )?;
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        append_canonical_in_tx(
+            conn,
+            PROJECT_ONE,
+            "canonical-foreign-object",
+            "foreign-entry",
+            1_786_579_200_004,
+        );
+        let input = transaction_input(
+            PROJECT_ONE,
+            "request-foreign-object",
+            "canonical-foreign-object",
+            vec![narrative_event("foreign-entry", "update")],
+        );
+        let error = append_narrative_change_transaction_in_tx(conn, &input)
+            .expect_err("foreign Feed object must be rejected");
+        assert!(error.to_string().contains("another project"));
+        conn.execute_batch("ROLLBACK")?;
+        assert_eq!(count(conn, "narrative_change_transactions"), 0);
+        assert_eq!(count(conn, "narrative_change_events"), 0);
+        Ok(())
+    })
+    .expect("validate Feed object project scope");
+}
+
+#[test]
+fn missing_live_feed_object_is_rejected_for_non_delete_mutations() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        append_change_events_in_tx(
+            conn,
+            PROJECT_ONE,
+            "test-session",
+            &[canonical_event(
+                "canonical-missing-object",
+                "missing-entry",
+                1_786_579_200_005,
+            )],
+        )?;
+        let input = transaction_input(
+            PROJECT_ONE,
+            "request-missing-object",
+            "canonical-missing-object",
+            vec![narrative_event("missing-entry", "update")],
+        );
+        let error = append_narrative_change_transaction_in_tx(conn, &input)
+            .expect_err("missing live object must fail closed");
+        assert!(error.to_string().contains("not in project"), "{error}");
+        conn.execute_batch("ROLLBACK")?;
+        assert_eq!(count(conn, "narrative_change_transactions"), 0);
+        assert_eq!(count(conn, "narrative_change_events"), 0);
+        Ok(())
+    })
+    .expect("validate missing Feed object");
+}
+
+#[test]
+fn logical_feed_roots_and_registered_components_are_fail_closed_by_project() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO import_sessions (
+                 id, state, target_json, created_at, updated_at
+             ) VALUES (
+                 'foreign-import', 'ready', '{\"projectId\":\"project-2\"}',
+                 '2026-08-13T00:00:00Z', '2026-08-13T00:00:00Z'
+             );
+             INSERT INTO codex_tags (id, project_id, name)
+             VALUES ('foreign-tag', 'project-2', 'Foreign');",
+        )?;
+
+        let cases = [
+            (
+                "calendar",
+                NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "calendar",
+                        "calendarRef": PROJECT_TWO,
+                    }),
+                    change_kind: "calendar".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: Some(1),
+                    before_digest: Some("sha256:before-calendar".to_string()),
+                    after_version: Some(2),
+                    after_digest: Some("sha256:after-calendar".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: None,
+                },
+            ),
+            (
+                "import-source",
+                NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "import-source",
+                        "sourceSetId": "foreign-import",
+                        "objectKey": PROJECT_ONE,
+                    }),
+                    change_kind: "metadata".to_string(),
+                    mutation_kind: "create".to_string(),
+                    before_version: None,
+                    before_digest: None,
+                    after_version: Some(1),
+                    after_digest: Some("sha256:after-import".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: None,
+                },
+            ),
+            (
+                "component",
+                NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "component",
+                        "componentId": "codex-tag:foreign-tag",
+                    }),
+                    change_kind: "catalog".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: Some(1),
+                    before_digest: Some("sha256:before-tag".to_string()),
+                    after_version: Some(2),
+                    after_digest: Some("sha256:after-tag".to_string()),
+                    changed_paths: vec!["/name".to_string()],
+                    text_impact: None,
+                    structural_impact: None,
+                },
+            ),
+            (
+                "unregistered-component",
+                NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "component",
+                        "componentId": "arbitrary-sql-table:foreign-row",
+                    }),
+                    change_kind: "metadata".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: Some(1),
+                    before_digest: Some("sha256:before-arbitrary".to_string()),
+                    after_version: Some(2),
+                    after_digest: Some("sha256:after-arbitrary".to_string()),
+                    changed_paths: vec!["/".to_string()],
+                    text_impact: None,
+                    structural_impact: None,
+                },
+            ),
+        ];
+
+        for (index, (label, event)) in cases.into_iter().enumerate() {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let canonical_uid = format!("canonical-logical-scope-{index}");
+            append_canonical_in_tx(
+                conn,
+                PROJECT_ONE,
+                &canonical_uid,
+                label,
+                1_786_579_200_100 + index as i64,
+            );
+            let input = transaction_input(
+                PROJECT_ONE,
+                &format!("request-logical-scope-{index}"),
+                &canonical_uid,
+                vec![event],
+            );
+            let error = append_narrative_change_transaction_in_tx(conn, &input)
+                .expect_err("logical Feed root must reject foreign or unregistered identity");
+            assert!(
+                error.to_string().contains("another project")
+                    || error.to_string().contains("not registered"),
+                "{label}: unexpected error: {error}"
+            );
+            conn.execute_batch("ROLLBACK")?;
+        }
+
+        assert_eq!(count(conn, "narrative_change_transactions"), 0);
+        assert_eq!(count(conn, "narrative_change_events"), 0);
+        Ok(())
+    })
+    .expect("validate logical Feed project scope");
 }
 
 #[test]
@@ -372,6 +782,11 @@ fn undo_lineage_cannot_reuse_another_commit_root_in_the_same_project() {
         )?;
 
         conn.execute_batch("BEGIN IMMEDIATE")?;
+        conn.execute(
+            "INSERT INTO codex_entries (id, project_id, type, name)
+             VALUES ('entry-a', 'project-1', 'character', 'Entry A')",
+            [],
+        )?;
         append_canonical_in_tx(
             conn,
             PROJECT_ONE,
@@ -406,6 +821,7 @@ fn undo_lineage_cannot_reuse_another_commit_root_in_the_same_project() {
         );
         wrong_lineage.source_domain = "narrative.commit.undo".to_string();
         wrong_lineage.cause_kind = NarrativeChangeCauseKind::Undo;
+        wrong_lineage.origin = NarrativeChangeOrigin::Undo;
         wrong_lineage.original_transaction_id = Some(root.transaction_id);
         wrong_lineage.commit_id = Some("commit-b".to_string());
         wrong_lineage.journal_id = Some("journal-b".to_string());
@@ -461,12 +877,34 @@ fn project_delete_cascades_feed_lineage_after_undo_and_redo() {
                     source_domain: source_domain.to_string(),
                     source_change_event_uid: event_uid.to_string(),
                     cause_kind: cause,
+                    origin: match cause {
+                        NarrativeChangeCauseKind::Undo => NarrativeChangeOrigin::Undo,
+                        NarrativeChangeCauseKind::Redo => NarrativeChangeOrigin::Redo,
+                        NarrativeChangeCauseKind::Forward => NarrativeChangeOrigin::Human,
+                    },
                     original_transaction_id: Some(forward.transaction_id.clone()),
                     commit_id: None,
                     journal_id: None,
+                    undo_journal_id: None,
                     application_ids: vec![],
                     occurred_at: "2026-08-13T00:00:04.000Z".to_string(),
-                    events: vec![narrative_event("entry-cascade", mutation_kind)],
+                    events: vec![match mutation_kind {
+                        "delete" => NarrativeChangeEventInput {
+                            before_version: Some(2),
+                            before_digest: Some("sha256:after-entry-cascade".to_string()),
+                            after_version: None,
+                            after_digest: None,
+                            ..narrative_event("entry-cascade", "delete")
+                        },
+                        "restore" => NarrativeChangeEventInput {
+                            before_version: None,
+                            before_digest: None,
+                            after_version: Some(3),
+                            after_digest: Some("sha256:restored-entry-cascade".to_string()),
+                            ..narrative_event("entry-cascade", "restore")
+                        },
+                        _ => unreachable!(),
+                    }],
                 },
             )?;
             conn.execute_batch("COMMIT")?;

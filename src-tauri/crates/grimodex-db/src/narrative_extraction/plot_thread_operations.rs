@@ -472,7 +472,13 @@ pub(crate) fn apply_plot_thread_patch_in_tx(
                 SET version = ?1,
                     updated_at = ?2
               WHERE id = ?3 AND project_id = ?4 AND version = ?5",
-            params![next_version, now, payload.thread_id, project_id, live_version],
+            params![
+                next_version,
+                now,
+                payload.thread_id,
+                project_id,
+                live_version
+            ],
         )?
     };
     anyhow::ensure!(
@@ -508,12 +514,9 @@ pub(crate) fn apply_plot_marker_create_in_tx(
     )?;
     ensure_thread_in_project(conn, project_id, &thread_id)?;
 
-    let semantic_key = payload
-        .semantic_key
-        .clone()
-        .unwrap_or_else(|| {
-            build_marker_semantic_key(&thread_id, &payload.scene_id, &payload.phase_type)
-        });
+    let semantic_key = payload.semantic_key.clone().unwrap_or_else(|| {
+        build_marker_semantic_key(&thread_id, &payload.scene_id, &payload.phase_type)
+    });
     ensure_semantic_key_unique(conn, "plot_thread_scene_links", &semantic_key, "marker")?;
     ensure_marker_id_available(conn, &payload.marker_id)?;
 

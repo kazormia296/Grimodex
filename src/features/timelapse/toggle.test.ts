@@ -392,6 +392,18 @@ describe("rebaselineEntitiesAtTail", () => {
     );
   });
 
+  it("uses the committed Native sequence instead of the stale renderer head", async () => {
+    recorderMock.getRecorderChainHead.mockReturnValue(9);
+    treeMock.loadSceneContent.mockResolvedValue('{"type":"doc"}');
+
+    await rebaselineEntitiesAtTail("p1", [{ kind: "scene", id: "s1" }], 12);
+
+    expect(recorderMock.flushNow).toHaveBeenCalled();
+    expect(snapshotsMock.recordStateSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ entityId: "s1", anchorSequence: 12 }),
+    );
+  });
+
   it("no-op when recording is disabled or refs empty", async () => {
     recorderMock.isRecorderEnabled.mockReturnValue(false);
     await rebaselineEntitiesAtTail("p1", [{ kind: "codex", id: "c1" }]);

@@ -2729,7 +2729,8 @@ export const genericExtractionSchemas = sqliteTable(
 );
 
 // =========================================================================
-// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21).
+// Narrative Maintenance Change Feed foundation (SCHEMA_VERSION 21), with the
+// mandatory writer-origin contract added in SCHEMA_VERSION 22.
 //
 // This is a freshness / dependency-invalidation feed, not a second audit
 // ledger. Every transaction is correlated to the canonical change_events hash
@@ -2752,9 +2753,21 @@ export const narrativeChangeTransactions = sqliteTable(
     causeKind: text("cause_kind", {
       enum: ["forward", "undo", "redo"],
     }).notNull(),
+    origin: text("origin", {
+      enum: [
+        "human",
+        "ai-apply",
+        "import",
+        "undo",
+        "redo",
+        "restore",
+        "migration",
+      ],
+    }).notNull(),
     originalTransactionId: text("original_transaction_id"),
     commitId: text("commit_id"),
     journalId: text("journal_id"),
+    undoJournalId: text("undo_journal_id"),
     applicationIdsJson: text("application_ids_json").notNull().default("[]"),
     payloadDigest: text("payload_digest").notNull(),
     createdAt: text("created_at").notNull().$defaultFn(nowInstantString),
@@ -2836,6 +2849,39 @@ export const narrativeChangeEvents = sqliteTable(
       name: "narrative_change_events_transaction_fkey",
     }).onDelete("cascade"),
     index("idx_narrative_change_events_project_sequence").on(
+      table.projectId,
+      table.canonicalSequence,
+      table.eventOrdinal,
+    ),
+  ],
+);
+
+/** Latest after-state per normalized object identity for O(1) continuity checks. */
+export const narrativeChangeObjectHeads = sqliteTable(
+  "narrative_change_object_heads",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    objectIdentity: text("object_identity").notNull(),
+    afterVersion: integer("after_version"),
+    afterDigest: text("after_digest"),
+    eventId: text("event_id").notNull(),
+    canonicalSequence: integer("canonical_sequence").notNull(),
+    eventOrdinal: integer("event_ordinal").notNull(),
+    updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.objectIdentity] }),
+    foreignKey({
+      columns: [table.projectId, table.eventId],
+      foreignColumns: [
+        narrativeChangeEvents.projectId,
+        narrativeChangeEvents.id,
+      ],
+      name: "narrative_change_object_heads_event_fkey",
+    }).onDelete("cascade"),
+    index("idx_narrative_change_object_heads_project_sequence").on(
       table.projectId,
       table.canonicalSequence,
       table.eventOrdinal,

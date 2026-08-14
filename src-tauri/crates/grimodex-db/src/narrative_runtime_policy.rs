@@ -309,19 +309,17 @@ fn load_stored_policy(conn: &Connection) -> NarrativeRuntimePolicy {
         },
     );
     match loaded {
-        Ok((mode, maintenance, generic_import, background_ai, version)) => {
-            NarrativeRuntimePolicy {
-                runtime_mode: NarrativeRuntimeMode::parse_fail_closed(&mode),
-                maintenance_enabled: parse_sql_bool_flag(maintenance),
-                generic_import_enabled: parse_sql_bool_flag(generic_import),
-                background_ai_enabled: parse_sql_bool_flag(background_ai),
-                version,
-                hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
-                hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
-                hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
-                hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
-            }
-        }
+        Ok((mode, maintenance, generic_import, background_ai, version)) => NarrativeRuntimePolicy {
+            runtime_mode: NarrativeRuntimeMode::parse_fail_closed(&mode),
+            maintenance_enabled: parse_sql_bool_flag(maintenance),
+            generic_import_enabled: parse_sql_bool_flag(generic_import),
+            background_ai_enabled: parse_sql_bool_flag(background_ai),
+            version,
+            hard_disable_engine: env_flag_enabled(ENV_DISABLE_ENGINE),
+            hard_disable_maintenance: env_flag_enabled(ENV_DISABLE_MAINTENANCE),
+            hard_disable_generic_import: env_flag_enabled(ENV_DISABLE_GENERIC_IMPORT),
+            hard_disable_background_ai: env_flag_enabled(ENV_DISABLE_BACKGROUND_AI),
+        },
         Err(_) => fail_closed_policy_with_env(),
     }
 }

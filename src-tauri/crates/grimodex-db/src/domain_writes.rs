@@ -2,13 +2,34 @@
 //! SQL batches. Each command owns its SQL, transaction boundary, and project
 //! checks here; renderer payloads contain domain data only.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use rusqlite::{params, OptionalExtension, Transaction};
-use serde::Deserialize;
-use serde_json::Value;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use super::Database;
+use crate::change_events::AppendChangeEvent;
+use crate::idempotency::{
+    canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
+    payload_fingerprint, IdempotencyRequest,
+};
+use crate::narrative_extraction::change_feed::{
+    append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
+    require_replay_lineage_in_project, AppendNarrativeChangeTransactionInput,
+    scene_text_impact, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+    NarrativeChangeOrigin,
+};
+
+fn json_pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
+fn event_timestamp(value: &str) -> i64 {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|value| value.timestamp_millis())
+        .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis())
+}
 
 fn require_non_empty(value: &str, field: &str) -> anyhow::Result<()> {
     if value.is_empty() {
@@ -247,9 +268,18 @@ pub fn replace_authorship_lane(
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetEntityTagsPayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
     pub entity_kind: String,
     pub entity_id: String,
     pub tag_ids: Vec<String>,
@@ -271,8 +301,53 @@ fn entity_project_id(
         .ok_or_else(|| anyhow::anyhow!("{entity_kind} entity not found"))
 }
 
+fn collect_entity_tags_snapshot(
+    tx: &Transaction<'_>,
+    entity_kind: &str,
+    entity_id: &str,
+    project_id: &str,
+) -> anyhow::Result<Value> {
+    let object_key = entity_tags_object_key(entity_kind, entity_id)?;
+    crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(tx, project_id, &object_key)?
+        .ok_or_else(|| anyhow::anyhow!("{entity_kind} entity '{entity_id}' disappeared"))
+}
+
+fn entity_tags_object_key(entity_kind: &str, entity_id: &str) -> anyhow::Result<Value> {
+    match entity_kind {
+        "codex" => Ok(json!({ "kind": "codex-entry", "entryId": entity_id })),
+        "snippet" => Ok(json!({
+            "kind": "component",
+            "componentId": format!("snippet:{entity_id}"),
+        })),
+        _ => anyhow::bail!("entityKind must be codex or snippet"),
+    }
+}
+
 pub fn set_entity_tags(db: &Database, payload: SetEntityTagsPayload) -> anyhow::Result<()> {
+    require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.request_id, "requestId")?;
+    require_non_empty(&payload.session_id, "sessionId")?;
+    require_non_empty(&payload.event_uid, "eventUid")?;
     require_non_empty(&payload.entity_id, "entityId")?;
+    let replay = matches!(
+        payload.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = payload
+        .original_transaction_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+        && payload
+            .undo_journal_id
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        replay == complete_lineage
+            && (replay
+                || (payload.original_transaction_id.is_none()
+                    && payload.undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
     let mut unique_tag_ids = HashSet::new();
     for tag_id in &payload.tag_ids {
         require_non_empty(tag_id, "tagIds[]")?;
@@ -287,9 +362,47 @@ pub fn set_entity_tags(db: &Database, payload: SetEntityTagsPayload) -> anyhow::
         )?;
     }
 
+    let request_hash = canonical_write_payload_fingerprint("entity_tags_set", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "entity_tags_set",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "ENTITY_TAGS_REQUEST_CONFLICT",
+    };
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        if load_idempotent_response(&tx, &idempotency_request)?.is_some() {
+            tx.commit()?;
+            return Ok(());
+        }
         let project_id = entity_project_id(&tx, &payload.entity_kind, &payload.entity_id)?;
+        anyhow::ensure!(
+            project_id == payload.project_id,
+            "{} entity '{}' is not in project '{}'",
+            payload.entity_kind,
+            payload.entity_id,
+            payload.project_id
+        );
+        if replay {
+            require_replay_lineage_in_project(
+                &tx,
+                &payload.project_id,
+                payload
+                    .original_transaction_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("originalTransactionId is required"))?,
+                payload
+                    .undo_journal_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("undoJournalId is required"))?,
+            )?;
+        }
+        let before = collect_entity_tags_snapshot(
+            &tx,
+            &payload.entity_kind,
+            &payload.entity_id,
+            &project_id,
+        )?;
         let mut tags = Vec::<serde_json::Value>::new();
         for tag_id in &payload.tag_ids {
             let tag = tx
@@ -365,12 +478,83 @@ pub fn set_entity_tags(db: &Database, payload: SetEntityTagsPayload) -> anyhow::
             }
             _ => unreachable!("entity kind was validated"),
         }
+        let after = collect_entity_tags_snapshot(
+            &tx,
+            &payload.entity_kind,
+            &payload.entity_id,
+            &project_id,
+        )?;
+        let timestamp = payload
+            .updated_at
+            .as_deref()
+            .map(event_timestamp)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let occurred_at = chrono::DateTime::from_timestamp_millis(timestamp)
+            .ok_or_else(|| anyhow::anyhow!("entity tags timestamp is outside the supported range"))?
+            .to_rfc3339();
+        let operation = format!("{}.tags.set", payload.entity_kind);
+        let object_key = entity_tags_object_key(&payload.entity_kind, &payload.entity_id)?;
+        append_canonical_and_narrative_change_in_tx(
+            &tx,
+            &project_id,
+            &payload.session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: payload.entity_kind.clone(),
+                op_type: operation.clone(),
+                entity_type: Some(format!("{}_tags", payload.entity_kind)),
+                entity_id: Some(payload.entity_id.clone()),
+                payload: json!({
+                    "requestId": payload.request_id,
+                    "tagCount": payload.tag_ids.len(),
+                })
+                .to_string(),
+                timestamp,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: operation,
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind: match payload.origin {
+                    NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+                    NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+                    _ => NarrativeChangeCauseKind::Forward,
+                },
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.clone(),
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: payload.undo_journal_id.clone(),
+                application_ids: Vec::new(),
+                occurred_at,
+                events: vec![NarrativeChangeEventInput {
+                    object_key,
+                    change_kind: "association".to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: before.get("version").and_then(Value::as_i64),
+                    before_digest: Some(narrative_snapshot_digest(&before)?),
+                    after_version: after.get("version").and_then(Value::as_i64),
+                    after_digest: Some(narrative_snapshot_digest(&after)?),
+                    changed_paths: vec!["/tags".to_string()],
+                    text_impact: None,
+                    structural_impact: Some(json!({ "changedPaths": ["/tags"] })),
+                }],
+            },
+        )?;
+        insert_idempotent_response(
+            &tx,
+            &idempotency_request,
+            &project_id,
+            &json!({ "eventUid": payload.event_uid }),
+        )?;
         tx.commit()?;
         Ok(())
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexRenameUndoUpdate {
     pub kind: String,
@@ -382,14 +566,114 @@ pub struct CodexRenameUndoUpdate {
     pub placed_beat_preview: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexRenameUndoPayload {
+    pub request_id: String,
+    pub event_uid: String,
+    pub original_transaction_id: String,
+    pub undo_journal_id: String,
     pub project_id: String,
     pub updated_at: String,
     pub updates: Vec<CodexRenameUndoUpdate>,
     #[serde(default)]
     pub session_id: Option<String>,
+}
+
+fn codex_rename_update_sort_key(update: &CodexRenameUndoUpdate) -> anyhow::Result<String> {
+    match update.kind.as_str() {
+        "scene-body" => Ok(format!("scene:{}:content", update.ref_id)),
+        "node-title" => Ok(format!("scene:{}:title", update.ref_id)),
+        "node-synopsis" => Ok(format!("scene:{}:synopsis", update.ref_id)),
+        "codex-summary" => Ok(format!("codex-entry:{}:/summary", update.ref_id)),
+        "codex-content" => Ok(format!("codex-entry:{}:/content", update.ref_id)),
+        "codex-notes" => Ok(format!("codex-entry:{}:/notes", update.ref_id)),
+        "codex-detail" => Ok(format!(
+            "codex-detail-value:{}:{}",
+            update.ref_id,
+            update
+                .detail_definition_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?
+        )),
+        "codex-relation-label" => Ok(format!("codex-relation:{}", update.ref_id)),
+        other => anyhow::bail!("unsupported codex rename kind '{other}'"),
+    }
+}
+
+fn codex_rename_feed_contract(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    update: &CodexRenameUndoUpdate,
+) -> anyhow::Result<(Value, &'static str, Vec<String>)> {
+    match update.kind.as_str() {
+        "scene-body" => Ok((
+            json!({ "kind": "scene", "sceneId": update.ref_id }),
+            "content",
+            vec![
+                "/charCount".to_string(),
+                "/content".to_string(),
+                "/placedBeatPreview".to_string(),
+            ],
+        )),
+        "node-title" => Ok((
+            json!({ "kind": "scene", "sceneId": update.ref_id }),
+            "metadata",
+            vec!["/title".to_string()],
+        )),
+        "node-synopsis" => Ok((
+            json!({ "kind": "scene", "sceneId": update.ref_id }),
+            "metadata",
+            vec!["/synopsis".to_string()],
+        )),
+        "codex-summary" | "codex-content" | "codex-notes" => {
+            let path = match update.kind.as_str() {
+                "codex-summary" => "/summary",
+                "codex-content" => "/content",
+                "codex-notes" => "/notes",
+                _ => unreachable!("matched above"),
+            };
+            Ok((
+                json!({ "kind": "codex-entry", "entryId": update.ref_id }),
+                "metadata",
+                vec![path.to_string()],
+            ))
+        }
+        "codex-detail" => {
+            let definition_id = update
+                .detail_definition_id
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?;
+            let value_id: String = conn
+                .query_row(
+                    "SELECT value.id FROM codex_detail_values value
+                      JOIN codex_entries entry ON entry.id = value.entry_id
+                      JOIN codex_detail_definitions definition
+                        ON definition.id = value.definition_id
+                     WHERE value.entry_id = ?1 AND value.definition_id = ?2
+                       AND entry.project_id = ?3
+                       AND definition.project_id = ?3",
+                    params![update.ref_id, definition_id, project_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or_else(|| anyhow::anyhow!("codex detail value is missing"))?;
+            Ok((
+                json!({
+                    "kind": "codex-detail-value",
+                    "valueId": value_id,
+                }),
+                "metadata",
+                vec![format!("/details/{}", json_pointer_segment(definition_id))],
+            ))
+        }
+        "codex-relation-label" => Ok((
+            json!({ "kind": "codex-relation", "relationId": update.ref_id }),
+            "association",
+            vec!["/forwardLabel".to_string()],
+        )),
+        other => anyhow::bail!("unsupported codex rename kind '{other}'"),
+    }
 }
 
 fn validate_codex_rename_updates(updates: &[CodexRenameUndoUpdate]) -> anyhow::Result<()> {
@@ -428,16 +712,43 @@ fn validate_codex_rename_updates(updates: &[CodexRenameUndoUpdate]) -> anyhow::R
 /// Narrative table, but is applied here too so the whole rename batch commits
 /// atomically in one Native transaction (matching the pre-cutover
 /// `agentWriteBundle` guarantee).
+struct CodexRenameApplyOutcome {
+    versions: Vec<Value>,
+    feed_events: Vec<NarrativeChangeEventInput>,
+}
+
 fn apply_codex_rename_updates_in_tx(
     conn: &rusqlite::Connection,
     project_id: &str,
     updated_at: &str,
     session_id: &str,
     updates: &[CodexRenameUndoUpdate],
-) -> anyhow::Result<Vec<Value>> {
-    let mut versions = Vec::with_capacity(updates.len());
+) -> anyhow::Result<CodexRenameApplyOutcome> {
+    let mut versions = vec![Value::Null; updates.len()];
+    let mut feed_events = Vec::with_capacity(updates.len());
+    let mut ordered_indices = (0..updates.len()).collect::<Vec<_>>();
+    let mut keyed_indices = ordered_indices
+        .drain(..)
+        .map(|index| Ok((codex_rename_update_sort_key(&updates[index])?, index)))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    keyed_indices.sort_by(|left, right| left.0.cmp(&right.0));
     let mut aggregate_versions: HashMap<String, (i64, i64)> = HashMap::new();
-    for update in updates {
+    for (_, index) in keyed_indices {
+        let update = &updates[index];
+        let (object_key, change_kind, changed_paths) =
+            codex_rename_feed_contract(conn, project_id, update)?;
+        let before_state = crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
+            conn,
+            project_id,
+            &object_key,
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "CODEX_RENAME_VERSION_MISMATCH: target '{}' is missing or outside project '{}'",
+                update.ref_id,
+                project_id
+            )
+        })?;
         let aggregate_key = match update.kind.as_str() {
             "scene-body" | "node-title" | "node-synopsis" => {
                 format!("tree-node:{}", update.ref_id)
@@ -446,7 +757,7 @@ fn apply_codex_rename_updates_in_tx(
                 format!("codex-entry:{}", update.ref_id)
             }
             "codex-detail" => format!(
-                "codex-detail:{}:{}",
+                "codex-detail-value:{}:{}",
                 update.ref_id,
                 update.detail_definition_id.as_deref().unwrap_or_default()
             ),
@@ -654,7 +965,7 @@ fn apply_codex_rename_updates_in_tx(
                     .detail_definition_id
                     .as_deref()
                     .ok_or_else(|| anyhow::anyhow!("codex detail definition id is required"))?;
-                let field_path = format!("/details/{definition_id}");
+                let field_path = format!("/details/{}", json_pointer_segment(definition_id));
                 crate::narrative_extraction::record_human_field_write(
                     conn,
                     project_id,
@@ -676,73 +987,133 @@ fn apply_codex_rename_updates_in_tx(
             }
             _ => unreachable!("unsupported rename kind was rejected above"),
         }
-        versions.push(serde_json::json!({
+        versions[index] = serde_json::json!({
             "kind": update.kind,
             "refId": update.ref_id,
             "detailDefinitionId": update.detail_definition_id,
             "version": next_version,
             "baseVersion": expected_version,
-        }));
+        });
+        let after_state = crate::canonical_feed_snapshots::canonical_snapshot_for_object_key(
+            conn,
+            project_id,
+            &object_key,
+        )?
+        .ok_or_else(|| anyhow::anyhow!("codex rename target '{}' disappeared", update.ref_id))?;
+        feed_events.push(NarrativeChangeEventInput {
+            object_key,
+            change_kind: change_kind.to_string(),
+            mutation_kind: "update".to_string(),
+            before_version: before_state.get("version").and_then(Value::as_i64),
+            before_digest: Some(narrative_snapshot_digest(&before_state)?),
+            after_version: after_state.get("version").and_then(Value::as_i64),
+            after_digest: Some(narrative_snapshot_digest(&after_state)?),
+            structural_impact: Some(json!({ "changedPaths": changed_paths })),
+            changed_paths,
+            text_impact: None,
+        });
     }
-    Ok(versions)
-}
-
-pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyhow::Result<Value> {
-    require_non_empty(&payload.project_id, "projectId")?;
-    require_non_empty(&payload.updated_at, "updatedAt")?;
-    validate_codex_rename_updates(&payload.updates)?;
-
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let versions = apply_codex_rename_updates_in_tx(
-            &tx,
-            &payload.project_id,
-            &payload.updated_at,
-            payload
-                .session_id
-                .as_deref()
-                .filter(|session| !session.is_empty())
-                .unwrap_or("codex-rename-undo"),
-            &payload.updates,
-        )?;
-        if !payload.updates.is_empty() {
-            let event_uid = uuid::Uuid::new_v4().to_string();
-            let timestamp = chrono::DateTime::parse_from_rfc3339(&payload.updated_at)
-                .map(|value| value.timestamp_millis())
-                .unwrap_or_else(|_| chrono::Utc::now().timestamp_millis());
-            crate::change_events::append_change_events_in_tx(
-                &tx,
-                &payload.project_id,
-                payload
-                    .session_id
-                    .as_deref()
-                    .filter(|session| !session.is_empty())
-                    .unwrap_or("codex-rename-undo"),
-                &[crate::change_events::AppendChangeEvent {
-                    event_uid,
-                    scene_id: None,
-                    domain: "codex".to_string(),
-                    op_type: "codex.renameUndo".to_string(),
-                    entity_type: Some("codex_rename".to_string()),
-                    entity_id: payload.updates.first().map(|update| update.ref_id.clone()),
-                    payload: serde_json::json!({
-                        "updateCount": payload.updates.len(),
-                    })
-                    .to_string(),
-                    timestamp,
-                }],
-            )?;
-        }
-        tx.commit()?;
-        Ok(serde_json::json!({
-            "versions": versions,
-        }))
+    Ok(CodexRenameApplyOutcome {
+        versions,
+        feed_events,
     })
 }
 
-#[derive(Debug, Deserialize)]
+pub fn undo_codex_rename(db: &Database, payload: CodexRenameUndoPayload) -> anyhow::Result<Value> {
+    require_non_empty(&payload.request_id, "requestId")?;
+    require_non_empty(&payload.event_uid, "eventUid")?;
+    require_non_empty(&payload.original_transaction_id, "originalTransactionId")?;
+    require_non_empty(&payload.undo_journal_id, "undoJournalId")?;
+    require_non_empty(&payload.project_id, "projectId")?;
+    require_non_empty(&payload.updated_at, "updatedAt")?;
+    validate_codex_rename_updates(&payload.updates)?;
+    anyhow::ensure!(
+        !payload.updates.is_empty(),
+        "codex rename undo requires updates"
+    );
+    let session_id = payload
+        .session_id
+        .as_deref()
+        .filter(|session| !session.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("sessionId is required"))?;
+    let request_hash = canonical_write_payload_fingerprint("codex_rename_undo", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "codex_rename_undo",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "CODEX_RENAME_UNDO_REQUEST_CONFLICT",
+    };
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        let CodexRenameApplyOutcome {
+            versions,
+            feed_events,
+        } = apply_codex_rename_updates_in_tx(
+            &tx,
+            &payload.project_id,
+            &payload.updated_at,
+            session_id,
+            &payload.updates,
+        )?;
+        let timestamp = event_timestamp(&payload.updated_at);
+        let occurred_at = chrono::DateTime::from_timestamp_millis(timestamp)
+            .ok_or_else(|| {
+                anyhow::anyhow!("codex rename timestamp is outside the supported range")
+            })?
+            .to_rfc3339();
+        let append = append_canonical_and_narrative_change_in_tx(
+            &tx,
+            &payload.project_id,
+            session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: "codex".to_string(),
+                op_type: "codex.renameUndo".to_string(),
+                entity_type: Some("codex_rename".to_string()),
+                entity_id: payload.updates.first().map(|update| update.ref_id.clone()),
+                payload: json!({
+                    "requestId": payload.request_id,
+                    "updateCount": payload.updates.len(),
+                })
+                .to_string(),
+                timestamp,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: payload.project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: "codex.renameUndo".to_string(),
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind: NarrativeChangeCauseKind::Undo,
+                origin: NarrativeChangeOrigin::Undo,
+                original_transaction_id: Some(payload.original_transaction_id.clone()),
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: Some(payload.undo_journal_id.clone()),
+                application_ids: Vec::new(),
+                occurred_at,
+                events: feed_events,
+            },
+        )?;
+        let response = json!({
+            "versions": versions,
+            "changeEventUid": payload.event_uid,
+            "maintenanceTransactionId": append.narrative.transaction_id,
+        });
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+        tx.commit()?;
+        Ok(response)
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexRenameApplyPayload {
+    pub request_id: String,
     pub project_id: String,
     pub session_id: String,
     #[serde(default)]
@@ -756,6 +1127,12 @@ pub struct CodexRenameApplyPayload {
     pub event_summary: String,
     pub event_uid: String,
     pub timestamp: i64,
+    #[serde(default)]
+    pub redo: bool,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
 }
 
 /// Forward-apply a rename propagation batch (Native replacement for the
@@ -766,6 +1143,9 @@ pub fn apply_codex_rename(
     db: &Database,
     payload: CodexRenameApplyPayload,
 ) -> anyhow::Result<Value> {
+    require_non_empty(&payload.request_id, "requestId")?;
+    require_non_empty(&payload.session_id, "sessionId")?;
+    require_non_empty(&payload.event_uid, "eventUid")?;
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
     require_non_empty(&payload.entry_id, "entryId")?;
@@ -774,13 +1154,39 @@ pub fn apply_codex_rename(
         "codex rename apply requires at least one update"
     );
     validate_codex_rename_updates(&payload.updates)?;
-
-    let undo_id = uuid::Uuid::new_v4().to_string();
+    if payload.redo {
+        require_non_empty(
+            payload
+                .original_transaction_id
+                .as_deref()
+                .unwrap_or_default(),
+            "originalTransactionId",
+        )?;
+        require_non_empty(
+            payload.undo_journal_id.as_deref().unwrap_or_default(),
+            "undoJournalId",
+        )?;
+    } else {
+        anyhow::ensure!(
+            payload.original_transaction_id.is_none() && payload.undo_journal_id.is_none(),
+            "originalTransactionId and undoJournalId are only valid for redo"
+        );
+    }
+    let request_hash = canonical_write_payload_fingerprint("codex_rename_apply", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "codex_rename_apply",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "CODEX_RENAME_APPLY_REQUEST_CONFLICT",
+    };
 
     db.with_conn(|conn| {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("BEGIN IMMEDIATE")?;
         let result = (|| -> anyhow::Result<Value> {
+            if let Some(response) = load_idempotent_response(conn, &idempotency_request)? {
+                return Ok(response);
+            }
             let entry_owned: i64 = conn.query_row(
                 "SELECT EXISTS(
                     SELECT 1 FROM codex_entries WHERE id = ?1 AND project_id = ?2
@@ -794,39 +1200,51 @@ pub fn apply_codex_rename(
                 payload.entry_id,
                 payload.project_id
             );
-            let versions = apply_codex_rename_updates_in_tx(
+            let CodexRenameApplyOutcome {
+                versions,
+                feed_events,
+            } = apply_codex_rename_updates_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.updated_at,
                 &payload.session_id,
                 &payload.updates,
             )?;
-
-            crate::undo_journal::insert_undo_journal_in_tx(
-                conn,
-                crate::undo_journal::UndoJournalInsert {
-                    id: &undo_id,
-                    project_id: &payload.project_id,
-                    surface: payload
-                        .surface
-                        .as_deref()
-                        .unwrap_or("codex-rename-propagation"),
-                    entity_kind: "codex_rename",
-                    entity_id: &payload.entry_id,
-                    op_kind: "codex.renamePropagate",
-                    before_json: None,
-                    after_json: Some(&payload.event_summary),
-                    base_version: 0,
-                    result_version: 1,
-                    change_event_uid: Some(&payload.event_uid),
-                },
-            )?;
-
-            crate::change_events::append_change_events_in_tx(
+            let undo_id = payload
+                .undo_journal_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            if !payload.redo {
+                crate::undo_journal::insert_undo_journal_in_tx(
+                    conn,
+                    crate::undo_journal::UndoJournalInsert {
+                        id: &undo_id,
+                        project_id: &payload.project_id,
+                        surface: payload
+                            .surface
+                            .as_deref()
+                            .unwrap_or("codex-rename-propagation"),
+                        entity_kind: "codex_rename",
+                        entity_id: &payload.entry_id,
+                        op_kind: "codex.renamePropagate",
+                        before_json: None,
+                        after_json: Some(&payload.event_summary),
+                        base_version: 0,
+                        result_version: 1,
+                        change_event_uid: Some(&payload.event_uid),
+                    },
+                )?;
+            }
+            let occurred_at = chrono::DateTime::from_timestamp_millis(payload.timestamp)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("codex rename timestamp is outside the supported range")
+                })?
+                .to_rfc3339();
+            let append = append_canonical_and_narrative_change_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                &[crate::change_events::AppendChangeEvent {
+                &AppendChangeEvent {
                     event_uid: payload.event_uid.clone(),
                     scene_id: None,
                     domain: "codex".to_string(),
@@ -835,16 +1253,46 @@ pub fn apply_codex_rename(
                     entity_id: Some(payload.entry_id.clone()),
                     payload: payload.event_summary.clone(),
                     timestamp: payload.timestamp,
-                }],
+                },
+                &AppendNarrativeChangeTransactionInput {
+                    project_id: payload.project_id.clone(),
+                    request_id: payload.request_id.clone(),
+                    source_domain: "codex.renamePropagate".to_string(),
+                    source_change_event_uid: payload.event_uid.clone(),
+                    cause_kind: if payload.redo {
+                        NarrativeChangeCauseKind::Redo
+                    } else {
+                        NarrativeChangeCauseKind::Forward
+                    },
+                    origin: if payload.redo {
+                        NarrativeChangeOrigin::Redo
+                    } else {
+                        NarrativeChangeOrigin::Human
+                    },
+                    original_transaction_id: payload.original_transaction_id.clone(),
+                    commit_id: None,
+                    journal_id: None,
+                    undo_journal_id: Some(undo_id.clone()),
+                    application_ids: Vec::new(),
+                    occurred_at,
+                    events: feed_events,
+                },
             )?;
-
-            Ok(serde_json::json!({
+            let response = json!({
                 "entityId": payload.entry_id,
                 "version": versions.last().and_then(|item| item.get("version")).and_then(Value::as_i64).unwrap_or(0),
                 "versions": versions,
                 "changeEventUid": payload.event_uid,
                 "undoJournalId": undo_id,
-            }))
+                "maintenanceTransactionId": append.narrative.transaction_id,
+            });
+            insert_idempotent_response(
+                conn,
+                &idempotency_request,
+                &payload.project_id,
+                &response,
+            )?;
+            Ok(response)
         })();
 
         match result {
@@ -869,10 +1317,559 @@ pub struct CreateScanStagingProjectPayload {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectCreatePayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+    pub title: String,
+    #[serde(default)]
+    pub genre: Option<String>,
+    #[serde(default)]
+    pub pov: Option<String>,
+    #[serde(default)]
+    pub tense: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub style_guide: Option<String>,
+    #[serde(default)]
+    pub ai_instructions: Option<String>,
+    #[serde(default)]
+    pub outline: Option<String>,
+    #[serde(default)]
+    pub target_readers: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectDeletePayload {
     pub project_id: String,
+}
+
+const PROJECT_CREATE_BUILTIN_SLUGS: [&str; 4] = ["character", "location", "item", "lore"];
+
+fn select_project_row(conn: &rusqlite::Connection, project_id: &str) -> anyhow::Result<Value> {
+    Database::execute_with_conn(
+        conn,
+        "SELECT id,
+                title,
+                genre,
+                pov,
+                tense,
+                language,
+                style_guide AS styleGuide,
+                ai_instructions AS aiInstructions,
+                outline,
+                target_readers AS targetReaders,
+                phase_resolution_mode AS phaseResolutionMode,
+                ai_policy AS aiPolicy,
+                created_at AS createdAt,
+                updated_at AS updatedAt
+           FROM projects
+          WHERE id = ?1",
+        &[Value::String(project_id.to_string())],
+        "get",
+    )?
+    .into_iter()
+    .next()
+    .map(Value::Object)
+    .ok_or_else(|| anyhow::anyhow!("project '{project_id}' was not created"))
+}
+
+fn project_builtin_type_snapshots(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let type_ids = conn
+        .prepare(
+            "SELECT id FROM codex_types
+              WHERE project_id = ?1 AND is_builtin = 1
+                AND slug IN ('character', 'location', 'item', 'lore')
+              ORDER BY CASE slug
+                         WHEN 'character' THEN 0 WHEN 'location' THEN 1
+                         WHEN 'item' THEN 2 WHEN 'lore' THEN 3 ELSE 4 END",
+        )?
+        .query_map(params![project_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let rows = type_ids
+        .into_iter()
+        .map(|type_id| {
+            crate::canonical_feed_snapshots::canonical_codex_type_snapshot(
+                conn, project_id, &type_id,
+            )
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        rows.len() == PROJECT_CREATE_BUILTIN_SLUGS.len()
+            && rows
+                .iter()
+                .zip(PROJECT_CREATE_BUILTIN_SLUGS)
+                .all(
+                    |(row, expected_slug)| row.get("slug").and_then(Value::as_str)
+                        == Some(expected_slug)
+                ),
+        "project '{project_id}' did not seed the canonical builtin Codex catalog"
+    );
+    Ok(rows)
+}
+
+fn project_create_feed_events(
+    builtin_types: &[Value],
+) -> anyhow::Result<Vec<NarrativeChangeEventInput>> {
+    builtin_types
+        .iter()
+        .map(|snapshot| {
+            let type_id = snapshot
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("builtin Codex type id is missing"))?;
+            Ok(NarrativeChangeEventInput {
+                object_key: json!({
+                    "kind": "component",
+                    "componentId": format!("codex-type:{type_id}"),
+                }),
+                change_kind: "catalog".to_string(),
+                mutation_kind: "create".to_string(),
+                before_version: None,
+                before_digest: None,
+                after_version: None,
+                after_digest: Some(narrative_snapshot_digest(snapshot)?),
+                changed_paths: vec!["/".to_string()],
+                text_impact: None,
+                structural_impact: Some(json!({ "changedPaths": ["/"] })),
+            })
+        })
+        .collect()
+}
+
+/// Publish a user-visible Project and its builtin Codex catalog as one
+/// canonical transaction. The schema trigger still seeds the four builtin
+/// rows for bootstrap/sample/import compatibility; this trusted writer owns
+/// their language normalization, canonical Change Event, Feed, and replay
+/// receipt before the surrounding transaction is allowed to commit.
+pub fn project_create(db: &Database, payload: ProjectCreatePayload) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.project_id, "projectId"),
+        (&payload.request_id, "requestId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_uid, "eventUid"),
+        (&payload.title, "title"),
+        (&payload.created_at, "createdAt"),
+        (&payload.updated_at, "updatedAt"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        !matches!(
+            payload.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ) && payload.original_transaction_id.is_none()
+            && payload.undo_journal_id.is_none(),
+        "project creation is a forward mutation and cannot name replay lineage"
+    );
+    let language = payload
+        .language
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("ja")
+        .to_string();
+    let request_hash = canonical_write_payload_fingerprint("project_create", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "project_create",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "PROJECT_CREATE_REQUEST_CONFLICT",
+    };
+
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+
+        tx.execute(
+            "INSERT INTO projects
+               (id, title, genre, pov, tense, language, style_guide,
+                ai_instructions, outline, target_readers, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                payload.project_id,
+                payload.title,
+                payload.genre,
+                payload.pov,
+                payload.tense,
+                language,
+                payload.style_guide,
+                payload.ai_instructions,
+                payload.outline,
+                payload.target_readers,
+                payload.created_at,
+                payload.updated_at,
+            ],
+        )?;
+
+        if language.starts_with("en") {
+            for (slug, label) in [
+                ("character", "Character"),
+                ("location", "Location"),
+                ("item", "Item"),
+                ("lore", "Lore & Worldbuilding"),
+            ] {
+                let updated = tx.execute(
+                    "UPDATE codex_types
+                        SET label = ?1
+                      WHERE project_id = ?2 AND slug = ?3 AND is_builtin = 1",
+                    params![label, payload.project_id, slug],
+                )?;
+                anyhow::ensure!(
+                    updated == 1,
+                    "project '{}' did not seed builtin Codex type '{}'",
+                    payload.project_id,
+                    slug
+                );
+            }
+        }
+
+        let project = select_project_row(&tx, &payload.project_id)?;
+        let builtin_types = project_builtin_type_snapshots(&tx, &payload.project_id)?;
+        let timestamp = event_timestamp(&payload.created_at);
+        let append = append_canonical_and_narrative_change_in_tx(
+            &tx,
+            &payload.project_id,
+            &payload.session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: "project".to_string(),
+                op_type: "project.create".to_string(),
+                entity_type: Some("project".to_string()),
+                entity_id: Some(payload.project_id.clone()),
+                payload: json!({
+                    "requestId": payload.request_id,
+                    "projectId": payload.project_id,
+                    "builtinTypeIds": builtin_types
+                        .iter()
+                        .filter_map(|row| row.get("id").and_then(Value::as_str))
+                        .collect::<Vec<_>>(),
+                })
+                .to_string(),
+                timestamp,
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: payload.project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: "project.create".to_string(),
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind: NarrativeChangeCauseKind::Forward,
+                origin: payload.origin,
+                original_transaction_id: None,
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: None,
+                application_ids: Vec::new(),
+                occurred_at: payload.created_at.clone(),
+                events: project_create_feed_events(&builtin_types)?,
+            },
+        )?;
+        let mut response = project;
+        response
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("project create response is not an object"))?
+            .insert(
+                "__writeReceipt".to_string(),
+                json!({
+                    "changeEventUid": payload.event_uid,
+                    "maintenanceTransactionId": append.narrative.transaction_id,
+                    "undoJournalId": null,
+                }),
+            );
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+        tx.commit()?;
+        Ok(response)
+    })
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectPatchPayload {
+    pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+    /// The renderer's last authoritative project token. Project metadata does
+    /// not have a numeric version column, so `updatedAt` is the OCC token.
+    pub base_updated_at: String,
+    pub updated_at: String,
+    pub patch: serde_json::Map<String, Value>,
+}
+
+const PROJECT_PATCH_FIELDS: [(&str, &str, &str); 11] = [
+    ("title", "title", "/title"),
+    ("genre", "genre", "/genre"),
+    ("pov", "pov", "/pov"),
+    ("tense", "tense", "/tense"),
+    ("language", "language", "/language"),
+    ("styleGuide", "style_guide", "/styleGuide"),
+    ("aiInstructions", "ai_instructions", "/aiInstructions"),
+    ("outline", "outline", "/outline"),
+    ("targetReaders", "target_readers", "/targetReaders"),
+    ("aiPolicy", "ai_policy", "/aiPolicy"),
+    (
+        "phaseResolutionMode",
+        "phase_resolution_mode",
+        "/phaseResolutionMode",
+    ),
+];
+
+fn project_patch_field(key: &str) -> Option<(&'static str, &'static str)> {
+    PROJECT_PATCH_FIELDS
+        .iter()
+        .find(|(wire, _, _)| *wire == key)
+        .map(|(_, sql, path)| (*sql, *path))
+}
+
+fn project_patch_sql_value(value: &Value, field: &str) -> anyhow::Result<rusqlite::types::Value> {
+    match value {
+        Value::Null => Ok(rusqlite::types::Value::Null),
+        Value::String(value) => {
+            if field == "title" {
+                require_non_empty(value, "patch.title")?;
+            }
+            Ok(rusqlite::types::Value::Text(value.clone()))
+        }
+        _ => anyhow::bail!("project patch field '{field}' must be a string or null"),
+    }
+}
+
+/// Update Project metadata through the same Native transaction contract as
+/// every other Canonical Writer. The `updatedAt` precondition is deliberately
+/// checked in the SQL UPDATE so two renderer windows cannot publish divergent
+/// feed states for one Project.
+pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.project_id, "projectId"),
+        (&payload.request_id, "requestId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.event_uid, "eventUid"),
+        (&payload.base_updated_at, "baseUpdatedAt"),
+        (&payload.updated_at, "updatedAt"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    anyhow::ensure!(
+        !payload.patch.is_empty(),
+        "project patch must contain at least one field"
+    );
+    anyhow::ensure!(
+        payload
+            .patch
+            .keys()
+            .all(|key| project_patch_field(key).is_some()),
+        "project patch contains an unsupported field"
+    );
+    let replay = matches!(
+        payload.origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    anyhow::ensure!(
+        replay
+            == (payload.original_transaction_id.is_some() && payload.undo_journal_id.is_some())
+            && (replay
+                || (payload.original_transaction_id.is_none()
+                    && payload.undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
+    let request_hash = canonical_write_payload_fingerprint("project_patch", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "project_patch",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "PROJECT_PATCH_REQUEST_CONFLICT",
+    };
+
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        if replay {
+            require_replay_lineage_in_project(
+                &tx,
+                &payload.project_id,
+                payload
+                    .original_transaction_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("missing originalTransactionId"))?,
+                payload
+                    .undo_journal_id
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("missing undoJournalId"))?,
+            )?;
+        }
+        let before = crate::canonical_feed_snapshots::canonical_project_snapshot(
+            &tx,
+            &payload.project_id,
+        )?;
+        let before_updated_at = before
+            .get("updatedAt")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("project snapshot has no updatedAt"))?;
+        anyhow::ensure!(
+            before_updated_at == payload.base_updated_at,
+            "PROJECT_VERSION_MISMATCH: project '{}' changed since {}",
+            payload.project_id,
+            payload.base_updated_at
+        );
+
+        let mut assignments = Vec::with_capacity(payload.patch.len() + 1);
+        let mut values = Vec::with_capacity(payload.patch.len() + 3);
+        let mut changed_paths = BTreeSet::new();
+        for (wire, value) in &payload.patch {
+            let (sql, path) = project_patch_field(wire)
+                .ok_or_else(|| anyhow::anyhow!("unsupported project patch field '{wire}'"))?;
+            assignments.push(format!("{sql} = ?{}", values.len() + 1));
+            values.push(project_patch_sql_value(value, wire)?);
+            changed_paths.insert(path.to_string());
+        }
+        assignments.push(format!("updated_at = ?{}", values.len() + 1));
+        values.push(rusqlite::types::Value::Text(payload.updated_at.clone()));
+        values.push(rusqlite::types::Value::Text(payload.project_id.clone()));
+        values.push(rusqlite::types::Value::Text(payload.base_updated_at.clone()));
+        let sql = format!(
+            "UPDATE projects SET {} WHERE id = ?{} AND updated_at = ?{}",
+            assignments.join(", "),
+            values.len() - 1,
+            values.len()
+        );
+        let changed = tx.execute(&sql, rusqlite::params_from_iter(values.iter()))?;
+        anyhow::ensure!(
+            changed == 1,
+            "PROJECT_VERSION_MISMATCH: project '{}' update lost its OCC race",
+            payload.project_id
+        );
+        let after = crate::canonical_feed_snapshots::canonical_project_snapshot(
+            &tx,
+            &payload.project_id,
+        )?;
+        let changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
+        let before_json = serde_json::to_string(&before)?;
+        let after_json = serde_json::to_string(&after)?;
+        let journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        if !replay {
+            crate::undo_journal::insert_undo_journal_in_tx(
+                &tx,
+                crate::undo_journal::UndoJournalInsert {
+                    id: &journal_id,
+                    project_id: &payload.project_id,
+                    surface: "project",
+                    entity_kind: "project",
+                    entity_id: &payload.project_id,
+                    op_kind: "update",
+                    before_json: Some(&before_json),
+                    after_json: Some(&after_json),
+                    base_version: 0,
+                    result_version: 0,
+                    change_event_uid: Some(&payload.event_uid),
+                },
+            )?;
+        }
+        let cause_kind = match payload.origin {
+            NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+            NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+            _ => NarrativeChangeCauseKind::Forward,
+        };
+        let change_kind = if changed_paths.iter().any(|path| path == "/aiPolicy") {
+            "policy"
+        } else {
+            "metadata"
+        };
+        let maintenance = append_canonical_and_narrative_change_in_tx(
+            &tx,
+            &payload.project_id,
+            &payload.session_id,
+            &AppendChangeEvent {
+                event_uid: payload.event_uid.clone(),
+                scene_id: None,
+                domain: "project".to_string(),
+                op_type: "project.meta.update".to_string(),
+                entity_type: Some("project".to_string()),
+                entity_id: Some(payload.project_id.clone()),
+                payload: json!({
+                    "projectId": payload.project_id,
+                    "fields": changed_paths.clone(),
+                    "patch": payload.patch,
+                })
+                .to_string(),
+                timestamp: event_timestamp(&payload.updated_at),
+            },
+            &AppendNarrativeChangeTransactionInput {
+                project_id: payload.project_id.clone(),
+                request_id: payload.request_id.clone(),
+                source_domain: "project.meta.update".to_string(),
+                source_change_event_uid: payload.event_uid.clone(),
+                cause_kind,
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.clone(),
+                commit_id: None,
+                journal_id: None,
+                undo_journal_id: Some(journal_id.clone()),
+                application_ids: Vec::new(),
+                occurred_at: payload.updated_at.clone(),
+                events: vec![NarrativeChangeEventInput {
+                    object_key: json!({
+                        "kind": "project",
+                        "projectId": payload.project_id,
+                    }),
+                    change_kind: change_kind.to_string(),
+                    mutation_kind: "update".to_string(),
+                    before_version: None,
+                    before_digest: Some(narrative_snapshot_digest(&before)?),
+                    after_version: None,
+                    after_digest: Some(narrative_snapshot_digest(&after)?),
+                    changed_paths: changed_paths.clone(),
+                    text_impact: None,
+                    structural_impact: Some(json!({
+                        "changedPaths": changed_paths,
+                    })),
+                }],
+            },
+        )?;
+        let mut response = after;
+        response
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("project patch response is not an object"))?
+            .insert(
+                "__writeReceipt".to_string(),
+                json!({
+                    "changeEventUid": payload.event_uid,
+                    "maintenanceTransactionId": maintenance.narrative.transaction_id,
+                    "undoJournalId": journal_id,
+                }),
+            );
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+        tx.commit()?;
+        Ok(response)
+    })
 }
 
 /// Delete a project through a trusted domain writer so foreign-key cascades
@@ -1070,11 +2067,19 @@ pub fn create_scan_staging_project(
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodeCreatePayload {
     pub id: String,
     pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
     pub parent_id: Option<String>,
     pub node_type: String,
     pub title: String,
@@ -1084,16 +2089,28 @@ pub struct TreeNodeCreatePayload {
     pub source_uri: Option<String>,
     pub source_mtime: Option<String>,
     pub content: Option<String>,
+    #[serde(default)]
+    pub canonical_payload: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodeDeletePayload {
     pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
     pub node_id: String,
+    #[serde(default)]
+    pub canonical_payload: Option<Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodePatchChangeEvent {
     pub event_uid: String,
@@ -1101,16 +2118,104 @@ pub struct TreeNodePatchChangeEvent {
     pub timestamp: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TreeNodePatchPayload {
     pub project_id: String,
+    pub request_id: String,
+    pub session_id: String,
+    pub event_uid: String,
     pub node_id: String,
     pub patch: serde_json::Map<String, Value>,
     pub base_version: Option<i64>,
     pub bump_version: bool,
     pub updated_at: String,
     pub change_event: Option<TreeNodePatchChangeEvent>,
+    pub origin: NarrativeChangeOrigin,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+    #[serde(default)]
+    pub source_domain: Option<String>,
+    #[serde(default)]
+    pub op_type: Option<String>,
+    #[serde(default)]
+    pub canonical_payload: Option<Value>,
+}
+
+fn validate_tree_write_identity(
+    request_id: &str,
+    session_id: &str,
+    event_uid: &str,
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<&str>,
+    undo_journal_id: Option<&str>,
+) -> anyhow::Result<()> {
+    require_non_empty(request_id, "requestId")?;
+    require_non_empty(session_id, "sessionId")?;
+    require_non_empty(event_uid, "eventUid")?;
+    let replay = matches!(
+        origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    );
+    let complete_lineage = original_transaction_id.is_some_and(|value| !value.trim().is_empty())
+        && undo_journal_id.is_some_and(|value| !value.trim().is_empty());
+    anyhow::ensure!(
+        replay == complete_lineage
+            && (replay || (original_transaction_id.is_none() && undo_journal_id.is_none())),
+        "undo/redo origin requires originalTransactionId and undoJournalId"
+    );
+    Ok(())
+}
+
+fn tree_cause_kind(origin: NarrativeChangeOrigin) -> NarrativeChangeCauseKind {
+    match origin {
+        NarrativeChangeOrigin::Undo => NarrativeChangeCauseKind::Undo,
+        NarrativeChangeOrigin::Redo => NarrativeChangeCauseKind::Redo,
+        _ => NarrativeChangeCauseKind::Forward,
+    }
+}
+
+fn validate_tree_replay_lineage_in_tx(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<&str>,
+    undo_journal_id: Option<&str>,
+) -> anyhow::Result<()> {
+    if matches!(
+        origin,
+        NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+    ) {
+        require_replay_lineage_in_project(
+            conn,
+            project_id,
+            original_transaction_id
+                .ok_or_else(|| anyhow::anyhow!("originalTransactionId is required"))?,
+            undo_journal_id.ok_or_else(|| anyhow::anyhow!("undoJournalId is required"))?,
+        )?;
+    }
+    Ok(())
+}
+
+fn tree_write_response(
+    mut row: Value,
+    change_event_uid: &str,
+    maintenance_transaction_id: &str,
+    undo_journal_id: &str,
+) -> Value {
+    if let Value::Object(object) = &mut row {
+        object.insert(
+            "__writeReceipt".to_string(),
+            json!({
+                "changeEventUid": change_event_uid,
+                "maintenanceTransactionId": maintenance_transaction_id,
+                "undoJournalId": undo_journal_id,
+            }),
+        );
+    }
+    row
 }
 
 const TREE_NODE_ROW_SELECT: &str = "
@@ -1170,6 +2275,211 @@ fn select_tree_node(
         .next()
         .map(Value::Object)
         .ok_or_else(|| anyhow::anyhow!("tree node '{node_id}' not found in project '{project_id}'"))
+}
+
+fn select_tree_subtree(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    root_id: &str,
+) -> anyhow::Result<Vec<Value>> {
+    let mut statement = conn.prepare(
+        "WITH RECURSIVE subtree(id, project_id, depth, path) AS (
+           SELECT id, project_id, 0, char(31) || id || char(31)
+             FROM tree_nodes
+            WHERE id = ?1 AND project_id = ?2
+           UNION ALL
+           SELECT child.id,
+                  child.project_id,
+                  parent.depth + 1,
+                  parent.path || child.id || char(31)
+             FROM tree_nodes child
+             JOIN subtree parent ON child.parent_id = parent.id
+            WHERE instr(parent.path, char(31) || child.id || char(31)) = 0
+         )
+         SELECT id, project_id
+           FROM subtree
+          ORDER BY depth, id",
+    )?;
+    let members = statement
+        .query_map(params![root_id, project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !members.is_empty(),
+        "tree node '{root_id}' not found in project '{project_id}'"
+    );
+    for (node_id, member_project_id) in &members {
+        anyhow::ensure!(
+            member_project_id == project_id,
+            "TREE_SUBTREE_CROSS_PROJECT: node '{node_id}' belongs to project '{member_project_id}'"
+        );
+    }
+    members
+        .into_iter()
+        .map(|(node_id, _)| select_tree_node(conn, project_id, &node_id))
+        .collect()
+}
+
+fn tree_object_key(snapshot: &Value, node_id: &str) -> Value {
+    if snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+        json!({ "kind": "scene", "sceneId": node_id })
+    } else {
+        json!({
+            "kind": "component",
+            "componentId": format!("tree-node:{node_id}"),
+        })
+    }
+}
+
+fn tree_version(snapshot: Option<&Value>) -> Option<i64> {
+    snapshot
+        .and_then(|value| value.get("version"))
+        .and_then(Value::as_i64)
+}
+
+fn tree_feed_event(
+    node_id: &str,
+    before: Option<&Value>,
+    after: Option<&Value>,
+    change_kind: &str,
+    mutation_kind: &str,
+    changed_paths: Vec<String>,
+) -> anyhow::Result<NarrativeChangeEventInput> {
+    let key_source = after.or(before).ok_or_else(|| {
+        anyhow::anyhow!("tree feed event '{node_id}' has neither before nor after state")
+    })?;
+    Ok(NarrativeChangeEventInput {
+        object_key: tree_object_key(key_source, node_id),
+        change_kind: change_kind.to_string(),
+        mutation_kind: mutation_kind.to_string(),
+        before_version: tree_version(before),
+        before_digest: before.map(narrative_snapshot_digest).transpose()?,
+        after_version: tree_version(after),
+        after_digest: after.map(narrative_snapshot_digest).transpose()?,
+        changed_paths: changed_paths.clone(),
+        text_impact: scene_text_impact(before, after)?,
+        structural_impact: Some(json!({ "changedPaths": changed_paths })),
+    })
+}
+
+struct TreeFeedAppend<'a> {
+    project_id: &'a str,
+    request_id: &'a str,
+    session_id: &'a str,
+    event_uid: &'a str,
+    source_domain: &'a str,
+    canonical_domain: &'a str,
+    canonical_entity_type: &'a str,
+    entity_id: &'a str,
+    canonical_payload: String,
+    scene_id: Option<String>,
+    occurred_at: &'a str,
+    timestamp: i64,
+    cause_kind: NarrativeChangeCauseKind,
+    origin: NarrativeChangeOrigin,
+    original_transaction_id: Option<&'a str>,
+    undo_journal_id: Option<&'a str>,
+    events: Vec<NarrativeChangeEventInput>,
+}
+
+fn append_tree_feed(
+    conn: &rusqlite::Connection,
+    input: TreeFeedAppend<'_>,
+) -> anyhow::Result<String> {
+    let append = append_canonical_and_narrative_change_in_tx(
+        conn,
+        input.project_id,
+        input.session_id,
+        &AppendChangeEvent {
+            event_uid: input.event_uid.to_string(),
+            scene_id: input.scene_id,
+            domain: input.canonical_domain.to_string(),
+            op_type: input.source_domain.to_string(),
+            entity_type: Some(input.canonical_entity_type.to_string()),
+            entity_id: Some(input.entity_id.to_string()),
+            payload: input.canonical_payload,
+            timestamp: input.timestamp,
+        },
+        &AppendNarrativeChangeTransactionInput {
+            project_id: input.project_id.to_string(),
+            request_id: input.request_id.to_string(),
+            source_domain: input.source_domain.to_string(),
+            source_change_event_uid: input.event_uid.to_string(),
+            cause_kind: input.cause_kind,
+            origin: input.origin,
+            original_transaction_id: input.original_transaction_id.map(str::to_string),
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: input.undo_journal_id.map(str::to_string),
+            application_ids: Vec::new(),
+            occurred_at: input.occurred_at.to_string(),
+            events: input.events,
+        },
+    )?;
+    Ok(append.narrative.transaction_id)
+}
+
+fn tree_patch_path(key: &str) -> Option<&'static str> {
+    match key {
+        "parentId" => Some("/parentId"),
+        "title" => Some("/title"),
+        "synopsis" => Some("/synopsis"),
+        "intent" => Some("/intent"),
+        "sortOrder" => Some("/sortOrder"),
+        "storyTimeOrder" => Some("/storyTimeOrder"),
+        "storyTimeLabel" => Some("/storyTimeLabel"),
+        "povCharacterId" => Some("/povCharacterId"),
+        "locationId" => Some("/locationId"),
+        "chronicleStartTime" => Some("/startTime"),
+        "chronicleStartMinute" => Some("/startMinute"),
+        "chronicleStartGranularity" => Some("/startGranularity"),
+        "chronicleEndTime" => Some("/endTime"),
+        "chronicleEndMinute" => Some("/endMinute"),
+        "chronicleEndGranularity" => Some("/endGranularity"),
+        "chroniclePrecision" => Some("/precision"),
+        "status" => Some("/status"),
+        "content" => Some("/content"),
+        "unplacedBeatsDoc" => Some("/unplacedBeatsDoc"),
+        "charCount" => Some("/charCount"),
+        "unplacedBeatPreview" => Some("/unplacedBeatPreview"),
+        "placedBeatPreview" => Some("/placedBeatPreview"),
+        "sourceUri" => Some("/sourceUri"),
+        "sourceMtime" => Some("/sourceMtime"),
+        "archivedAt" => Some("/archivedAt"),
+        "contextMode" => Some("/contextMode"),
+        "aliases" => Some("/aliases"),
+        "excludedAliases" => Some("/excludedAliases"),
+        _ => None,
+    }
+}
+
+fn tree_patch_change_kind(paths: &[String]) -> &'static str {
+    if paths.iter().any(|path| path == "/content") {
+        "content"
+    } else if paths.iter().any(|path| {
+        matches!(
+            path.as_str(),
+            "/startTime"
+                | "/startMinute"
+                | "/startGranularity"
+                | "/endTime"
+                | "/endMinute"
+                | "/endGranularity"
+                | "/precision"
+        )
+    }) {
+        "calendar"
+    } else if paths.iter().any(|path| {
+        matches!(
+            path.as_str(),
+            "/parentId" | "/sortOrder" | "/storyTimeOrder"
+        )
+    }) {
+        "order"
+    } else {
+        "metadata"
+    }
 }
 
 fn ensure_tree_parent_in_project(
@@ -1262,9 +2572,35 @@ pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow
         matches!(payload.node_type.as_str(), "folder" | "scene" | "note"),
         "tree node nodeType must be folder, scene, or note"
     );
+    validate_tree_write_identity(
+        &payload.request_id,
+        &payload.session_id,
+        &payload.event_uid,
+        payload.origin,
+        payload.original_transaction_id.as_deref(),
+        payload.undo_journal_id.as_deref(),
+    )?;
+    let request_hash = canonical_write_payload_fingerprint("tree_node_create", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "tree_node_create",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "TREE_NODE_CREATE_REQUEST_CONFLICT",
+    };
 
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        validate_tree_replay_lineage_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.original_transaction_id.as_deref(),
+            payload.undo_journal_id.as_deref(),
+        )?;
         if let Some(parent_id) = payload.parent_id.as_deref() {
             anyhow::ensure!(
                 parent_id != payload.id,
@@ -1298,46 +2634,250 @@ pub fn tree_node_create(db: &Database, payload: TreeNodeCreatePayload) -> anyhow
                     .clone()
                     .map_or(Value::Null, Value::String),
                 Value::String(payload.content.clone().unwrap_or_else(|| "{}".to_string())),
-                Value::String(now),
+                Value::String(now.clone()),
             ],
             "run",
         )?;
         let row = select_tree_node(&tx, &payload.project_id, &payload.id)?;
+        let journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        let after_json = serde_json::to_string(&row)?;
+        if !matches!(
+            payload.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ) {
+            crate::undo_journal::insert_undo_journal_in_tx(
+                &tx,
+                crate::undo_journal::UndoJournalInsert {
+                    id: &journal_id,
+                    project_id: &payload.project_id,
+                    surface: "tree",
+                    entity_kind: "tree_node",
+                    entity_id: &payload.id,
+                    op_kind: "create",
+                    before_json: None,
+                    after_json: Some(&after_json),
+                    base_version: 0,
+                    result_version: tree_version(Some(&row)).unwrap_or(0),
+                    change_event_uid: Some(&payload.event_uid),
+                },
+            )?;
+        }
+        let change_kind = if payload.node_type == "scene" {
+            "content"
+        } else {
+            "metadata"
+        };
+        let maintenance_transaction_id = append_tree_feed(
+            &tx,
+            TreeFeedAppend {
+                project_id: &payload.project_id,
+                request_id: &payload.request_id,
+                session_id: &payload.session_id,
+                event_uid: &payload.event_uid,
+                source_domain: "tree.node.create",
+                canonical_domain: "tree",
+                canonical_entity_type: "tree_node",
+                entity_id: &payload.id,
+                canonical_payload: payload
+                    .canonical_payload
+                    .clone()
+                    .unwrap_or_else(|| {
+                        json!({
+                            "parentId": payload.parent_id,
+                            "sortOrder": payload.sort_order,
+                            "title": payload.title,
+                        })
+                    })
+                    .to_string(),
+                scene_id: (payload.node_type == "scene").then(|| payload.id.clone()),
+                occurred_at: &now,
+                timestamp: event_timestamp(&now),
+                cause_kind: tree_cause_kind(payload.origin),
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: Some(&journal_id),
+                events: vec![tree_feed_event(
+                    &payload.id,
+                    None,
+                    Some(&row),
+                    change_kind,
+                    "create",
+                    vec!["/".to_string()],
+                )?],
+            },
+        )?;
+        let response = tree_write_response(
+            row,
+            &payload.event_uid,
+            &maintenance_transaction_id,
+            &journal_id,
+        );
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
         tx.commit()?;
-        Ok(row)
+        Ok(response)
     })
 }
 
-pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow::Result<()> {
+pub fn tree_node_delete(db: &Database, payload: TreeNodeDeletePayload) -> anyhow::Result<Value> {
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
+    validate_tree_write_identity(
+        &payload.request_id,
+        &payload.session_id,
+        &payload.event_uid,
+        payload.origin,
+        payload.original_transaction_id.as_deref(),
+        payload.undo_journal_id.as_deref(),
+    )?;
+    let request_hash = canonical_write_payload_fingerprint("tree_node_delete", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "tree_node_delete",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "TREE_NODE_DELETE_REQUEST_CONFLICT",
+    };
+    let occurred_at = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        let node_type: Option<String> = tx
-            .query_row(
-                "SELECT node_type FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
-                params![payload.node_id, payload.project_id],
-                |row| row.get(0),
-            )
-            .optional()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        validate_tree_replay_lineage_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.original_transaction_id.as_deref(),
+            payload.undo_journal_id.as_deref(),
+        )?;
+        let before_nodes = select_tree_subtree(&tx, &payload.project_id, &payload.node_id)?;
+        let before = before_nodes
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("tree subtree snapshot is empty"))?;
+        let is_scene = before.get("nodeType").and_then(Value::as_str) == Some("scene");
+        let deleted_ids = before_nodes
+            .iter()
+            .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            deleted_ids.len() == before_nodes.len(),
+            "tree subtree snapshot contains a node without an id"
+        );
+        for node in &before_nodes {
+            if node.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                let node_id = node
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("tree scene snapshot has no id"))?;
+                crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+                    &tx,
+                    &payload.project_id,
+                    "scene-body",
+                    &format!("project:scene:{node_id}"),
+                    None,
+                    &occurred_at,
+                    "tree-node-writer",
+                )?;
+            }
+        }
         let deleted = tx.execute(
             "DELETE FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
             params![payload.node_id, payload.project_id],
         )?;
         anyhow::ensure!(deleted == 1, "tree node '{}' not found", payload.node_id);
-        if node_type.as_deref() == Some("scene") {
-            crate::narrative_extraction::propagate_source_change_freshness_in_tx(
+        let journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        let before_json = serde_json::to_string(&json!({
+            "rootId": payload.node_id,
+            "nodes": before_nodes,
+        }))?;
+        if !matches!(
+            payload.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ) {
+            crate::undo_journal::insert_undo_journal_in_tx(
                 &tx,
-                &payload.project_id,
-                "scene-body",
-                &format!("project:scene:{}", payload.node_id),
-                None,
-                &chrono::Utc::now().to_rfc3339(),
-                "tree-node-writer",
+                crate::undo_journal::UndoJournalInsert {
+                    id: &journal_id,
+                    project_id: &payload.project_id,
+                    surface: "tree",
+                    entity_kind: "tree_node",
+                    entity_id: &payload.node_id,
+                    op_kind: "delete",
+                    before_json: Some(&before_json),
+                    after_json: None,
+                    base_version: tree_version(Some(before)).unwrap_or(0),
+                    result_version: 0,
+                    change_event_uid: Some(&payload.event_uid),
+                },
             )?;
         }
+        let maintenance_transaction_id = append_tree_feed(
+            &tx,
+            TreeFeedAppend {
+                project_id: &payload.project_id,
+                request_id: &payload.request_id,
+                session_id: &payload.session_id,
+                event_uid: &payload.event_uid,
+                source_domain: "tree.node.delete",
+                canonical_domain: "tree",
+                canonical_entity_type: "tree_node",
+                entity_id: &payload.node_id,
+                canonical_payload: payload
+                    .canonical_payload
+                    .clone()
+                    .unwrap_or_else(|| {
+                        json!({
+                            "id": payload.node_id,
+                            "deletedIds": deleted_ids,
+                        })
+                    })
+                    .to_string(),
+                scene_id: is_scene.then(|| payload.node_id.clone()),
+                occurred_at: &occurred_at,
+                timestamp: event_timestamp(&occurred_at),
+                cause_kind: tree_cause_kind(payload.origin),
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: Some(&journal_id),
+                events: before_nodes
+                    .iter()
+                    .map(|node| {
+                        let node_id = node
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| anyhow::anyhow!("tree subtree snapshot has no id"))?;
+                        tree_feed_event(
+                            node_id,
+                            Some(node),
+                            None,
+                            if node.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                                "content"
+                            } else {
+                                "metadata"
+                            },
+                            "delete",
+                            vec!["/".to_string()],
+                        )
+                    })
+                    .collect::<anyhow::Result<Vec<_>>>()?,
+            },
+        )?;
+        let response = json!({
+            "entityId": payload.node_id,
+            "changeEventUid": payload.event_uid,
+            "maintenanceTransactionId": maintenance_transaction_id,
+            "undoJournalId": journal_id,
+            "deletedIds": deleted_ids,
+        });
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
         tx.commit()?;
-        Ok(())
+        Ok(response)
     })
 }
 
@@ -1345,6 +2885,14 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
     require_non_empty(&payload.project_id, "projectId")?;
     require_non_empty(&payload.node_id, "nodeId")?;
     require_non_empty(&payload.updated_at, "updatedAt")?;
+    validate_tree_write_identity(
+        &payload.request_id,
+        &payload.session_id,
+        &payload.event_uid,
+        payload.origin,
+        payload.original_transaction_id.as_deref(),
+        payload.undo_journal_id.as_deref(),
+    )?;
     let columns = [
         ("parentId", "parent_id"),
         ("title", "title"),
@@ -1410,6 +2958,26 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
             "tree node content event requires a content-only patch"
         );
     }
+    let is_restore = payload.origin == NarrativeChangeOrigin::Restore;
+    if payload.source_domain.is_some() || payload.op_type.is_some() {
+        anyhow::ensure!(
+            is_restore
+                && payload.source_domain.as_deref() == Some("revision")
+                && payload.op_type.as_deref() == Some("content.restore"),
+            "tree node tracked override must be revision content.restore with restore origin"
+        );
+        anyhow::ensure!(
+            payload.change_event.is_some()
+                && payload.base_version.is_some()
+                && payload.bump_version
+                && payload.patch.contains_key("content")
+                && payload
+                    .patch
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "content" | "charCount")),
+            "revision content restore requires a versioned content-only change event"
+        );
+    }
     assignments.push(format!("updated_at = ?{}", params.len() + 1));
     params.push(Value::String(payload.updated_at.clone()));
     if payload.bump_version {
@@ -1430,8 +2998,60 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
         params.push(Value::Number(base_version.into()));
         sql.push_str(&format!(" AND version = ?{version_param}"));
     }
+    if let Some(event) = payload.change_event.as_ref() {
+        anyhow::ensure!(
+            event.event_uid == payload.event_uid && event.session_id == payload.session_id,
+            "tree node changeEvent identity must match writer identity"
+        );
+    }
+    let request_hash = canonical_write_payload_fingerprint("tree_node_patch", &payload)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "tree_node_patch",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "TREE_NODE_PATCH_REQUEST_CONFLICT",
+    };
+    let timestamp = payload
+        .change_event
+        .as_ref()
+        .map(|event| event.timestamp)
+        .unwrap_or_else(|| event_timestamp(&payload.updated_at));
+    let source_domain = if is_restore {
+        "content.restore"
+    } else if payload.change_event.is_some() {
+        "scene.content_update"
+    } else {
+        "tree.node.patch"
+    };
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        validate_tree_replay_lineage_in_tx(
+            &tx,
+            &payload.project_id,
+            payload.origin,
+            payload.original_transaction_id.as_deref(),
+            payload.undo_journal_id.as_deref(),
+        )?;
+        let before = select_tree_node(&tx, &payload.project_id, &payload.node_id)?;
+        if payload.change_event.is_some() {
+            let already_exists = tx
+                .query_row(
+                    "SELECT 1 FROM change_events WHERE project_id = ?1 AND event_uid = ?2",
+                    params![payload.project_id, payload.event_uid],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .is_some();
+            anyhow::ensure!(
+                !already_exists,
+                "tree node content event UID '{}' already exists",
+                payload.event_uid
+            );
+        }
         if let Some(parent_id) = payload.patch.get("parentId") {
             match parent_id {
                 Value::Null => {}
@@ -1497,66 +3117,17 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
                 base_version
             );
         }
-        if let Some(event) = payload.change_event.as_ref() {
+        if payload.change_event.is_some() {
             anyhow::ensure!(
                 row.get("nodeType").and_then(Value::as_str) == Some("scene"),
                 "tree node content event target must be a scene"
-            );
-            let appended = crate::change_events::append_change_events_in_tx(
-                &tx,
-                &payload.project_id,
-                &event.session_id,
-                &[crate::change_events::AppendChangeEvent {
-                    event_uid: event.event_uid.clone(),
-                    scene_id: Some(payload.node_id.clone()),
-                    domain: "editor".to_string(),
-                    op_type: "scene.content_update".to_string(),
-                    entity_type: Some("tree_batch".to_string()),
-                    entity_id: Some(payload.node_id.clone()),
-                    payload: serde_json::json!({ "sceneId": payload.node_id }).to_string(),
-                    timestamp: event.timestamp,
-                }],
-            )?;
-            anyhow::ensure!(
-                appended.inserted_count == 1,
-                "tree node content event UID '{}' already exists",
-                event.event_uid
             );
         }
         if row.get("nodeType").and_then(Value::as_str) == Some("scene") {
             let field_paths: Vec<&str> = payload
                 .patch
                 .keys()
-                .filter_map(|key| match key.as_str() {
-                    "parentId" => Some("/parentId"),
-                    "title" => Some("/title"),
-                    "synopsis" => Some("/synopsis"),
-                    "sortOrder" => Some("/sortOrder"),
-                    "storyTimeOrder" => Some("/storyTimeOrder"),
-                    "storyTimeLabel" => Some("/storyTimeLabel"),
-                    "povCharacterId" => Some("/povCharacterId"),
-                    "locationId" => Some("/locationId"),
-                    "chronicleStartTime" => Some("/startTime"),
-                    "chronicleStartMinute" => Some("/startMinute"),
-                    "chronicleStartGranularity" => Some("/startGranularity"),
-                    "chronicleEndTime" => Some("/endTime"),
-                    "chronicleEndMinute" => Some("/endMinute"),
-                    "chronicleEndGranularity" => Some("/endGranularity"),
-                    "chroniclePrecision" => Some("/precision"),
-                    "status" => Some("/status"),
-                    "content" => Some("/content"),
-                    "unplacedBeatsDoc" => Some("/unplacedBeatsDoc"),
-                    "charCount" => Some("/charCount"),
-                    "unplacedBeatPreview" => Some("/unplacedBeatPreview"),
-                    "placedBeatPreview" => Some("/placedBeatPreview"),
-                    "sourceUri" => Some("/sourceUri"),
-                    "sourceMtime" => Some("/sourceMtime"),
-                    "archivedAt" => Some("/archivedAt"),
-                    "contextMode" => Some("/contextMode"),
-                    "aliases" => Some("/aliases"),
-                    "excludedAliases" => Some("/excludedAliases"),
-                    _ => None,
-                })
+                .filter_map(|key| tree_patch_path(key))
                 .collect();
             if !field_paths.is_empty() {
                 let updated_at = row
@@ -1592,85 +3163,799 @@ pub fn tree_node_patch(db: &Database, payload: TreeNodePatchPayload) -> anyhow::
                 )?;
             }
         }
+        let mut changed_paths = payload
+            .patch
+            .keys()
+            .filter_map(|key| tree_patch_path(key))
+            .map(str::to_string)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if changed_paths.is_empty() {
+            changed_paths.push("/updatedAt".to_string());
+        }
+        let is_scene = row.get("nodeType").and_then(Value::as_str) == Some("scene");
+        let canonical_payload = payload
+            .canonical_payload
+            .clone()
+            .unwrap_or_else(|| {
+                json!({
+                    "fields": payload.patch.keys().cloned().collect::<Vec<_>>(),
+                    "before": before.clone(),
+                    "after": row.clone(),
+                })
+            })
+            .to_string();
+        let journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        let before_json = serde_json::to_string(&before)?;
+        let after_json = serde_json::to_string(&row)?;
+        if !matches!(
+            payload.origin,
+            NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
+        ) {
+            crate::undo_journal::insert_undo_journal_in_tx(
+                &tx,
+                crate::undo_journal::UndoJournalInsert {
+                    id: &journal_id,
+                    project_id: &payload.project_id,
+                    surface: "tree",
+                    entity_kind: "tree_node",
+                    entity_id: &payload.node_id,
+                    op_kind: "update",
+                    before_json: Some(&before_json),
+                    after_json: Some(&after_json),
+                    base_version: tree_version(Some(&before)).unwrap_or(0),
+                    result_version: tree_version(Some(&row)).unwrap_or(0),
+                    change_event_uid: Some(&payload.event_uid),
+                },
+            )?;
+        }
+        let maintenance_transaction_id = append_tree_feed(
+            &tx,
+            TreeFeedAppend {
+                project_id: &payload.project_id,
+                request_id: &payload.request_id,
+                session_id: &payload.session_id,
+                event_uid: &payload.event_uid,
+                source_domain,
+                canonical_domain: if is_restore {
+                    "revision"
+                } else if payload.change_event.is_some() {
+                    "editor"
+                } else {
+                    "tree"
+                },
+                canonical_entity_type: if payload.change_event.is_some() {
+                    "tree_batch"
+                } else {
+                    "tree_node"
+                },
+                entity_id: &payload.node_id,
+                canonical_payload,
+                scene_id: is_scene.then(|| payload.node_id.clone()),
+                occurred_at: &payload.updated_at,
+                timestamp,
+                cause_kind: tree_cause_kind(payload.origin),
+                events: vec![tree_feed_event(
+                    &payload.node_id,
+                    if is_restore { None } else { Some(&before) },
+                    Some(&row),
+                    tree_patch_change_kind(&changed_paths),
+                    if is_restore { "restore" } else { "update" },
+                    changed_paths,
+                )?],
+                origin: payload.origin,
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: Some(&journal_id),
+            },
+        )?;
+        let response = tree_write_response(
+            row,
+            &payload.event_uid,
+            &maintenance_transaction_id,
+            &journal_id,
+        );
+        insert_idempotent_response(
+            &tx,
+            &idempotency_request,
+            &payload.project_id,
+            &response,
+        )?;
         tx.commit()?;
-        Ok(row)
+        Ok(response)
     })
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TreeBeforeState {
+pub struct AiTreePlanCreateInput {
     pub id: String,
     pub parent_id: Option<String>,
-    pub sort_order: String,
+    pub node_type: String,
     pub title: String,
+    pub sort_order: String,
+    pub synopsis: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UndoTreePlanPayload {
-    pub project_id: String,
-    pub before_states: Vec<TreeBeforeState>,
-    pub created_ids: Vec<String>,
-    pub updated_at: String,
+pub struct AiTreePlanPlacementInput {
+    pub parent_id: Option<String>,
+    pub sort_order: String,
 }
 
-pub fn undo_tree_plan(db: &Database, payload: UndoTreePlanPayload) -> anyhow::Result<()> {
-    require_non_empty(&payload.project_id, "projectId")?;
-    require_non_empty(&payload.updated_at, "updatedAt")?;
-    let mut affected_ids = HashSet::new();
-    for state in &payload.before_states {
-        require_non_empty(&state.id, "beforeStates[].id")?;
-        require_non_empty(&state.sort_order, "beforeStates[].sortOrder")?;
-        if !affected_ids.insert(state.id.as_str()) {
-            anyhow::bail!("tree undo ids must be unique");
-        }
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTreePlanUpdateInput {
+    pub id: String,
+    pub base_version: i64,
+    pub placement: Option<AiTreePlanPlacementInput>,
+    pub title: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiTreeNodeVersionInput {
+    pub id: String,
+    pub version: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyAiTreePlanPayload {
+    pub request_id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub surface: String,
+    pub kind: String,
+    pub updated_at: String,
+    pub model: Option<String>,
+    pub trace_id: Option<String>,
+    pub creates: Vec<AiTreePlanCreateInput>,
+    pub updates: Vec<AiTreePlanUpdateInput>,
+    #[serde(default)]
+    pub redo: bool,
+    #[serde(default)]
+    pub original_transaction_id: Option<String>,
+    #[serde(default)]
+    pub undo_journal_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UndoAiTreePlanPayload {
+    pub request_id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub updated_at: String,
+    pub original_transaction_id: String,
+    pub undo_journal_id: String,
+    pub expected_versions: Vec<AiTreeNodeVersionInput>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiTreePlanJournal {
+    created_ids: Vec<String>,
+    updated_before: Vec<Value>,
+}
+
+fn validate_ai_tree_lineage(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    original_transaction_id: &str,
+    undo_journal_id: &str,
+) -> anyhow::Result<()> {
+    let journal_owned = conn
+        .query_row(
+            "SELECT 1 FROM undo_journal
+              WHERE id = ?1 AND project_id = ?2 AND entity_kind = 'tree_batch'",
+            params![undo_journal_id, project_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    anyhow::ensure!(
+        journal_owned,
+        "AI tree plan Undo Journal is not in the active project"
+    );
+    let transaction_owned = conn
+        .query_row(
+            "SELECT 1 FROM narrative_change_transactions
+              WHERE id = ?1 AND project_id = ?2 AND undo_journal_id = ?3
+                AND cause_kind = 'forward'",
+            params![original_transaction_id, project_id, undo_journal_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    anyhow::ensure!(
+        transaction_owned,
+        "AI tree plan Change Feed lineage is not in the active project"
+    );
+    Ok(())
+}
+
+fn ai_tree_version_rows(rows: &BTreeMap<String, Value>) -> Value {
+    Value::Array(
+        rows.iter()
+            .filter_map(|(id, row)| {
+                row.get("version")
+                    .and_then(Value::as_i64)
+                    .map(|version| json!({ "id": id, "version": version }))
+            })
+            .collect(),
+    )
+}
+
+pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.request_id, "requestId"),
+        (&payload.project_id, "projectId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.surface, "surface"),
+        (&payload.updated_at, "updatedAt"),
+    ] {
+        require_non_empty(value, field)?;
     }
-    for created_id in &payload.created_ids {
-        require_non_empty(created_id, "createdIds[]")?;
-        if !affected_ids.insert(created_id.as_str()) {
-            anyhow::bail!("tree undo ids must be unique");
+    anyhow::ensure!(
+        matches!(payload.kind.as_str(), "scaffold" | "reorganize"),
+        "AI tree plan kind must be scaffold or reorganize"
+    );
+    anyhow::ensure!(
+        !payload.creates.is_empty() || !payload.updates.is_empty(),
+        "AI tree plan must contain at least one mutation"
+    );
+    anyhow::ensure!(
+        payload.creates.len() + payload.updates.len() <= 200,
+        "AI tree plan exceeds the mutation budget"
+    );
+    match (
+        payload.redo,
+        payload.original_transaction_id.as_deref(),
+        payload.undo_journal_id.as_deref(),
+    ) {
+        (false, None, None) | (true, Some(_), Some(_)) => {}
+        _ => anyhow::bail!(
+            "AI tree plan redo requires originalTransactionId and undoJournalId only for redo"
+        ),
+    }
+    let mut ids = HashSet::new();
+    for create in &payload.creates {
+        for (value, field) in [
+            (&create.id, "creates[].id"),
+            (&create.node_type, "creates[].nodeType"),
+            (&create.title, "creates[].title"),
+            (&create.sort_order, "creates[].sortOrder"),
+        ] {
+            require_non_empty(value, field)?;
         }
+        anyhow::ensure!(
+            matches!(create.node_type.as_str(), "folder" | "scene" | "note"),
+            "AI tree plan nodeType must be folder, scene, or note"
+        );
+        anyhow::ensure!(
+            ids.insert(create.id.as_str()),
+            "AI tree plan ids must be unique"
+        );
+    }
+    for update in &payload.updates {
+        require_non_empty(&update.id, "updates[].id")?;
+        anyhow::ensure!(
+            update.base_version >= 0,
+            "AI tree plan baseVersion is invalid"
+        );
+        anyhow::ensure!(
+            update.placement.is_some() || update.title.is_some(),
+            "AI tree plan update must change placement or title"
+        );
+        if let Some(placement) = &update.placement {
+            require_non_empty(&placement.sort_order, "updates[].placement.sortOrder")?;
+        }
+        if let Some(title) = &update.title {
+            require_non_empty(title, "updates[].title")?;
+        }
+        anyhow::ensure!(
+            ids.insert(update.id.as_str()),
+            "AI tree plan ids must be unique"
+        );
     }
 
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    let request_hash = payload_fingerprint("ai_tree_plan_apply", &normalized)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "ai_tree_plan_apply",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "AI_TREE_PLAN_APPLY_REQUEST_CONFLICT",
+    };
+    let op_type = if payload.kind == "scaffold" {
+        "tree.aiScaffold"
+    } else {
+        "tree.aiReorganize"
+    };
+    let timestamp = event_timestamp(&payload.updated_at);
     db.with_conn(|conn| {
         let tx = conn.unchecked_transaction()?;
-        for state in &payload.before_states {
-            if let Some(parent_id) = &state.parent_id {
-                let parent_exists = tx
-                    .query_row(
-                        "SELECT 1 FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
-                        params![parent_id, payload.project_id],
-                        |row| row.get::<_, i64>(0),
-                    )
-                    .optional()?
-                    .is_some();
-                if !parent_exists {
-                    anyhow::bail!("tree undo parent is not in the active project");
-                }
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        if let (Some(original_transaction_id), Some(undo_journal_id)) = (
+            payload.original_transaction_id.as_deref(),
+            payload.undo_journal_id.as_deref(),
+        ) {
+            validate_ai_tree_lineage(
+                &tx,
+                &payload.project_id,
+                original_transaction_id,
+                undo_journal_id,
+            )?;
+        }
+
+        let mut before = BTreeMap::<String, Value>::new();
+        for update in &payload.updates {
+            let snapshot = select_tree_node(&tx, &payload.project_id, &update.id)?;
+            anyhow::ensure!(
+                snapshot.get("version").and_then(Value::as_i64) == Some(update.base_version),
+                "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' expected version {}",
+                update.id,
+                update.base_version
+            );
+            before.insert(update.id.clone(), snapshot);
+        }
+
+        for create in &payload.creates {
+            let existing_project = tx
+                .query_row(
+                    "SELECT project_id FROM tree_nodes WHERE id = ?1",
+                    [&create.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                existing_project.is_none(),
+                "AI tree plan create id '{}' already exists{}",
+                create.id,
+                existing_project
+                    .as_deref()
+                    .map(|project| format!(" in project '{project}'"))
+                    .unwrap_or_default()
+            );
+            if let Some(parent_id) = create.parent_id.as_deref() {
+                ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
             }
             tx.execute(
-                "UPDATE tree_nodes
-                    SET parent_id = ?1, sort_order = ?2, title = ?3, updated_at = ?4
-                  WHERE id = ?5 AND project_id = ?6",
+                "INSERT INTO tree_nodes
+                   (id, project_id, parent_id, node_type, title, synopsis, sort_order,
+                    content, version, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '{}', 1, ?8, ?8)",
                 params![
-                    state.parent_id,
-                    state.sort_order,
-                    state.title,
+                    create.id,
+                    payload.project_id,
+                    create.parent_id,
+                    create.node_type,
+                    create.title,
+                    create.synopsis,
+                    create.sort_order,
                     payload.updated_at,
-                    state.id,
-                    payload.project_id
                 ],
             )?;
         }
-        for created_id in payload.created_ids.iter().rev() {
-            tx.execute(
-                "DELETE FROM tree_nodes WHERE id = ?1 AND project_id = ?2",
-                params![created_id, payload.project_id],
+
+        for update in &payload.updates {
+            if let Some(placement) = &update.placement {
+                if let Some(parent_id) = placement.parent_id.as_deref() {
+                    ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+                    ensure_tree_parent_does_not_cycle(
+                        &tx,
+                        &payload.project_id,
+                        &update.id,
+                        parent_id,
+                    )?;
+                }
+            }
+            let changed = match (&update.placement, &update.title) {
+                (Some(placement), Some(title)) => tx.execute(
+                    "UPDATE tree_nodes
+                        SET parent_id = ?1, sort_order = ?2, title = ?3,
+                            updated_at = ?4, version = version + 1
+                      WHERE id = ?5 AND project_id = ?6 AND version = ?7",
+                    params![
+                        placement.parent_id,
+                        placement.sort_order,
+                        title,
+                        payload.updated_at,
+                        update.id,
+                        payload.project_id,
+                        update.base_version,
+                    ],
+                )?,
+                (Some(placement), None) => tx.execute(
+                    "UPDATE tree_nodes
+                        SET parent_id = ?1, sort_order = ?2,
+                            updated_at = ?3, version = version + 1
+                      WHERE id = ?4 AND project_id = ?5 AND version = ?6",
+                    params![
+                        placement.parent_id,
+                        placement.sort_order,
+                        payload.updated_at,
+                        update.id,
+                        payload.project_id,
+                        update.base_version,
+                    ],
+                )?,
+                (None, Some(title)) => tx.execute(
+                    "UPDATE tree_nodes
+                        SET title = ?1, updated_at = ?2, version = version + 1
+                      WHERE id = ?3 AND project_id = ?4 AND version = ?5",
+                    params![
+                        title,
+                        payload.updated_at,
+                        update.id,
+                        payload.project_id,
+                        update.base_version,
+                    ],
+                )?,
+                (None, None) => unreachable!("empty updates were rejected"),
+            };
+            anyhow::ensure!(
+                changed == 1,
+                "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before apply",
+                update.id
+            );
+        }
+
+        let mut after = BTreeMap::<String, Value>::new();
+        for id in ids.iter().copied().collect::<BTreeSet<_>>() {
+            after.insert(
+                id.to_string(),
+                select_tree_node(&tx, &payload.project_id, id)?,
+            );
+        }
+        let created_ids = payload
+            .creates
+            .iter()
+            .map(|create| create.id.clone())
+            .collect::<Vec<_>>();
+        let journal = AiTreePlanJournal {
+            created_ids: created_ids.clone(),
+            updated_before: before.values().cloned().collect(),
+        };
+        let undo_journal_id = payload
+            .undo_journal_id
+            .clone()
+            .unwrap_or_else(|| payload.request_id.clone());
+        if !payload.redo {
+            let before_json = serde_json::to_string(&journal)?;
+            let after_json = serde_json::to_string(&json!({
+                "createdIds": created_ids,
+                "updated": after.values().cloned().collect::<Vec<_>>(),
+            }))?;
+            crate::undo_journal::insert_undo_journal_in_tx(
+                &tx,
+                crate::undo_journal::UndoJournalInsert {
+                    id: &undo_journal_id,
+                    project_id: &payload.project_id,
+                    surface: &payload.surface,
+                    entity_kind: "tree_batch",
+                    entity_id: payload
+                        .trace_id
+                        .as_deref()
+                        .unwrap_or_else(|| ids.iter().copied().min().unwrap_or("tree-plan")),
+                    op_kind: op_type,
+                    before_json: Some(&before_json),
+                    after_json: Some(&after_json),
+                    base_version: 0,
+                    result_version: 1,
+                    change_event_uid: Some(&payload.request_id),
+                },
             )?;
         }
+
+        let mut events = Vec::new();
+        for (id, after_snapshot) in &after {
+            let before_snapshot = before.get(id);
+            let update = payload.updates.iter().find(|update| update.id == *id);
+            let (change_kind, mutation_kind, changed_paths) = if let Some(update) = update {
+                let mut paths = Vec::new();
+                if update.placement.is_some() {
+                    paths.extend(["/parentId".to_string(), "/sortOrder".to_string()]);
+                }
+                if update.title.is_some() {
+                    paths.push("/title".to_string());
+                }
+                (
+                    if update.placement.is_some() {
+                        "order"
+                    } else {
+                        "metadata"
+                    },
+                    "update",
+                    paths,
+                )
+            } else {
+                (
+                    if after_snapshot.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                        "content"
+                    } else {
+                        "metadata"
+                    },
+                    if payload.redo { "restore" } else { "create" },
+                    vec!["/".to_string()],
+                )
+            };
+            events.push(tree_feed_event(
+                id,
+                before_snapshot,
+                Some(after_snapshot),
+                change_kind,
+                mutation_kind,
+                changed_paths,
+            )?);
+        }
+        let maintenance_transaction_id = append_tree_feed(
+            &tx,
+            TreeFeedAppend {
+                project_id: &payload.project_id,
+                request_id: &payload.request_id,
+                session_id: &payload.session_id,
+                event_uid: &payload.request_id,
+                source_domain: op_type,
+                canonical_domain: "grid",
+                canonical_entity_type: "tree_batch",
+                entity_id: payload
+                    .trace_id
+                    .as_deref()
+                    .unwrap_or_else(|| ids.iter().copied().min().unwrap_or("tree-plan")),
+                canonical_payload: json!({
+                    "requestId": payload.request_id,
+                    "model": payload.model,
+                    "traceId": payload.trace_id,
+                    "createdIds": payload.creates.iter().map(|item| &item.id).collect::<Vec<_>>(),
+                    "updatedIds": payload.updates.iter().map(|item| &item.id).collect::<Vec<_>>(),
+                    "redo": payload.redo,
+                })
+                .to_string(),
+                scene_id: None,
+                occurred_at: &payload.updated_at,
+                timestamp,
+                cause_kind: if payload.redo {
+                    NarrativeChangeCauseKind::Redo
+                } else {
+                    NarrativeChangeCauseKind::Forward
+                },
+                origin: if payload.redo {
+                    NarrativeChangeOrigin::Redo
+                } else {
+                    NarrativeChangeOrigin::AiApply
+                },
+                original_transaction_id: payload.original_transaction_id.as_deref(),
+                undo_journal_id: Some(&undo_journal_id),
+                events,
+            },
+        )?;
+        let response = json!({
+            "versions": ai_tree_version_rows(&after),
+            "changeEventUid": payload.request_id,
+            "maintenanceTransactionId": maintenance_transaction_id,
+            "undoJournalId": undo_journal_id,
+        });
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
         tx.commit()?;
-        Ok(())
+        Ok(response)
+    })
+}
+
+pub fn undo_ai_tree_plan(db: &Database, payload: UndoAiTreePlanPayload) -> anyhow::Result<Value> {
+    for (value, field) in [
+        (&payload.request_id, "requestId"),
+        (&payload.project_id, "projectId"),
+        (&payload.session_id, "sessionId"),
+        (&payload.updated_at, "updatedAt"),
+        (&payload.original_transaction_id, "originalTransactionId"),
+        (&payload.undo_journal_id, "undoJournalId"),
+    ] {
+        require_non_empty(value, field)?;
+    }
+    let mut normalized = payload.clone();
+    normalized.session_id.clear();
+    let request_hash = payload_fingerprint("ai_tree_plan_undo", &normalized)?;
+    let idempotency_request = IdempotencyRequest {
+        domain: "ai_tree_plan_undo",
+        request_id: Some(&payload.request_id),
+        payload_hash: &request_hash,
+        conflict_marker: "AI_TREE_PLAN_UNDO_REQUEST_CONFLICT",
+    };
+    let expected_versions = payload
+        .expected_versions
+        .iter()
+        .map(|entry| (entry.id.as_str(), entry.version))
+        .collect::<BTreeMap<_, _>>();
+    anyhow::ensure!(
+        expected_versions.len() == payload.expected_versions.len(),
+        "AI tree plan expectedVersions ids must be unique"
+    );
+    let timestamp = event_timestamp(&payload.updated_at);
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        if let Some(response) = load_idempotent_response(&tx, &idempotency_request)? {
+            tx.commit()?;
+            return Ok(response);
+        }
+        validate_ai_tree_lineage(
+            &tx,
+            &payload.project_id,
+            &payload.original_transaction_id,
+            &payload.undo_journal_id,
+        )?;
+        let before_json: String = tx.query_row(
+            "SELECT before_json FROM undo_journal WHERE id = ?1 AND project_id = ?2",
+            params![payload.undo_journal_id, payload.project_id],
+            |row| row.get(0),
+        )?;
+        let journal: AiTreePlanJournal = serde_json::from_str(&before_json)?;
+        let restored_ids = journal
+            .updated_before
+            .iter()
+            .map(|snapshot| {
+                snapshot
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("AI tree plan journal snapshot has no id"))
+            })
+            .collect::<anyhow::Result<BTreeSet<_>>>()?;
+        let affected_ids = journal
+            .created_ids
+            .iter()
+            .map(String::as_str)
+            .chain(restored_ids.iter().copied())
+            .collect::<BTreeSet<_>>();
+        anyhow::ensure!(
+            expected_versions.keys().copied().collect::<BTreeSet<_>>() == affected_ids,
+            "AI tree plan expectedVersions must cover the exact forward result"
+        );
+        let mut before = BTreeMap::<String, Value>::new();
+        for id in &affected_ids {
+            let snapshot = select_tree_node(&tx, &payload.project_id, id)?;
+            anyhow::ensure!(
+                snapshot.get("version").and_then(Value::as_i64)
+                    == expected_versions.get(id).copied(),
+                "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before undo",
+                id
+            );
+            before.insert((*id).to_string(), snapshot);
+        }
+
+        let mut after = BTreeMap::<String, Value>::new();
+        for snapshot in &journal.updated_before {
+            let id = snapshot
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("AI tree plan journal snapshot has no id"))?;
+            let parent_id = match snapshot.get("parentId") {
+                None | Some(Value::Null) => None,
+                Some(Value::String(parent_id)) => Some(parent_id.as_str()),
+                _ => anyhow::bail!("AI tree plan journal has an invalid parentId"),
+            };
+            if let Some(parent_id) = parent_id {
+                ensure_tree_parent_in_project(&tx, &payload.project_id, parent_id)?;
+            }
+            let sort_order = snapshot
+                .get("sortOrder")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("AI tree plan journal has no sortOrder"))?;
+            let title = snapshot
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("AI tree plan journal has no title"))?;
+            let changed = tx.execute(
+                "UPDATE tree_nodes
+                    SET parent_id = ?1, sort_order = ?2, title = ?3,
+                        updated_at = ?4, version = version + 1
+                  WHERE id = ?5 AND project_id = ?6 AND version = ?7",
+                params![
+                    parent_id,
+                    sort_order,
+                    title,
+                    payload.updated_at,
+                    id,
+                    payload.project_id,
+                    expected_versions[id],
+                ],
+            )?;
+            anyhow::ensure!(changed == 1, "AI_TREE_PLAN_VERSION_MISMATCH during undo");
+            after.insert(
+                id.to_string(),
+                select_tree_node(&tx, &payload.project_id, id)?,
+            );
+        }
+        for id in journal.created_ids.iter().rev() {
+            let deleted = tx.execute(
+                "DELETE FROM tree_nodes WHERE id = ?1 AND project_id = ?2 AND version = ?3",
+                params![id, payload.project_id, expected_versions[id.as_str()]],
+            )?;
+            anyhow::ensure!(
+                deleted == 1,
+                "AI_TREE_PLAN_VERSION_MISMATCH: created node '{}' changed before undo",
+                id
+            );
+        }
+
+        let mut events = Vec::new();
+        for id in &affected_ids {
+            match (before.get(*id), after.get(*id)) {
+                (Some(before), Some(after)) => events.push(tree_feed_event(
+                    id,
+                    Some(before),
+                    Some(after),
+                    "order",
+                    "update",
+                    vec![
+                        "/parentId".to_string(),
+                        "/sortOrder".to_string(),
+                        "/title".to_string(),
+                    ],
+                )?),
+                (Some(before), None) => events.push(tree_feed_event(
+                    id,
+                    Some(before),
+                    None,
+                    if before.get("nodeType").and_then(Value::as_str) == Some("scene") {
+                        "content"
+                    } else {
+                        "metadata"
+                    },
+                    "delete",
+                    vec!["/".to_string()],
+                )?),
+                _ => anyhow::bail!("AI tree plan undo produced an incomplete state"),
+            }
+        }
+        let entity_id: String = tx.query_row(
+            "SELECT entity_id FROM undo_journal WHERE id = ?1 AND project_id = ?2",
+            params![payload.undo_journal_id, payload.project_id],
+            |row| row.get(0),
+        )?;
+        let maintenance_transaction_id = append_tree_feed(
+            &tx,
+            TreeFeedAppend {
+                project_id: &payload.project_id,
+                request_id: &payload.request_id,
+                session_id: &payload.session_id,
+                event_uid: &payload.request_id,
+                source_domain: "tree.aiPlanUndo",
+                canonical_domain: "tree",
+                canonical_entity_type: "tree_plan",
+                entity_id: &entity_id,
+                canonical_payload: json!({
+                    "requestId": payload.request_id,
+                    "affectedIds": affected_ids,
+                })
+                .to_string(),
+                scene_id: None,
+                occurred_at: &payload.updated_at,
+                timestamp,
+                cause_kind: NarrativeChangeCauseKind::Undo,
+                origin: NarrativeChangeOrigin::Undo,
+                original_transaction_id: Some(&payload.original_transaction_id),
+                undo_journal_id: Some(&payload.undo_journal_id),
+                events,
+            },
+        )?;
+        let response = json!({
+            "versions": ai_tree_version_rows(&after),
+            "changeEventUid": payload.request_id,
+            "maintenanceTransactionId": maintenance_transaction_id,
+            "undoJournalId": payload.undo_journal_id,
+        });
+        insert_idempotent_response(&tx, &idempotency_request, &payload.project_id, &response)?;
+        tx.commit()?;
+        Ok(response)
     })
 }
 
@@ -1679,6 +3964,74 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    fn tree_create_payload(
+        id: &str,
+        node_type: &str,
+        sort_order: &str,
+        parent_id: Option<&str>,
+    ) -> TreeNodeCreatePayload {
+        TreeNodeCreatePayload {
+            id: id.to_string(),
+            project_id: "p1".to_string(),
+            request_id: format!("create-{id}-request"),
+            session_id: "tree-session".to_string(),
+            event_uid: format!("create-{id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            parent_id: parent_id.map(str::to_string),
+            node_type: node_type.to_string(),
+            title: id.to_string(),
+            sort_order: sort_order.to_string(),
+            synopsis: None,
+            status: None,
+            source_uri: None,
+            source_mtime: None,
+            content: None,
+            canonical_payload: None,
+        }
+    }
+
+    fn tree_patch_payload(
+        node_id: &str,
+        patch: serde_json::Map<String, Value>,
+        base_version: Option<i64>,
+        updated_at: &str,
+    ) -> TreeNodePatchPayload {
+        TreeNodePatchPayload {
+            project_id: "p1".to_string(),
+            request_id: format!("patch-{node_id}-{updated_at}-request"),
+            session_id: "tree-session".to_string(),
+            event_uid: format!("patch-{node_id}-{updated_at}-event"),
+            node_id: node_id.to_string(),
+            patch,
+            base_version,
+            bump_version: base_version.is_some(),
+            updated_at: updated_at.to_string(),
+            change_event: None,
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            source_domain: None,
+            op_type: None,
+            canonical_payload: None,
+        }
+    }
+
+    fn tree_delete_payload(node_id: &str) -> TreeNodeDeletePayload {
+        TreeNodeDeletePayload {
+            project_id: "p1".to_string(),
+            request_id: format!("delete-{node_id}-request"),
+            session_id: "tree-session".to_string(),
+            event_uid: format!("delete-{node_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            node_id: node_id.to_string(),
+            canonical_payload: None,
+        }
+    }
 
     fn fixture() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open database");
@@ -1719,6 +4072,568 @@ mod tests {
         db
     }
 
+    fn project_create_payload(project_id: &str, request_id: &str) -> ProjectCreatePayload {
+        ProjectCreatePayload {
+            project_id: project_id.to_string(),
+            request_id: request_id.to_string(),
+            session_id: "project-session".to_string(),
+            event_uid: format!("{request_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            title: "New project".to_string(),
+            genre: Some("Fantasy".to_string()),
+            pov: None,
+            tense: None,
+            language: Some("en".to_string()),
+            style_guide: None,
+            ai_instructions: None,
+            outline: None,
+            target_readers: None,
+            created_at: "2026-08-13T00:00:00.000Z".to_string(),
+            updated_at: "2026-08-13T00:00:00.000Z".to_string(),
+        }
+    }
+
+    fn project_patch_payload(
+        project_id: &str,
+        request_id: &str,
+        base_updated_at: &str,
+        updated_at: &str,
+    ) -> ProjectPatchPayload {
+        ProjectPatchPayload {
+            project_id: project_id.to_string(),
+            request_id: request_id.to_string(),
+            session_id: "project-session".to_string(),
+            event_uid: format!("{request_id}-event"),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            base_updated_at: base_updated_at.to_string(),
+            updated_at: updated_at.to_string(),
+            patch: serde_json::Map::from_iter([
+                (
+                    "styleGuide".to_string(),
+                    Value::String("clear and vivid".to_string()),
+                ),
+                (
+                    "aiPolicy".to_string(),
+                    Value::String("{\"preset\":\"review-only\"}".to_string()),
+                ),
+            ]),
+        }
+    }
+
+    #[test]
+    fn project_create_publishes_builtin_catalog_once_in_deterministic_order() {
+        let db = fixture();
+        let payload = project_create_payload("project-create", "project-create-request");
+        let response = project_create(&db, payload.clone()).expect("create project");
+        assert_eq!(response["id"], "project-create");
+        assert_eq!(response["language"], "en");
+        assert_eq!(response["title"], "New project");
+        assert!(response["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .is_some());
+
+        let mut retry = payload;
+        retry.session_id = "project-session-after-restart".to_string();
+        retry.event_uid = "project-event-after-restart".to_string();
+        let replay = project_create(&db, retry).expect("retry project create");
+        assert_eq!(replay, response);
+
+        db.with_conn(|conn| {
+            let project_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM projects WHERE id = 'project-create'",
+                [],
+                |row| row.get(0),
+            )?;
+            let canonical_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM change_events
+                  WHERE project_id = 'project-create' AND op_type = 'project.create'",
+                [],
+                |row| row.get(0),
+            )?;
+            let transaction_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions
+                  WHERE project_id = 'project-create'
+                    AND request_id = 'project-create-request'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(project_count, 1);
+            assert_eq!(canonical_count, 1);
+            assert_eq!(transaction_count, 1);
+
+            let mut statement = conn.prepare(
+                "SELECT type.slug, type.label, event.event_ordinal,
+                        json_extract(event.object_key_json, '$.componentId')
+                   FROM narrative_change_events event
+                   JOIN codex_types type
+                     ON type.id = substr(
+                          json_extract(event.object_key_json, '$.componentId'),
+                          length('codex-type:') + 1
+                        )
+                  WHERE event.project_id = 'project-create'
+                  ORDER BY event.event_ordinal",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    (
+                        "character".to_string(),
+                        "Character".to_string(),
+                        0,
+                        "codex-type:project-create-character".to_string(),
+                    ),
+                    (
+                        "location".to_string(),
+                        "Location".to_string(),
+                        1,
+                        "codex-type:project-create-location".to_string(),
+                    ),
+                    (
+                        "item".to_string(),
+                        "Item".to_string(),
+                        2,
+                        "codex-type:project-create-item".to_string(),
+                    ),
+                    (
+                        "lore".to_string(),
+                        "Lore & Worldbuilding".to_string(),
+                        3,
+                        "codex-type:project-create-lore".to_string(),
+                    ),
+                ]
+            );
+            Ok(())
+        })
+        .expect("verify project history");
+    }
+
+    #[test]
+    fn project_create_conflict_is_fail_closed() {
+        let db = fixture();
+        let payload = project_create_payload("project-conflict", "project-conflict-request");
+        project_create(&db, payload.clone()).expect("create project");
+        let mut conflicting = payload;
+        conflicting.title = "Different title".to_string();
+        let error = project_create(&db, conflicting).expect_err("reject request conflict");
+        assert!(error
+            .to_string()
+            .contains("PROJECT_CREATE_REQUEST_CONFLICT"));
+    }
+
+    #[test]
+    fn project_patch_is_atomic_idempotent_and_publishes_semantic_paths() {
+        let db = fixture();
+        let created = project_create(
+            &db,
+            project_create_payload("project-patch", "project-patch-create"),
+        )
+        .expect("create project");
+        let base_updated_at = created["updatedAt"].as_str().expect("created timestamp");
+        let payload = project_patch_payload(
+            "project-patch",
+            "project-patch-request",
+            base_updated_at,
+            "2026-08-13T00:00:01.000Z",
+        );
+        let response = project_patch(&db, payload.clone()).expect("patch project");
+        assert_eq!(response["styleGuide"], "clear and vivid");
+        assert_eq!(response["aiPolicy"], "{\"preset\":\"review-only\"}");
+
+        let replay = project_patch(&db, payload).expect("replay project patch");
+        assert_eq!(replay, response);
+
+        db.with_conn(|conn| {
+            let (object_key, paths, change_kind): (String, String, String) = conn.query_row(
+                "SELECT object_key_json, changed_paths_json, change_kind
+                   FROM narrative_change_events
+                  WHERE canonical_change_event_uid = 'project-patch-request-event'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                serde_json::from_str::<Value>(&object_key)?,
+                json!({ "kind": "project", "projectId": "project-patch" })
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&paths)?,
+                json!(["/aiPolicy", "/styleGuide"])
+            );
+            assert_eq!(change_kind, "policy");
+            let feed_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_events
+                  WHERE canonical_change_event_uid = 'project-patch-request-event'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(feed_count, 1);
+            Ok(())
+        })
+        .expect("inspect project patch feed");
+
+        let stale = project_patch_payload(
+            "project-patch",
+            "project-patch-stale",
+            base_updated_at,
+            "2026-08-13T00:00:02.000Z",
+        );
+        let error = project_patch(&db, stale).expect_err("stale patch must fail closed");
+        assert!(error.to_string().contains("PROJECT_VERSION_MISMATCH"));
+    }
+
+    #[test]
+    fn project_create_feed_failure_rolls_back_project_and_trigger_rows() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_project_create_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced project create feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install feed failure trigger");
+
+        let result = project_create(
+            &db,
+            project_create_payload("project-rollback", "project-rollback-request"),
+        );
+        assert!(result.is_err());
+        db.with_conn(|conn| {
+            for (table, predicate) in [
+                ("projects", "id = 'project-rollback'"),
+                ("codex_types", "project_id = 'project-rollback'"),
+                ("map_boards", "project_id = 'project-rollback'"),
+                ("change_events", "project_id = 'project-rollback'"),
+                (
+                    "idempotency_requests",
+                    "request_id = 'project-rollback-request'",
+                ),
+            ] {
+                let count: i64 = conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{table} should roll back");
+            }
+            Ok(())
+        })
+        .expect("verify project rollback");
+    }
+
+    fn seed_rename_lineage(db: &Database, suffix: &str) -> (String, String) {
+        let undo_journal_id = format!("rename-journal-{suffix}");
+        let change_event_uid = format!("rename-forward-event-{suffix}");
+        let request_id = format!("rename-forward-request-{suffix}");
+        let transaction_id = db
+            .with_conn(|conn| {
+                let tx = conn.unchecked_transaction()?;
+                let canonical_entry =
+                    crate::canonical_feed_snapshots::canonical_codex_entry_snapshot(
+                        &tx, "p1", "c1",
+                    )?;
+                let canonical_digest = narrative_snapshot_digest(&canonical_entry)?;
+                let canonical_version = canonical_entry.get("version").and_then(Value::as_i64);
+                crate::undo_journal::insert_undo_journal_in_tx(
+                    &tx,
+                    crate::undo_journal::UndoJournalInsert {
+                        id: &undo_journal_id,
+                        project_id: "p1",
+                        surface: "rename-test",
+                        entity_kind: "codex_rename",
+                        entity_id: "c1",
+                        op_kind: "codex.renamePropagate",
+                        before_json: None,
+                        after_json: Some("{}"),
+                        base_version: 0,
+                        result_version: 1,
+                        change_event_uid: Some(&change_event_uid),
+                    },
+                )?;
+                let append = append_canonical_and_narrative_change_in_tx(
+                    &tx,
+                    "p1",
+                    "rename-test",
+                    &AppendChangeEvent {
+                        event_uid: change_event_uid.clone(),
+                        scene_id: None,
+                        domain: "codex".to_string(),
+                        op_type: "codex.renamePropagate".to_string(),
+                        entity_type: Some("codex_entry".to_string()),
+                        entity_id: Some("c1".to_string()),
+                        payload: "{}".to_string(),
+                        timestamp: 1,
+                    },
+                    &AppendNarrativeChangeTransactionInput {
+                        project_id: "p1".to_string(),
+                        request_id,
+                        source_domain: "codex.renamePropagate".to_string(),
+                        source_change_event_uid: change_event_uid,
+                        cause_kind: NarrativeChangeCauseKind::Forward,
+                        origin: NarrativeChangeOrigin::Human,
+                        original_transaction_id: None,
+                        commit_id: None,
+                        journal_id: None,
+                        undo_journal_id: Some(undo_journal_id.clone()),
+                        application_ids: Vec::new(),
+                        occurred_at: "2026-08-13T00:00:00Z".to_string(),
+                        events: vec![NarrativeChangeEventInput {
+                            object_key: json!({ "kind": "codex-entry", "entryId": "c1" }),
+                            change_kind: "metadata".to_string(),
+                            mutation_kind: "update".to_string(),
+                            before_version: canonical_version,
+                            before_digest: Some(canonical_digest.clone()),
+                            after_version: canonical_version,
+                            after_digest: Some(canonical_digest),
+                            changed_paths: vec!["/name".to_string()],
+                            text_impact: None,
+                            structural_impact: None,
+                        }],
+                    },
+                )?;
+                tx.commit()?;
+                Ok(append.narrative.transaction_id)
+            })
+            .expect("seed rename lineage");
+        (transaction_id, undo_journal_id)
+    }
+
+    fn ai_tree_payload(request_id: &str) -> ApplyAiTreePlanPayload {
+        ApplyAiTreePlanPayload {
+            request_id: request_id.to_string(),
+            project_id: "p1".to_string(),
+            session_id: "ai-tree-session".to_string(),
+            surface: "in-app-agent".to_string(),
+            kind: "reorganize".to_string(),
+            updated_at: "2026-08-13T01:00:00Z".to_string(),
+            model: Some("model-1".to_string()),
+            trace_id: Some("trace-1".to_string()),
+            creates: vec![AiTreePlanCreateInput {
+                id: "ai-folder".to_string(),
+                parent_id: Some("root".to_string()),
+                node_type: "folder".to_string(),
+                title: "AI Folder".to_string(),
+                sort_order: "a2".to_string(),
+                synopsis: None,
+            }],
+            updates: vec![AiTreePlanUpdateInput {
+                id: "moved".to_string(),
+                base_version: 0,
+                placement: Some(AiTreePlanPlacementInput {
+                    parent_id: Some("ai-folder".to_string()),
+                    sort_order: "a0".to_string(),
+                }),
+                title: Some("Moved by AI".to_string()),
+            }],
+            redo: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        }
+    }
+
+    #[test]
+    fn ai_tree_plan_is_atomic_idempotent_ordered_and_preserves_undo_redo_lineage() {
+        let db = fixture();
+        let payload = ai_tree_payload("ai-tree-forward-request");
+        let forward = apply_ai_tree_plan(&db, payload.clone()).expect("apply AI tree plan");
+        let original_transaction_id = forward["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward["undoJournalId"]
+            .as_str()
+            .expect("undo journal")
+            .to_string();
+        assert_eq!(undo_journal_id, "ai-tree-forward-request");
+        assert_eq!(forward["versions"].as_array().map(Vec::len), Some(2));
+
+        let mut retry = payload.clone();
+        retry.session_id = "session-after-restart".to_string();
+        assert_eq!(
+            apply_ai_tree_plan(&db, retry).expect("idempotent retry"),
+            forward
+        );
+        db.with_conn(|conn| {
+            let moved: (Option<String>, String, i64) = conn.query_row(
+                "SELECT parent_id, title, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(moved, (Some("ai-folder".to_string()), "Moved by AI".to_string(), 1));
+            let counts: (i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM change_events WHERE event_uid = 'ai-tree-forward-request'),
+                    (SELECT COUNT(*) FROM narrative_change_transactions
+                      WHERE request_id = 'ai-tree-forward-request'),
+                    (SELECT COUNT(*) FROM narrative_change_events event
+                      JOIN narrative_change_transactions tx ON tx.id = event.transaction_id
+                     WHERE tx.request_id = 'ai-tree-forward-request'),
+                    (SELECT COUNT(*) FROM undo_journal WHERE id = 'ai-tree-forward-request')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(counts, (1, 1, 2, 1));
+            let event_order = conn
+                .prepare(
+                    "SELECT event.object_key_json
+                       FROM narrative_change_events event
+                       JOIN narrative_change_transactions tx ON tx.id = event.transaction_id
+                      WHERE tx.request_id = 'ai-tree-forward-request'
+                      ORDER BY event.event_ordinal",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert!(event_order[0].contains("ai-folder"));
+            assert!(event_order[1].contains("moved"));
+            Ok(())
+        })
+        .expect("verify forward state");
+
+        let undo = undo_ai_tree_plan(
+            &db,
+            UndoAiTreePlanPayload {
+                request_id: "ai-tree-undo-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "ai-tree-session".to_string(),
+                updated_at: "2026-08-13T01:01:00Z".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
+                expected_versions: vec![
+                    AiTreeNodeVersionInput {
+                        id: "ai-folder".to_string(),
+                        version: 1,
+                    },
+                    AiTreeNodeVersionInput {
+                        id: "moved".to_string(),
+                        version: 1,
+                    },
+                ],
+            },
+        )
+        .expect("undo AI tree plan");
+        assert_eq!(undo["versions"][0]["id"], "moved");
+        assert_eq!(undo["versions"][0]["version"], 2);
+
+        let mut redo = payload;
+        redo.request_id = "ai-tree-redo-request".to_string();
+        redo.updated_at = "2026-08-13T01:02:00Z".to_string();
+        redo.updates[0].base_version = 2;
+        redo.redo = true;
+        redo.original_transaction_id = Some(original_transaction_id.clone());
+        redo.undo_journal_id = Some(undo_journal_id);
+        apply_ai_tree_plan(&db, redo).expect("redo AI tree plan");
+
+        db.with_conn(|conn| {
+            let lineage = conn
+                .prepare(
+                    "SELECT cause_kind, origin, original_transaction_id
+                       FROM narrative_change_transactions
+                      WHERE request_id IN (
+                        'ai-tree-forward-request', 'ai-tree-undo-request', 'ai-tree-redo-request'
+                      )
+                      ORDER BY source_change_event_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                lineage[0],
+                ("forward".to_string(), "ai-apply".to_string(), None)
+            );
+            assert_eq!(lineage[1].0, "undo");
+            assert_eq!(lineage[1].1, "undo");
+            assert_eq!(lineage[2].0, "redo");
+            assert_eq!(lineage[2].1, "redo");
+            assert_eq!(lineage[1].2, Some(original_transaction_id.clone()));
+            assert_eq!(lineage[2].2, Some(original_transaction_id.clone()));
+            let moved: (Option<String>, String, i64) = conn.query_row(
+                "SELECT parent_id, title, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                moved,
+                (Some("ai-folder".to_string()), "Moved by AI".to_string(), 3)
+            );
+            Ok(())
+        })
+        .expect("verify undo/redo lineage");
+    }
+
+    #[test]
+    fn ai_tree_plan_rejects_cross_project_and_rolls_back_when_feed_append_fails() {
+        let db = fixture();
+        let mut cross_project = ai_tree_payload("ai-tree-cross-project");
+        cross_project.updates[0].id = "foreign-node".to_string();
+        let error = apply_ai_tree_plan(&db, cross_project)
+            .expect_err("foreign project node must be rejected");
+        assert!(error.to_string().contains("not found in project 'p1'"));
+        assert_eq!(
+            db.with_conn(|conn| conn
+                .query_row(
+                    "SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map_err(Into::into))
+                .expect("count rolled back create"),
+            0
+        );
+
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_ai_tree_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced AI tree feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install feed failure trigger");
+        let error = apply_ai_tree_plan(&db, ai_tree_payload("ai-tree-feed-failure"))
+            .expect_err("feed failure must abort the full plan");
+        assert!(error.to_string().contains("forced AI tree feed failure"));
+        db.with_conn(|conn| {
+            let moved: (Option<String>, String, i64) = conn.query_row(
+                "SELECT parent_id, title, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(moved, (None, "Moved".to_string(), 0));
+            let counts: (i64, i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'),
+                    (SELECT COUNT(*) FROM undo_journal WHERE id = 'ai-tree-feed-failure'),
+                    (SELECT COUNT(*) FROM idempotency_requests
+                      WHERE domain = 'ai_tree_plan_apply'
+                        AND request_id = 'ai-tree-feed-failure')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(counts, (0, 0, 0));
+            Ok(())
+        })
+        .expect("verify atomic rollback");
+    }
+
     #[test]
     fn authorship_replace_is_atomic_and_owner_scoped() {
         let db = fixture();
@@ -1753,19 +4668,51 @@ mod tests {
     #[test]
     fn entity_tags_are_sorted_and_cross_project_tags_roll_back() {
         let db = fixture();
-        set_entity_tags(
-            &db,
-            SetEntityTagsPayload {
-                entity_kind: "codex".to_string(),
-                entity_id: "c1".to_string(),
-                tag_ids: vec!["tag-b".to_string(), "tag-a".to_string()],
-                updated_at: Some("new".to_string()),
-            },
-        )
-        .expect("set tags");
+        let payload = SetEntityTagsPayload {
+            project_id: "p1".to_string(),
+            request_id: "tags-request-1".to_string(),
+            session_id: "tags-session".to_string(),
+            event_uid: "tags-event-1".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            entity_kind: "codex".to_string(),
+            entity_id: "c1".to_string(),
+            tag_ids: vec!["tag-b".to_string(), "tag-a".to_string()],
+            updated_at: Some("new".to_string()),
+        };
+        set_entity_tags(&db, payload.clone()).expect("set tags");
+        let mut retry = payload;
+        retry.session_id = "tags-session-after-restart".to_string();
+        retry.event_uid = "tags-event-after-restart".to_string();
+        set_entity_tags(&db, retry).expect("retry tags");
         assert!(set_entity_tags(
             &db,
             SetEntityTagsPayload {
+                project_id: "p2".to_string(),
+                request_id: "tags-request-wrong-project".to_string(),
+                session_id: "tags-session".to_string(),
+                event_uid: "tags-event-wrong-project".to_string(),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                entity_kind: "codex".to_string(),
+                entity_id: "c1".to_string(),
+                tag_ids: vec!["tag-a".to_string()],
+                updated_at: Some("newer".to_string()),
+            },
+        )
+        .is_err());
+        assert!(set_entity_tags(
+            &db,
+            SetEntityTagsPayload {
+                project_id: "p1".to_string(),
+                request_id: "tags-request-2".to_string(),
+                session_id: "tags-session".to_string(),
+                event_uid: "tags-event-2".to_string(),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
                 entity_kind: "codex".to_string(),
                 entity_id: "c1".to_string(),
                 tag_ids: vec!["tag-x".to_string()],
@@ -1783,9 +4730,63 @@ mod tests {
                 cache,
                 r##"[{"name":"Alpha","color":null},{"name":"Beta","color":"#222"}]"##
             );
+            let feed_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions
+                  WHERE project_id = 'p1' AND request_id = 'tags-request-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(feed_count, 1);
             Ok(())
         })
         .expect("read cache");
+    }
+
+    #[test]
+    fn entity_tags_feed_failure_rolls_back_links_and_cache() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_tags_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced tags feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install failure trigger");
+        let result = set_entity_tags(
+            &db,
+            SetEntityTagsPayload {
+                project_id: "p1".to_string(),
+                request_id: "tags-request-failure".to_string(),
+                session_id: "tags-session".to_string(),
+                event_uid: "tags-event-failure".to_string(),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                entity_kind: "codex".to_string(),
+                entity_id: "c1".to_string(),
+                tag_ids: vec!["tag-a".to_string()],
+                updated_at: Some("new".to_string()),
+            },
+        );
+        assert!(result.is_err());
+        db.with_conn(|conn| {
+            let link_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM codex_entry_tags WHERE entry_id = 'c1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let tags_cache: Option<String> = conn.query_row(
+                "SELECT tags_cache FROM codex_entries WHERE id = 'c1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(link_count, 0);
+            assert_eq!(tags_cache, None);
+            Ok(())
+        })
+        .expect("verify rollback");
     }
 
     #[test]
@@ -1817,6 +4818,7 @@ mod tests {
     #[test]
     fn codex_rename_undo_is_project_scoped_and_rolls_back_as_one_unit() {
         let db = fixture();
+        let (original_transaction_id, undo_journal_id) = seed_rename_lineage(&db, "scope");
         let update = |ref_id: &str, value: &str| CodexRenameUndoUpdate {
             kind: "node-title".to_string(),
             ref_id: ref_id.to_string(),
@@ -1829,13 +4831,17 @@ mod tests {
         assert!(undo_codex_rename(
             &db,
             CodexRenameUndoPayload {
+                request_id: "rename-undo-request-scope-fail".to_string(),
+                event_uid: "rename-undo-event-scope-fail".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
                 project_id: "p1".to_string(),
                 updated_at: "undo".to_string(),
                 updates: vec![
                     update("moved", "Restored"),
                     update("foreign-node", "Leaked"),
                 ],
-                session_id: None,
+                session_id: Some("rename-test".to_string()),
             },
         )
         .is_err());
@@ -1853,10 +4859,14 @@ mod tests {
         undo_codex_rename(
             &db,
             CodexRenameUndoPayload {
+                request_id: "rename-undo-request-scope-ok".to_string(),
+                event_uid: "rename-undo-event-scope-ok".to_string(),
+                original_transaction_id,
+                undo_journal_id,
                 project_id: "p1".to_string(),
                 updated_at: "undo".to_string(),
                 updates: vec![update("moved", "Restored")],
-                session_id: None,
+                session_id: Some("rename-test".to_string()),
             },
         )
         .expect("undo rename");
@@ -1875,9 +4885,14 @@ mod tests {
     #[test]
     fn codex_rename_detail_rejects_cross_project_definition() {
         let db = fixture();
+        let (original_transaction_id, undo_journal_id) = seed_rename_lineage(&db, "detail-xproj");
         let result = undo_codex_rename(
             &db,
             CodexRenameUndoPayload {
+                request_id: "rename-undo-request-detail-xproj".to_string(),
+                event_uid: "rename-undo-event-detail-xproj".to_string(),
+                original_transaction_id,
+                undo_journal_id,
                 project_id: "p1".to_string(),
                 updated_at: "undo".to_string(),
                 updates: vec![CodexRenameUndoUpdate {
@@ -1889,7 +4904,7 @@ mod tests {
                     char_count: None,
                     placed_beat_preview: None,
                 }],
-                session_id: None,
+                session_id: Some("rename-test".to_string()),
             },
         );
 
@@ -1910,6 +4925,7 @@ mod tests {
     #[test]
     fn codex_rename_cas_authority_and_undo_event_cover_all_storage_lanes() {
         let db = fixture();
+        let (original_transaction_id, undo_journal_id) = seed_rename_lineage(&db, "lanes");
         db.with_conn(|conn| {
             conn.execute_batch(
                 "INSERT INTO codex_entries (id, project_id, type, name)
@@ -1941,6 +4957,10 @@ mod tests {
         undo_codex_rename(
             &db,
             CodexRenameUndoPayload {
+                request_id: "rename-undo-request-lanes".to_string(),
+                event_uid: "rename-undo-event-lanes".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
                 project_id: "p1".to_string(),
                 updated_at: "undo".to_string(),
                 updates: vec![
@@ -1951,13 +4971,7 @@ mod tests {
                     update("codex-summary", "c1", None, 0, "Summary"),
                     update("codex-content", "c1", None, 0, "{}"),
                     update("codex-detail", "c1", Some("d1"), 0, "Detail"),
-                    update(
-                        "codex-relation-label",
-                        "relation-p1",
-                        None,
-                        1,
-                        "Relation",
-                    ),
+                    update("codex-relation-label", "relation-p1", None, 1, "Relation"),
                 ],
                 session_id: Some("rename-test".to_string()),
             },
@@ -1990,6 +5004,72 @@ mod tests {
             assert_eq!(detail_version, 1);
             assert_eq!(relation_version, 2);
 
+            let version_chain = conn
+                .prepare(
+                    "SELECT event.object_key_json, event.changed_paths_json,
+                            event.before_version, event.after_version
+                       FROM narrative_change_events event
+                       JOIN narrative_change_transactions feed_tx
+                         ON feed_tx.id = event.transaction_id
+                      WHERE feed_tx.request_id = 'rename-undo-request-lanes'
+                      ORDER BY event.event_ordinal",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        serde_json::from_str::<Value>(&row.get::<_, String>(0)?)
+                            .expect("valid object key"),
+                        serde_json::from_str::<Value>(&row.get::<_, String>(1)?)
+                            .expect("valid changed paths"),
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                version_chain,
+                vec![
+                    (
+                        json!({
+                            "kind": "codex-detail-value",
+                            "valueId": "value-p1"
+                        }),
+                        json!(["/details/d1"]),
+                        0,
+                        1,
+                    ),
+                    (
+                        json!({"kind": "codex-entry", "entryId": "c1"}),
+                        json!(["/content"]),
+                        0,
+                        1,
+                    ),
+                    (
+                        json!({"kind": "codex-entry", "entryId": "c1"}),
+                        json!(["/summary"]),
+                        1,
+                        2,
+                    ),
+                    (
+                        json!({"kind": "codex-relation", "relationId": "relation-p1"}),
+                        json!(["/forwardLabel"]),
+                        1,
+                        2,
+                    ),
+                    (
+                        json!({"kind": "scene", "sceneId": "moved"}),
+                        json!(["/charCount", "/content", "/placedBeatPreview"]),
+                        0,
+                        1,
+                    ),
+                    (
+                        json!({"kind": "scene", "sceneId": "moved"}),
+                        json!(["/title"]),
+                        1,
+                        2,
+                    ),
+                ]
+            );
+
             for (entity_kind, entity_id, field_path) in [
                 ("scene", "moved", "/content"),
                 ("scene", "moved", "/title"),
@@ -2021,82 +5101,475 @@ mod tests {
         let stale = undo_codex_rename(
             &db,
             CodexRenameUndoPayload {
+                request_id: "rename-undo-request-stale".to_string(),
+                event_uid: "rename-undo-event-stale".to_string(),
+                original_transaction_id,
+                undo_journal_id,
                 project_id: "p1".to_string(),
                 updated_at: "undo-stale".to_string(),
                 updates: vec![update("node-title", "moved", None, 0, "Stale")],
-                session_id: None,
+                session_id: Some("rename-test".to_string()),
             },
         );
         assert!(stale.is_err());
     }
 
     #[test]
-    fn tree_undo_restores_existing_nodes_before_deleting_created_parents() {
+    fn codex_rename_forward_undo_redo_preserve_lineage_and_retry_identity() {
         let db = fixture();
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE tree_nodes SET parent_id = 'created-parent', title = 'Renamed'
-                  WHERE id = 'moved'",
-                [],
-            )?;
-            Ok(())
-        })
-        .expect("apply forward state");
-        undo_tree_plan(
+        let update = |value: &str, base_version: i64| CodexRenameUndoUpdate {
+            kind: "node-title".to_string(),
+            ref_id: "moved".to_string(),
+            detail_definition_id: None,
+            base_version,
+            value: value.to_string(),
+            char_count: None,
+            placed_beat_preview: None,
+        };
+        let forward = CodexRenameApplyPayload {
+            request_id: "rename-forward-request".to_string(),
+            project_id: "p1".to_string(),
+            session_id: "rename-session".to_string(),
+            surface: Some("rename-test".to_string()),
+            entry_id: "c1".to_string(),
+            updated_at: "2026-08-13T00:00:01Z".to_string(),
+            updates: vec![update("Renamed", 0)],
+            event_summary: "{}".to_string(),
+            event_uid: "rename-forward-event".to_string(),
+            timestamp: 1,
+            redo: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        };
+        let forward_result = apply_codex_rename(&db, forward.clone()).expect("forward rename");
+        let mut forward_retry = forward;
+        forward_retry.session_id = "rename-session-after-restart".to_string();
+        forward_retry.event_uid = "rename-forward-event-after-restart".to_string();
+        assert_eq!(
+            apply_codex_rename(&db, forward_retry).expect("retry forward rename"),
+            forward_result
+        );
+        let original_transaction_id = forward_result["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward maintenance transaction")
+            .to_string();
+        let undo_journal_id = forward_result["undoJournalId"]
+            .as_str()
+            .expect("forward undo journal")
+            .to_string();
+
+        let undo_result = undo_codex_rename(
             &db,
-            UndoTreePlanPayload {
+            CodexRenameUndoPayload {
+                request_id: "rename-undo-request".to_string(),
+                event_uid: "rename-undo-event".to_string(),
+                original_transaction_id: original_transaction_id.clone(),
+                undo_journal_id: undo_journal_id.clone(),
                 project_id: "p1".to_string(),
-                before_states: vec![TreeBeforeState {
-                    id: "moved".to_string(),
-                    parent_id: Some("root".to_string()),
-                    sort_order: "a0".to_string(),
-                    title: "Moved".to_string(),
-                }],
-                created_ids: vec!["created-parent".to_string()],
-                updated_at: "undo".to_string(),
+                updated_at: "2026-08-13T00:00:02Z".to_string(),
+                updates: vec![update("Moved", 1)],
+                session_id: Some("rename-session".to_string()),
             },
         )
-        .expect("undo tree plan");
+        .expect("undo rename");
+        assert_eq!(undo_result["versions"][0]["version"], 2);
+
+        apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-redo-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:03Z".to_string(),
+                updates: vec![update("Renamed", 2)],
+                event_summary: "{}".to_string(),
+                event_uid: "rename-redo-event".to_string(),
+                timestamp: 3,
+                redo: true,
+                original_transaction_id: Some(original_transaction_id),
+                undo_journal_id: Some(undo_journal_id),
+            },
+        )
+        .expect("redo rename");
+
         db.with_conn(|conn| {
-            let (parent, title): (String, String) = conn.query_row(
-                "SELECT parent_id, title FROM tree_nodes WHERE id = 'moved'",
+            let title: String = conn.query_row(
+                "SELECT title FROM tree_nodes WHERE id = 'moved'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| row.get(0),
             )?;
-            assert_eq!((parent, title), ("root".to_string(), "Moved".to_string()));
+            let ledger_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM undo_journal
+                  WHERE project_id = 'p1' AND op_kind = 'codex.renamePropagate'",
+                [],
+                |row| row.get(0),
+            )?;
+            let lineage = conn
+                .prepare(
+                    "SELECT cause_kind, origin
+                       FROM narrative_change_transactions
+                      WHERE project_id = 'p1'
+                        AND source_domain IN ('codex.renamePropagate', 'codex.renameUndo')
+                      ORDER BY source_change_event_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            assert_eq!(title, "Renamed");
+            assert_eq!(ledger_count, 1);
             assert_eq!(
-                conn.query_row(
-                    "SELECT COUNT(*) FROM tree_nodes WHERE id = 'created-parent'",
-                    [],
-                    |row| row.get::<_, i64>(0)
-                )?,
-                0
+                lineage,
+                vec![
+                    ("forward".to_string(), "human".to_string()),
+                    ("undo".to_string(), "undo".to_string()),
+                    ("redo".to_string(), "redo".to_string()),
+                ]
             );
             Ok(())
         })
-        .expect("read tree");
+        .expect("verify rename lineage");
+    }
+
+    #[test]
+    fn codex_rename_feed_failure_rolls_back_domain_undo_and_canonical_event() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_codex_rename_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced codex rename feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install feed failure trigger");
+
+        let error = apply_codex_rename(
+            &db,
+            CodexRenameApplyPayload {
+                request_id: "rename-failure-request".to_string(),
+                project_id: "p1".to_string(),
+                session_id: "rename-session".to_string(),
+                surface: Some("rename-test".to_string()),
+                entry_id: "c1".to_string(),
+                updated_at: "2026-08-13T00:00:01Z".to_string(),
+                updates: vec![CodexRenameUndoUpdate {
+                    kind: "node-title".to_string(),
+                    ref_id: "moved".to_string(),
+                    detail_definition_id: None,
+                    base_version: 0,
+                    value: "Must roll back".to_string(),
+                    char_count: None,
+                    placed_beat_preview: None,
+                }],
+                event_summary: "{}".to_string(),
+                event_uid: "rename-failure-event".to_string(),
+                timestamp: 1,
+                redo: false,
+                original_transaction_id: None,
+                undo_journal_id: None,
+            },
+        )
+        .expect_err("feed failure must abort the whole rename");
+        assert!(error
+            .to_string()
+            .contains("forced codex rename feed failure"));
+
+        db.with_conn(|conn| {
+            let (title, version): (String, i64) = conn.query_row(
+                "SELECT title, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let undo_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM undo_journal WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let canonical_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM change_events WHERE project_id = 'p1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!((title, version), ("Moved".to_string(), 0));
+            assert_eq!((undo_count, canonical_count), (0, 0));
+            Ok(())
+        })
+        .expect("verify atomic rename rollback");
+    }
+
+    #[test]
+    fn non_scene_tree_crud_uses_component_feed_root() {
+        let db = fixture();
+        let mut create = tree_create_payload("tracked-note", "note", "a8", Some("root"));
+        create.request_id = "tree-create-request".to_string();
+        create.event_uid = "tree-create-event".to_string();
+        create.title = "Tracked note".to_string();
+        create.content = Some("{}".to_string());
+        tree_node_create(&db, create).expect("create tracked note");
+        let mut patch = tree_patch_payload(
+            "tracked-note",
+            serde_json::Map::from_iter([(
+                "title".to_string(),
+                Value::String("Updated note".to_string()),
+            )]),
+            Some(0),
+            "2026-08-13T00:00:01Z",
+        );
+        patch.request_id = "tree-patch-request".to_string();
+        patch.event_uid = "tree-patch-event".to_string();
+        tree_node_patch(&db, patch).expect("patch tracked note");
+        let mut delete = tree_delete_payload("tracked-note");
+        delete.request_id = "tree-delete-request".to_string();
+        delete.event_uid = "tree-delete-event".to_string();
+        tree_node_delete(&db, delete).expect("delete tracked note");
+
+        db.with_conn(|conn| {
+            let rows = conn
+                .prepare(
+                    "SELECT feed_tx.request_id, event.object_key_json,
+                            event.mutation_kind, event.changed_paths_json
+                       FROM narrative_change_transactions feed_tx
+                       JOIN narrative_change_events event
+                         ON event.transaction_id = feed_tx.id
+                      ORDER BY feed_tx.source_change_event_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        serde_json::from_str::<Value>(&row.get::<_, String>(1)?)
+                            .expect("valid object key"),
+                        row.get::<_, String>(2)?,
+                        serde_json::from_str::<Value>(&row.get::<_, String>(3)?)
+                            .expect("valid changed paths"),
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(rows.len(), 3);
+            assert_eq!(
+                rows.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+                vec![
+                    "tree-create-request",
+                    "tree-patch-request",
+                    "tree-delete-request",
+                ]
+            );
+            assert!(rows.iter().all(|row| row.1
+                == serde_json::json!({
+                    "kind": "component",
+                    "componentId": "tree-node:tracked-note",
+                })));
+            assert_eq!(
+                rows.iter().map(|row| row.2.as_str()).collect::<Vec<_>>(),
+                vec!["create", "update", "delete"]
+            );
+            assert_eq!(rows[1].3, serde_json::json!(["/title"]));
+            Ok(())
+        })
+        .expect("inspect tracked tree CRUD feed");
+    }
+
+    #[test]
+    fn tree_create_retry_ignores_transport_session_and_event_identity() {
+        let db = fixture();
+        let payload = tree_create_payload("retry-scene", "scene", "a8", Some("root"));
+        let request_id = payload.request_id.clone();
+        let original_event_uid = payload.event_uid.clone();
+        let first = tree_node_create(&db, payload.clone()).expect("first tree create");
+
+        let mut retry = payload;
+        retry.session_id = "tree-session-after-restart".to_string();
+        retry.event_uid = "tree-event-after-restart".to_string();
+        let retry_event_uid = retry.event_uid.clone();
+        let replayed = tree_node_create(&db, retry).expect("durable request replay");
+
+        assert_eq!(replayed, first);
+        db.with_conn(|conn| {
+            let counts: (i64, i64, i64, i64, i64, i64) = conn.query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM tree_nodes WHERE id = 'retry-scene'),
+                   (SELECT COUNT(*) FROM undo_journal WHERE id = ?1),
+                   (SELECT COUNT(*) FROM change_events
+                     WHERE project_id = 'p1' AND event_uid IN (?2, ?3)),
+                   (SELECT COUNT(*) FROM narrative_change_transactions
+                     WHERE project_id = 'p1' AND request_id = ?1),
+                   (SELECT COUNT(*) FROM narrative_change_events event
+                     JOIN narrative_change_transactions feed_tx
+                       ON feed_tx.id = event.transaction_id
+                    WHERE feed_tx.project_id = 'p1' AND feed_tx.request_id = ?1),
+                   (SELECT COUNT(*) FROM idempotency_requests
+                     WHERE domain = 'tree_node_create' AND request_id = ?1)",
+                params![request_id, original_event_uid, retry_event_uid],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?;
+            assert_eq!(counts, (1, 1, 1, 1, 1, 1));
+            let persisted_event_uid: String = conn.query_row(
+                "SELECT event_uid FROM change_events
+                  WHERE project_id = 'p1' AND event_uid IN (?1, ?2)",
+                params![original_event_uid, retry_event_uid],
+                |row| row.get(0),
+            )?;
+            assert_eq!(persisted_event_uid, original_event_uid);
+            Ok(())
+        })
+        .expect("inspect tree replay");
+    }
+
+    #[test]
+    fn tree_subtree_delete_is_project_scoped_ordered_and_idempotent() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes
+                   (id, project_id, parent_id, node_type, title, sort_order)
+                 VALUES
+                   ('delete-root', 'p1', NULL, 'folder', 'Root', 'z0'),
+                   ('delete-a', 'p1', 'delete-root', 'scene', 'A', 'a0'),
+                   ('delete-z', 'p1', 'delete-root', 'folder', 'Z', 'z0'),
+                   ('delete-grandchild', 'p1', 'delete-z', 'scene', 'Grandchild', 'a0'),
+                   ('delete-foreign', 'p2', 'delete-root', 'scene', 'Foreign', 'a0');",
+            )?;
+            Ok(())
+        })
+        .expect("seed subtree");
+
+        let payload = tree_delete_payload("delete-root");
+        let error = tree_node_delete(&db, payload.clone())
+            .expect_err("cross-project descendant must reject the whole delete");
+        assert!(error.to_string().contains("TREE_SUBTREE_CROSS_PROJECT"));
+        db.with_conn(|conn| {
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id LIKE 'delete-%'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 5);
+            conn.execute("DELETE FROM tree_nodes WHERE id = 'delete-foreign'", [])?;
+            Ok(())
+        })
+        .expect("verify fail-closed scope and remove invalid fixture");
+
+        let first = tree_node_delete(&db, payload.clone()).expect("delete subtree");
+        assert_eq!(
+            first["deletedIds"],
+            json!(["delete-root", "delete-a", "delete-z", "delete-grandchild"])
+        );
+        let mut retry = payload;
+        retry.session_id = "tree-delete-session-after-restart".to_string();
+        retry.event_uid = "tree-delete-event-after-restart".to_string();
+        let replayed = tree_node_delete(&db, retry).expect("replay subtree delete");
+        assert_eq!(replayed, first);
+
+        db.with_conn(|conn| {
+            let keys = conn
+                .prepare(
+                    "SELECT event.object_key_json
+                       FROM narrative_change_transactions feed_tx
+                       JOIN narrative_change_events event
+                         ON event.transaction_id = feed_tx.id
+                      WHERE feed_tx.request_id = 'delete-delete-root-request'
+                      ORDER BY event.event_ordinal",
+                )?
+                .query_map([], |row| row.get::<_, String>(0))?
+                .map(|row| serde_json::from_str::<Value>(&row?).map_err(Into::into))
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            assert_eq!(
+                keys,
+                vec![
+                    json!({"kind": "component", "componentId": "tree-node:delete-root"}),
+                    json!({"kind": "scene", "sceneId": "delete-a"}),
+                    json!({"kind": "component", "componentId": "tree-node:delete-z"}),
+                    json!({"kind": "scene", "sceneId": "delete-grandchild"}),
+                ]
+            );
+            let remaining: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id LIKE 'delete-%'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(remaining, 0);
+            let transactions: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions
+                  WHERE request_id = 'delete-delete-root-request'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(transactions, 1);
+            Ok(())
+        })
+        .expect("inspect deterministic subtree transaction");
+    }
+
+    #[test]
+    fn tree_subtree_feed_failure_rolls_back_every_node_and_ledger() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO tree_nodes
+                   (id, project_id, parent_id, node_type, title, sort_order)
+                 VALUES
+                   ('rollback-root', 'p1', NULL, 'folder', 'Root', 'z1'),
+                   ('rollback-child', 'p1', 'rollback-root', 'scene', 'Child', 'a0');
+                 CREATE TRIGGER fail_tree_subtree_feed
+                 BEFORE INSERT ON narrative_change_events
+                 WHEN NEW.event_ordinal = 1
+                 BEGIN
+                   SELECT RAISE(ABORT, 'forced Tree subtree Feed failure');
+                 END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed rollback subtree");
+
+        let error = tree_node_delete(&db, tree_delete_payload("rollback-root"))
+            .expect_err("Feed append must abort subtree delete");
+        assert!(error
+            .to_string()
+            .contains("forced Tree subtree Feed failure"));
+        db.with_conn(|conn| {
+            let nodes: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id LIKE 'rollback-%'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(nodes, 2);
+            for (table, predicate) in [
+                ("undo_journal", "id = 'delete-rollback-root-request'"),
+                ("change_events", "event_uid = 'delete-rollback-root-event'"),
+                (
+                    "narrative_change_transactions",
+                    "request_id = 'delete-rollback-root-request'",
+                ),
+            ] {
+                let count: i64 = conn.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{table} must roll back");
+            }
+            Ok(())
+        })
+        .expect("inspect subtree rollback");
     }
 
     #[test]
     fn native_tree_crud_owns_structural_and_temporal_columns() {
         let db = fixture();
-        let created = tree_node_create(
-            &db,
-            TreeNodeCreatePayload {
-                id: "native-scene".to_string(),
-                project_id: "p1".to_string(),
-                parent_id: Some("root".to_string()),
-                node_type: "scene".to_string(),
-                title: "Native scene".to_string(),
-                sort_order: "a1".to_string(),
-                synopsis: None,
-                status: None,
-                source_uri: None,
-                source_mtime: None,
-                content: None,
-            },
-        )
-        .expect("create tree node");
+        let mut create = tree_create_payload("native-scene", "scene", "a1", Some("root"));
+        create.title = "Native scene".to_string();
+        let created = tree_node_create(&db, create).expect("create tree node");
         assert_eq!(created["id"], "native-scene");
         assert_eq!(created["sortOrder"], "a1");
         assert_eq!(created["version"], 0);
@@ -2107,28 +5580,13 @@ mod tests {
         ]);
         let patched = tree_node_patch(
             &db,
-            TreeNodePatchPayload {
-                project_id: "p1".to_string(),
-                node_id: "native-scene".to_string(),
-                patch,
-                base_version: Some(0),
-                bump_version: true,
-                updated_at: "native-update".to_string(),
-                change_event: None,
-            },
+            tree_patch_payload("native-scene", patch, Some(0), "native-update"),
         )
         .expect("patch tree node");
         assert_eq!(patched["storyTimeOrder"], "a0V");
         assert_eq!(patched["version"], 1);
 
-        tree_node_delete(
-            &db,
-            TreeNodeDeletePayload {
-                project_id: "p1".to_string(),
-                node_id: "native-scene".to_string(),
-            },
-        )
-        .expect("delete tree node");
+        tree_node_delete(&db, tree_delete_payload("native-scene")).expect("delete tree node");
         db.with_conn(|conn| {
             let count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM tree_nodes WHERE id = 'native-scene'",
@@ -2151,19 +5609,7 @@ mod tests {
         ] {
             let created = tree_node_create(
                 &db,
-                TreeNodeCreatePayload {
-                    id: id.to_string(),
-                    project_id: "p1".to_string(),
-                    parent_id: Some("root".to_string()),
-                    node_type: node_type.to_string(),
-                    title: id.to_string(),
-                    sort_order: sort_order.to_string(),
-                    synopsis: None,
-                    status: None,
-                    source_uri: None,
-                    source_mtime: None,
-                    content: None,
-                },
+                tree_create_payload(id, node_type, sort_order, Some("root")),
             )
             .expect("create ordered tree node");
             assert_eq!(created["sortOrder"], sort_order);
@@ -2195,23 +5641,9 @@ mod tests {
             ("non-folder-parent-create", "moved", "must be a folder"),
             ("self-parent-create", "self-parent-create", "own parent"),
         ] {
-            let error = tree_node_create(
-                &db,
-                TreeNodeCreatePayload {
-                    id: id.to_string(),
-                    project_id: "p1".to_string(),
-                    parent_id: Some(parent_id.to_string()),
-                    node_type: "scene".to_string(),
-                    title: "Must not exist".to_string(),
-                    sort_order: "a9".to_string(),
-                    synopsis: None,
-                    status: None,
-                    source_uri: None,
-                    source_mtime: None,
-                    content: None,
-                },
-            )
-            .expect_err("invalid parent must be rejected");
+            let error =
+                tree_node_create(&db, tree_create_payload(id, "scene", "a9", Some(parent_id)))
+                    .expect_err("invalid parent must be rejected");
             assert!(error.to_string().contains(marker));
             db.with_conn(|conn| {
                 let count: i64 = conn.query_row(
@@ -2236,18 +5668,15 @@ mod tests {
         ] {
             let error = tree_node_patch(
                 &db,
-                TreeNodePatchPayload {
-                    project_id: "p1".to_string(),
-                    node_id: "moved".to_string(),
-                    patch: serde_json::Map::from_iter([(
+                tree_patch_payload(
+                    "moved",
+                    serde_json::Map::from_iter([(
                         field.to_string(),
                         Value::String(value.to_string()),
                     )]),
-                    base_version: Some(0),
-                    bump_version: true,
-                    updated_at: format!("rejected-{field}"),
-                    change_event: None,
-                },
+                    Some(0),
+                    &format!("rejected-{field}"),
+                ),
             )
             .expect_err("cross-project relation must be rejected");
             assert!(error.to_string().contains("not in project 'p1'"));
@@ -2285,36 +5714,21 @@ mod tests {
 
         tree_node_create(
             &db,
-            TreeNodeCreatePayload {
-                id: "leaf-parent".to_string(),
-                project_id: "p1".to_string(),
-                parent_id: Some("root".to_string()),
-                node_type: "note".to_string(),
-                title: "Leaf".to_string(),
-                sort_order: "a9".to_string(),
-                synopsis: None,
-                status: None,
-                source_uri: None,
-                source_mtime: None,
-                content: None,
-            },
+            tree_create_payload("leaf-parent", "note", "a9", Some("root")),
         )
         .expect("create non-folder parent candidate");
         for (parent_id, marker) in [("leaf-parent", "must be a folder"), ("moved", "own parent")] {
             let error = tree_node_patch(
                 &db,
-                TreeNodePatchPayload {
-                    project_id: "p1".to_string(),
-                    node_id: "moved".to_string(),
-                    patch: serde_json::Map::from_iter([(
+                tree_patch_payload(
+                    "moved",
+                    serde_json::Map::from_iter([(
                         "parentId".to_string(),
                         Value::String(parent_id.to_string()),
                     )]),
-                    base_version: Some(0),
-                    bump_version: true,
-                    updated_at: format!("rejected-parent-{parent_id}"),
-                    change_event: None,
-                },
+                    Some(0),
+                    &format!("rejected-parent-{parent_id}"),
+                ),
             )
             .expect_err("invalid structural parent must be rejected");
             assert!(error.to_string().contains(marker));
@@ -2330,18 +5744,15 @@ mod tests {
         .expect("seed descendant folder");
         let cycle = tree_node_patch(
             &db,
-            TreeNodePatchPayload {
-                project_id: "p1".to_string(),
-                node_id: "root".to_string(),
-                patch: serde_json::Map::from_iter([(
+            tree_patch_payload(
+                "root",
+                serde_json::Map::from_iter([(
                     "parentId".to_string(),
                     Value::String("created-parent".to_string()),
                 )]),
-                base_version: Some(0),
-                bump_version: true,
-                updated_at: "rejected-cycle".to_string(),
-                change_event: None,
-            },
+                Some(0),
+                "rejected-cycle",
+            ),
         )
         .expect_err("descendant parent must be rejected");
         assert!(cycle.to_string().contains("create a cycle"));
@@ -2371,18 +5782,12 @@ mod tests {
         let db = fixture();
         let winner = tree_node_patch(
             &db,
-            TreeNodePatchPayload {
-                project_id: "p1".to_string(),
-                node_id: "moved".to_string(),
-                patch: serde_json::Map::from_iter([(
-                    "content".to_string(),
-                    serde_json::json!("winner"),
-                )]),
-                base_version: Some(0),
-                bump_version: true,
-                updated_at: "winner-update".to_string(),
-                change_event: None,
-            },
+            tree_patch_payload(
+                "moved",
+                serde_json::Map::from_iter([("content".to_string(), serde_json::json!("winner"))]),
+                Some(0),
+                "winner-update",
+            ),
         )
         .expect("write winning tree patch");
         assert_eq!(winner["content"], "winner");
@@ -2390,18 +5795,12 @@ mod tests {
 
         let error = tree_node_patch(
             &db,
-            TreeNodePatchPayload {
-                project_id: "p1".to_string(),
-                node_id: "moved".to_string(),
-                patch: serde_json::Map::from_iter([(
-                    "content".to_string(),
-                    serde_json::json!("stale"),
-                )]),
-                base_version: Some(0),
-                bump_version: true,
-                updated_at: "stale-update".to_string(),
-                change_event: None,
-            },
+            tree_patch_payload(
+                "moved",
+                serde_json::Map::from_iter([("content".to_string(), serde_json::json!("stale"))]),
+                Some(0),
+                "stale-update",
+            ),
         )
         .expect_err("one-generation-stale patch must conflict");
         let message = error.to_string();
@@ -2426,25 +5825,24 @@ mod tests {
     fn native_tree_content_event_commits_with_canonical_chain_and_rolls_back_duplicate_uid() {
         let db = fixture();
         let patch = |content: &str, base_version: i64, event_uid: &str, timestamp: i64| {
-            tree_node_patch(
-                &db,
-                TreeNodePatchPayload {
-                    project_id: "p1".to_string(),
-                    node_id: "moved".to_string(),
-                    patch: serde_json::Map::from_iter([
-                        ("content".to_string(), serde_json::json!(content)),
-                        ("charCount".to_string(), serde_json::json!(content.len())),
-                    ]),
-                    base_version: Some(base_version),
-                    bump_version: true,
-                    updated_at: format!("event-{timestamp}"),
-                    change_event: Some(TreeNodePatchChangeEvent {
-                        event_uid: event_uid.to_string(),
-                        session_id: "external-product-journey".to_string(),
-                        timestamp,
-                    }),
-                },
-            )
+            let mut payload = tree_patch_payload(
+                "moved",
+                serde_json::Map::from_iter([
+                    ("content".to_string(), serde_json::json!(content)),
+                    ("charCount".to_string(), serde_json::json!(content.len())),
+                ]),
+                Some(base_version),
+                &format!("event-{timestamp}"),
+            );
+            payload.request_id = format!("request-{timestamp}");
+            payload.session_id = "external-product-journey".to_string();
+            payload.event_uid = event_uid.to_string();
+            payload.change_event = Some(TreeNodePatchChangeEvent {
+                event_uid: event_uid.to_string(),
+                session_id: "external-product-journey".to_string(),
+                timestamp,
+            });
+            tree_node_patch(&db, payload)
         };
 
         patch("first", 0, "event-1", 10).expect("first atomic content event");
@@ -2480,7 +5878,22 @@ mod tests {
             assert_eq!(rows[0].3, "scene.content_update");
             assert_eq!(rows[0].4.as_deref(), Some("tree_batch"));
             assert_eq!(rows[0].5.as_deref(), Some("moved"));
-            assert_eq!(rows[0].6, r#"{"sceneId":"moved"}"#);
+            let payload: Value = serde_json::from_str(&rows[0].6)?;
+            let mut fields = payload["fields"]
+                .as_array()
+                .expect("canonical fields")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            fields.sort_unstable();
+            assert_eq!(fields, vec!["charCount", "content"]);
+            assert_eq!(payload["before"]["id"], "moved");
+            assert_eq!(payload["before"]["content"], "{}");
+            assert_eq!(payload["before"]["version"], 0);
+            assert_eq!(payload["after"]["id"], "moved");
+            assert_eq!(payload["after"]["content"], "first");
+            assert_eq!(payload["after"]["charCount"], 5);
+            assert_eq!(payload["after"]["version"], 1);
             assert_eq!(rows[0].7, "external-product-journey");
             assert_eq!(rows[0].8, 1);
             assert_eq!(rows[0].9, "0".repeat(64));
@@ -2496,18 +5909,283 @@ mod tests {
             .expect_err("duplicate event UID must roll back the content patch");
         assert!(error.to_string().contains("already exists"));
         db.with_conn(|conn| {
-            let (content, version, event_count): (String, i64, i64) = conn.query_row(
+            let state: (String, i64, i64, i64, i64, i64, i64) = conn.query_row(
                 "SELECT content, version,
-                        (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1')
+                        (SELECT COUNT(*) FROM change_events WHERE project_id = 'p1'),
+                        (SELECT COUNT(*) FROM undo_journal WHERE project_id = 'p1'),
+                        (SELECT COUNT(*) FROM narrative_change_transactions
+                          WHERE project_id = 'p1'),
+                        (SELECT COUNT(*) FROM narrative_change_events
+                          WHERE project_id = 'p1'),
+                        (SELECT COUNT(*) FROM idempotency_requests
+                          WHERE domain = 'tree_node_patch')
                    FROM tree_nodes WHERE id = 'moved'",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                    ))
+                },
             )?;
-            assert_eq!(content, "second");
-            assert_eq!(version, 2);
-            assert_eq!(event_count, 2);
+            assert_eq!(state, ("second".to_string(), 2, 2, 2, 2, 2, 2));
             Ok(())
         })
         .expect("verify duplicate UID rollback");
+    }
+
+    #[test]
+    fn native_scene_content_forward_undo_redo_feed_text_impact_is_reversible() {
+        let db = fixture();
+        let content_a = r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"A"}]}]}"#;
+        let content_b = "{}";
+        let mut forward = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_a.to_string())),
+                ("charCount".to_string(), Value::Number(1.into())),
+            ]),
+            Some(0),
+            "scene-forward",
+        );
+        forward.request_id = "scene-forward-request".to_string();
+        forward.event_uid = "scene-forward-event".to_string();
+        let forward_result = tree_node_patch(&db, forward).expect("forward scene write");
+        let root_transaction_id = forward_result["__writeReceipt"]["maintenanceTransactionId"]
+            .as_str()
+            .expect("forward transaction")
+            .to_string();
+        let undo_journal_id = forward_result["__writeReceipt"]["undoJournalId"]
+            .as_str()
+            .expect("forward undo journal")
+            .to_string();
+
+        let mut undo = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_b.to_string())),
+                ("charCount".to_string(), Value::Number(2.into())),
+            ]),
+            Some(1),
+            "scene-undo",
+        );
+        undo.request_id = "scene-undo-request".to_string();
+        undo.event_uid = "scene-undo-event".to_string();
+        undo.origin = NarrativeChangeOrigin::Undo;
+        undo.original_transaction_id = Some(root_transaction_id.clone());
+        undo.undo_journal_id = Some(undo_journal_id.clone());
+        tree_node_patch(&db, undo).expect("undo scene write");
+
+        let mut redo = tree_patch_payload(
+            "moved",
+            serde_json::Map::from_iter([
+                ("content".to_string(), Value::String(content_a.to_string())),
+                ("charCount".to_string(), Value::Number(1.into())),
+            ]),
+            Some(2),
+            "scene-redo",
+        );
+        redo.request_id = "scene-redo-request".to_string();
+        redo.event_uid = "scene-redo-event".to_string();
+        redo.origin = NarrativeChangeOrigin::Redo;
+        redo.original_transaction_id = Some(root_transaction_id);
+        redo.undo_journal_id = Some(undo_journal_id);
+        tree_node_patch(&db, redo).expect("redo scene write");
+
+        db.with_conn(|conn| {
+            let impacts = conn
+                .prepare(
+                    "SELECT tx.cause_kind, event.text_impact_json
+                       FROM narrative_change_events event
+                       JOIN narrative_change_transactions tx
+                         ON tx.id = event.transaction_id
+                      WHERE event.project_id = 'p1'
+                        AND json_extract(event.object_key_json, '$.kind') = 'scene'
+                      ORDER BY event.canonical_sequence",
+                )?
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(impacts.len(), 3);
+            assert_eq!(
+                impacts.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+                vec!["forward", "undo", "redo"]
+            );
+            let parsed = impacts
+                .iter()
+                .map(|row| serde_json::from_str::<Value>(&row.1))
+                .collect::<Result<Vec<_>, _>>()?;
+            for impact in &parsed {
+                assert_eq!(
+                    impact["normalizerVersion"],
+                    crate::narrative_extraction::change_feed::CANONICAL_TEXT_NORMALIZER_VERSION
+                );
+                assert_eq!(impact["mapping"]["kind"], "whole-document");
+            }
+            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[1]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[1]["newCanonicalDigest"]);
+            assert_eq!(parsed[1]["newCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
+            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[2]["newCanonicalDigest"]);
+            Ok(())
+        })
+        .expect("verify forward undo redo text impacts");
+    }
+
+    #[test]
+    fn revision_content_restore_has_restore_feed_contract() {
+        let db = fixture();
+        let restored_content = r#"{"type":"doc","content":[]}"#;
+        let result = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                request_id: "revision-restore-request".to_string(),
+                session_id: "revision-session".to_string(),
+                event_uid: "revision-restore-event".to_string(),
+                node_id: "moved".to_string(),
+                patch: serde_json::Map::from_iter([
+                    (
+                        "content".to_string(),
+                        Value::String(restored_content.to_string()),
+                    ),
+                    ("charCount".to_string(), Value::Number(0.into())),
+                ]),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "2026-08-13T00:00:01Z".to_string(),
+                change_event: Some(TreeNodePatchChangeEvent {
+                    event_uid: "revision-restore-event".to_string(),
+                    session_id: "revision-session".to_string(),
+                    timestamp: 1,
+                }),
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: Some("revision".to_string()),
+                op_type: Some("content.restore".to_string()),
+                canonical_payload: None,
+            },
+        )
+        .expect("restore scene content");
+        assert_eq!(result["content"], restored_content);
+        assert_eq!(result["version"], 1);
+
+        db.with_conn(|conn| {
+            let canonical: (String, String) = conn.query_row(
+                "SELECT domain, op_type FROM change_events
+                  WHERE event_uid = 'revision-restore-event'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let transaction: (String, String, String) = conn.query_row(
+                "SELECT request_id, source_domain, origin
+                   FROM narrative_change_transactions
+                  WHERE source_change_event_uid = 'revision-restore-event'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            let event: (String, Option<String>, Option<String>) = conn.query_row(
+                "SELECT mutation_kind, before_digest, after_digest
+                   FROM narrative_change_events
+                  WHERE transaction_id = (
+                    SELECT id FROM narrative_change_transactions
+                     WHERE source_change_event_uid = 'revision-restore-event'
+                  )",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(
+                canonical,
+                ("revision".to_string(), "content.restore".to_string())
+            );
+            assert_eq!(
+                transaction,
+                (
+                    "revision-restore-request".to_string(),
+                    "content.restore".to_string(),
+                    "restore".to_string(),
+                )
+            );
+            assert_eq!(event.0, "restore");
+            assert_eq!(event.1, None);
+            assert!(event.2.is_some());
+            Ok(())
+        })
+        .expect("verify restore contract");
+    }
+
+    #[test]
+    fn revision_content_restore_rolls_back_when_feed_append_fails() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_revision_restore_feed
+                   BEFORE INSERT ON narrative_change_transactions
+                   BEGIN SELECT RAISE(ABORT, 'forced revision restore feed failure'); END;",
+            )?;
+            Ok(())
+        })
+        .expect("install feed failure trigger");
+
+        let error = tree_node_patch(
+            &db,
+            TreeNodePatchPayload {
+                project_id: "p1".to_string(),
+                request_id: "revision-restore-failure-request".to_string(),
+                session_id: "revision-session".to_string(),
+                event_uid: "revision-restore-failure-event".to_string(),
+                node_id: "moved".to_string(),
+                patch: serde_json::Map::from_iter([
+                    ("content".to_string(), Value::String("restored".to_string())),
+                    ("charCount".to_string(), Value::Number(8.into())),
+                ]),
+                base_version: Some(0),
+                bump_version: true,
+                updated_at: "2026-08-13T00:00:01Z".to_string(),
+                change_event: Some(TreeNodePatchChangeEvent {
+                    event_uid: "revision-restore-failure-event".to_string(),
+                    session_id: "revision-session".to_string(),
+                    timestamp: 1,
+                }),
+                origin: NarrativeChangeOrigin::Restore,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: Some("revision".to_string()),
+                op_type: Some("content.restore".to_string()),
+                canonical_payload: None,
+            },
+        )
+        .expect_err("feed failure must abort content restore");
+        assert!(error
+            .to_string()
+            .contains("forced revision restore feed failure"));
+
+        db.with_conn(|conn| {
+            let (content, version): (String, i64) = conn.query_row(
+                "SELECT content, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            let canonical_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM change_events
+                  WHERE event_uid = 'revision-restore-failure-event'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!((content, version), ("{}".to_string(), 0));
+            assert_eq!(canonical_count, 0);
+            Ok(())
+        })
+        .expect("verify atomic restore rollback");
     }
 }

@@ -1,12 +1,6 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
-import {
-  buildForwardStatements,
-  buildUndoStatements,
-  applyAiTreePlan,
-  AiTreePlanError,
-} from "./applyPlan";
-import type { NodePlacement } from "./placement";
-import type { AiTreePlan, ApplyContext, CreateOp } from "./types";
+import { applyAiTreePlan, AiTreePlanError } from "./applyPlan";
+import type { AiTreePlan, ApplyContext } from "./types";
 import type { TreeNodeData, NodeType } from "../treeStore";
 
 const h = vi.hoisted(() => ({
@@ -20,7 +14,7 @@ const h = vi.hoisted(() => ({
   isReplaying: false,
 }));
 
-vi.mock("@/lib/tauri", () => ({ invoke: vi.fn().mockResolvedValue({}) }));
+vi.mock("@/lib/tauri", () => ({ invoke: vi.fn() }));
 vi.mock("../treeStore", () => ({
   useTreeStore: {
     getState: () => ({ nodes: h.nodes, reloadTreeOrThrow: h.reloadImpl }),
@@ -50,6 +44,10 @@ vi.mock("@/store/globalHistoryStore", () => ({
 
 import { invoke } from "@/lib/tauri";
 
+function ipcFailure(message: string, outcome: "failed" | "unknown"): Error {
+  return Object.assign(new Error(message), { outcome });
+}
+
 function mkNode(p: {
   id: string;
   nodeType: NodeType;
@@ -76,6 +74,7 @@ function mkNode(p: {
     excludedAliases: null,
     createdAt: "t",
     updatedAt: "t",
+    version: 1,
     ...p,
   };
 }
@@ -93,105 +92,58 @@ const ctx = (scopeOverride?: Partial<ApplyContext["scope"]>): ApplyContext => ({
   },
 });
 
-const sqlKind = (s: string) => s.trim().slice(0, 6).toLowerCase();
-
 beforeEach(() => {
-  (invoke as Mock).mockClear().mockResolvedValue({});
+  const createdIds = new Set<string>();
+  let receiptSequence = 0;
+  (invoke as Mock)
+    .mockClear()
+    .mockImplementation(
+      async (command: string, args: { payload: Record<string, unknown> }) => {
+        receiptSequence += 1;
+        const payload = args.payload;
+        if (command === "ai_tree_plan_apply") {
+          const creates = payload.creates as Array<{ id: string }>;
+          const updates = payload.updates as Array<{
+            id: string;
+            baseVersion: number;
+          }>;
+          for (const create of creates) createdIds.add(create.id);
+          return {
+            versions: [
+              ...creates.map((create) => ({ id: create.id, version: 1 })),
+              ...updates.map((update) => ({
+                id: update.id,
+                version: update.baseVersion + 1,
+              })),
+            ],
+            changeEventUid: String(payload.requestId),
+            maintenanceTransactionId: `maintenance-${receiptSequence}`,
+            undoJournalId: "tree-journal-1",
+          };
+        }
+        if (command === "ai_tree_plan_undo") {
+          const expected = payload.expectedVersions as Array<{
+            id: string;
+            version: number;
+          }>;
+          return {
+            versions: expected
+              .filter((entry) => !createdIds.has(entry.id))
+              .map((entry) => ({ id: entry.id, version: entry.version + 1 })),
+            changeEventUid: String(payload.requestId),
+            maintenanceTransactionId: `maintenance-${receiptSequence}`,
+            undoJournalId: "tree-journal-1",
+          };
+        }
+        return {};
+      },
+    );
   h.nodes = [];
   h.reloadImpl = vi.fn().mockResolvedValue(undefined);
   h.closeTab.mockClear();
   h.closeSecondaryTab.mockClear();
   h.pushed = undefined;
   h.isReplaying = false;
-});
-
-describe("buildForwardStatements", () => {
-  it("emits INSERT (topo) before move UPDATE for a group", () => {
-    const plan: AiTreePlan = {
-      kind: "reorganize",
-      ops: [
-        {
-          op: "create",
-          tempId: "tmp:g",
-          parentRef: null,
-          nodeType: "folder",
-          title: "G",
-        },
-        { op: "move", nodeId: "x1", newParentRef: "tmp:g" },
-      ],
-    };
-    const orderedCreates: CreateOp[] = [plan.ops[0] as CreateOp];
-    const idMap = new Map([["tmp:g", "G"]]);
-    const placements = new Map<string, NodePlacement>([
-      ["G", { parentId: null, sortOrder: "a0" }],
-      ["x1", { parentId: "G", sortOrder: "a0" }],
-    ]);
-    const stmts = buildForwardStatements(
-      plan,
-      orderedCreates,
-      idMap,
-      placements,
-      "proj-1",
-    );
-    expect(sqlKind(stmts[0].sql)).toBe("insert");
-    expect(stmts[0].params).toContain("G");
-    expect(sqlKind(stmts[1].sql)).toBe("update");
-  });
-
-  it("passes parentId=null directly for move-to-root (not omitted)", () => {
-    const plan: AiTreePlan = {
-      kind: "reorganize",
-      ops: [{ op: "move", nodeId: "x1", newParentRef: null }],
-    };
-    const placements = new Map<string, NodePlacement>([
-      ["x1", { parentId: null, sortOrder: "a5" }],
-    ]);
-    const stmts = buildForwardStatements(
-      plan,
-      [],
-      new Map(),
-      placements,
-      "proj-1",
-    );
-    expect(stmts).toHaveLength(1);
-    expect(sqlKind(stmts[0].sql)).toBe("update");
-    expect(stmts[0].params).toContain(null);
-  });
-});
-
-describe("buildUndoStatements — cascade safety (★)", () => {
-  it("restores existing nodes BEFORE deleting created nodes", () => {
-    const stmts = buildUndoStatements(
-      [{ id: "x1", parentId: null, sortOrder: "a0", title: "x1" }],
-      ["G"],
-      "proj-1",
-    );
-    // restore UPDATE first, DELETE last
-    expect(sqlKind(stmts[0].sql)).toBe("update");
-    expect(stmts[0].params).toContain("x1");
-    expect(sqlKind(stmts[stmts.length - 1].sql)).toBe("delete");
-    // the moved existing node must NOT appear in any DELETE
-    const deletes = stmts.filter((s) => sqlKind(s.sql) === "delete");
-    expect(deletes.some((s) => s.params.includes("x1"))).toBe(false);
-    expect(deletes.some((s) => s.params.includes("G"))).toBe(true);
-  });
-
-  it("deletes created nodes leaf-first (reverse topo)", () => {
-    const stmts = buildUndoStatements([], ["parent", "child"], "proj-1");
-    const deletes = stmts.filter((s) => sqlKind(s.sql) === "delete");
-    expect(deletes[0].params).toContain("child");
-    expect(deletes[1].params).toContain("parent");
-  });
-
-  it("scopes every undo statement to projectId (N1 defense)", () => {
-    const stmts = buildUndoStatements(
-      [{ id: "x1", parentId: null, sortOrder: "a0", title: "x1" }],
-      ["G"],
-      "proj-1",
-    );
-    // both the restore UPDATE and the DELETE carry the project id param
-    for (const s of stmts) expect(s.params).toContain("proj-1");
-  });
 });
 
 describe("applyAiTreePlan — orchestration", () => {
@@ -240,13 +192,21 @@ describe("applyAiTreePlan — orchestration", () => {
     setGroupNodes();
     const res = await applyAiTreePlan(groupPlan, ctx());
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_apply");
     expect(h.reloadImpl).toHaveBeenCalledTimes(1);
-    const bundlePayload = (invoke as Mock).mock.calls[0][1].payload;
-    expect(bundlePayload.changeEvent.opType).toBe("tree.aiReorganize");
-    const payload = JSON.parse(bundlePayload.changeEvent.payload);
-    expect(payload.source).toBe("ai");
-    expect(payload.movedIds).toEqual(["x1", "x2"]);
+    const payload = (invoke as Mock).mock.calls[0][1].payload;
+    expect(payload).toMatchObject({
+      projectId: "proj-1",
+      surface: "in-app-agent",
+      kind: "reorganize",
+      redo: false,
+      originalTransactionId: null,
+      undoJournalId: null,
+    });
+    expect(payload.updates.map((update: { id: string }) => update.id)).toEqual([
+      "x1",
+      "x2",
+    ]);
     expect(res.createdIds).toHaveLength(1);
     expect(h.pushed).toBeDefined();
   });
@@ -258,15 +218,17 @@ describe("applyAiTreePlan — orchestration", () => {
     h.isReplaying = true;
     await h.pushed!.undo();
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect((invoke as Mock).mock.calls[0][0]).toBe("tree_plan_undo");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_undo");
     expect((invoke as Mock).mock.calls[0][1]).toMatchObject({
       payload: {
         projectId: "proj-1",
-        beforeStates: expect.arrayContaining([
+        originalTransactionId: "maintenance-1",
+        undoJournalId: "tree-journal-1",
+        expectedVersions: expect.arrayContaining([
           expect.objectContaining({ id: "x1" }),
           expect.objectContaining({ id: "x2" }),
+          expect.objectContaining({ id: expect.any(String), version: 1 }),
         ]),
-        createdIds: [expect.any(String)],
         updatedAt: expect.any(String),
       },
     });
@@ -280,18 +242,70 @@ describe("applyAiTreePlan — orchestration", () => {
     // nor orphan the committed change.
     const res = await applyAiTreePlan(groupPlan, ctx());
     expect(invoke).toHaveBeenCalledTimes(1); // forward bundle committed
-    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_apply");
     expect(h.pushed).toBeDefined();
     expect(res.createdIds).toHaveLength(1);
   });
 
   it("does NOT record or push when the forward commit itself fails (rolled back)", async () => {
     setGroupNodes();
-    (invoke as Mock).mockRejectedValueOnce(new Error("commit failed"));
+    (invoke as Mock).mockRejectedValueOnce(
+      ipcFailure("commit failed", "failed"),
+    );
     await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
       "commit failed",
     );
     expect(h.pushed).toBeUndefined();
+  });
+
+  it("retries an unknown initial outcome with the exact request and created IDs", async () => {
+    setGroupNodes();
+    (invoke as Mock).mockRejectedValueOnce(
+      ipcFailure("transport outcome is unknown", "unknown"),
+    );
+    await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
+      "transport outcome is unknown",
+    );
+    const firstPayload = (invoke as Mock).mock.calls[0][1].payload;
+
+    await applyAiTreePlan(groupPlan, ctx());
+    const retryPayload = (invoke as Mock).mock.calls[1][1].payload;
+    expect(retryPayload.requestId).toBe(firstPayload.requestId);
+    expect(retryPayload.updatedAt).toBe(firstPayload.updatedAt);
+    expect(retryPayload.creates).toEqual(firstPayload.creates);
+  });
+
+  it("retains the initial identity when Native returned but receipt publication failed", async () => {
+    setGroupNodes();
+    (invoke as Mock).mockResolvedValueOnce({
+      versions: [],
+      changeEventUid: "committed-with-bad-receipt",
+    });
+    await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
+      "Native receipt is incomplete",
+    );
+    const firstPayload = (invoke as Mock).mock.calls[0][1].payload;
+
+    await applyAiTreePlan(groupPlan, ctx());
+    const retryPayload = (invoke as Mock).mock.calls[1][1].payload;
+    expect(retryPayload.requestId).toBe(firstPayload.requestId);
+    expect(retryPayload.creates).toEqual(firstPayload.creates);
+  });
+
+  it("rotates the initial identity after an explicit definite failure", async () => {
+    setGroupNodes();
+    (invoke as Mock).mockRejectedValueOnce(
+      ipcFailure("Native did not execute", "failed"),
+    );
+    await expect(applyAiTreePlan(groupPlan, ctx())).rejects.toThrow(
+      "Native did not execute",
+    );
+    const firstPayload = (invoke as Mock).mock.calls[0][1].payload;
+
+    await applyAiTreePlan(groupPlan, ctx());
+    const retryPayload = (invoke as Mock).mock.calls[1][1].payload;
+    expect(retryPayload.requestId).not.toBe(firstPayload.requestId);
+    expect(retryPayload.creates).not.toEqual(firstPayload.creates);
   });
 
   it("skips history push when isReplaying", async () => {
@@ -300,7 +314,7 @@ describe("applyAiTreePlan — orchestration", () => {
     await applyAiTreePlan(groupPlan, ctx());
     expect(h.pushed).toBeUndefined();
     expect(invoke).toHaveBeenCalledTimes(1);
-    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_apply");
   });
 
   it("undo tolerates a reload failure after its commit (no throw → no history wipe) [M1]", async () => {
@@ -325,26 +339,67 @@ describe("applyAiTreePlan — orchestration", () => {
     await h.pushed!.undo();
     (invoke as Mock).mockClear();
     await h.pushed!.redo();
-    expect((invoke as Mock).mock.calls[0][0]).toBe("agent_write_bundle");
-    const redoStmts = (invoke as Mock).mock.calls[0][1].payload.statements as {
-      sql: string;
-      params: unknown[];
-    }[];
-    // the re-INSERT of the created folder must reuse the original UUID, so a
-    // subsequent undo (which deletes by that id) still matches.
-    const insert = redoStmts.find((s) => sqlKind(s.sql) === "insert");
-    expect(insert?.params).toContain(createdId);
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_apply");
+    const redoPayload = (invoke as Mock).mock.calls[0][1].payload;
+    expect(redoPayload).toMatchObject({
+      redo: true,
+      originalTransactionId: "maintenance-1",
+      undoJournalId: "tree-journal-1",
+    });
+    expect(redoPayload.creates).toContainEqual(
+      expect.objectContaining({ id: createdId }),
+    );
+  });
+
+  it("retains undo and redo identities across unknown outcomes", async () => {
+    setGroupNodes();
+    await applyAiTreePlan(groupPlan, ctx());
+
+    (invoke as Mock).mockClear();
+    (invoke as Mock).mockRejectedValueOnce(
+      ipcFailure("undo outcome unknown", "unknown"),
+    );
+    await expect(h.pushed!.undo()).rejects.toThrow("undo outcome unknown");
+    const firstUndo = (invoke as Mock).mock.calls[0][1].payload;
+    await h.pushed!.undo();
+    const retryUndo = (invoke as Mock).mock.calls[1][1].payload;
+    expect(retryUndo).toEqual(firstUndo);
+
+    (invoke as Mock).mockClear();
+    (invoke as Mock).mockRejectedValueOnce(
+      ipcFailure("redo outcome unknown", "unknown"),
+    );
+    await expect(h.pushed!.redo()).rejects.toThrow("redo outcome unknown");
+    const firstRedo = (invoke as Mock).mock.calls[0][1].payload;
+    await h.pushed!.redo();
+    const retryRedo = (invoke as Mock).mock.calls[1][1].payload;
+    expect(retryRedo).toEqual(firstRedo);
+  });
+
+  it("rotates a confirmed undo identity for the next undo cycle", async () => {
+    setGroupNodes();
+    await applyAiTreePlan(groupPlan, ctx());
+    (invoke as Mock).mockClear();
+
+    await h.pushed!.undo();
+    const firstUndoRequest = (invoke as Mock).mock.calls[0][1].payload
+      .requestId;
+    await h.pushed!.redo();
+    await h.pushed!.undo();
+    const nextUndoRequest = (invoke as Mock).mock.calls[2][1].payload.requestId;
+    expect(nextUndoRequest).not.toBe(firstUndoRequest);
   });
 
   it("every reported created/moved id is backed by an emitted statement (no phantom ids)", async () => {
     setGroupNodes();
     const res = await applyAiTreePlan(groupPlan, ctx());
-    const stmts = (invoke as Mock).mock.calls[0][1].payload.statements as {
-      params: unknown[];
-    }[];
-    const allParams = new Set(stmts.flatMap((s) => s.params));
+    const payload = (invoke as Mock).mock.calls[0][1].payload;
+    const allIds = new Set<string>([
+      ...payload.creates.map((create: { id: string }) => create.id),
+      ...payload.updates.map((update: { id: string }) => update.id),
+    ]);
     for (const id of [...res.createdIds, ...res.movedIds]) {
-      expect(allParams.has(id)).toBe(true);
+      expect(allIds.has(id)).toBe(true);
     }
   });
 
@@ -366,17 +421,20 @@ describe("applyAiTreePlan — orchestration", () => {
     );
     expect(res.movedIds).toEqual(["x1"]);
     expect(res.renamedIds).toEqual(["x1"]);
+    const forwardUpdate = (invoke as Mock).mock.calls[0][1].payload.updates[0];
+    expect(forwardUpdate).toMatchObject({
+      id: "x1",
+      baseVersion: 1,
+      placement: { parentId: "f" },
+      title: "Renamed",
+    });
     // undo restores parentId/sortOrder/title for x1 in a single before-state
     h.isReplaying = true;
     (invoke as Mock).mockClear();
     await h.pushed!.undo();
-    expect((invoke as Mock).mock.calls[0][0]).toBe("tree_plan_undo");
-    expect((invoke as Mock).mock.calls[0][1].payload.beforeStates).toEqual([
-      expect.objectContaining({
-        id: "x1",
-        parentId: null,
-        title: "x1",
-      }),
+    expect((invoke as Mock).mock.calls[0][0]).toBe("ai_tree_plan_undo");
+    expect((invoke as Mock).mock.calls[0][1].payload.expectedVersions).toEqual([
+      { id: "x1", version: 2 },
     ]);
   });
 

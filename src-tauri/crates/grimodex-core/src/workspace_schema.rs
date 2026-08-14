@@ -562,10 +562,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 21 adds the Native-owned Narrative Maintenance
-/// Change Feed while preserving every Gate B invariant through version 20.
+/// [`SCHEMA_VERSION`]. Version 22 requires an explicit writer origin on every
+/// Native-owned Narrative Maintenance Change Feed transaction while preserving
+/// the version 21 Foundation schema and every Gate B invariant through v20.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 21
+    Ok(SCHEMA_VERSION == 22
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -575,7 +576,9 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v18_projection_freshness_columns(conn)?
         && has_v19_field_authority_columns(conn)?
         && has_v20_retraction_columns(conn)?
-        && has_v21_change_feed_columns(conn)?)
+        && has_v21_change_feed_columns(conn)?
+        && has_v22_change_feed_writer_correlation(conn)?
+        && has_change_feed_object_heads(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -892,6 +895,75 @@ fn has_v21_change_feed_columns(conn: &Connection) -> anyhow::Result<bool> {
         && event_sql.contains(
             "foreignkey(project_id,canonical_change_event_uid)referenceschange_events(project_id,event_uid)",
         ))
+}
+
+fn has_v22_change_feed_writer_correlation(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_change_transactions")? {
+        return Ok(false);
+    }
+    let transactions = table_columns(conn, "narrative_change_transactions")?;
+    let has_required_origin = transactions.iter().any(|column| {
+        column.name == "origin"
+            && column.declared_type == "TEXT"
+            && column.not_null
+            && column.default.is_none()
+    });
+    let has_optional_undo_journal = transactions.iter().any(|column| {
+        column.name == "undo_journal_id"
+            && column.declared_type == "TEXT"
+            && !column.not_null
+            && column.default.is_none()
+    });
+    if !has_required_origin || !has_optional_undo_journal {
+        return Ok(false);
+    }
+    let transaction_sql = compact_sql(&table_sql(conn, "narrative_change_transactions")?);
+    Ok(transaction_sql.contains(
+        "check(originin('human','ai-apply','import','undo','redo','restore','migration'))",
+    ))
+}
+
+fn has_change_feed_object_heads(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_change_object_heads")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_change_object_heads")?;
+    let required_columns = [
+        ("project_id", "TEXT", true),
+        ("object_identity", "TEXT", true),
+        ("after_version", "INTEGER", false),
+        ("after_digest", "TEXT", false),
+        ("event_id", "TEXT", true),
+        ("canonical_sequence", "INTEGER", true),
+        ("event_ordinal", "INTEGER", true),
+        ("updated_at", "TEXT", true),
+    ];
+    let has_columns = required_columns.iter().all(|(name, declared, not_null)| {
+        columns.iter().any(|column| {
+            column.name == *name
+                && column.declared_type == *declared
+                && column.not_null == *not_null
+        })
+    });
+    if !has_columns {
+        return Ok(false);
+    }
+    let identity_index = index_columns(
+        conn,
+        "sqlite_autoindex_narrative_change_object_heads_1",
+    )?;
+    let sequence_index = index_columns(
+        conn,
+        "idx_narrative_change_object_heads_project_sequence",
+    )?;
+    Ok(identity_index
+        .iter()
+        .map(String::as_str)
+        .eq(["project_id", "object_identity"])
+        && sequence_index
+            .iter()
+            .map(String::as_str)
+            .eq(["project_id", "canonical_sequence", "event_ordinal"]))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

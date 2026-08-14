@@ -6,8 +6,8 @@ use grimodex_db::narrative_extraction::{
     ProposalSeed, ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 use grimodex_db::{
-    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy,
-    SetNarrativeRuntimePolicyInput, Database,
+    load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
+    SetNarrativeRuntimePolicyInput,
 };
 use serde_json::{json, Value};
 
@@ -256,9 +256,8 @@ fn enable_manual_apply(db: &Database) {
 
 fn prepare_and_apply(db: &Database, prepare: PrepareCommitPayload) -> Value {
     enable_manual_apply(db);
-    let prepared =
-        narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
-            .expect("prepare");
+    let prepared = narrative_extraction::narrative_extraction_prepare_commit(db, prepare.clone())
+        .expect("prepare");
     let prepared_commit_id = prepared["preparedCommitId"]
         .as_str()
         .expect("id")
@@ -727,24 +726,17 @@ fn apply_commit_creates_three_events_atomically() {
     ];
     let pairs = seed_approved_proposals(&db, "run-commit-1", "set-1", &payloads);
     let ops = vec![
-        (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            payloads[0].clone(),
-        ),
-        (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            payloads[1].clone(),
-        ),
-        (
-            pairs[2].0.clone(),
-            pairs[2].1.clone(),
-            payloads[2].clone(),
-        ),
+        (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+        (pairs[1].0.clone(), pairs[1].1.clone(), payloads[1].clone()),
+        (pairs[2].0.clone(), pairs[2].1.clone(), payloads[2].clone()),
     ];
-    let payload =
-        build_prepare("req-atomic-1", "digest-atomic-1", "set-1", "run-commit-1", ops);
+    let payload = build_prepare(
+        "req-atomic-1",
+        "digest-atomic-1",
+        "set-1",
+        "run-commit-1",
+        ops,
+    );
 
     let applied = prepare_and_apply(&db, payload);
     assert_eq!(applied["status"], "applied");
@@ -762,9 +754,9 @@ fn apply_commit_creates_three_events_atomically() {
     assert_eq!(event_count, 3);
 
     let link_count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM scene_events", [], |r| r.get(0))?)
-        })
+        .with_conn(
+            |conn| Ok(conn.query_row("SELECT COUNT(*) FROM scene_events", [], |r| r.get(0))?),
+        )
         .unwrap();
     assert_eq!(link_count, 3);
 
@@ -792,28 +784,17 @@ fn apply_commit_rolls_back_all_on_failure() {
     let pairs = seed_approved_proposals(&db, "run-commit-2", "set-2", &payloads);
     // Second op expects wrong scene version → whole commit fails.
     let ops = vec![
-        (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            payloads[0].clone(),
-        ),
-        (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            payloads[1].clone(),
-        ),
+        (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+        (pairs[1].0.clone(), pairs[1].1.clone(), payloads[1].clone()),
     ];
-    let payload =
-        build_prepare("req-fail-1", "digest-fail-1", "set-2", "run-commit-2", ops);
+    let payload = build_prepare("req-fail-1", "digest-fail-1", "set-2", "run-commit-2", ops);
     enable_manual_apply(&db);
     let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("prepare should fail");
     assert!(err.to_string().contains("NEX_SCENE_VERSION_MISMATCH"));
 
     let event_count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-        })
+        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(event_count, 0);
 
@@ -838,22 +819,15 @@ fn apply_commit_is_idempotent_for_same_request_and_digest() {
     insert_scene(&db, "scene-1", 0);
     let payloads = [event_create_payload("event-only", "Only", "scene-1", 0)];
     let pairs = seed_approved_proposals(&db, "run-commit-3", "set-3", &payloads);
-    let ops = vec![(
-        pairs[0].0.clone(),
-        pairs[0].1.clone(),
-        payloads[0].clone(),
-    )];
-    let payload =
-        build_prepare("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
+    let ops = vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())];
+    let payload = build_prepare("req-idem-1", "digest-idem-1", "set-3", "run-commit-3", ops);
     let first = prepare_and_apply(&db, payload.clone());
     let second = prepare_and_apply(&db, payload);
     assert_eq!(first["commitId"], second["commitId"]);
     assert_eq!(second["idempotentReplay"], true);
 
     let event_count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-        })
+        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(event_count, 1);
 }
@@ -863,8 +837,7 @@ fn apply_commit_rejects_same_request_with_different_digest() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
     let first_payloads = [event_create_payload("event-only-2", "Only", "scene-1", 0)];
-    let first_pairs =
-        seed_approved_proposals(&db, "run-commit-4a", "set-4a", &first_payloads);
+    let first_pairs = seed_approved_proposals(&db, "run-commit-4a", "set-4a", &first_payloads);
     let first_ops = vec![(
         first_pairs[0].0.clone(),
         first_pairs[0].1.clone(),
@@ -883,8 +856,7 @@ fn apply_commit_rejects_same_request_with_different_digest() {
 
     // Same requestId but a different sealed plan must conflict on Native digest.
     let second_payloads = [event_create_payload("event-only-3", "Other", "scene-1", 0)];
-    let second_pairs =
-        seed_approved_proposals(&db, "run-commit-4b", "set-4b", &second_payloads);
+    let second_pairs = seed_approved_proposals(&db, "run-commit-4b", "set-4b", &second_payloads);
     let second_ops = vec![(
         second_pairs[0].0.clone(),
         second_pairs[0].1.clone(),
@@ -913,19 +885,10 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
     ];
     let pairs = seed_approved_proposals(&db, "run-commit-5", "set-5", &payloads);
     let ops = vec![
-        (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            payloads[0].clone(),
-        ),
-        (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            payloads[1].clone(),
-        ),
+        (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+        (pairs[1].0.clone(), pairs[1].1.clone(), payloads[1].clone()),
     ];
-    let payload =
-        build_prepare("req-undo-1", "digest-undo-1", "set-5", "run-commit-5", ops);
+    let payload = build_prepare("req-undo-1", "digest-undo-1", "set-5", "run-commit-5", ops);
     let applied = prepare_and_apply(&db, payload);
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
 
@@ -936,16 +899,14 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("undo-events-initial".to_string()),
         },
     )
     .expect("undo");
     assert_eq!(undone["status"], "undone");
 
     let event_count: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-        })
+        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(event_count, 0);
 
@@ -957,7 +918,7 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("redo-events".to_string()),
         },
     )
     .expect("redo");
@@ -976,18 +937,86 @@ fn undo_commit_removes_all_events_and_refuses_edited() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("undo-events-edited".to_string()),
         },
     )
     .expect_err("edited refuse");
     assert!(refuse.to_string().contains("NEX_COMMIT_EVENT_EDITED"));
 
     let remaining: i64 = db
-        .with_conn(|conn| {
-            Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-        })
+        .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
         .unwrap();
     assert_eq!(remaining, 2);
+}
+
+#[test]
+fn undo_commit_retry_returns_the_exact_receipt_before_status_checks() {
+    let db = migrated_db();
+    insert_scene(&db, "scene-1", 0);
+    let payloads = [event_create_payload(
+        "event-undo-retry",
+        "Retry",
+        "scene-1",
+        0,
+    )];
+    let pairs = seed_approved_proposals(&db, "run-undo-retry", "set-undo-retry", &payloads);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-undo-retry-apply",
+            "digest-undo-retry",
+            "set-undo-retry",
+            "run-undo-retry",
+            vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
+        ),
+    );
+    let commit_id = applied["commitId"].as_str().unwrap().to_string();
+    let first_payload = UndoCommitPayload {
+        project_id: "project-1".to_string(),
+        session_id: "sess-before-restart".to_string(),
+        surface: None,
+        commit_id: Some(commit_id),
+        request_id: Some("undo-action-retry-1".to_string()),
+    };
+    let mut retry_payload = first_payload.clone();
+    retry_payload.session_id = "sess-after-restart".to_string();
+
+    let first = narrative_extraction::narrative_extraction_undo_commit(&db, first_payload)
+        .expect("first undo");
+    let retry = narrative_extraction::narrative_extraction_undo_commit(&db, retry_payload)
+        .expect("retry must replay before status validation");
+    assert_eq!(retry, first);
+    assert_eq!(retry["status"], "undone");
+
+    db.with_conn(|conn| {
+        let canonical_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM change_events
+              WHERE project_id = 'project-1'
+                AND op_type = 'narrative.commit.undo'",
+            [],
+            |row| row.get(0),
+        )?;
+        let feed_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE project_id = 'project-1'
+                AND source_domain = 'narrative.commit.undo'
+                AND request_id = 'undo-action-retry-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        let receipt_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM idempotency_requests
+              WHERE domain = 'narrative_commit_undo'
+                AND request_id = 'undo-action-retry-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(canonical_count, 1);
+        assert_eq!(feed_count, 1);
+        assert_eq!(receipt_count, 1);
+        Ok(())
+    })
+    .expect("inspect undo retry artifacts");
 }
 
 #[test]
@@ -1000,57 +1029,56 @@ fn undo_redo_cycles_without_event_edited_false_positive() {
     ];
     let pairs = seed_approved_proposals(&db, "run-commit-6", "set-6", &payloads);
     let ops = vec![
-        (
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            payloads[0].clone(),
-        ),
-        (
-            pairs[1].0.clone(),
-            pairs[1].1.clone(),
-            payloads[1].clone(),
-        ),
+        (pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone()),
+        (pairs[1].0.clone(), pairs[1].1.clone(), payloads[1].clone()),
     ];
-    let payload =
-        build_prepare("req-cycle-1", "digest-cycle-1", "set-6", "run-commit-6", ops);
+    let payload = build_prepare(
+        "req-cycle-1",
+        "digest-cycle-1",
+        "set-6",
+        "run-commit-6",
+        ops,
+    );
     let applied = prepare_and_apply(&db, payload);
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
-    let undo_payload = UndoCommitPayload {
+    let replay_payload = |request_id: String| UndoCommitPayload {
         project_id: "project-1".to_string(),
         session_id: "sess".to_string(),
         surface: None,
-        commit_id: Some(commit_id),
-        request_id: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some(request_id),
     };
 
     for cycle in 1..=2 {
         let undone = narrative_extraction::narrative_extraction_undo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("undo-event-cycle-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
         assert_eq!(undone["status"], "undone");
 
         let event_count: i64 = db
-            .with_conn(|conn| {
-                Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-            })
+            .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(event_count, 0, "events must be gone after undo cycle {cycle}");
+        assert_eq!(
+            event_count, 0,
+            "events must be gone after undo cycle {cycle}"
+        );
 
         let redone = narrative_extraction::narrative_extraction_redo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("redo-event-cycle-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
         assert_eq!(redone["status"], "redone");
 
         let event_count: i64 = db
-            .with_conn(|conn| {
-                Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?)
-            })
+            .with_conn(|conn| Ok(conn.query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(event_count, 2, "events must be restored after redo cycle {cycle}");
+        assert_eq!(
+            event_count, 2,
+            "events must be restored after redo cycle {cycle}"
+        );
 
         let versions: Vec<i64> = db
             .with_conn(|conn| {
@@ -1068,8 +1096,11 @@ fn undo_redo_cycles_without_event_edited_false_positive() {
     }
 
     // Final undo after two full cycles must still succeed (journal stayed in sync).
-    let final_undo =
-        narrative_extraction::narrative_extraction_undo_commit(&db, undo_payload).expect("final undo");
+    let final_undo = narrative_extraction::narrative_extraction_undo_commit(
+        &db,
+        replay_payload("undo-event-cycle-final".to_string()),
+    )
+    .expect("final undo");
     assert_eq!(final_undo["status"], "undone");
 }
 
@@ -1114,10 +1145,7 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
                 proposal_key: "key-occ".to_string(),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "title": "Rev1" }),
-                reconciliation_envelope: Some(test_envelope(
-                    run_id,
-                    &format!("{run_id}-task"),
-                )),
+                reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
             }],
         },
     )
@@ -1162,9 +1190,7 @@ fn append_decision_rejects_stale_revision_when_current_advanced() {
     )
     .expect_err("stale revision must fail");
     assert!(
-        stale
-            .to_string()
-            .contains("NEX_PROPOSAL_REVISION_MISMATCH"),
+        stale.to_string().contains("NEX_PROPOSAL_REVISION_MISMATCH"),
         "unexpected error: {stale}"
     );
 
@@ -1237,10 +1263,7 @@ fn seed_single_proposal(
                 proposal_key: format!("{proposal_id}-key"),
                 kind: "chronicle.event.create@1".to_string(),
                 payload_json: json!({ "title": "Rev1" }),
-                reconciliation_envelope: Some(test_envelope(
-                    run_id,
-                    &format!("{run_id}-task"),
-                )),
+                reconciliation_envelope: Some(test_envelope(run_id, &format!("{run_id}-task"))),
             }],
         },
     )
@@ -1557,10 +1580,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
             && a["payloadJson"]["proposalSetId"] == "set-review-bundle"
     }));
 
-    assert_eq!(
-        bundle["proposalSet"]["proposalSetId"],
-        "set-review-bundle"
-    );
+    assert_eq!(bundle["proposalSet"]["proposalSetId"], "set-review-bundle");
     let proposals = bundle["proposals"].as_array().expect("proposals");
     assert_eq!(proposals.len(), 1);
     assert_eq!(proposals[0]["proposalId"], "prop-review-1");
@@ -1603,11 +1623,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
         "digest-failopen-1",
         "set-failopen",
         "run-failopen",
-        vec![(
-            pairs[0].0.clone(),
-            pairs[0].1.clone(),
-            payloads[0].clone(),
-        )],
+        vec![(pairs[0].0.clone(), pairs[0].1.clone(), payloads[0].clone())],
     );
     let mut payload = payload;
     payload.applications.clear();
@@ -1615,8 +1631,7 @@ fn apply_commit_rejects_missing_applications_and_unapproved_payload() {
     let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("empty applications must fail closed");
     assert!(
-        err.to_string()
-            .contains("NEX_COMMIT_APPLICATIONS_MISMATCH"),
+        err.to_string().contains("NEX_COMMIT_APPLICATIONS_MISMATCH"),
         "unexpected error: {err}"
     );
 
@@ -1686,8 +1701,7 @@ fn apply_commit_rejects_revision_payload_mismatch() {
     let db = migrated_db();
     insert_scene(&db, "scene-1", 0);
     let approved = [event_create_payload("event-m", "M", "scene-1", 0)];
-    let pairs =
-        seed_approved_proposals(&db, "run-rev-mismatch", "set-rev-mismatch", &approved);
+    let pairs = seed_approved_proposals(&db, "run-rev-mismatch", "set-rev-mismatch", &approved);
     let ops = vec![(
         pairs[0].0.clone(),
         pairs[0].1.clone(),
@@ -1705,8 +1719,7 @@ fn apply_commit_rejects_revision_payload_mismatch() {
     let err = narrative_extraction::narrative_extraction_prepare_commit(&db, payload)
         .expect_err("title mismatch must fail");
     assert!(
-        err.to_string()
-            .contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
+        err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected error: {err}"
     );
 }
@@ -1741,13 +1754,14 @@ fn list_resumable_runs_excludes_applied_completed_runs() {
     .expect("mark completed");
 
     // Completed + applied → not resumable.
-    let applied_payloads = [event_create_payload("event-applied", "Applied", "scene-1", 0)];
-    let applied_pairs = seed_approved_proposals(
-        &db,
-        "run-applied",
-        "set-applied",
-        &applied_payloads,
-    );
+    let applied_payloads = [event_create_payload(
+        "event-applied",
+        "Applied",
+        "scene-1",
+        0,
+    )];
+    let applied_pairs =
+        seed_approved_proposals(&db, "run-applied", "set-applied", &applied_payloads);
     let payload = build_prepare(
         "req-applied",
         "digest-applied",
@@ -1799,12 +1813,7 @@ fn list_resumable_runs_prefers_older_review_over_crashed_running() {
 
     // Older completed review with unapplied proposals.
     let review_payloads = [event_create_payload("event-old", "Old", "scene-1", 0)];
-    let _pairs = seed_approved_proposals(
-        &db,
-        "run-old-review",
-        "set-old-review",
-        &review_payloads,
-    );
+    let _pairs = seed_approved_proposals(&db, "run-old-review", "set-old-review", &review_payloads);
     db.execute(
         "UPDATE narrative_extraction_runs
             SET status = 'completed',
@@ -1976,9 +1985,7 @@ fn relation_dependencies_in_summary_json_survive_append_revision() {
         .find(|row| row["proposalId"] == relation_id)
         .expect("relation row");
     assert!(
-        relation_row["payloadJson"]
-            .get("dependencies")
-            .is_none(),
+        relation_row["payloadJson"].get("dependencies").is_none(),
         "domain payload must not carry dependencies after approve revision"
     );
 }

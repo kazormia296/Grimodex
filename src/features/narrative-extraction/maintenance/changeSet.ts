@@ -11,6 +11,7 @@ import {
   domainObjectKeyToString,
   type DomainObjectKey,
 } from "./domainObjectKey";
+import { canonicalChangedPaths } from "./changedPath";
 import { assertValidUtf16Range, type Utf16Range } from "./rangeImpact";
 
 export interface NarrativeObjectChangeSummary {
@@ -34,6 +35,8 @@ export interface NarrativeObjectChangeSummary {
 
 export interface NarrativeEventRangeImpact {
   readonly eventId: string;
+  /** Canonical Text coordinate-system version for the ranges below. */
+  readonly normalizerVersion: string;
   readonly oldCanonicalDigest: Sha256Digest;
   readonly newCanonicalDigest: Sha256Digest;
   readonly scope: "ranges" | "whole-document";
@@ -266,6 +269,7 @@ export async function buildChangeSetFromEvents(
       const oldRangeImpact = summarizeOldRangeImpact(event.textImpact);
       entry.rangeImpacts.push({
         eventId: event.eventId,
+        normalizerVersion: event.textImpact.normalizerVersion,
         oldCanonicalDigest: event.textImpact.oldCanonicalDigest,
         newCanonicalDigest: event.textImpact.newCanonicalDigest,
         ...oldRangeImpact,
@@ -287,7 +291,7 @@ export async function buildChangeSetFromEvents(
       before: entry.before,
       after: entry.after,
       mutationKinds: Array.from(entry.mutationKinds).sort(),
-      changedPaths: Array.from(entry.changedPaths).sort(),
+      changedPaths: canonicalChangedPaths([...entry.changedPaths]),
       rangeImpacts: entry.rangeImpacts,
       eventIds: entry.eventIds,
     }));

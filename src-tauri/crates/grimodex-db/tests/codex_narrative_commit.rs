@@ -121,11 +121,7 @@ fn seed_approved_proposals(
     pairs
 }
 
-fn entry_create(
-    entry_id: &str,
-    name: &str,
-    narrative_entity_id: &str,
-) -> Value {
+fn entry_create(entry_id: &str, name: &str, narrative_entity_id: &str) -> Value {
     json!({
         "entryId": entry_id,
         "typeSlug": "character",
@@ -184,12 +180,14 @@ fn build_prepare(
 ) -> PrepareCommitPayload {
     let operations: Vec<CommitOperation> = ops
         .iter()
-        .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-            kind: kind.clone(),
-            payload: payload.clone(),
-            proposal_id: proposal_id.clone(),
-            revision_id: revision_id.clone(),
-        })
+        .map(
+            |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                kind: kind.clone(),
+                payload: payload.clone(),
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            },
+        )
         .collect();
     let applications: Vec<CommitApplicationRef> = ops
         .iter()
@@ -251,7 +249,6 @@ fn prepare_then_apply(db: &Database, prepare: PrepareCommitPayload) -> anyhow::R
         },
     )
 }
-
 
 fn codex_review_envelope(review_payload: Value, kind: &str, operation_payload: Value) -> Value {
     json!({
@@ -374,10 +371,7 @@ fn two_entries_and_relation_atomic_commit() {
         applied["entityBindings"]["ent:alice"]["codexEntryId"],
         "entry-a"
     );
-    assert_eq!(
-        applied["entityBindings"]["ent:bob"]["source"],
-        "created"
-    );
+    assert_eq!(applied["entityBindings"]["ent:bob"]["source"], "created");
 
     let entry_count: i64 = db
         .with_conn(|conn| {
@@ -421,7 +415,8 @@ fn relation_failure_rolls_back_entries() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    ).expect_err("should fail");
+    )
+    .expect_err("should fail");
     assert!(err.to_string().contains("NEX_CODEX_SELF_RELATION"));
 
     let entry_count: i64 = db
@@ -647,7 +642,8 @@ fn semantic_duplicate_relation_is_rejected() {
             ops_from_pairs(&pairs, &items),
             vec![],
         ),
-    ).expect_err("duplicate");
+    )
+    .expect_err("duplicate");
     assert!(err
         .to_string()
         .contains("NEX_CODEX_RELATION_SEMANTIC_DUPLICATE"));
@@ -709,7 +705,8 @@ fn commit_map_conflict_and_payload_mismatch_are_rejected() {
                 },
             ],
         ),
-    ).expect_err("endpoint mismatch");
+    )
+    .expect_err("endpoint mismatch");
     assert!(err.to_string().contains("NEX_COMMIT_MAP_ENDPOINT_MISMATCH"));
 
     // Conflicting seed bindings for the same NarrativeEntityId.
@@ -773,7 +770,8 @@ fn revision_payload_mismatch_is_rejected() {
             mismatched,
             vec![],
         ),
-    ).expect_err("payload mismatch");
+    )
+    .expect_err("payload mismatch");
     assert!(err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"));
 }
 
@@ -781,14 +779,8 @@ fn revision_payload_mismatch_is_rejected() {
 fn undo_deletes_relation_before_entries() {
     let db = migrated_db();
     let items = [
-        (
-            "codex.entry.create",
-            entry_create("entry-u1", "A", "ent:a"),
-        ),
-        (
-            "codex.entry.create",
-            entry_create("entry-u2", "B", "ent:b"),
-        ),
+        ("codex.entry.create", entry_create("entry-u1", "A", "ent:a")),
+        ("codex.entry.create", entry_create("entry-u2", "B", "ent:b")),
         (
             "codex.relation.create",
             relation_create("rel-u", "ent:a", "ent:b", None),
@@ -815,7 +807,7 @@ fn undo_deletes_relation_before_entries() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("schema20-initial-undo".to_string()),
         },
     )
     .expect("initial undo");
@@ -852,7 +844,7 @@ fn undo_deletes_relation_before_entries() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id.clone()),
-            request_id: None,
+            request_id: Some("schema20-redo".to_string()),
         },
     )
     .expect("redo");
@@ -865,7 +857,7 @@ fn undo_deletes_relation_before_entries() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("schema20-second-undo".to_string()),
         },
     )
     .expect("second undo");
@@ -902,12 +894,17 @@ fn undo_deletes_relation_before_entries() {
             Ok(rows)
         })
         .expect("read maintenance feed");
-    assert_eq!(feed_rows.len(), 9, "three feed operations x three entities");
+    assert_eq!(
+        feed_rows.len(),
+        12,
+        "historical forward/undo plus new redo/undo x three entities"
+    );
     let forward_transaction_id = feed_rows[0].0.as_str();
     let expectations = [
         (0..3, ("forward", "create"), None),
-        (3..6, ("redo", "restore"), Some(forward_transaction_id)),
-        (6..9, ("undo", "delete"), Some(forward_transaction_id)),
+        (3..6, ("undo", "delete"), Some(forward_transaction_id)),
+        (6..9, ("redo", "restore"), Some(forward_transaction_id)),
+        (9..12, ("undo", "delete"), Some(forward_transaction_id)),
     ];
     for (index, expected, expected_origin) in expectations {
         for row in &feed_rows[index] {
@@ -964,7 +961,7 @@ fn external_dependency_blocks_undo() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("codex-external-relation-undo".to_string()),
         },
     )
     .expect_err("external dep");
@@ -1020,7 +1017,7 @@ fn external_tag_dependency_blocks_undo() {
             session_id: "sess".to_string(),
             surface: None,
             commit_id: Some(commit_id),
-            request_id: None,
+            request_id: Some("codex-external-tag-undo".to_string()),
         },
     )
     .expect_err("tag dep");
@@ -1069,18 +1066,18 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
         ),
     );
     let commit_id = applied["commitId"].as_str().unwrap().to_string();
-    let undo_payload = UndoCommitPayload {
+    let replay_payload = |request_id: String| UndoCommitPayload {
         project_id: "project-1".to_string(),
         session_id: "sess".to_string(),
         surface: None,
-        commit_id: Some(commit_id),
-        request_id: None,
+        commit_id: Some(commit_id.clone()),
+        request_id: Some(request_id),
     };
 
     for cycle in 1..=2 {
         let undone = narrative_extraction::narrative_extraction_undo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("codex-patch-undo-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("undo cycle {cycle}: {err}"));
         assert_eq!(undone["status"], "undone");
@@ -1102,7 +1099,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
 
         let redone = narrative_extraction::narrative_extraction_redo_commit(
             &db,
-            undo_payload.clone(),
+            replay_payload(format!("codex-patch-redo-{cycle}")),
         )
         .unwrap_or_else(|err| panic!("redo cycle {cycle}: {err}"));
         assert_eq!(redone["status"], "redone");
@@ -1123,7 +1120,7 @@ fn patch_undo_redo_undo_cycle_refreshes_journal_versions() {
 
     let undone_final = narrative_extraction::narrative_extraction_undo_commit(
         &db,
-        undo_payload,
+        replay_payload("codex-patch-undo-final".to_string()),
     )
     .expect("final undo");
     assert_eq!(undone_final["status"], "undone");
@@ -1160,10 +1157,7 @@ fn envelope_revise_and_decide_prepare_apply_succeeds() {
             decision: "approved".to_string(),
             decision_json: Some(json!({ "source": "envelope-test" })),
             created_by: Some("reviewer".to_string()),
-            reconciliation_envelope: Some(test_envelope(
-                "run-env-apply",
-                "run-env-apply-task",
-            )),
+            reconciliation_envelope: Some(test_envelope("run-env-apply", "run-env-apply-task")),
             inherit_reconciliation_envelope: None,
         },
     )
@@ -1261,7 +1255,8 @@ fn envelope_revision_rejects_operation_payload_mismatch() {
             mismatched_ops,
             vec![],
         ),
-    ).expect_err("envelope vs operation payload mismatch");
+    )
+    .expect_err("envelope vs operation payload mismatch");
     assert!(
         err.to_string().contains("NEX_PROPOSAL_PAYLOAD_MISMATCH"),
         "unexpected error: {err}"
@@ -1449,12 +1444,7 @@ fn applied_proposal_rejects_revision_and_revise_and_decide() {
         "codex.entry.create",
         entry_create("entry-applied-guard", "Guard", "ent:applied-guard"),
     )];
-    let pairs = seed_approved_proposals(
-        &db,
-        "run-applied-guard",
-        "set-applied-guard",
-        &items,
-    );
+    let pairs = seed_approved_proposals(&db, "run-applied-guard", "set-applied-guard", &items);
     let proposal_id = pairs[0].0.clone();
     let revision_id = pairs[0].1.clone();
 
@@ -1537,11 +1527,9 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
     );
 
     enable_manual_apply(&db);
-    let prepared = narrative_extraction::narrative_extraction_prepare_commit(
-        &db,
-        apply_payload.clone(),
-    )
-    .expect("prepare");
+    let prepared =
+        narrative_extraction::narrative_extraction_prepare_commit(&db, apply_payload.clone())
+            .expect("prepare");
     assert_eq!(prepared["ok"], true);
 
     let applied = narrative_extraction::narrative_extraction_apply_commit(
@@ -1672,12 +1660,14 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
             surface: Some("narrative-extraction".to_string()),
             operations: ops
                 .iter()
-                .map(|(proposal_id, revision_id, kind, payload)| CommitOperation {
-                    kind: kind.clone(),
-                    payload: payload.clone(),
-                    proposal_id: proposal_id.clone(),
-                    revision_id: revision_id.clone(),
-                })
+                .map(
+                    |(proposal_id, revision_id, kind, payload)| CommitOperation {
+                        kind: kind.clone(),
+                        payload: payload.clone(),
+                        proposal_id: proposal_id.clone(),
+                        revision_id: revision_id.clone(),
+                    },
+                )
                 .collect(),
             applications: ops
                 .iter()

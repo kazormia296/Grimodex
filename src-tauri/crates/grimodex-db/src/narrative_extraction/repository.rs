@@ -1,7 +1,7 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
-use chrono::Utc;
 use anyhow::Context;
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -826,13 +826,7 @@ fn append_revision_on_conn(
         current_origin_kind,
         current_envelope_json,
         current_envelope_digest,
-    ): (
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-    ) = conn.query_row(
+    ): (String, String, String, Option<String>, Option<String>) = conn.query_row(
         "SELECT p.proposal_set_id, p.current_revision_id,
                 r.origin_kind, r.reconciliation_envelope_json,
                 r.reconciliation_envelope_digest
@@ -843,13 +837,15 @@ fn append_revision_on_conn(
             AND s.run_id = ?2
             AND s.project_id = ?3",
         params![payload.proposal_id, payload.run_id, payload.project_id],
-        |row| Ok((
-            row.get(0)?,
-            row.get(1)?,
-            row.get(2)?,
-            row.get(3)?,
-            row.get(4)?,
-        )),
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
     )?;
     let _ = proposal_set_id;
     anyhow::ensure!(
@@ -864,8 +860,7 @@ fn append_revision_on_conn(
             && payload.inherit_reconciliation_envelope.is_some()),
         "NEX_REVISION_ENVELOPE_MODE_CONFLICT: supply an envelope or explicit inheritance, not both"
     );
-    let inherited_envelope = if let Some(inherit) =
-        payload.inherit_reconciliation_envelope.as_ref()
+    let inherited_envelope = if let Some(inherit) = payload.inherit_reconciliation_envelope.as_ref()
     {
         anyhow::ensure!(
             inherit.parent_revision_id == current_revision_id,
@@ -882,8 +877,16 @@ fn append_revision_on_conn(
         Some(
             current_envelope_json
                 .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("NEX_REVISION_ENVELOPE_INHERIT_MISSING: current envelope JSON is missing"))
-                .and_then(|json| serde_json::from_str(json).context("NEX_REVISION_ENVELOPE_INHERIT_INVALID: current envelope JSON is invalid"))?,
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_REVISION_ENVELOPE_INHERIT_MISSING: current envelope JSON is missing"
+                    )
+                })
+                .and_then(|json| {
+                    serde_json::from_str(json).context(
+                        "NEX_REVISION_ENVELOPE_INHERIT_INVALID: current envelope JSON is invalid",
+                    )
+                })?,
         )
     } else {
         None
@@ -1019,7 +1022,7 @@ fn append_decision_on_conn(
 ) -> anyhow::Result<Value> {
     ensure_proposal_not_applied(conn, &payload.proposal_id)?;
     let decision_value = payload
-            .decision_json
+        .decision_json
         .clone()
         .unwrap_or_else(default_object_json);
     let decision_json = serde_json::to_string(&decision_value)?;
@@ -1154,9 +1157,7 @@ fn revise_and_decide_with_actor(
                 expected_current_revision_id: payload.expected_current_revision_id.clone(),
                 created_by: payload.created_by.clone(),
                 reconciliation_envelope: payload.reconciliation_envelope.clone(),
-                inherit_reconciliation_envelope: payload
-                    .inherit_reconciliation_envelope
-                    .clone(),
+                inherit_reconciliation_envelope: payload.inherit_reconciliation_envelope.clone(),
             };
             let revision = append_revision_on_conn(conn, &revision_payload)?;
             let revision_id = revision["revisionId"]

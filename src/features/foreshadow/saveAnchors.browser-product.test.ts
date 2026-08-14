@@ -44,7 +44,9 @@ describe("browser foreshadow anchor save product journey", () => {
 
   beforeEach(async () => {
     delete (window as unknown as Record<string, unknown>).grimodex;
-    browser = await createBrowserMock();
+    browser = await createBrowserMock({
+      allowProtectedWriterTestFixtures: true,
+    });
     invokeMock.mockReset();
     invokeMock.mockImplementation(
       (command: string, args?: Record<string, unknown>) =>
@@ -181,28 +183,30 @@ describe("browser foreshadow anchor save product journey", () => {
       ([command]) => command === "foreshadow_save_anchors_for_scene",
     );
     expect(call?.[1]).toMatchObject({
-      setups: [
-        {
-          id: "split-anchor",
-          foreshadowId: "anchor-setup-foreshadow",
-          baseVersion: 0,
-          sceneId: "anchor-scene",
-          fromPos: 1,
-          toPos: 6,
+      payload: {
+        setups: [
+          {
+            id: "split-anchor",
+            foreshadowId: "anchor-setup-foreshadow",
+            baseVersion: 0,
+            sceneId: "anchor-scene",
+            fromPos: 1,
+            toPos: 6,
+          },
+        ],
+        payoffs: [
+          {
+            foreshadowId: "anchor-payoff-foreshadow",
+            baseVersion: 0,
+            sceneId: "anchor-scene",
+            fromPos: 7,
+            toPos: 13,
+          },
+        ],
+        baseVersions: {
+          "anchor-setup-foreshadow": 0,
+          "anchor-payoff-foreshadow": 0,
         },
-      ],
-      payoffs: [
-        {
-          foreshadowId: "anchor-payoff-foreshadow",
-          baseVersion: 0,
-          sceneId: "anchor-scene",
-          fromPos: 7,
-          toPos: 13,
-        },
-      ],
-      baseVersions: {
-        "anchor-setup-foreshadow": 0,
-        "anchor-payoff-foreshadow": 0,
       },
     });
     expect(

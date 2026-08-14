@@ -33,11 +33,26 @@ process.on("exit", () => {
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project";
 
+function mutationIdentity(requestId) {
+  return {
+    requestId,
+    projectId: PROJECT,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin: "human",
+    originalTransactionId: null,
+    undoJournalId: null,
+  };
+}
+
 test("workspace 未オープンの ftsSearch は 'No workspace is open' マーカーで reject する", async () => {
-  await assert.rejects(backend.ftsSearch(PROJECT, "query", "scene", 10), (err) => {
-    assert.match(String(err.message), /No workspace is open/);
-    return true;
-  });
+  await assert.rejects(
+    backend.ftsSearch(PROJECT, "query", "scene", 10),
+    (err) => {
+      assert.match(String(err.message), /No workspace is open/);
+      return true;
+    },
+  );
 });
 
 test("openWorkspace 後、fts_search はヒット無しで空配列 JSON を返す", async () => {
@@ -50,13 +65,21 @@ test("openWorkspace 後、fts_search はヒット無しで空配列 JSON を返�
 });
 
 test("integrityCheck はレポート object の JSON を返す", async () => {
-  const report = JSON.parse(await backend.integrityCheck());
+  const report = JSON.parse(await backend.integrityCheck(PROJECT));
   assert.equal(typeof report, "object");
   assert.ok(report !== null && !Array.isArray(report));
 });
 
 test("repairIntegrity は空 workspace でもレポート object を返す", async () => {
-  const report = JSON.parse(await backend.repairIntegrity());
+  const report = JSON.parse(
+    await backend.repairIntegrity({
+      projectId: PROJECT,
+      requestId: "integrity-empty-repair",
+      sessionId: "integrity-test-session",
+      eventUid: "integrity-empty-event",
+      occurredAt: "2026-08-13T10:00:00.000Z",
+    }),
+  );
   assert.equal(typeof report, "object");
   assert.ok(report !== null && !Array.isArray(report));
 });
@@ -71,6 +94,7 @@ test("FTS 再構築後もシーン本文の roundtrip 検索が通る", async ()
   // db_execute で tree_nodes の scene 行を挿入 → fts_rebuild → 検索ヒット、
   // の粗い end-to-end（FTS トリガ/rebuild と search_fts の整合を疎通確認）。
   await backend.treeNodeCreate({
+    ...mutationIdentity("integrity-scene-create"),
     id: "itg-scene-1",
     projectId: PROJECT,
     parentId: null,

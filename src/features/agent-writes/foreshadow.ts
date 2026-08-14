@@ -19,7 +19,7 @@ export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
 
 export interface AgentForeshadowCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
-  requestId?: string;
+  requestId: string;
   /** Reuse this domain ID when retrying the same logical create. */
   foreshadowId?: string;
   title: string;
@@ -31,6 +31,8 @@ export interface AgentForeshadowCreateInput {
 }
 
 export interface AgentForeshadowUpdateInput {
+  /** Stable identity of the logical update; retries must reuse this value. */
+  requestId: string;
   foreshadowId: string;
   /** Version returned by the read that informed this update. */
   baseVersion: number;
@@ -104,12 +106,15 @@ export async function agentCreateForeshadow(
     throw new Error("knowledgeWrite policy is off");
   }
   assertLoadBearing(input.loadBearing);
+  if (input.requestId.trim().length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
 
   const projectId = getCurrentProjectId();
   const foreshadowId = input.foreshadowId ?? crypto.randomUUID();
   const result = await invoke<AgentWriteResult>("agent_foreshadow_create", {
     payload: {
-      requestId: input.requestId ?? null,
+      requestId: input.requestId,
       foreshadowId,
       projectId,
       sessionId: getRecorderSessionId(),
@@ -136,6 +141,9 @@ export async function agentUpdateForeshadow(
   if (!Number.isSafeInteger(input.baseVersion) || input.baseVersion < 0) {
     throw new Error("baseVersion must be a non-negative integer");
   }
+  if (input.requestId.trim().length === 0) {
+    throw new Error("requestId must be a non-empty string");
+  }
   const hasPatch =
     input.title !== undefined ||
     input.intent !== undefined ||
@@ -151,6 +159,7 @@ export async function agentUpdateForeshadow(
   const projectId = getCurrentProjectId();
   const result = await invoke<AgentWriteResult>("agent_foreshadow_update", {
     payload: {
+      requestId: input.requestId,
       projectId,
       sessionId: getRecorderSessionId(),
       foreshadowId: input.foreshadowId,

@@ -3,6 +3,7 @@
  * 新 ID。元 sceneId が現存しなければ無効化 (snippet は scene 紐付けが任意)。
  */
 import { createSnippet } from "@/features/snippets/api";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import { getNode } from "@/features/tree/api";
 import type { SnippetPayload, TrashItemData } from "../types";
 import type { RestoreOutcome } from "./types";
@@ -36,15 +37,18 @@ export async function restoreSnippet(
   }
 
   try {
-    await createSnippet({
-      id: newId,
-      projectId: options.projectId,
-      title: payload.title,
-      content: payload.body,
-      tagsCache: payload.tags ?? undefined,
-      sceneId: sceneId ?? undefined,
-      contentSource: payload.contentSource ?? undefined,
-    });
+    await createSnippet(
+      {
+        id: newId,
+        projectId: options.projectId,
+        title: payload.title,
+        content: payload.body,
+        tagsCache: payload.tags ?? undefined,
+        sceneId: sceneId ?? undefined,
+        contentSource: payload.contentSource ?? undefined,
+      },
+      { writeContext: createCanonicalWriteContext("restore") },
+    );
   } catch (e) {
     return {
       ok: false,

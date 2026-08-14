@@ -395,8 +395,10 @@ export interface UndoCommitPayload {
   readonly projectId: string;
   readonly sessionId: string;
   readonly surface?: string;
-  readonly commitId?: string;
-  readonly requestId?: string;
+  /** Exact applied commit being replayed. */
+  readonly commitId: string;
+  /** Stable identity of this undo or redo action; reuse only for its retry. */
+  readonly requestId: string;
 }
 
 export interface ListResumableRunsPayload {

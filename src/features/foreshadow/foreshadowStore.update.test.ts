@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { attachNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
 
 const {
   mockUpdateForeshadow,
@@ -110,7 +111,11 @@ describe("ForeshadowStore.update", () => {
     mockListForeshadowsWithLabels.mockClear();
     mockUnsetPayoffMarks.mockClear();
     mockSaveSceneContent.mockClear();
-    mockUpdateForeshadow.mockResolvedValue(makeForeshadowRow(1));
+    mockUpdateForeshadow.mockResolvedValue(
+      attachNativeMutationMetadata(makeForeshadowRow(1), {
+        maintenanceTransactionId: "foreshadow-test-maintenance-1",
+      }),
+    );
     editorRef.current = {
       state: { tr: {}, doc: { type: "doc" } },
       view: { dispatch: vi.fn() },
@@ -133,6 +138,7 @@ describe("ForeshadowStore.update", () => {
       "f-1",
       { title: "新タイトル" },
       0,
+      "p-1",
     );
     expect(mockListForeshadowsWithLabels).toHaveBeenCalledWith("p-1");
     expect(mockUnsetPayoffMarks).not.toHaveBeenCalled();

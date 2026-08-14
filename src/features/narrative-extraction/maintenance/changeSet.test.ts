@@ -62,14 +62,14 @@ describe("buildChangeSetFromEvents", () => {
         canonicalSequence: 2,
         before: stateB,
         after: stateC,
-        changedPaths: ["title"],
+        changedPaths: ["/title"],
       }),
       makeEvent({
         eventId: "ev-1",
         canonicalSequence: 1,
         before: stateA,
         after: stateB,
-        changedPaths: ["body"],
+        changedPaths: ["/body"],
       }),
     ]);
 
@@ -79,7 +79,7 @@ describe("buildChangeSetFromEvents", () => {
     expect(changeSet.objectChanges[0]).toMatchObject({
       before: stateA,
       after: stateC,
-      changedPaths: ["body", "title"],
+      changedPaths: ["/body", "/title"],
       eventIds: ["ev-1", "ev-2"],
     });
   });
@@ -120,6 +120,8 @@ describe("buildChangeSetFromEvents", () => {
         before: { version: 1, digest: "sha256:state-a" },
         after: { version: 2, digest: "sha256:state-b" },
         textImpact: {
+          unit: "utf16",
+          normalizerVersion: "gdx-canonical-text/1",
           oldStorageDigest: "sha256:storage-a",
           newStorageDigest: "sha256:storage-b",
           oldCanonicalDigest: "sha256:canonical-a",
@@ -136,6 +138,7 @@ describe("buildChangeSetFromEvents", () => {
     expect(changeSet.objectChanges[0].rangeImpacts).toEqual([
       {
         eventId: "delete-text",
+        normalizerVersion: "gdx-canonical-text/1",
         oldCanonicalDigest: "sha256:canonical-a",
         newCanonicalDigest: "sha256:canonical-b",
         scope: "ranges",
@@ -163,6 +166,8 @@ describe("buildChangeSetFromEvents", () => {
         before: stateA,
         after: stateB,
         textImpact: {
+          unit: "utf16",
+          normalizerVersion: "gdx-canonical-text/1",
           oldStorageDigest: "sha256:storage-a",
           newStorageDigest: "sha256:storage-b",
           oldCanonicalDigest: "sha256:canonical-a",
@@ -190,6 +195,8 @@ describe("buildChangeSetFromEvents", () => {
         before: stateB,
         after: stateC,
         textImpact: {
+          unit: "utf16",
+          normalizerVersion: "gdx-canonical-text/1",
           oldStorageDigest: "sha256:storage-b",
           newStorageDigest: "sha256:storage-c",
           oldCanonicalDigest: "sha256:canonical-b",

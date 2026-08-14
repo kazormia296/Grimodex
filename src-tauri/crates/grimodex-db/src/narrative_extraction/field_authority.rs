@@ -15,7 +15,9 @@ use super::codex_operations::{
     parse_relation_create_payload, CommitMap,
 };
 use super::detail_operations::parse_detail_value_set_payload;
-use super::foreshadow_operations::{parse_create as parse_foreshadow_create, parse_patch as parse_foreshadow_patch};
+use super::foreshadow_operations::{
+    parse_create as parse_foreshadow_create, parse_patch as parse_foreshadow_patch,
+};
 use super::models::{CommitOperation, HumanFieldLockPayload};
 use super::phase_operations::{parse_phase_create_payload, parse_phase_patch_payload};
 use super::plot_thread_operations::{
@@ -32,12 +34,20 @@ use super::temporal_operations::{
 use super::temporal_projections::parse_projection_record_payload;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 
+fn json_pointer_segment(value: &str) -> String {
+    value.replace('~', "~0").replace('/', "~1")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TrustedDecisionActor {
-    Human { actor_id: String },
+    Human {
+        actor_id: String,
+    },
     /// The automated endpoint has no human authority, regardless of what the
     /// renderer puts in `createdBy`.
-    Automated { actor_id: String },
+    Automated {
+        actor_id: String,
+    },
 }
 
 impl TrustedDecisionActor {
@@ -116,7 +126,9 @@ pub(crate) fn set_human_field_lock_in_tx(
         payload.expected_version >= 0,
         "NEX_FIELD_AUTHORITY_LOCK_INVALID: expectedVersion must be non-negative"
     );
-    let updated_at = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+    let updated_at = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
     let updated = conn.execute(
         "UPDATE narrative_field_authority
             SET owner_kind = 'human', explicit_lock = ?1,
@@ -151,7 +163,8 @@ pub(crate) fn set_human_field_lock_in_tx(
         if let Some(current_version) = current_version {
             anyhow::bail!(
                 "NEX_FIELD_AUTHORITY_LOCK_CONFLICT: expected version {} but field is at {}",
-                payload.expected_version, current_version
+                payload.expected_version,
+                current_version
             );
         }
         anyhow::ensure!(
@@ -290,12 +303,20 @@ pub(crate) fn derive_decision_authority(
         !actor_id.is_empty(),
         "NEX_AUTHORITY_ACTOR_MISSING: trusted actor identity is required"
     );
-    anyhow::ensure!(!project_id.trim().is_empty(), "NEX_AUTHORITY_SCOPE_INVALID: project is required");
-    anyhow::ensure!(!proposal_id.trim().is_empty(), "NEX_AUTHORITY_SCOPE_INVALID: proposal is required");
-    anyhow::ensure!(!revision_id.trim().is_empty(), "NEX_AUTHORITY_SCOPE_INVALID: revision is required");
-    let authority_scope = format!(
-        "project/{project_id}/proposal/{proposal_id}/revision/{revision_id}"
+    anyhow::ensure!(
+        !project_id.trim().is_empty(),
+        "NEX_AUTHORITY_SCOPE_INVALID: project is required"
     );
+    anyhow::ensure!(
+        !proposal_id.trim().is_empty(),
+        "NEX_AUTHORITY_SCOPE_INVALID: proposal is required"
+    );
+    anyhow::ensure!(
+        !revision_id.trim().is_empty(),
+        "NEX_AUTHORITY_SCOPE_INVALID: revision is required"
+    );
+    let authority_scope =
+        format!("project/{project_id}/proposal/{proposal_id}/revision/{revision_id}");
     if let Some(declared_scope) = decision_json.get("authorityScope").and_then(Value::as_str) {
         anyhow::ensure!(
             declared_scope == authority_scope,
@@ -413,34 +434,81 @@ pub(crate) fn affected_fields(
     match operation.kind.as_str() {
         "chronicle.event.create" => {
             let value = super::chronicle_operations::parse_event_create_payload(payload)?;
-            fields = fields_for("event", &value.event_id, &[
-                "/title", "/note", "/kind", "/precision", "/ordinal", "/secret",
-                "/revealSceneId", "/evidenceSceneLinks", "/detail", "/primaryCodexId",
-                "/locationCodexId", "/participants", "/startTime", "/endTime",
-                "/startMinute", "/endMinute", "/startGranularity", "/endGranularity",
-            ]);
+            fields = fields_for(
+                "event",
+                &value.event_id,
+                &[
+                    "/title",
+                    "/note",
+                    "/kind",
+                    "/precision",
+                    "/ordinal",
+                    "/secret",
+                    "/revealSceneId",
+                    "/evidenceSceneLinks",
+                    "/detail",
+                    "/primaryCodexId",
+                    "/locationCodexId",
+                    "/participants",
+                    "/startTime",
+                    "/endTime",
+                    "/startMinute",
+                    "/endMinute",
+                    "/startGranularity",
+                    "/endGranularity",
+                ],
+            );
         }
         "codex.entry.create" => {
             let value = parse_entry_create_payload(payload)?;
-            fields = fields_for("codex-entry", &value.entry_id, &[
-                "/name", "/summary", "/aliases", "/type", "/content", "/parentId",
-            ]);
+            fields = fields_for(
+                "codex-entry",
+                &value.entry_id,
+                &[
+                    "/name",
+                    "/summary",
+                    "/aliases",
+                    "/type",
+                    "/content",
+                    "/parentId",
+                ],
+            );
         }
         "codex.entry.patch" => {
             let value = parse_entry_patch_payload(payload)?;
-            if value.name.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .name
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("codex-entry", &value.entry_id, "/name"));
             }
-            if value.summary.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .summary
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("codex-entry", &value.entry_id, "/summary"));
             }
-            if value.aliases.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .aliases
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("codex-entry", &value.entry_id, "/aliases"));
             }
-            if value.type_slug.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .type_slug
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("codex-entry", &value.entry_id, "/type"));
             }
-            if value.parent_id.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .parent_id
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("codex-entry", &value.entry_id, "/parentId"));
             }
         }
@@ -450,10 +518,19 @@ pub(crate) fn affected_fields(
         }
         "codex.relation.create" => {
             let value = parse_relation_create_payload(payload)?;
-            fields = fields_for("codex-relation", &value.relation_id, &[
-                "/fromCodexId", "/toCodexId", "/relationType", "/directionality",
-                "/forwardLabel", "/inverseLabel", "/semanticKey",
-            ]);
+            fields = fields_for(
+                "codex-relation",
+                &value.relation_id,
+                &[
+                    "/fromCodexId",
+                    "/toCodexId",
+                    "/relationType",
+                    "/directionality",
+                    "/forwardLabel",
+                    "/inverseLabel",
+                    "/semanticKey",
+                ],
+            );
         }
         "codex.detail.value.set" => {
             let value = parse_detail_value_set_payload(payload)?;
@@ -469,25 +546,35 @@ pub(crate) fn affected_fields(
                         .and_then(|id| commit_map.resolve(id).ok())
                         .map(|binding| binding.codex_entry_id.clone())
                 })
-                .ok_or_else(|| anyhow::anyhow!(
-                    "NEX_FIELD_AUTHORITY_PAYLOAD_INVALID: detail value target is not bound"
-                ))?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_FIELD_AUTHORITY_PAYLOAD_INVALID: detail value target is not bound"
+                    )
+                })?;
             fields.push(field(
                 "codex-entry",
                 &entry_id,
-                &format!("/details/{}", value.definition_id),
+                &format!("/details/{}", json_pointer_segment(&value.definition_id)),
             ));
         }
         "codex.phase.create" => {
             let value = parse_phase_create_payload(payload)?;
-            fields = fields_for("codex-phase", &value.phase_id, &[
-                "/label", "/summaryOverride", "/detailOverrides", "/entryId", "/anchorNodeId",
-            ]);
+            fields = fields_for(
+                "codex-phase",
+                &value.phase_id,
+                &[
+                    "/label",
+                    "/summaryOverride",
+                    "/detailOverrides",
+                    "/entryId",
+                    "/anchorNodeId",
+                ],
+            );
             for item in &value.detail_overrides {
                 fields.push(field(
                     "codex-phase",
                     &value.phase_id,
-                    &format!("/details/{}", item.definition_id),
+                    &format!("/details/{}", json_pointer_segment(&item.definition_id)),
                 ));
             }
         }
@@ -496,7 +583,10 @@ pub(crate) fn affected_fields(
             if value.label.is_some() {
                 fields.push(field("codex-phase", &value.phase_id, "/label"));
             }
-            if !matches!(value.summary, super::phase_operations::PhaseSummaryPatch::Leave) {
+            if !matches!(
+                value.summary,
+                super::phase_operations::PhaseSummaryPatch::Leave
+            ) {
                 fields.push(field("codex-phase", &value.phase_id, "/summaryOverride"));
             }
             // The typed writer replaces the complete collection, including an
@@ -506,30 +596,50 @@ pub(crate) fn affected_fields(
                 fields.push(field(
                     "codex-phase",
                     &value.phase_id,
-                    &format!("/details/{}", item.definition_id),
+                    &format!("/details/{}", json_pointer_segment(&item.definition_id)),
                 ));
             }
         }
         "codex.semantic_binding.upsert" => {
             let value = parse_semantic_binding_upsert_payload(payload)?;
-            fields = fields_for("codex-detail-semantic-binding", &value.binding_id, &[
-                "/definitionId", "/facetKey", "/projectionKind", "/temporalPolicy",
-                "/source", "/confirmed",
-            ]);
+            fields = fields_for(
+                "codex-detail-semantic-binding",
+                &value.binding_id,
+                &[
+                    "/definitionId",
+                    "/facetKey",
+                    "/projectionKind",
+                    "/temporalPolicy",
+                    "/source",
+                    "/confirmed",
+                ],
+            );
         }
         "temporal.node.ensure" => {
             let value = parse_node_ensure_payload(payload)?;
-            fields = fields_for("temporal-node", &value.node_id, &[
-                "/timelineKind", "/timelineKey", "/subject", "/shape",
-            ]);
+            fields = fields_for(
+                "temporal-node",
+                &value.node_id,
+                &["/timelineKind", "/timelineKey", "/subject", "/shape"],
+            );
         }
         "temporal.constraint.create" => {
             let value = parse_constraint_create_payload(payload)?;
             let id = value.authority_entity_id();
-            fields = fields_for("temporal-constraint", &id, &[
-                "/kind", "/nodes", "/literal", "/resolved", "/authority", "/strictness",
-                "/sourceIds", "/fingerprint",
-            ]);
+            fields = fields_for(
+                "temporal-constraint",
+                &id,
+                &[
+                    "/kind",
+                    "/nodes",
+                    "/literal",
+                    "/resolved",
+                    "/authority",
+                    "/strictness",
+                    "/sourceIds",
+                    "/fingerprint",
+                ],
+            );
         }
         "temporal.scene.metadata.patch" => {
             let value = parse_scene_metadata_patch_payload(payload)?;
@@ -553,17 +663,35 @@ pub(crate) fn affected_fields(
                 .as_deref()
                 .filter(|id| !id.is_empty())
                 .unwrap_or(&value.target_id);
-            fields = fields_for("temporal-projection", id, &[
-                "/targetKind", "/targetId", "/constraintSetDigest", "/solverVersion",
-                "/calendarDigest", "/projectedValueDigest", "/targetResultVersion",
-                "/applicationId", "/status",
-            ]);
+            fields = fields_for(
+                "temporal-projection",
+                id,
+                &[
+                    "/targetKind",
+                    "/targetId",
+                    "/constraintSetDigest",
+                    "/solverVersion",
+                    "/calendarDigest",
+                    "/projectedValueDigest",
+                    "/targetResultVersion",
+                    "/applicationId",
+                    "/status",
+                ],
+            );
         }
         "plot.thread.create" => {
             let value = parse_plot_thread_create_payload(payload)?;
-            fields = fields_for("plot-thread", &value.thread_id, &[
-                "/name", "/description", "/color", "/sortOrder", "/hypothesisId",
-            ]);
+            fields = fields_for(
+                "plot-thread",
+                &value.thread_id,
+                &[
+                    "/name",
+                    "/description",
+                    "/color",
+                    "/sortOrder",
+                    "/hypothesisId",
+                ],
+            );
         }
         "plot.thread.patch" => {
             let value = parse_plot_thread_patch_payload(payload)?;
@@ -582,30 +710,66 @@ pub(crate) fn affected_fields(
         }
         "plot.marker.create" => {
             let value = parse_plot_marker_create_payload(payload)?;
-            fields = fields_for("plot-marker", &value.marker_id, &[
-                "/threadId", "/sceneId", "/phaseType", "/note", "/semanticKey", "/hypothesisId",
-            ]);
+            fields = fields_for(
+                "plot-marker",
+                &value.marker_id,
+                &[
+                    "/threadId",
+                    "/sceneId",
+                    "/phaseType",
+                    "/note",
+                    "/semanticKey",
+                    "/hypothesisId",
+                ],
+            );
         }
         "plot.branch.create" => {
             let value = parse_plot_branch_create_payload(payload)?;
-            fields = fields_for("plot-branch", &value.branch_id, &[
-                "/fromThreadId", "/toThreadId", "/atSceneId", "/kind", "/semanticKey",
-                "/fromHypothesisId", "/toHypothesisId",
-            ]);
+            fields = fields_for(
+                "plot-branch",
+                &value.branch_id,
+                &[
+                    "/fromThreadId",
+                    "/toThreadId",
+                    "/atSceneId",
+                    "/kind",
+                    "/semanticKey",
+                    "/fromHypothesisId",
+                    "/toHypothesisId",
+                ],
+            );
         }
         "foreshadow.aggregate.create" => {
             let value = parse_foreshadow_create(payload)?;
-            fields = fields_for("foreshadow", &value.foreshadow_id, &[
-                "/title", "/intent", "/mechanism", "/secret", "/setups", "/payoffs",
-                "/supportEdges", "/codexEntryIds",
-            ]);
+            fields = fields_for(
+                "foreshadow",
+                &value.foreshadow_id,
+                &[
+                    "/title",
+                    "/intent",
+                    "/mechanism",
+                    "/secret",
+                    "/setups",
+                    "/payoffs",
+                    "/supportEdges",
+                    "/codexEntryIds",
+                ],
+            );
         }
         "foreshadow.aggregate.patch" => {
             let value = parse_foreshadow_patch(payload)?;
-            if value.intent.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .intent
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("foreshadow", &value.foreshadow_id, "/intent"));
             }
-            if value.mechanism.as_ref().is_some_and(|patch| patch.kind != "leave") {
+            if value
+                .mechanism
+                .as_ref()
+                .is_some_and(|patch| patch.kind != "leave")
+            {
                 fields.push(field("foreshadow", &value.foreshadow_id, "/mechanism"));
             }
             if !value.add_setups.is_empty() {
@@ -642,14 +806,26 @@ fn field(entity_kind: &str, entity_id: &str, field_path: &str) -> AffectedField 
 }
 
 fn fields_for(entity_kind: &str, entity_id: &str, paths: &[&str]) -> Vec<AffectedField> {
-    paths.iter().map(|path| field(entity_kind, entity_id, path)).collect()
+    paths
+        .iter()
+        .map(|path| field(entity_kind, entity_id, path))
+        .collect()
 }
 
 fn temporal_typed_fields(entity_kind: &str, entity_id: &str) -> Vec<AffectedField> {
-    fields_for(entity_kind, entity_id, &[
-        "/startTime", "/startMinute", "/startGranularity", "/endTime", "/endMinute",
-        "/endGranularity", "/precision",
-    ])
+    fields_for(
+        entity_kind,
+        entity_id,
+        &[
+            "/startTime",
+            "/startMinute",
+            "/startGranularity",
+            "/endTime",
+            "/endMinute",
+            "/endGranularity",
+            "/precision",
+        ],
+    )
 }
 
 pub(crate) fn validate_operation_field_authority(

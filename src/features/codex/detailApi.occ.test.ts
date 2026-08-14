@@ -123,6 +123,32 @@ describe("detailApi OCC", () => {
     });
   });
 
+  it("preserves an explicit import write context for definition creation", async () => {
+    selectQueue.push([{ ...definition, version: 0 }]);
+    const writeContext = {
+      requestId: "import-definition-request",
+      sessionId: "import-session",
+      eventUid: "import-definition-event",
+      origin: "import" as const,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+
+    await createDefinition(
+      {
+        id: "d1",
+        projectId: "p1",
+        typeSlug: "character",
+        name: "Role",
+      },
+      { writeContext },
+    );
+
+    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+      payload: expect.objectContaining(writeContext),
+    });
+  });
+
   it("updateDefinition sends baseVersion and returns the persisted CAS bump", async () => {
     selectQueue.push(
       [definition],
@@ -205,6 +231,29 @@ describe("detailApi OCC", () => {
       }),
     });
     expect(saved.version).toBe(3);
+  });
+
+  it("preserves an explicit import write context for value creation", async () => {
+    selectQueue.push(
+      [definition],
+      [],
+      [{ projectId: "p1" }],
+      [{ ...existingValue, version: 1 }],
+    );
+    const writeContext = {
+      requestId: "import-value-request",
+      sessionId: "import-session",
+      eventUid: "import-value-event",
+      origin: "import" as const,
+      originalTransactionId: null,
+      undoJournalId: null,
+    };
+
+    await upsertValue("e1", "d1", "主人公", { writeContext });
+
+    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+      payload: expect.objectContaining(writeContext),
+    });
   });
 
   it("upsertValue maps a stale typed writer conflict", async () => {

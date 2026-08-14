@@ -25,7 +25,7 @@ pub(crate) fn internal_err(e: impl std::fmt::Display) -> ErrorData {
 }
 
 pub struct GrimodexServer {
-    pub conn: Mutex<Connection>,
+    pub conn: grimodex_db::Database,
     /// The project all tools currently scope to. Mutable so `--all-projects`
     /// mode can switch it via `select_project`. In pinned mode (the default)
     /// it never changes — `select_project` is rejected — so the per-connection
@@ -79,7 +79,7 @@ impl GrimodexServer {
         license_file_path: Option<PathBuf>,
     ) -> Self {
         Self {
-            conn: Mutex::new(conn),
+            conn: grimodex_db::Database::from_connection(conn),
             current_project: Mutex::new(project_id),
             all_projects,
             readonly,

@@ -32,9 +32,17 @@ const backend = new Backend(join(root, "app-data"));
 // default-project を主プロジェクトに使う。
 const PROJECT = "default-project";
 
-async function run(sql, params = []) {
-  return JSON.parse(await backend.dbExecute(sql, params, "run"));
+function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  return {
+    requestId,
+    projectId,
+    sessionId: `${requestId}:session`,
+    eventUid: `${requestId}:event`,
+    origin,
+    originalTransactionId: null,
+  };
 }
+
 async function listThreads(projectId = PROJECT) {
   return JSON.parse(await backend.plotThreadList(projectId));
 }
@@ -42,9 +50,38 @@ async function listLinks(projectId = PROJECT) {
   return JSON.parse(await backend.plotThreadListLinks(projectId));
 }
 
+async function createProject(projectId) {
+  const occurredAt = "2026-08-13T00:00:00.000Z";
+  return JSON.parse(
+    await backend.projectCreate({
+      requestId: `plot-project-create:${projectId}`,
+      projectId,
+      sessionId: "plot-thread-napi-test",
+      eventUid: `plot-project-create-event:${projectId}`,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
+      title: projectId,
+      genre: null,
+      pov: null,
+      tense: null,
+      language: "ja",
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      createdAt: occurredAt,
+      updatedAt: occurredAt,
+    }),
+  );
+}
+
 async function createScene(id, projectId = PROJECT) {
+  const requestId = `plot-scene-create:${projectId}:${id}`;
   return JSON.parse(
     await backend.treeNodeCreate({
+      ...mutationIdentity(requestId, projectId),
+      undoJournalId: null,
       id,
       projectId,
       parentId: null,
@@ -74,7 +111,7 @@ test("plotThreadCreate → list → update roundtrip（生行 snake_case）", as
 
   const created = JSON.parse(
     await backend.plotThreadCreate({
-      projectId: PROJECT,
+      ...mutationIdentity("plot-thread-create-roundtrip"),
       name: "復讐の糸（日本語）",
       color: "#c33",
       description: null,
@@ -96,6 +133,7 @@ test("plotThreadCreate → list → update roundtrip（生行 snake_case）", as
   // update: name 変更 + description は Option<Option<String>> の値セット。
   const updated = JSON.parse(
     await backend.plotThreadUpdate(created.id, {
+      ...mutationIdentity("plot-thread-update-name"),
       name: "改名した糸",
       description: "説明",
       baseVersion: created.version,
@@ -107,6 +145,7 @@ test("plotThreadCreate → list → update roundtrip（生行 snake_case）", as
   // Explicit JSON null must remain distinct from an omitted PATCH field.
   const cleared = JSON.parse(
     await backend.plotThreadUpdate(created.id, {
+      ...mutationIdentity("plot-thread-update-clear"),
       color: null,
       description: null,
       baseVersion: updated.version,
@@ -119,6 +158,7 @@ test("plotThreadCreate → list → update roundtrip（生行 snake_case）", as
   // 空 patch は現行行をそのまま返す（updated_at も変えない契約）。
   const noop = JSON.parse(
     await backend.plotThreadUpdate(created.id, {
+      ...mutationIdentity("plot-thread-update-noop"),
       baseVersion: cleared.version,
     }),
   );
@@ -137,6 +177,7 @@ test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作�
   // 不正 phase_type は 'invalid phase_type' で reject（サーバサイド検証）。
   await assert.rejects(
     backend.plotThreadLinkCreate({
+      ...mutationIdentity("plot-marker-create-invalid-phase"),
       threadId: thread.id,
       nodeId: "s1",
       phaseType: "BOGUS",
@@ -151,6 +192,7 @@ test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作�
 
   const link = JSON.parse(
     await backend.plotThreadLinkCreate({
+      ...mutationIdentity("plot-marker-create-roundtrip"),
       threadId: thread.id,
       nodeId: "s1",
       phaseType: "introduce",
@@ -166,6 +208,7 @@ test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作�
 
   const cleared = JSON.parse(
     await backend.plotThreadLinkUpdate(link.id, {
+      ...mutationIdentity("plot-marker-update-clear"),
       note: null,
       sortOrder: null,
       baseVersion: link.version,
@@ -182,12 +225,13 @@ test("plotThreadLinkCreate は phase_type を検証し、正常リンクを作�
 
 test("XPROJ ガード: 別 project のシーンへのリンクは reject する（Electron でも効く）", async () => {
   // 別 project p2 とそのシーン s2 を用意。
-  await run("INSERT INTO projects (id) VALUES ('p2')");
+  await createProject("p2");
   await createScene("s2", "p2");
   const [thread] = await listThreads(); // default-project のスレッド
 
   await assert.rejects(
     backend.plotThreadLinkCreate({
+      ...mutationIdentity("plot-marker-create-xproj"),
       threadId: thread.id,
       nodeId: "s2",
       phaseType: "introduce",
@@ -205,7 +249,7 @@ test("XPROJ ガード: link_update の別 project スレッドへの移動も re
   // p2 にスレッドを作り、default-project の既存リンクをそこへ移そうとする。
   const p2thread = JSON.parse(
     await backend.plotThreadCreate({
-      projectId: "p2",
+      ...mutationIdentity("plot-thread-create-p2", "p2"),
       name: "p2 のスレッド",
       color: null,
       description: null,
@@ -216,6 +260,7 @@ test("XPROJ ガード: link_update の別 project スレッドへの移動も re
 
   await assert.rejects(
     backend.plotThreadLinkUpdate(link.id, {
+      ...mutationIdentity("plot-marker-update-xproj"),
       threadId: p2thread.id,
       baseVersion: link.version,
     }),
@@ -229,8 +274,8 @@ test("XPROJ ガード: link_update の別 project スレッドへの移動も re
 test("plotThreadBranchCreate は native transaction で XPROJ と durable replay を守る", async () => {
   const from = JSON.parse(
     await backend.plotThreadCreate({
+      ...mutationIdentity("plot-thread-create-branch-from"),
       id: "branch-from-thread",
-      projectId: PROJECT,
       name: "分岐元",
       color: null,
       description: null,
@@ -239,8 +284,8 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
   );
   const to = JSON.parse(
     await backend.plotThreadCreate({
+      ...mutationIdentity("plot-thread-create-branch-to"),
       id: "branch-to-thread",
-      projectId: PROJECT,
       name: "分岐先",
       color: null,
       description: null,
@@ -248,8 +293,8 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
     }),
   );
   const payload = {
+    ...mutationIdentity("branch-napi-request-1"),
     id: "branch-napi-request-1",
-    projectId: PROJECT,
     fromThreadId: from.id,
     toThreadId: to.id,
     atNodeId: "s1",
@@ -274,13 +319,18 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
   await assert.rejects(
     backend.plotThreadBranchCreate({
       ...payload,
+      ...mutationIdentity("branch-napi-xproj"),
       id: "branch-napi-xproj",
       toThreadId: "p2-thread-missing",
     }),
     /same project/,
   );
 
-  await backend.plotThreadBranchDelete(payload.id, created.version);
+  await backend.plotThreadBranchDelete({
+    ...mutationIdentity("branch-napi-delete"),
+    id: payload.id,
+    baseVersion: created.version,
+  });
   const deletedReplay = JSON.parse(
     await backend.plotThreadBranchCreate(payload),
   );
@@ -296,16 +346,24 @@ test("plotThreadBranchCreate は native transaction で XPROJ と durable replay
     ),
   ).rows;
   assert.deepEqual(rows, []);
-  await backend.plotThreadDelete(from.id, from.version);
-  await backend.plotThreadDelete(to.id, to.version);
+  await backend.plotThreadDelete({
+    ...mutationIdentity("plot-thread-delete-branch-from"),
+    id: from.id,
+    baseVersion: from.version,
+  });
+  await backend.plotThreadDelete({
+    ...mutationIdentity("plot-thread-delete-branch-to"),
+    id: to.id,
+    baseVersion: to.version,
+  });
 });
 
 test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で確定・再送する", async () => {
   await createScene("s-move");
   const from = JSON.parse(
     await backend.plotThreadCreate({
+      ...mutationIdentity("plot-thread-create-move-from"),
       id: "move-from-thread",
-      projectId: PROJECT,
       name: "移動元",
       color: null,
       description: null,
@@ -314,8 +372,8 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
   );
   const to = JSON.parse(
     await backend.plotThreadCreate({
+      ...mutationIdentity("plot-thread-create-move-to"),
       id: "move-to-thread",
-      projectId: PROJECT,
       name: "移動先",
       color: null,
       description: null,
@@ -324,6 +382,7 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
   );
   const rawLink = JSON.parse(
     await backend.plotThreadLinkCreate({
+      ...mutationIdentity("plot-marker-create-move"),
       id: "move-marker-link",
       threadId: from.id,
       nodeId: "s1",
@@ -365,25 +424,20 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     updatedAt: "2026-07-29T04:00:00.000Z",
   };
   const payload = {
-    requestId: "move-marker-request",
-    projectId: PROJECT,
+    ...mutationIdentity("move-marker-request"),
     markerBefore,
     markerAfter,
     branchTransitions: [{ before: null, after: branchAfter }],
   };
 
-  const moved = JSON.parse(
-    await backend.plotThreadMoveMarkerBundle(payload),
-  );
+  const moved = JSON.parse(await backend.plotThreadMoveMarkerBundle(payload));
   assert.deepEqual(moved.marker, markerAfter);
   assert.deepEqual(moved.branches, [branchAfter]);
   assert.deepEqual(moved.__idempotency, {
     replayed: false,
     entityPresent: true,
   });
-  const replay = JSON.parse(
-    await backend.plotThreadMoveMarkerBundle(payload),
-  );
+  const replay = JSON.parse(await backend.plotThreadMoveMarkerBundle(payload));
   assert.deepEqual(replay.__idempotency, {
     replayed: true,
     entityPresent: true,
@@ -404,8 +458,16 @@ test("plotThreadMoveMarkerBundle は N-API 越しに marker + branch を1回で�
     branches: 1,
   });
 
-  await backend.plotThreadDelete(from.id, from.version);
-  await backend.plotThreadDelete(to.id, to.version);
+  await backend.plotThreadDelete({
+    ...mutationIdentity("plot-thread-delete-move-from"),
+    id: from.id,
+    baseVersion: from.version,
+  });
+  await backend.plotThreadDelete({
+    ...mutationIdentity("plot-thread-delete-move-to"),
+    id: to.id,
+    baseVersion: to.version,
+  });
 });
 
 test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic replay を守る", async () => {
@@ -448,8 +510,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     updatedAt: "2026-07-28T03:05:00.000Z",
   };
   const restorePayload = {
-    requestId: "snapshot-napi-restore",
-    projectId: PROJECT,
+    ...mutationIdentity("snapshot-napi-restore", PROJECT, "restore"),
     thread,
     links: [link],
     branches: [branch],
@@ -478,6 +539,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
 
   const changedLinkRow = JSON.parse(
     await backend.plotThreadLinkUpdate(restoredLink.id, {
+      ...mutationIdentity("snapshot-napi-link-update"),
       note: "changed",
       baseVersion: restoredLink.version,
     }),
@@ -496,8 +558,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
   };
   await assert.rejects(
     backend.plotThreadDeleteSnapshot({
-      requestId: "snapshot-napi-delete-stale",
-      projectId: PROJECT,
+      ...mutationIdentity("snapshot-napi-delete-stale"),
       link: restoredLink,
       branches: [restoredBranch],
     }),
@@ -513,8 +574,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
   ).rows;
   assert.deepEqual(staleLedger, []);
   const deletePayload = {
-    requestId: "snapshot-napi-delete",
-    projectId: PROJECT,
+    ...mutationIdentity("snapshot-napi-delete"),
     link: changedLink,
     branches: [restoredBranch],
   };
@@ -535,8 +595,7 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
   });
 
   await backend.plotThreadRestoreSnapshot({
-    requestId: "snapshot-napi-recreate",
-    projectId: PROJECT,
+    ...mutationIdentity("snapshot-napi-recreate", PROJECT, "restore"),
     thread: null,
     links: [changedLink],
     branches: [restoredBranch],
@@ -561,15 +620,27 @@ test("plotThreadRestoreSnapshot / DeleteSnapshot は N-API 経由でも atomic r
     { id: restoredBranch.id },
   ]);
 
-  await backend.plotThreadDelete(restoredThread.id, restoredThread.version);
+  await backend.plotThreadDelete({
+    ...mutationIdentity("snapshot-napi-thread-delete"),
+    id: restoredThread.id,
+    baseVersion: restoredThread.version,
+  });
 });
 
 test("plotThreadLinkDelete / plotThreadDelete は対象を消す", async () => {
   const [link] = await listLinks();
-  await backend.plotThreadLinkDelete(link.id, link.version);
+  await backend.plotThreadLinkDelete({
+    ...mutationIdentity("plot-marker-delete-final"),
+    id: link.id,
+    baseVersion: link.version,
+  });
   assert.deepEqual(await listLinks(), []);
 
   const [thread] = await listThreads();
-  await backend.plotThreadDelete(thread.id, thread.version);
+  await backend.plotThreadDelete({
+    ...mutationIdentity("plot-thread-delete-final"),
+    id: thread.id,
+    baseVersion: thread.version,
+  });
   assert.deepEqual(await listThreads(), []);
 });

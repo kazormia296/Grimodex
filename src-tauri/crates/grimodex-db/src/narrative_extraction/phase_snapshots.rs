@@ -20,9 +20,7 @@ pub(crate) fn ensure_no_external_phase_dependencies(
         )
         .unwrap_or(0);
     if sticky_count > 0 {
-        anyhow::bail!(
-            "NEX_UNDO_EXTERNAL_DEPENDENCY: phase '{phase_id}' has editor_stickies"
-        );
+        anyhow::bail!("NEX_UNDO_EXTERNAL_DEPENDENCY: phase '{phase_id}' has editor_stickies");
     }
 
     let authorship_count: i64 = conn
@@ -48,14 +46,9 @@ pub(crate) fn undo_created_phase(
 ) -> anyhow::Result<()> {
     ensure_no_external_phase_dependencies(conn, phase_id)?;
     let current = collect_phase_snapshot(conn, phase_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     if live_version != expected_version {
-        anyhow::bail!(
-            "NEX_COMMIT_PHASE_EDITED: phase '{phase_id}' was modified after commit"
-        );
+        anyhow::bail!("NEX_COMMIT_PHASE_EDITED: phase '{phase_id}' was modified after commit");
     }
     let deleted = conn.execute(
         "DELETE FROM codex_entry_phases WHERE id = ?1 AND version = ?2",
@@ -160,10 +153,7 @@ pub(crate) fn undo_created_detail_value(
     expected_version: i64,
 ) -> anyhow::Result<()> {
     let current = collect_detail_value_snapshot(conn, detail_value_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     if live_version != expected_version {
         anyhow::bail!(
             "NEX_COMMIT_DETAIL_EDITED: detail value '{detail_value_id}' was modified after commit"
@@ -222,10 +212,7 @@ pub(crate) fn undo_created_semantic_binding(
     expected_version: i64,
 ) -> anyhow::Result<()> {
     let current = collect_semantic_binding_snapshot(conn, binding_id)?;
-    let live_version = current
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let live_version = current.get("version").and_then(Value::as_i64).unwrap_or(0);
     if live_version != expected_version {
         anyhow::bail!(
             "NEX_COMMIT_BINDING_EDITED: semantic binding '{binding_id}' was modified after commit"
@@ -335,10 +322,7 @@ pub(crate) fn reapply_phase_create_snapshot(
     let summary = snapshot.get("summaryOverride").and_then(Value::as_str);
     let content = snapshot.get("contentOverride").and_then(Value::as_str);
     let context_mode = snapshot.get("contextModeOverride").and_then(Value::as_str);
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(0);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("phase version overflow during redo"))?;
@@ -395,10 +379,7 @@ pub(crate) fn reapply_detail_value_create_snapshot(
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("detail value snapshot missing definitionId"))?;
     let value = snapshot.get("value").and_then(Value::as_str);
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(1);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(1);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("detail value version overflow during redo"))?;
@@ -445,10 +426,7 @@ pub(crate) fn reapply_semantic_binding_create_snapshot(
         .get("confirmed")
         .and_then(Value::as_i64)
         .unwrap_or(0);
-    let previous_version = snapshot
-        .get("version")
-        .and_then(Value::as_i64)
-        .unwrap_or(0);
+    let previous_version = snapshot.get("version").and_then(Value::as_i64).unwrap_or(0);
     let replay_version = previous_version
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("binding version overflow during redo"))?;

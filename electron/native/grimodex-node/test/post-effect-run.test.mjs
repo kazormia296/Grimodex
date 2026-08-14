@@ -215,8 +215,15 @@ function scopedArgs(args, workspace) {
 }
 
 async function insertScene(backend, sceneId) {
+  const requestId = `post-effect-scene-create:${sceneId}`;
   return JSON.parse(
     await backend.treeNodeCreate({
+      requestId,
+      sessionId: `${requestId}:session`,
+      eventUid: `${requestId}:event`,
+      origin: "human",
+      originalTransactionId: null,
+      undoJournalId: null,
       id: sceneId,
       projectId: "default-project",
       parentId: null,

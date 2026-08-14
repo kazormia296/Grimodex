@@ -5,6 +5,7 @@ import {
   restoreProjectSnapshot,
 } from "./projectSnapshotApi";
 import { RESTORE_SCOPES } from "./projectSnapshotScopes";
+import { saveSceneContent } from "@/features/tree/api";
 
 // Uses the browser-mock DB (in-memory SQLite via sql.js).
 
@@ -28,7 +29,24 @@ async function resetSnapshotTables() {
     plotThreads,
     plotThreadSceneLinks,
     plotThreadBranches,
+    narrativeChangeEvents,
+    narrativeChangeTransactions,
+    narrativeChangeCursors,
+    narrativeChangeSets,
+    changeEvents,
+    undoJournal,
+    idempotencyRequests,
   } = await import("@/db/schema");
+  // Each test reuses the default project and scene IDs. Clear the canonical
+  // history first so C1's per-object continuity chain cannot inherit a
+  // previous test's state after the fixture rows are recreated.
+  await db.delete(narrativeChangeEvents);
+  await db.delete(narrativeChangeTransactions);
+  await db.delete(narrativeChangeCursors);
+  await db.delete(narrativeChangeSets);
+  await db.delete(undoJournal);
+  await db.delete(changeEvents);
+  await db.delete(idempotencyRequests);
   await db.delete(editorStickies);
   await db.delete(projectSnapshotEntries);
   await db.delete(projectSnapshotTreeNodes);
@@ -232,12 +250,9 @@ describe("projectSnapshotApi", () => {
     const { db } = await import("@/db/client");
     const { treeNodes } = await import("@/db/schema");
     const { eq } = await import("drizzle-orm");
-    await db
-      .update(treeNodes)
-      .set({
-        content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
-      })
-      .where(eq(treeNodes.id, SCENE_ID));
+    await saveSceneContent(SCENE_ID, {
+      content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
+    });
 
     const result = await restoreProjectSnapshot(target.id, "checkpoint");
 
@@ -271,12 +286,9 @@ describe("projectSnapshotApi", () => {
       .where(eq(treeNodes.id, SCENE_ID));
     const first = await restoreProjectSnapshot(target.id, "checkpoint");
 
-    await db
-      .update(treeNodes)
-      .set({
-        content: '{"type":"doc","content":[{"type":"text","text":"v3"}]}',
-      })
-      .where(eq(treeNodes.id, SCENE_ID));
+    await saveSceneContent(SCENE_ID, {
+      content: '{"type":"doc","content":[{"type":"text","text":"v3"}]}',
+    });
     const second = await restoreProjectSnapshot(target.id, "checkpoint");
 
     expect(first.safetySnapshotId).not.toBe(second.safetySnapshotId);
@@ -371,21 +383,29 @@ describe("projectSnapshotApi", () => {
     expect(ids).not.toContain("added-after");
   });
 
-  it("legacy snapshot (no structural tables) falls back to content-only restore", async () => {
+  it("legacy snapshot restore fails closed without mutating scene or snippet content", async () => {
     await seedScene('{"type":"doc","content":[{"type":"text","text":"v1"}]}');
-    const target = await createProjectSnapshot({ name: "checkpoint" });
-
-    // Simulate a legacy snapshot by stripping structural data, leaving only
-    // the project_snapshot_entries / content_versions pair.
     const { db } = await import("@/db/client");
     const {
       projectSnapshotTreeNodes,
       projectSnapshotCodexEntries,
       projectSnapshotSnippets,
       projectSnapshotAux,
+      projectSnapshots,
       treeNodes,
+      snippets,
     } = await import("@/db/schema");
     const { eq } = await import("drizzle-orm");
+    await db.insert(snippets).values({
+      id: "legacy-snippet",
+      projectId: PROJECT_ID,
+      title: "Legacy snippet",
+      content: '{"type":"doc","content":[{"type":"text","text":"v1"}]}',
+    });
+    const target = await createProjectSnapshot({ name: "checkpoint" });
+
+    // Simulate a legacy snapshot by stripping structural data, leaving only
+    // the project_snapshot_entries / content_versions pair.
     await db
       .delete(projectSnapshotTreeNodes)
       .where(eq(projectSnapshotTreeNodes.snapshotId, target.id));
@@ -399,23 +419,38 @@ describe("projectSnapshotApi", () => {
       .delete(projectSnapshotAux)
       .where(eq(projectSnapshotAux.snapshotId, target.id));
 
-    // Mutate scene content, then restore: legacy path UPDATES content.
+    // Mutate both paths that the removed renderer fallback used to write.
     await db
       .update(treeNodes)
       .set({
         content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
       })
       .where(eq(treeNodes.id, SCENE_ID));
-    const result = await restoreProjectSnapshot(target.id, "checkpoint");
+    await db
+      .update(snippets)
+      .set({
+        content: '{"type":"doc","content":[{"type":"text","text":"v2"}]}',
+      })
+      .where(eq(snippets.id, "legacy-snippet"));
 
-    expect(result.format).toBe("legacy");
+    await expect(
+      restoreProjectSnapshot(target.id, "checkpoint"),
+    ).rejects.toThrow(
+      "PROJECT_SNAPSHOT_LEGACY_RESTORE_REQUIRES_NATIVE_AGGREGATE",
+    );
     const rows = await db
       .select({ content: treeNodes.content })
       .from(treeNodes)
       .where(eq(treeNodes.id, SCENE_ID));
-    expect(rows[0]?.content).toBe(
-      '{"type":"doc","content":[{"type":"text","text":"v1"}]}',
-    );
+    expect(rows[0]?.content).toContain('"v2"');
+    const snippetRows = await db
+      .select({ content: snippets.content })
+      .from(snippets)
+      .where(eq(snippets.id, "legacy-snippet"));
+    expect(snippetRows[0]?.content).toContain('"v2"');
+    expect(
+      await db.select({ id: projectSnapshots.id }).from(projectSnapshots),
+    ).toHaveLength(1);
   });
 
   it("scope selection: restoring with empty body scope still restores codex if selected", async () => {

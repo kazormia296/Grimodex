@@ -20,10 +20,18 @@ const h = vi.hoisted(() => ({
   loadSceneContent: vi.fn(async () => h.state.sceneContent),
   getSceneVersion: vi.fn(async () => h.state.sceneVersion),
   saveScene: vi.fn(async (_id: string) => {}),
-  persistSceneBody: vi.fn(async (_id: string, _doc: ProseMirrorNode) => {}),
+  persistSceneBody: vi.fn(
+    async (
+      _id: string,
+      _doc: ProseMirrorNode,
+      _options?: {
+        origin?: "human" | "ai-apply";
+        timelapseSteps?: readonly unknown[];
+      },
+    ) => {},
+  ),
   agentAcceptProseStage: vi.fn(async () => ({})),
   setLiveContent: vi.fn(),
-  recordChangeEvent: vi.fn(),
 }));
 
 vi.mock("@/features/tree/api", () => ({
@@ -54,10 +62,6 @@ vi.mock("@/features/editor/sceneContentStore", () => ({
 vi.mock("@/features/external-mount/externalRootStore", () => ({
   isFileBackedNode: () => h.state.fileBacked,
 }));
-vi.mock("@/features/timelapse/recorder", () => ({
-  recordChangeEvent: h.recordChangeEvent,
-}));
-
 import { autoApplyProseProposal } from "@/features/agent-writes/autoApplyProse";
 import { useExternalWriteStore } from "@/features/concurrency/externalWriteStore";
 
@@ -124,34 +128,30 @@ describe("autoApplyProseProposal — append", () => {
     const result = await autoApplyProseProposal(proposal());
     expect(result.applied).toBe(true);
     expect(h.persistSceneBody).toHaveBeenCalledTimes(1);
-    const [sceneId, doc] = h.persistSceneBody.mock.calls[0];
+    const [sceneId, doc, options] = h.persistSceneBody.mock.calls[0];
     expect(sceneId).toBe("scene-1");
+    expect(options).toEqual({
+      origin: "ai-apply",
+      timelapseSteps: expect.arrayContaining([expect.any(Object)]),
+    });
     expect(doc.textContent).toContain("World");
     expect(doc.textContent).toContain("Hello");
     // The appended text — and only the appended text — must carry source='ai'.
     expect(aiMarkedText(doc)).toBe("World");
   });
 
-  it("records the append as a doc.step so timelapse replay stays consistent", async () => {
+  it("passes replay steps to the atomic Native scene-body write", async () => {
     await autoApplyProseProposal(proposal());
-    expect(h.recordChangeEvent).toHaveBeenCalledTimes(1);
-    const ev = h.recordChangeEvent.mock.calls[0][0] as {
-      domain: string;
-      opType: string;
-      sceneId: string;
-      payload: { steps: unknown[] };
-    };
-    expect(ev.domain).toBe("editor");
-    expect(ev.opType).toBe("doc.step");
-    expect(ev.sceneId).toBe("scene-1");
-    expect(Array.isArray(ev.payload.steps)).toBe(true);
-    expect(ev.payload.steps.length).toBeGreaterThan(0);
+    const options = h.persistSceneBody.mock.calls[0]?.[2];
+    expect(options?.timelapseSteps).toEqual(
+      expect.arrayContaining([expect.any(Object)]),
+    );
   });
 
-  it("does not record a doc.step when the proposal is skipped", async () => {
+  it("does not persist replay steps when the proposal is skipped", async () => {
     h.state.sceneContent = '{"foo":"bar"}'; // unparseable → abort
     await autoApplyProseProposal(proposal());
-    expect(h.recordChangeEvent).not.toHaveBeenCalled();
+    expect(h.persistSceneBody).not.toHaveBeenCalled();
   });
 
   it("appends to an empty scene", async () => {
@@ -238,7 +238,6 @@ describe("autoApplyProseProposal — authority", () => {
       reason: "authority-changed",
     });
     expect(h.persistSceneBody).not.toHaveBeenCalled();
-    expect(h.recordChangeEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -422,7 +421,6 @@ describe("autoApplyProseProposal — stale base_version 検知", () => {
       // 適用も finalize もしない (row は `proposed` のまま → 手動レビューへ)
       expect(h.agentAcceptProseStage).not.toHaveBeenCalled();
       expect(h.persistSceneBody).not.toHaveBeenCalled();
-      expect(h.recordChangeEvent).not.toHaveBeenCalled();
       // 既存の scene 用 conflict 導線 (ExternalEditConflictBanner) に流す
       expect(useExternalWriteStore.getState().conflicts).toEqual([
         {

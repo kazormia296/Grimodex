@@ -40,6 +40,66 @@ describe("createNarrativeChangeEvent", () => {
   it("rejects an event without an explicit changed path", () => {
     expect(() =>
       createNarrativeChangeEvent(event({ changedPaths: [] })),
-    ).toThrow("changedPaths must be unique, non-empty paths");
+    ).toThrow("changedPaths must contain at least one path");
+  });
+
+  it("requires canonical JSON Pointer paths", () => {
+    expect(() =>
+      createNarrativeChangeEvent(event({ changedPaths: ["title"] })),
+    ).toThrow("canonical JSON Pointer");
+    expect(() =>
+      createNarrativeChangeEvent(event({ changedPaths: ["/title~2"] })),
+    ).toThrow("canonical JSON Pointer");
+    expect(() =>
+      createNarrativeChangeEvent(event({ changedPaths: ["/title~0"] })),
+    ).not.toThrow();
+  });
+
+  it("seals TextChangeImpact with its UTF-16 normalizer version", () => {
+    const valid = {
+      unit: "utf16" as const,
+      normalizerVersion: "gdx-canonical-text/1",
+      oldStorageDigest: "sha256:storage-a" as const,
+      newStorageDigest: "sha256:storage-b" as const,
+      oldCanonicalDigest: "sha256:canonical-a" as const,
+      newCanonicalDigest: "sha256:canonical-b" as const,
+      mapping: {
+        kind: "canonical-diff" as const,
+        changedOldRanges: [{ from: 0, to: 1 }],
+        changedNewRanges: [{ from: 0, to: 2 }],
+      },
+    };
+    expect(() =>
+      createNarrativeChangeEvent(event({ textImpact: valid })),
+    ).not.toThrow();
+    expect(() =>
+      createNarrativeChangeEvent(
+        event({ textImpact: { ...valid, unit: "code-point" as never } }),
+      ),
+    ).toThrow("textImpact.unit");
+  });
+
+  it("accepts epoch markers without pretending they are row-level paths", () => {
+    expect(() =>
+      createNarrativeChangeEvent(
+        event({
+          objectKey: { kind: "project", projectId: "project-1" },
+          changeKind: "schema",
+          structuralImpact: {
+            event: "project-restored",
+            requiresFullRebuild: true,
+          },
+        }),
+      ),
+    ).not.toThrow();
+    expect(() =>
+      createNarrativeChangeEvent(
+        event({
+          structuralImpact: {
+            event: "unknown" as never,
+          },
+        }),
+      ),
+    ).toThrow("structuralImpact.event");
   });
 });

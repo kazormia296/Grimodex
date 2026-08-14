@@ -65,7 +65,9 @@ pub(crate) struct ChronicleEventCreatePayload {
     pub end_granularity: Option<String>,
 }
 
-pub(crate) fn parse_event_create_payload(payload: &Value) -> anyhow::Result<ChronicleEventCreatePayload> {
+pub(crate) fn parse_event_create_payload(
+    payload: &Value,
+) -> anyhow::Result<ChronicleEventCreatePayload> {
     serde_json::from_value(payload.clone())
         .map_err(|err| anyhow::anyhow!("invalid chronicle.event.create payload: {err}"))
 }

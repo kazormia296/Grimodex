@@ -24,7 +24,9 @@ impl PostEffectAuditAppender for Database {
 
 impl PostEffectAuditAppender for WorkspaceAuthority {
     fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()> {
-        self.db().append_ai_audit_events(project_id, events).map(|_| ())
+        self.db()
+            .append_ai_audit_events(project_id, events)
+            .map(|_| ())
     }
 }
 

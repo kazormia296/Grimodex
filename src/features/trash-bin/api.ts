@@ -12,6 +12,7 @@ import type {
   TrashSubKind,
   TrashPayload,
 } from "./types";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 /**
  * この実行シェルで trash_bin 5 コマンドがネイティブ実装されているか。
@@ -126,6 +127,44 @@ export async function createTrashItem(
   };
   const created = await invoke<unknown>("trash_bin_create", { payload });
   return normalizeTrashItem(created);
+}
+
+export interface RestoreStructuralTrashOptions {
+  requestId?: string;
+  boardIdOverride?: string;
+  dropX?: number;
+  dropY?: number;
+}
+
+export interface RestoreStructuralTrashResult {
+  newId: string;
+  brokenLinks: string[];
+}
+
+/**
+ * Restore a persisted structure item through the Native aggregate. The domain
+ * rows, both ledgers, retry receipt, and Trash consumption share one DB tx.
+ */
+export async function restoreStructuralTrashItem(
+  item: TrashItemData,
+  options: RestoreStructuralTrashOptions = {},
+): Promise<RestoreStructuralTrashResult> {
+  if (!supportsTrashBin()) {
+    throw new Error(
+      "trash_bin_restore: native shell (tauri/electron) required",
+    );
+  }
+  return invoke<RestoreStructuralTrashResult>("trash_bin_restore", {
+    payload: {
+      requestId: options.requestId ?? `trash-restore:${item.id}`,
+      sessionId: getRecorderSessionId(),
+      projectId: item.projectId,
+      itemId: item.id,
+      boardIdOverride: options.boardIdOverride ?? null,
+      dropX: options.dropX ?? null,
+      dropY: options.dropY ?? null,
+    },
+  });
 }
 
 export async function deleteTrashItem(id: string): Promise<void> {
