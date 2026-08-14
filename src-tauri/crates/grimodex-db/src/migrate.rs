@@ -3101,6 +3101,110 @@ impl Database {
             "TEXT NOT NULL DEFAULT ''",
         )?;
 
+        // SCHEMA_VERSION 21: Narrative Maintenance Change Feed foundation.
+        // This is not a second audit ledger. Every feed transaction is linked
+        // to one canonical change_events row and exists only for downstream
+        // freshness / dependency invalidation. Existing SCHEMA 18 projection
+        // dependencies/freshness and SCHEMA 20 immutable Applications remain
+        // authoritative for their respective domains.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_change_transactions (
+                id                           TEXT NOT NULL,
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                request_id                   TEXT NOT NULL CHECK(length(request_id) > 0),
+                source_domain                TEXT NOT NULL CHECK(length(source_domain) > 0),
+                source_change_event_uid      TEXT NOT NULL CHECK(length(source_change_event_uid) > 0),
+                source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0),
+                cause_kind                   TEXT NOT NULL
+                    CHECK(cause_kind IN ('forward','undo','redo')),
+                original_transaction_id      TEXT,
+                commit_id                    TEXT,
+                journal_id                   TEXT,
+                application_ids_json         TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(application_ids_json)
+                      AND json_type(application_ids_json) = 'array'),
+                payload_digest               TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                created_at                   TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, source_domain, request_id),
+                UNIQUE(project_id, source_change_event_uid),
+                FOREIGN KEY(project_id, source_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT,
+                FOREIGN KEY(project_id, original_transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_events (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                transaction_id             TEXT NOT NULL,
+                canonical_change_event_uid TEXT NOT NULL,
+                canonical_sequence         INTEGER NOT NULL CHECK(canonical_sequence > 0),
+                event_ordinal              INTEGER NOT NULL CHECK(event_ordinal >= 0),
+                object_key_json            TEXT NOT NULL CHECK(json_valid(object_key_json)),
+                change_kind                TEXT NOT NULL
+                    CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')),
+                mutation_kind              TEXT NOT NULL
+                    CHECK(mutation_kind IN ('create','update','delete','restore')),
+                before_version             INTEGER,
+                before_digest              TEXT,
+                after_version              INTEGER,
+                after_digest               TEXT,
+                changed_paths_json         TEXT NOT NULL
+                    CHECK(json_valid(changed_paths_json)
+                      AND json_type(changed_paths_json) = 'array'),
+                text_impact_json           TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)),
+                structural_impact_json     TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)),
+                occurred_at                TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, id),
+                UNIQUE(project_id, canonical_change_event_uid, event_ordinal),
+                FOREIGN KEY(project_id, transaction_id)
+                    REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE,
+                FOREIGN KEY(project_id, canonical_change_event_uid)
+                    REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_cursors (
+                project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                    CHECK(acknowledged_through_sequence >= 0),
+                lease_owner                   TEXT,
+                lease_expires_at              TEXT,
+                last_error                    TEXT,
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_change_sets (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                from_sequence_exclusive    INTEGER NOT NULL CHECK(from_sequence_exclusive >= 0),
+                through_sequence_inclusive INTEGER NOT NULL
+                    CHECK(through_sequence_inclusive > from_sequence_exclusive),
+                event_ids_json             TEXT NOT NULL
+                    CHECK(json_valid(event_ids_json) AND json_type(event_ids_json) = 'array'),
+                affected_objects_json      TEXT NOT NULL
+                    CHECK(json_valid(affected_objects_json) AND json_type(affected_objects_json) = 'array'),
+                digest                     TEXT NOT NULL CHECK(length(digest) > 0),
+                created_at                 TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, from_sequence_exclusive, through_sequence_inclusive, digest)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_transactions_project_sequence
+                ON narrative_change_transactions(project_id, source_change_event_sequence);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_events_project_sequence
+                ON narrative_change_events(project_id, canonical_sequence, event_ordinal);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
+                ON narrative_change_cursors(project_id, consumer_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_change_sets_project_range
+                ON narrative_change_sets(project_id, from_sequence_exclusive, through_sequence_inclusive);",
+        )?;
+        // Interrupted/prerelease SCHEMA 21 builds may have created the feed
+        // transaction table before all nullable correlation fields landed.
+        // SQLite's CREATE TABLE IF NOT EXISTS cannot repair that partial
+        // shape, so keep the shadow migrator able to converge it safely.
+        Self::add_column_if_missing(&conn, "narrative_change_transactions", "journal_id", "TEXT")?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
@@ -6651,26 +6755,30 @@ mod tests {
                 "user_version",
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
-            assert!(grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            assert!(
+                grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
 
             conn.pragma_update(None, "user_version", 15)?;
-            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
 
             conn.pragma_update(
                 None,
                 "user_version",
                 grimodex_core::PREVIOUS_COMPATIBLE_SCHEMA_VERSION,
             )?;
-            conn.execute_batch(
-                "DROP TRIGGER narrative_revision_envelope_immutable_update",
-            )?;
-            assert!(!grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
-                conn
-            )?);
+            conn.execute_batch("DROP TRIGGER narrative_revision_envelope_immutable_update")?;
+            assert!(
+                !grimodex_core::workspace_schema::is_previous_workspace_schema_write_compatible(
+                    conn
+                )?
+            );
             Ok(())
         })
         .expect("probe previous marker compatibility");

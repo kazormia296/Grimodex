@@ -75,13 +75,13 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     narrativeRuntimePolicyGet: record(
       "narrativeRuntimePolicyGet",
       Promise.resolve(
-        '{"runtimeMode":"review-only","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":1,"effectiveMode":"review-only"}',
+        '{"runtimeMode":"review-only","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":1,"effectiveMode":"review-only","maintenancePreviewAllowed":false}',
       ),
     ) as never,
     narrativeRuntimePolicySet: record(
       "narrativeRuntimePolicySet",
       Promise.resolve(
-        '{"runtimeMode":"manual-apply","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":2,"effectiveMode":"manual-apply"}',
+        '{"runtimeMode":"manual-apply","maintenanceEnabled":false,"genericImportEnabled":false,"backgroundAiEnabled":false,"version":2,"effectiveMode":"manual-apply","maintenancePreviewAllowed":false}',
       ),
     ) as never,
     saveSceneBodyBundle: record(
@@ -1400,6 +1400,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         backgroundAiEnabled: false,
         version: 1,
         effectiveMode: "review-only",
+        maintenancePreviewAllowed: false,
       },
     });
   });
@@ -1430,6 +1431,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         backgroundAiEnabled: false,
         version: 2,
         effectiveMode: "manual-apply",
+        maintenancePreviewAllowed: false,
       },
     });
   });

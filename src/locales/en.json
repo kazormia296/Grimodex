@@ -6316,5 +6316,22 @@
       "titleRequired": "Please enter a title",
       "contentRequired": "Please enter the content"
     }
+  },
+  "narrativeMaintenance": {
+    "title": "Structure health",
+    "shortLabel": "Health",
+    "openPreview": "Structure health (preview)",
+    "previewNote": "Preview: live counts arrive after the dependency index is wired. Default mode is deterministic maintenance only — AI is never auto-applied.",
+    "foundationOnly": "Only the Change Feed foundation is active. Live health counts appear after the dependency index is wired.",
+    "modeLabel": "Mode",
+    "principles": "Detecting change, re-analyzing, and rewriting applied structure are separate stages. Reanchor candidates are computed deterministically but never auto-applied.",
+    "health": {
+      "fresh": "Fresh",
+      "reanchorable": "Needs reanchor review",
+      "contentStale": "Source text changed",
+      "contextStale": "Surrounding context changed",
+      "coverageStale": "Coverage root changed",
+      "sourceMissing": "Evidence missing"
+    }
   }
 }

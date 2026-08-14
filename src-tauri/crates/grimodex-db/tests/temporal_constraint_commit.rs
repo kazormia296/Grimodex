@@ -584,6 +584,72 @@ fn semantic_duplicates_are_rejected_for_nodes_and_constraints() {
 }
 
 #[test]
+fn ensuring_an_existing_node_commits_without_a_false_feed_mutation() {
+    let db = migrated_db();
+    seed_scene(&db, "scene-existing", "Existing Scene");
+    let node = [(
+        "temporal.node.ensure",
+        node_ensure_payload(
+            "tn:scene:existing",
+            json!({ "kind": "scene", "documentRef": "scene-existing" }),
+        ),
+    )];
+
+    let first_pairs = seed_approved_proposals(&db, "run-existing-a", "set-existing-a", &node);
+    let first = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-existing-a",
+            "digest-existing-a",
+            "set-existing-a",
+            "run-existing-a",
+            zip_ops(&first_pairs, &node),
+        ),
+    );
+    assert!(first["maintenanceTransactionId"].is_string());
+
+    let second_pairs =
+        seed_approved_proposals(&db, "run-existing-b", "set-existing-b", &node);
+    let second = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-existing-b",
+            "digest-existing-b",
+            "set-existing-b",
+            "run-existing-b",
+            zip_ops(&second_pairs, &node),
+        ),
+    );
+    assert_eq!(second["status"], "applied");
+    assert!(second.get("maintenanceTransactionId").is_none());
+
+    db.with_conn(|conn| {
+        let feed_transactions: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            feed_transactions, 1,
+            "the second no-op ensure must not create a freshness mutation"
+        );
+        let second_commit_id = second["commitId"].as_str().expect("second commit id");
+        let journal: String = conn.query_row(
+            "SELECT after_json FROM narrative_commit_journals WHERE commit_id = ?1",
+            [second_commit_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            serde_json::from_str::<Value>(&journal)?["entities"][0]["opKind"],
+            "ensure-existing",
+            "the immutable journal must retain the no-op operation"
+        );
+        Ok(())
+    })
+    .expect("inspect no-op commit");
+}
+
+#[test]
 fn undo_restores_scene_chronicle_with_a_version_bump_not_a_rewind() {
     let db = migrated_db();
     seed_scene(&db, "scene-4", "Scene Four");

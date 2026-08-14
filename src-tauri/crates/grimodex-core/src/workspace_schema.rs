@@ -562,10 +562,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 20 adds immutable semantic-retraction metadata
-/// on Applications and protection triggers on applied history.
+/// [`SCHEMA_VERSION`]. Version 21 adds the Native-owned Narrative Maintenance
+/// Change Feed while preserving every Gate B invariant through version 20.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 20
+    Ok(SCHEMA_VERSION == 21
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -574,7 +574,8 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v17_reconciliation_envelope_columns(conn)?
         && has_v18_projection_freshness_columns(conn)?
         && has_v19_field_authority_columns(conn)?
-        && has_v20_retraction_columns(conn)?)
+        && has_v20_retraction_columns(conn)?
+        && has_v21_change_feed_columns(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -744,6 +745,155 @@ fn has_v20_retraction_columns(conn: &Connection) -> anyhow::Result<bool> {
             }))
 }
 
+fn has_v21_change_feed_columns(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_change_transactions",
+        "narrative_change_events",
+        "narrative_change_cursors",
+        "narrative_change_sets",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let transactions = table_columns(conn, "narrative_change_transactions")?;
+    let events = table_columns(conn, "narrative_change_events")?;
+    let cursors = table_columns(conn, "narrative_change_cursors")?;
+    let change_sets = table_columns(conn, "narrative_change_sets")?;
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+
+    let required_indexes = [
+        (
+            "idx_narrative_change_transactions_project_sequence",
+            &["project_id", "source_change_event_sequence"][..],
+        ),
+        (
+            "idx_narrative_change_events_project_sequence",
+            &["project_id", "canonical_sequence", "event_ordinal"][..],
+        ),
+        (
+            "idx_narrative_change_cursors_project",
+            &["project_id", "consumer_id"][..],
+        ),
+        (
+            "idx_narrative_change_sets_project_range",
+            &[
+                "project_id",
+                "from_sequence_exclusive",
+                "through_sequence_inclusive",
+            ][..],
+        ),
+    ];
+    for (index, expected_columns) in required_indexes {
+        let actual_columns = index_columns(conn, index)?;
+        if !actual_columns
+            .iter()
+            .map(String::as_str)
+            .eq(expected_columns.iter().copied())
+        {
+            return Ok(false);
+        }
+    }
+
+    let transaction_sql = compact_sql(&table_sql(conn, "narrative_change_transactions")?);
+    let event_sql = compact_sql(&table_sql(conn, "narrative_change_events")?);
+
+    Ok(has_column(&transactions, "id", "TEXT", true)
+        && has_column(&transactions, "project_id", "TEXT", true)
+        && has_column(&transactions, "request_id", "TEXT", true)
+        && has_column(&transactions, "source_domain", "TEXT", true)
+        && has_column(
+            &transactions,
+            "source_change_event_uid",
+            "TEXT",
+            true,
+        )
+        && has_column(
+            &transactions,
+            "source_change_event_sequence",
+            "INTEGER",
+            true,
+        )
+        && has_column(&transactions, "cause_kind", "TEXT", true)
+        && has_column(
+            &transactions,
+            "original_transaction_id",
+            "TEXT",
+            false,
+        )
+        && has_column(&transactions, "commit_id", "TEXT", false)
+        && has_column(&transactions, "journal_id", "TEXT", false)
+        && has_column(&transactions, "application_ids_json", "TEXT", true)
+        && has_column(&transactions, "payload_digest", "TEXT", true)
+        && has_column(&transactions, "created_at", "TEXT", true)
+        && has_column(&events, "id", "TEXT", true)
+        && has_column(&events, "project_id", "TEXT", true)
+        && has_column(&events, "transaction_id", "TEXT", true)
+        && has_column(&events, "canonical_change_event_uid", "TEXT", true)
+        && has_column(&events, "canonical_sequence", "INTEGER", true)
+        && has_column(&events, "event_ordinal", "INTEGER", true)
+        && has_column(&events, "object_key_json", "TEXT", true)
+        && has_column(&events, "change_kind", "TEXT", true)
+        && has_column(&events, "mutation_kind", "TEXT", true)
+        && has_column(&events, "before_version", "INTEGER", false)
+        && has_column(&events, "before_digest", "TEXT", false)
+        && has_column(&events, "after_version", "INTEGER", false)
+        && has_column(&events, "after_digest", "TEXT", false)
+        && has_column(&events, "changed_paths_json", "TEXT", true)
+        && has_column(&events, "text_impact_json", "TEXT", false)
+        && has_column(&events, "structural_impact_json", "TEXT", false)
+        && has_column(&events, "occurred_at", "TEXT", true)
+        && has_column(&cursors, "project_id", "TEXT", true)
+        && has_column(&cursors, "consumer_id", "TEXT", true)
+        && has_column(
+            &cursors,
+            "acknowledged_through_sequence",
+            "INTEGER",
+            true,
+        )
+        && has_column(&cursors, "lease_owner", "TEXT", false)
+        && has_column(&cursors, "lease_expires_at", "TEXT", false)
+        && has_column(&cursors, "last_error", "TEXT", false)
+        && has_column(&cursors, "updated_at", "TEXT", true)
+        && has_column(&change_sets, "id", "TEXT", true)
+        && has_column(&change_sets, "project_id", "TEXT", true)
+        && has_column(
+            &change_sets,
+            "from_sequence_exclusive",
+            "INTEGER",
+            true,
+        )
+        && has_column(
+            &change_sets,
+            "through_sequence_inclusive",
+            "INTEGER",
+            true,
+        )
+        && has_column(&change_sets, "event_ids_json", "TEXT", true)
+        && has_column(&change_sets, "affected_objects_json", "TEXT", true)
+        && has_column(&change_sets, "digest", "TEXT", true)
+        && has_column(&change_sets, "created_at", "TEXT", true)
+        && transaction_sql.contains(
+            "foreignkey(project_id,source_change_event_uid)referenceschange_events(project_id,event_uid)",
+        )
+        && transaction_sql.contains(
+            "foreignkey(project_id,original_transaction_id)referencesnarrative_change_transactions(project_id,id)ondeletecascade",
+        )
+        && event_sql.contains(
+            "foreignkey(project_id,transaction_id)referencesnarrative_change_transactions(project_id,id)",
+        )
+        && event_sql.contains(
+            "foreignkey(project_id,canonical_change_event_uid)referenceschange_events(project_id,event_uid)",
+        ))
+}
+
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {
     columns.iter().any(|column| {
         column.name == name
@@ -770,6 +920,15 @@ fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
         "SELECT EXISTS(
             SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
         )",
+        [table],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
+fn table_sql(conn: &Connection, table: &str) -> anyhow::Result<String> {
+    conn.query_row(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?1",
         [table],
         |row| row.get(0),
     )

@@ -75,6 +75,9 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/field_authority.rs",
   ],
+  "narrative.maintenance-feed": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
+  ],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/chronicle.rs",

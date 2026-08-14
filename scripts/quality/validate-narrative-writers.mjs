@@ -80,6 +80,10 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_projection_freshness: ["narrativeProjectionFreshness"],
   narrative_projection_dependencies: ["narrativeProjectionDependencies"],
   narrative_field_authority: ["narrativeFieldAuthority"],
+  narrative_change_transactions: ["narrativeChangeTransactions"],
+  narrative_change_events: ["narrativeChangeEvents"],
+  narrative_change_cursors: ["narrativeChangeCursors"],
+  narrative_change_sets: ["narrativeChangeSets"],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
@@ -90,6 +94,10 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_projection_freshness",
   "narrative_projection_dependencies",
   "narrative_field_authority",
+  "narrative_change_transactions",
+  "narrative_change_events",
+  "narrative_change_cursors",
+  "narrative_change_sets",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);

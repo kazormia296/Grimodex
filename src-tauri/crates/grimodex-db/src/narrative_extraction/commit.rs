@@ -7,6 +7,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::change_feed::{
+    append_narrative_change_transaction_in_tx, events_from_journal_entities,
+    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
+};
 use super::chronicle_operations::{
     apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
     ensure_scene_versions, generate_append_ordinals, parse_event_create_payload,
@@ -931,6 +935,7 @@ pub fn narrative_extraction_apply_commit(
 
             let mut created = Vec::new();
             let mut after_snapshots = Vec::new();
+            let mut application_ids = Vec::with_capacity(payload.applications.len());
 
             for (index, op) in payload.operations.iter().enumerate() {
                 ensure_operation_kind(&op.kind)?;
@@ -1473,6 +1478,7 @@ pub fn narrative_extraction_apply_commit(
                         ],
                     )?;
                 }
+                application_ids.push(application_id);
             }
             record_operation_field_authority(
                 conn,
@@ -1509,7 +1515,7 @@ pub fn narrative_extraction_apply_commit(
                 "entityIds": created.iter().map(|row| row["entityId"].clone()).collect::<Vec<_>>(),
                 "entityBindings": commit_map.to_json(),
             });
-            append_change_events_in_tx(
+            let canonical_append = append_change_events_in_tx(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
@@ -1524,8 +1530,39 @@ pub fn narrative_extraction_apply_commit(
                     timestamp,
                 }],
             )?;
+            anyhow::ensure!(
+                canonical_append.inserted_count == 1,
+                "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical event was not appended"
+            );
 
-            let receipt = json!({
+            let maintenance_events = events_from_journal_entities(
+                after_json["entities"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("commit journal entities are missing"))?,
+                NarrativeChangeCauseKind::Forward,
+            )?;
+            let maintenance_transaction = if maintenance_events.is_empty() {
+                None
+            } else {
+                Some(append_narrative_change_transaction_in_tx(
+                    conn,
+                    &AppendNarrativeChangeTransactionInput {
+                        project_id: payload.project_id.clone(),
+                        request_id: payload.request_id.clone(),
+                        source_domain: "narrative.commit.apply".to_string(),
+                        source_change_event_uid: change_uid.clone(),
+                        cause_kind: NarrativeChangeCauseKind::Forward,
+                        original_transaction_id: None,
+                        commit_id: Some(commit_id.clone()),
+                        journal_id: Some(journal_id.clone()),
+                        application_ids,
+                        occurred_at: now.clone(),
+                        events: maintenance_events,
+                    },
+                )?)
+            };
+
+            let mut receipt = json!({
                 "commitId": commit_id,
                 "requestId": payload.request_id,
                 "planDigest": payload.plan_digest,
@@ -1535,6 +1572,22 @@ pub fn narrative_extraction_apply_commit(
                 "created": created,
                 "entityBindings": commit_map.to_json(),
             });
+            if let (Some(receipt), Some(maintenance_transaction)) =
+                (receipt.as_object_mut(), maintenance_transaction)
+            {
+                receipt.insert(
+                    "maintenanceTransactionId".to_string(),
+                    Value::String(maintenance_transaction.transaction_id.clone()),
+                );
+                receipt.insert(
+                    "maintenanceOriginalTransactionId".to_string(),
+                    Value::String(maintenance_transaction.transaction_id),
+                );
+                receipt.insert(
+                    "maintenanceEventIds".to_string(),
+                    serde_json::to_value(maintenance_transaction.event_ids)?,
+                );
+            }
 
             conn.execute(
                 "UPDATE narrative_apply_commits
