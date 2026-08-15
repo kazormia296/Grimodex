@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 use super::Database;
 use crate::agent_writes::{
     canonical_payload_with_authority_context, canonical_payload_with_derived_authority_context,
-    validate_agent_field_authority_for_entity, validate_renderer_authority_context,
-    validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
-    RendererMutationProvenance,
+    record_agent_field_authority_for_entity, validate_agent_field_authority_for_entity,
+    validate_renderer_authority_context, validate_renderer_authority_context_for_routes,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
 };
 use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
@@ -4636,6 +4636,30 @@ fn ai_tree_version_rows(rows: &BTreeMap<String, Value>) -> Value {
     )
 }
 
+fn ai_tree_create_authority_paths() -> Vec<String> {
+    [
+        "/parentId",
+        "/nodeType",
+        "/title",
+        "/sortOrder",
+        "/synopsis",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
+fn ai_tree_update_authority_paths(update: &AiTreePlanUpdateInput) -> Vec<String> {
+    let mut paths = Vec::new();
+    if update.placement.is_some() {
+        paths.extend(["/parentId".to_string(), "/sortOrder".to_string()]);
+    }
+    if update.title.is_some() {
+        paths.push("/title".to_string());
+    }
+    paths
+}
+
 pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> anyhow::Result<Value> {
     for (value, field) in [
         (&payload.request_id, "requestId"),
@@ -4758,15 +4782,10 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
         }
 
         let mut affected_authority_paths = BTreeSet::new();
+        let mut authority_records = Vec::<(String, Vec<String>)>::new();
         if authority_context.authority_route == "interactive-agent-command" {
             for create in &payload.creates {
-                let paths = [
-                    "/parentId".to_string(),
-                    "/nodeType".to_string(),
-                    "/title".to_string(),
-                    "/sortOrder".to_string(),
-                    "/synopsis".to_string(),
-                ];
+                let paths = ai_tree_create_authority_paths();
                 affected_authority_paths.extend(paths.iter().cloned());
                 validate_agent_field_authority_for_entity(
                     &tx,
@@ -4776,15 +4795,10 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     &paths,
                     &payload.updated_at,
                 )?;
+                authority_records.push((create.id.clone(), paths));
             }
             for update in &payload.updates {
-                let mut paths = Vec::new();
-                if update.placement.is_some() {
-                    paths.extend(["/parentId".to_string(), "/sortOrder".to_string()]);
-                }
-                if update.title.is_some() {
-                    paths.push("/title".to_string());
-                }
+                let paths = ai_tree_update_authority_paths(update);
                 affected_authority_paths.extend(paths.iter().cloned());
                 validate_agent_field_authority_for_entity(
                     &tx,
@@ -4794,6 +4808,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     &paths,
                     &payload.updated_at,
                 )?;
+                authority_records.push((update.id.clone(), paths));
             }
         }
 
@@ -4908,6 +4923,22 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                 "AI_TREE_PLAN_VERSION_MISMATCH: node '{}' changed before apply",
                 update.id
             );
+        }
+
+        // Authority is recorded only after the corresponding entity mutation
+        // succeeds, but before the feed/journal work can commit. Keeping this
+        // in the same transaction makes an AI-created node immediately
+        // writable by the next AI turn and rolls the ownership rows back with
+        // the tree mutation when any later append fails.
+        for (entity_id, paths) in &authority_records {
+            record_agent_field_authority_for_entity(
+                &tx,
+                &payload.project_id,
+                "tree_node",
+                entity_id,
+                paths,
+                &payload.updated_at,
+            )?;
         }
 
         let mut after = BTreeMap::<String, Value>::new();
@@ -5866,6 +5897,18 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
             assert_eq!(counts, (1, 1, 2, 1));
+            let created_authority: (i64, i64) = conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_field_authority
+                      WHERE project_id = 'p1' AND entity_kind = 'tree_node'
+                        AND entity_id = 'ai-folder' AND owner_kind = 'ai'),
+                    (SELECT COUNT(*) FROM narrative_field_authority
+                      WHERE project_id = 'p1' AND entity_kind = 'tree_node'
+                        AND entity_id = 'moved' AND owner_kind = 'ai')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(created_authority, (5, 5));
             let canonical_payload: String = conn.query_row(
                 "SELECT payload FROM change_events WHERE event_uid = 'ai-tree-forward-request'",
                 [],
@@ -6014,6 +6057,146 @@ mod tests {
     }
 
     #[test]
+    fn interactive_ai_tree_plan_allows_follow_up_after_ai_create_and_denies_human_title() {
+        let db = fixture();
+        seed_ai_tree_authority(&db, "moved");
+
+        let mut create = ai_tree_payload("ai-tree-create-scene");
+        create.kind = "scaffold".to_string();
+        create.creates[0].id = "ai-scene".to_string();
+        create.creates[0].node_type = "scene".to_string();
+        create.creates[0].title = "AI Scene".to_string();
+        create.updates.clear();
+        create.ops = Some(vec![json!({
+            "op": "create",
+            "tempId": "tmp:scene",
+            "parentRef": "root",
+            "nodeType": "scene",
+            "title": "AI Scene",
+            "pos": {},
+        })]);
+        create.creates[0].temp_id = Some("tmp:scene".to_string());
+        apply_ai_tree_plan(&db, create).expect("AI scene scaffold");
+
+        db.with_conn(|conn| {
+            let rows: Vec<(String, String)> = conn
+                .prepare(
+                    "SELECT field_path, owner_kind
+                       FROM narrative_field_authority
+                      WHERE project_id = 'p1' AND entity_kind = 'tree_node'
+                        AND entity_id = 'ai-scene'
+                      ORDER BY field_path",
+                )?
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(
+                rows,
+                vec![
+                    ("/nodeType".to_string(), "ai".to_string()),
+                    ("/parentId".to_string(), "ai".to_string()),
+                    ("/sortOrder".to_string(), "ai".to_string()),
+                    ("/synopsis".to_string(), "ai".to_string()),
+                    ("/title".to_string(), "ai".to_string()),
+                ]
+            );
+            Ok(())
+        })
+        .expect("verify AI scaffold authority");
+
+        let follow_up = ApplyAiTreePlanPayload {
+            request_id: "ai-tree-follow-up".to_string(),
+            project_id: "p1".to_string(),
+            session_id: "ai-tree-session-follow-up".to_string(),
+            surface: "in-app-agent".to_string(),
+            kind: "reorganize".to_string(),
+            updated_at: "2026-08-13T01:10:00Z".to_string(),
+            model: Some("model-1".to_string()),
+            trace_id: Some("trace-follow-up".to_string()),
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "chat-tool-executor".to_string(),
+            controls: ai_tree_payload("controls-only").controls,
+            provenance: Some(RendererMutationProvenance {
+                request_id: "ai-tree-follow-up".to_string(),
+                trace_id: "trace-follow-up".to_string(),
+                chat_message_id: None,
+                tool_call_id: None,
+                execution_id: None,
+                main_owned_provenance_id: None,
+            }),
+            writes_authority_protected_field: false,
+            creates: Vec::new(),
+            updates: vec![AiTreePlanUpdateInput {
+                id: "ai-scene".to_string(),
+                base_version: 1,
+                placement: Some(AiTreePlanPlacementInput {
+                    parent_id: Some("created-parent".to_string()),
+                    sort_order: "a0".to_string(),
+                }),
+                title: Some("AI Scene Renamed".to_string()),
+            }],
+            ops: Some(vec![
+                json!({
+                    "op": "move",
+                    "nodeId": "ai-scene",
+                    "newParentRef": "created-parent",
+                    "pos": {},
+                }),
+                json!({
+                    "op": "rename",
+                    "nodeId": "ai-scene",
+                    "title": "AI Scene Renamed",
+                }),
+            ]),
+            redo: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+        };
+        apply_ai_tree_plan(&db, follow_up).expect("AI can update its created scene");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE tree_nodes SET title = 'Human Scene', version = version + 1
+                  WHERE id = 'ai-scene' AND project_id = 'p1'",
+                [],
+            )?;
+            crate::narrative_extraction::record_human_field_write(
+                conn,
+                "p1",
+                "tree_node",
+                "ai-scene",
+                &["/title"],
+                "2026-08-13T01:11:00Z",
+            )?;
+            let owner: String = conn.query_row(
+                "SELECT owner_kind FROM narrative_field_authority
+                  WHERE project_id = 'p1' AND entity_kind = 'tree_node'
+                    AND entity_id = 'ai-scene' AND field_path = '/title'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(owner, "human");
+            Ok(())
+        })
+        .expect("record human title edit");
+
+        let mut denied = ai_tree_payload("ai-tree-human-title");
+        denied.creates.clear();
+        denied.updates = vec![AiTreePlanUpdateInput {
+            id: "ai-scene".to_string(),
+            base_version: 3,
+            placement: None,
+            title: Some("AI Must Be Denied".to_string()),
+        }];
+        denied.ops = Some(vec![json!({
+            "op": "rename",
+            "nodeId": "ai-scene",
+            "title": "AI Must Be Denied",
+        })]);
+        let error = apply_ai_tree_plan(&db, denied).expect_err("human title must deny AI");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+    }
+
+    #[test]
     fn interactive_ai_tree_plan_rejects_tampered_effect_projection() {
         let db = fixture();
         let mut title_tampered = ai_tree_payload("ai-tree-tampered-title");
@@ -6111,17 +6294,20 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
             assert_eq!(moved, (None, "Moved".to_string(), 0));
-            let counts: (i64, i64, i64) = conn.query_row(
+            let counts: (i64, i64, i64, i64) = conn.query_row(
                 "SELECT
                     (SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'),
                     (SELECT COUNT(*) FROM undo_journal WHERE id = 'ai-tree-feed-failure'),
                     (SELECT COUNT(*) FROM idempotency_requests
                       WHERE domain = 'ai_tree_plan_apply'
-                        AND request_id = 'ai-tree-feed-failure')",
+                        AND request_id = 'ai-tree-feed-failure'),
+                    (SELECT COUNT(*) FROM narrative_field_authority
+                      WHERE project_id = 'p1' AND entity_kind = 'tree_node'
+                        AND entity_id = 'ai-folder')",
                 [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(counts, (0, 0, 0));
+            assert_eq!(counts, (0, 0, 0, 0));
             Ok(())
         })
         .expect("verify atomic rollback");

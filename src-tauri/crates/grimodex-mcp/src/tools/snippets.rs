@@ -123,6 +123,7 @@ pub async fn create_snippet(
             to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
         }]

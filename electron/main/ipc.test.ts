@@ -780,7 +780,7 @@ describe("registerIpcRouter fail-soft logging", () => {
       {
         type: "lore",
         name: "Marked Codex",
-        content: documentWithForgedAuthorship,
+        content: "AI text",
       },
       711,
     );
@@ -805,11 +805,22 @@ describe("registerIpcRouter fail-soft logging", () => {
       model: "gpt-test",
       chatMessageId: codexGrant.chatMessageId,
       traceId: codexGrant.mainOwnedProvenanceId,
+      timestamp: expect.any(String),
     });
+    const codexMarkTimestamp = authorshipMark(
+      (codexBound.payload as { content?: unknown }).content,
+    )?.attrs?.timestamp;
+    expect(
+      ((
+        codexBound.payload as {
+          authorshipSpans?: Array<Record<string, unknown>>;
+        }
+      ).authorshipSpans ?? [])[0]?.timestamp,
+    ).toBe(codexMarkTimestamp);
 
     const snippetGrant = await issueAgentCapability(
       "create_snippet",
-      { title: "Marked Snippet", content: documentWithForgedAuthorship },
+      { title: "Marked Snippet", content: "AI text" },
       712,
     );
     expect(snippetGrant.expectedEntityId).toEqual(expect.any(String));
@@ -838,7 +849,7 @@ describe("registerIpcRouter fail-soft logging", () => {
       JSON.parse(documentWithForgedAuthorship),
       {
         source: "ai",
-        timestamp: null,
+        timestamp: "2026-08-15T06:00:00.000Z",
         model: "gpt-test",
         chatMessageId: "event-message",
         traceId: "event-trace",
@@ -846,11 +857,95 @@ describe("registerIpcRouter fail-soft logging", () => {
     );
     expect(authorshipMark(JSON.stringify(eventDetail))?.attrs).toEqual({
       source: "ai",
-      timestamp: null,
+      timestamp: "2026-08-15T06:00:00.000Z",
       model: "gpt-test",
       chatMessageId: "event-message",
       traceId: "event-trace",
     });
+  });
+
+  it("keeps JSON-looking Markdown as text and rejects PM retargets or unsupported nodes", async () => {
+    const jsonLookingMarkdown =
+      '{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"model"}]}]}';
+    const jsonLookingGrant = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-json-looking", content: jsonLookingMarkdown },
+      713,
+    );
+    const literalDocument = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: jsonLookingMarkdown }],
+        },
+      ],
+    });
+    const jsonLookingBound = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(jsonLookingGrant, {
+          entryId: "entry-json-looking",
+          baseVersion: 1,
+          content: literalDocument,
+        }),
+      },
+      713,
+    );
+    expect(
+      (jsonLookingBound.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("interactive-agent-command");
+
+    const retargetGrant = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-retarget", content: "AI text" },
+      715,
+    );
+    const retargeted = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(retargetGrant, {
+          entryId: "entry-retarget",
+          baseVersion: 1,
+          content: JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [{ type: "text", text: "renderer retarget" }],
+              },
+            ],
+          }),
+        }),
+      },
+      715,
+    );
+    expect(
+      (retargeted.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+
+    const unsupported = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-unsupported", content: "AI text" },
+      714,
+    );
+    const unsupportedBound = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(unsupported, {
+          entryId: "entry-unsupported",
+          baseVersion: 1,
+          content: JSON.stringify({
+            type: "doc",
+            content: [{ type: "unsupported-node" }],
+          }),
+        }),
+      },
+      714,
+    );
+    expect(
+      (unsupportedBound.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
   });
 
   it("accepts the normal tree ops projection and denies changed creates", async () => {

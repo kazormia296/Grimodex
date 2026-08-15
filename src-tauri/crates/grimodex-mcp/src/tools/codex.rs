@@ -254,6 +254,7 @@ pub async fn create_codex_entry(
             to_pos: grimodex_core::pm_text::utf16_text_len(summary_text),
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
         });
@@ -265,6 +266,7 @@ pub async fn create_codex_entry(
             to_pos: content_text_len,
             source: "ai".to_string(),
             model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+            timestamp: None,
             chat_msg_id: None,
             trace_id: None,
         });
@@ -403,6 +405,7 @@ pub async fn update_codex_entry(
                 to_pos: grimodex_core::pm_text::utf16_text_len(s),
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_SUMMARY_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             });
@@ -417,6 +420,7 @@ pub async fn update_codex_entry(
                 to_pos: content_text_len,
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             });

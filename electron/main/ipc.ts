@@ -10,6 +10,7 @@
 import { BrowserWindow, ipcMain } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { getSchema } from "@tiptap/core";
+import { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import StarterKit from "@tiptap/starter-kit";
 import {
   defaultMarkdownParser,
@@ -201,6 +202,8 @@ type AgentToolInputSpec = {
   readonly fields: readonly string[];
   readonly aliases?: Readonly<Record<string, string>>;
 };
+
+type AgentToolInputProjection = "model" | "effective";
 
 // This is the exact model-facing contract. It intentionally mirrors the
 // public schemas in `toolDefinitions.ts`; renderer/native-only fields must not
@@ -462,8 +465,6 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
   },
 };
 
-type AgentToolInputProjection = "model" | "effective";
-
 function stableCanonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     const primitive = JSON.stringify(value);
@@ -515,6 +516,14 @@ function getAgentAuthorityMarkdownParser(): MarkdownParser {
   return agentAuthorityMarkdownParser;
 }
 
+function getAgentAuthoritySchema(): ReturnType<typeof getSchema> {
+  getAgentAuthorityMarkdownParser();
+  if (agentAuthoritySchema === null) {
+    throw new Error("agent authority schema is unavailable");
+  }
+  return agentAuthoritySchema;
+}
+
 function remapAgentMarkdownSpec(
   spec: ParseSpec,
   schema: ReturnType<typeof getSchema>,
@@ -552,37 +561,49 @@ function stripAuthorshipMarks(value: unknown): unknown {
   return normalized;
 }
 
-/**
- * Keep the exact persisted rich-text structure in the capability digest.
- * Renderer-authorship marks are audit metadata and are removed only for the
- * comparison; links, attrs, marks, paragraphs, and all other PM structure
- * remain part of the canonical value.
- */
-function canonicalRichTextValue(value: unknown): unknown {
-  if (typeof value !== "string") return value;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (isRecord(parsed) && parsed.type === "doc") {
-      return stripAuthorshipMarks(parsed);
-    }
-  } catch {
-    // Model-facing content is Markdown; parse it below.
-  }
+function invalidRichTextValue(value: unknown): Record<string, unknown> {
+  return {
+    __grimodexInvalidRichText: true,
+    value: typeof value === "string" ? value : String(value),
+  };
+}
+
+/** The model contract is Markdown, even when its text happens to be JSON. */
+function canonicalModelRichText(value: unknown): unknown {
+  if (value === null) return null;
+  if (typeof value !== "string") return invalidRichTextValue(value);
   try {
     return stripAuthorshipMarks(
       getAgentAuthorityMarkdownParser().parse(value).toJSON(),
     );
   } catch {
-    // Native validation remains authoritative for malformed rich text. Keep
-    // the raw value bound here so a malformed renderer value cannot collide
-    // with a different valid document.
-    return value;
+    return invalidRichTextValue(value);
+  }
+}
+
+/** The native wire contract is schema-validated serialized ProseMirror JSON. */
+function canonicalEffectiveRichText(value: unknown): unknown {
+  if (value === null) return null;
+  if (typeof value !== "string") return invalidRichTextValue(value);
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isRecord(parsed)) return invalidRichTextValue(value);
+    const withoutRendererAuthorship = stripAuthorshipMarks(parsed);
+    const document = ProseMirrorNode.fromJSON(
+      getAgentAuthoritySchema(),
+      withoutRendererAuthorship,
+    );
+    document.check();
+    if (document.type.name !== "doc") return invalidRichTextValue(value);
+    return stripAuthorshipMarks(document.toJSON());
+  } catch {
+    return invalidRichTextValue(value);
   }
 }
 
 export interface MainOwnedAuthorshipMarkAttrs {
   readonly source: "ai";
-  readonly timestamp: null;
+  readonly timestamp: string;
   readonly model: string | null;
   readonly chatMessageId: string;
   readonly traceId: string;
@@ -625,9 +646,15 @@ export function applyMainOwnedAuthorshipMarks(
   return normalized;
 }
 
-function canonicalAgentInputValue(field: string, value: unknown): unknown {
+function canonicalAgentInputValue(
+  field: string,
+  value: unknown,
+  projection: AgentToolInputProjection,
+): unknown {
   if (field === "content" || field === "detail") {
-    return canonicalRichTextValue(value);
+    return projection === "model"
+      ? canonicalModelRichText(value)
+      : canonicalEffectiveRichText(value);
   }
   if (
     field === "aliases" ||
@@ -685,6 +712,7 @@ function canonicalAgentToolInput(
   projection: AgentToolInputProjection = enforceModelShape
     ? "model"
     : "effective",
+  valueProjection: AgentToolInputProjection = projection,
 ): string | null {
   const spec = (
     projection === "model"
@@ -709,7 +737,11 @@ function canonicalAgentToolInput(
       : source[wireField];
     const value = raw === undefined ? defaults[field] : raw;
     if (value !== undefined) {
-      normalized[field] = canonicalAgentInputValue(field, value);
+      normalized[field] = canonicalAgentInputValue(
+        field,
+        value,
+        valueProjection,
+      );
     }
   }
   return stableCanonicalJson(normalized);
@@ -722,12 +754,14 @@ function canonicalAgentToolInputDigest(
   projection: AgentToolInputProjection = enforceModelShape
     ? "model"
     : "effective",
+  valueProjection: AgentToolInputProjection = projection,
 ): string | null {
   const canonical = canonicalAgentToolInput(
     toolName,
     source,
     enforceModelShape,
     projection,
+    valueProjection,
   );
   if (canonical === null) return null;
   return createHash("sha256").update(canonical).digest("hex");
@@ -830,6 +864,7 @@ function readAgentProjectionField(
   field: string,
   source: Record<string, unknown>,
   defaults: Readonly<Record<string, unknown>> | undefined,
+  valueProjection: AgentToolInputProjection,
 ): AgentProjectionField {
   const wireField = spec.aliases?.[field] ?? field;
   const hasField = Object.hasOwn(source, field) && source[field] !== undefined;
@@ -838,8 +873,16 @@ function readAgentProjectionField(
     Object.hasOwn(source, wireField) &&
     source[wireField] !== undefined;
   if (hasField && hasWireField) {
-    const fieldValue = canonicalAgentInputValue(field, source[field]);
-    const wireValue = canonicalAgentInputValue(field, source[wireField]);
+    const fieldValue = canonicalAgentInputValue(
+      field,
+      source[field],
+      valueProjection,
+    );
+    const wireValue = canonicalAgentInputValue(
+      field,
+      source[wireField],
+      valueProjection,
+    );
     if (stableCanonicalJson(fieldValue) !== stableCanonicalJson(wireValue)) {
       return {
         present: true,
@@ -857,6 +900,7 @@ function readAgentProjectionField(
       value: canonicalAgentInputValue(
         field,
         hasField ? source[field] : source[wireField],
+        valueProjection,
       ),
     };
   }
@@ -869,7 +913,7 @@ function readAgentProjectionField(
       present: true,
       fromDefault: true,
       conflict: false,
-      value: canonicalAgentInputValue(field, defaults[field]),
+      value: canonicalAgentInputValue(field, defaults[field], valueProjection),
     };
   }
   return {
@@ -887,7 +931,11 @@ function agentMutationProjectionMatches(
   payload: CommandArgs,
 ): boolean {
   const spec = EFFECTIVE_NATIVE_MUTATION_SPECS[toolName];
-  if (!spec || canonicalAgentToolInput(toolName, modelInput, true) === null) {
+  if (
+    !spec ||
+    canonicalAgentToolInput(toolName, modelInput, true, "model", "model") ===
+      null
+  ) {
     return false;
   }
   const defaults = AGENT_TOOL_INPUT_DEFAULTS[toolName];
@@ -897,8 +945,15 @@ function agentMutationProjectionMatches(
       field,
       modelInput,
       defaults,
+      "model",
     );
-    const actual = readAgentProjectionField(spec, field, payload, undefined);
+    const actual = readAgentProjectionField(
+      spec,
+      field,
+      payload,
+      undefined,
+      "effective",
+    );
     if (expected.conflict || actual.conflict) return false;
     if (!expected.present) {
       if (actual.present) return false;
@@ -1057,9 +1112,16 @@ interface MainOwnedAuthorshipSpan {
   toPos: number;
   source: "ai";
   model: string;
+  timestamp: string;
   chatMsgId: string;
   traceId: string;
   lane: "summary" | "content";
+}
+
+function mainOwnedAuthorshipTimestamp(
+  capability: AgentAuthorityCapabilityRecord,
+): string {
+  return new Date(capability.issuedAt).toISOString();
 }
 
 function mainOwnedContentSpans(
@@ -1067,6 +1129,7 @@ function mainOwnedContentSpans(
   model: string | null,
   chatMessageId: string,
   traceId: string,
+  timestamp: string,
 ): MainOwnedAuthorshipSpan[] {
   if (typeof content !== "string" || content.length === 0) return [];
   try {
@@ -1080,6 +1143,7 @@ function mainOwnedContentSpans(
           toPos: position + node.text.length,
           source: "ai",
           model: model ?? "__lane_content__",
+          timestamp,
           chatMsgId: chatMessageId,
           traceId,
           lane: "content",
@@ -1104,12 +1168,14 @@ function mainOwnedCodexAuthorship(
   capability: AgentAuthorityCapabilityRecord,
 ): MainOwnedAuthorshipSpan[] {
   const spans: MainOwnedAuthorshipSpan[] = [];
+  const timestamp = mainOwnedAuthorshipTimestamp(capability);
   if (typeof payload.summary === "string" && payload.summary.length > 0) {
     spans.push({
       fromPos: 0,
       toPos: payload.summary.length,
       source: "ai",
       model: capability.model ?? "__lane_summary__",
+      timestamp,
       chatMsgId: capability.chatMessageId,
       traceId: capability.mainOwnedProvenanceId,
       lane: "summary",
@@ -1121,6 +1187,7 @@ function mainOwnedCodexAuthorship(
       capability.model,
       capability.chatMessageId,
       capability.mainOwnedProvenanceId,
+      timestamp,
     ),
   );
   return spans;
@@ -1140,15 +1207,16 @@ function bindMainOwnedRichTextFields(
       field,
       capability.modelInput,
       defaults,
+      "model",
     );
     if (!expected.present || expected.conflict) continue;
     const wireField = spec.aliases?.[field] ?? field;
-    // The model projection is the only accepted document. Renderer
-    // authorship marks/attrs are discarded by canonicalRichTextValue, then
-    // rebuilt from main-owned provenance before Native persists the document.
+    // The model Markdown projection is converted to canonical PM JSON here.
+    // Renderer authorship marks/attrs are never trusted; they are discarded
+    // before main-owned provenance is rebuilt for Native persistence.
     const mainOwnedValue = applyMainOwnedAuthorshipMarks(expected.value, {
       source: "ai",
-      timestamp: null,
+      timestamp: mainOwnedAuthorshipTimestamp(capability),
       model: capability.model,
       chatMessageId: capability.chatMessageId,
       traceId: capability.mainOwnedProvenanceId,
@@ -1267,6 +1335,7 @@ function bindMainOwnedAgentMutation(
       capability.model,
       capability.chatMessageId,
       capability.mainOwnedProvenanceId,
+      mainOwnedAuthorshipTimestamp(capability),
     ).map(({ lane: _lane, ...span }) => span);
   }
   return bound;
@@ -1379,6 +1448,7 @@ function consumeAgentAuthorityCapability(
     payload,
     false,
     "model",
+    "effective",
   );
   const matches =
     record.senderId === senderId &&

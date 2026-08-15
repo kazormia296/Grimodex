@@ -37,6 +37,8 @@ pub struct AuthorshipSpanInput {
     pub to_pos: i64,
     pub source: String,
     pub model: Option<String>,
+    #[serde(default)]
+    pub timestamp: Option<String>,
     pub chat_msg_id: Option<String>,
     pub trace_id: Option<String>,
 }
@@ -1851,7 +1853,7 @@ fn merge_codex_authorship_spans(
                 resolved_model,
                 span.chat_msg_id.as_deref().or(chat_msg_id),
                 span.trace_id.as_deref().or(trace_id),
-                now,
+                span.timestamp.as_deref().unwrap_or(&now),
             ],
         )?;
     }
@@ -10575,6 +10577,7 @@ mod tests {
                         .unwrap()
                         .to_string(),
                     model: None,
+                    timestamp: None,
                     chat_msg_id: None,
                     trace_id: None,
                 }],
@@ -11496,10 +11499,34 @@ mod tests {
                 to_pos: span_to,
                 source: "ai".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             }],
         }
+    }
+
+    #[test]
+    fn codex_authorship_span_preserves_main_owned_timestamp() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let timestamp = "2026-08-15T06:00:00.000Z";
+        let mut payload =
+            tracked_codex_create_payload(&project_id, "codex-main-timestamp", "Main timestamp", 8);
+        payload.authorship_spans[0].timestamp = Some(timestamp.to_string());
+
+        agent_codex_create_impl(&db, payload).expect("create timestamped codex");
+        db.with_conn(|conn| {
+            let stored: String = conn.query_row(
+                "SELECT timestamp FROM authorship_spans
+                  WHERE codex_entry_id = 'codex-main-timestamp'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(stored, timestamp);
+            Ok(())
+        })
+        .expect("read main-owned authorship timestamp");
     }
 
     fn tracked_codex_create(
@@ -11782,6 +11809,7 @@ mod tests {
                 to_pos: span_to,
                 source: "human".to_string(),
                 model: Some(grimodex_core::writes::LANE_CONTENT_MODEL.to_string()),
+                timestamp: None,
                 chat_msg_id: None,
                 trace_id: None,
             }]),
