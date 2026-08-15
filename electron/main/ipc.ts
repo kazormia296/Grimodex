@@ -609,6 +609,17 @@ export interface MainOwnedAuthorshipMarkAttrs {
   readonly traceId: string;
 }
 
+function parentAllowsInlineMarks(
+  schema: ReturnType<typeof getSchema>,
+  parentTypeName: string | null,
+): boolean {
+  if (parentTypeName === null) return true;
+  // A NodeSpec with marks: "" rejects every inline mark. StarterKit's
+  // codeBlock uses this contract, so its text remains attributable through
+  // authorship_spans rather than receiving an invalid inline mark.
+  return schema.nodes[parentTypeName]?.spec.marks !== "";
+}
+
 /**
  * Rebuild authorship marks after the renderer-authorship projection has been
  * stripped. The capability boundary owns these values; renderer-provided
@@ -618,32 +629,40 @@ export function applyMainOwnedAuthorshipMarks(
   value: unknown,
   attrs: MainOwnedAuthorshipMarkAttrs,
 ): unknown {
-  if (Array.isArray(value)) {
-    return value.map((child) => applyMainOwnedAuthorshipMarks(child, attrs));
-  }
-  if (!isRecord(value)) return value;
+  const schema = getAgentAuthoritySchema();
+  const apply = (current: unknown, parentTypeName: string | null): unknown => {
+    if (Array.isArray(current)) {
+      return current.map((child) => apply(child, parentTypeName));
+    }
+    if (!isRecord(current)) return current;
 
-  const normalized: CommandArgs = { ...value };
-  if (normalized.type === "text" && typeof normalized.text === "string") {
-    const marks = Array.isArray(normalized.marks)
-      ? normalized.marks.filter(
-          (mark) => !isRecord(mark) || mark.type !== "authorship",
-        )
-      : [];
-    normalized.marks = [
-      ...marks,
-      {
-        type: "authorship",
-        attrs: { ...attrs },
-      },
-    ];
-  }
-  if (Array.isArray(normalized.content)) {
-    normalized.content = normalized.content.map((child) =>
-      applyMainOwnedAuthorshipMarks(child, attrs),
-    );
-  }
-  return normalized;
+    const normalized: CommandArgs = { ...current };
+    const nodeTypeName =
+      typeof normalized.type === "string" ? normalized.type : null;
+    if (nodeTypeName === "text" && typeof normalized.text === "string") {
+      const marks = Array.isArray(normalized.marks)
+        ? normalized.marks.filter(
+            (mark) => !isRecord(mark) || mark.type !== "authorship",
+          )
+        : [];
+      normalized.marks = parentAllowsInlineMarks(schema, parentTypeName)
+        ? [
+            ...marks,
+            {
+              type: "authorship",
+              attrs: { ...attrs },
+            },
+          ]
+        : [];
+    }
+    if (Array.isArray(normalized.content)) {
+      normalized.content = normalized.content.map((child) =>
+        apply(child, nodeTypeName),
+      );
+    }
+    return normalized;
+  };
+  return apply(value, null);
 }
 
 function canonicalAgentInputValue(

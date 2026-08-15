@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { getSchema } from "@tiptap/core";
+import { Node as ProseMirrorNode } from "@tiptap/pm/model";
+import StarterKit from "@tiptap/starter-kit";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
@@ -862,6 +865,67 @@ describe("registerIpcRouter fail-soft logging", () => {
       chatMessageId: "event-message",
       traceId: "event-trace",
     });
+  });
+
+  it("keeps fenced code blocks schema-valid and tracks their authorship spans", async () => {
+    const markdown = "```ts\nconst value = 1\n```";
+    const grant = await issueAgentCapability(
+      "create_codex_entry",
+      { type: "lore", name: "Code Block", content: markdown },
+      716,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_codex_create",
+      {
+        payload: agentCapabilityPayload(grant, {
+          typeSlug: "lore",
+          name: "Code Block",
+          entryId: grant.expectedEntityId,
+          content: JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "codeBlock",
+                attrs: { language: null },
+                content: [{ type: "text", text: "const value = 1" }],
+              },
+            ],
+          }),
+        }),
+      },
+      716,
+    );
+    expect(
+      (bound.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("interactive-agent-command");
+
+    const content = JSON.parse(
+      String((bound.payload as { content?: unknown }).content),
+    ) as {
+      content?: Array<{
+        type?: string;
+        content?: Array<{ marks?: unknown[] }>;
+      }>;
+    };
+    expect(content.content?.[0]?.type).toBe("codeBlock");
+    expect(content.content?.[0]?.content?.[0]?.marks ?? []).toEqual([]);
+
+    const document = ProseMirrorNode.fromJSON(
+      getSchema([StarterKit.configure()]),
+      content,
+    );
+    document.check();
+
+    expect(
+      (bound.payload as { authorshipSpans?: Array<Record<string, unknown>> })
+        .authorshipSpans,
+    ).toEqual([
+      expect.objectContaining({
+        fromPos: 0,
+        toPos: 15,
+        source: "ai",
+      }),
+    ]);
   });
 
   it("keeps JSON-looking Markdown as text and rejects PM retargets or unsupported nodes", async () => {
