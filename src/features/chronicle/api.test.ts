@@ -9,7 +9,7 @@ type AgentWriteResult = {
   undoJournalId: string;
 };
 
-// Native agent_event_* を sql.js 上で再現する共有ホルダー。
+// Native Chronicle writer aliasesをsql.js上で再現する共有ホルダー。
 const chronicleTestDb = vi.hoisted(() => ({
   sqldb: undefined as Database | undefined,
   handleInvoke: undefined as
@@ -191,7 +191,8 @@ vi.mock("@/db/client", async () => {
           String(args?.eventId ?? payload.eventId),
           String(args?.projectId ?? payload.projectId),
         );
-      case "agent_event_create": {
+      case "agent_event_create":
+      case "event_create": {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         sqldb.run(
@@ -226,7 +227,8 @@ vi.mock("@/db/client", async () => {
         );
         return agentWriteResult(eventId, 0);
       }
-      case "agent_event_update": {
+      case "agent_event_update":
+      case "event_update": {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         const baseVersion = Number(payload.baseVersion);
@@ -291,7 +293,8 @@ vi.mock("@/db/client", async () => {
         }
         return agentWriteResult(eventId, nextVersion);
       }
-      case "agent_event_delete": {
+      case "agent_event_delete":
+      case "event_delete": {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         const baseVersion = Number(payload.baseVersion);
@@ -304,7 +307,8 @@ vi.mock("@/db/client", async () => {
         }
         return agentWriteResult(eventId, baseVersion + 1);
       }
-      case "agent_event_set_participants": {
+      case "agent_event_set_participants":
+      case "event_participants_set": {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         const baseVersion = Number(payload.baseVersion);
@@ -338,7 +342,8 @@ vi.mock("@/db/client", async () => {
         }
         return agentWriteResult(eventId, nextVersion);
       }
-      case "agent_scene_event_link": {
+      case "agent_scene_event_link":
+      case "scene_event_link": {
         const sceneId = String(payload.sceneId);
         const eventId = String(payload.eventId);
         sqldb.run(
@@ -350,7 +355,8 @@ vi.mock("@/db/client", async () => {
           queryEventVersion(eventId, String(payload.projectId)) ?? 0,
         );
       }
-      case "agent_scene_event_link_batch": {
+      case "agent_scene_event_link_batch":
+      case "scene_event_link_batch": {
         const eventId = String(payload.eventId);
         const projectId = String(payload.projectId);
         const sceneIds = [...new Set(payload.sceneIds as string[])];
@@ -389,7 +395,8 @@ vi.mock("@/db/client", async () => {
         }
         return agentWriteResult(eventId, eventVersion);
       }
-      case "agent_scene_event_unlink": {
+      case "agent_scene_event_unlink":
+      case "scene_event_unlink": {
         const sceneId = String(payload.sceneId);
         const eventId = String(payload.eventId);
         sqldb.run(
@@ -401,7 +408,8 @@ vi.mock("@/db/client", async () => {
           queryEventVersion(eventId, String(payload.projectId)) ?? 0,
         );
       }
-      case "agent_event_relation_add": {
+      case "agent_event_relation_add":
+      case "event_relation_add": {
         const causeEventId = String(payload.causeEventId);
         const effectEventId = String(payload.effectEventId);
         const projectId = String(payload.projectId);
@@ -413,7 +421,8 @@ vi.mock("@/db/client", async () => {
         );
         return agentWriteResult(causeEventId, 0);
       }
-      case "agent_event_relation_remove": {
+      case "agent_event_relation_remove":
+      case "event_relation_remove": {
         const causeEventId = String(payload.causeEventId);
         const effectEventId = String(payload.effectEventId);
         const projectId = String(payload.projectId);
@@ -808,7 +817,7 @@ describe("linkScenesToEvent (一括リンク)", () => {
     ).toEqual(["s1", "s2"]);
     expect(vi.mocked(invokeTauri)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(invokeTauri)).toHaveBeenCalledWith(
-      "agent_scene_event_link_batch",
+      "scene_event_link_batch",
       {
         payload: expect.objectContaining({
           projectId: "p1",
@@ -840,7 +849,7 @@ describe("linkScenesToEvent (一括リンク)", () => {
     ]);
     expect(vi.mocked(invokeTauri)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(invokeTauri)).toHaveBeenCalledWith(
-      "agent_scene_event_link_batch",
+      "scene_event_link_batch",
       {
         payload: expect.objectContaining({
           projectId: "p1",

@@ -145,7 +145,7 @@ describe.each(deletionTargets)(
         expect(persistenceMocks.selectFrom).toHaveBeenCalledOnce();
         expect(persistenceMocks.selectWhere).toHaveBeenCalledOnce();
         expect(persistenceMocks.invokeTypedWriter).toHaveBeenCalledWith(
-          "agent_codex_delete",
+          "codex_delete",
           {
             payload: expect.objectContaining({
               projectId: "project-1",
