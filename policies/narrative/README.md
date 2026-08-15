@@ -222,20 +222,16 @@ their own module doc comments, as internal helpers meant to be called from
   "Producer-time commit path" turned out, on closer reading, to mean
   Proposal/Revision *generation* (`repository.rs`), not `commit.rs`'s
   *apply*, and needed no change to `commit.rs` at all.
-- `application_contributions.rs` (Lane H): still open. Its own doc comment
-  says call-site wiring into `commit.rs`'s apply path "lands in C2-T1."
-  Unlike Lane G, this genuinely is an apply-time concern — "which
-  Application most recently touched which field" can only be known once a
-  Proposal Revision is actually applied — so it needs a call from inside
-  `commit.rs`'s `narrative_extraction_apply_commit`, which dispatches ~15
-  operation kinds (chronicle, codex, detail, foreshadow, phase,
-  plot-thread, semantic-binding, temporal ×4) across a 2200+ line,
-  already-shipped, live commit engine. This is materially higher-risk than
-  everything landed so far: a mistake risks regressing already-shipped
-  commit paths for every operation kind, not just leaving new code
-  unreachable, and — like everything else in this section — cannot be
-  `cargo check`ed in this environment. Not yet attempted, pending an
-  explicit decision on how to proceed given that risk.
+- `application_contributions.rs` (Lane H): **wired (C2-T1, see below)** —
+  a genuine `commit.rs` apply-time concern, but it turned out to need only
+  *one* new call site, not 15: `commit.rs` already has a single central
+  loop (right after applying every operation) that calls
+  `field_authority::affected_fields` per operation to record Field
+  Authority, and that loop already has `application_id`,
+  `entity_kind`/`entity_id`, and `now` in scope. Reusing that exact
+  already-correct field list, rather than re-deriving "which fields did
+  this operation kind touch" a second, drifting way per operation kind,
+  turned this from a feared 15-call-site risk into one small addition.
 - `cursor_reservation.rs` (Lane I) and `publish_runtime.rs` (Lane J):
   internal bookkeeping for the Run execution pipeline and the (not yet
   built) Change Feed → Reverse Lookup → evaluator → publish background
@@ -296,13 +292,44 @@ asserts both Edges land under the Run, then that a legacy-unbound Proposal
 in the same Run neither adds nor removes them. As with everything else on
 this branch, this has not been through `cargo check`/`cargo test`.
 
-**`application_contributions.rs` (Lane H) → `commit.rs` remains the one
-piece of Wave 1/2 transport still not attempted.** Unlike Lane G, it is a
-genuine apply-time concern that needs a call from inside
-`narrative_extraction_apply_commit`'s ~15-operation-kind dispatch — see the
-bullet list above for the full risk assessment. This has not been
-attempted yet, pending an explicit decision on how to proceed given that
-risk.
+**Lane H (`application_contributions.rs`) apply-time wiring also landed in
+C2-T1.** `commit.rs`'s `narrative_extraction_apply_commit` gained one new
+loop, immediately after its existing `record_operation_field_authority`
+call: `for (operation, application_id) in payload.operations.iter().zip(&application_ids)
+{ for field in affected_fields(operation, &commit_map)? { record_contribution_in_tx(...) } }`.
+`application_ids` is 1:1 with `payload.operations` by construction (both
+built from the same per-index loop over `payload.applications` moments
+earlier), and `commit.rs` already validates `applications.len() ==
+operations.len()` before apply ever runs, so the `zip` is safe. Calling
+`affected_fields` a second time (it was already called once inside
+`record_operation_field_authority`) is a deliberate, cheap redundancy
+instead of threading its result through two functions — `affected_fields`
+is pure (payload parsing plus a `CommitMap` lookup, no I/O), so the two
+calls are guaranteed identical. Every contribution lands with
+`target_state: Unchanged` (the write just happened, so the field currently
+matches exactly what this Application applied); a later process — Undo/
+Redo, a superseding Application, a hand edit — is what would ever
+transition it away from `Unchanged`, not this commit itself. This is
+*not* the 15-operation-kind risk originally feared: `affected_fields`
+already centralizes per-operation-kind field derivation for Field
+Authority, so Lane H needed no new per-operation-kind logic at all, only
+one small addition at the one place all operation kinds already converge.
+
+Verified via `rustfmt --edition 2021 --check`, a brace/paren balance
+check, and a new
+`codex_narrative_commit.rs::apply_commit_records_application_contributions_per_affected_field`
+integration test that applies a real `codex.entry.create` commit and
+asserts `narrative_application_contributions` has exactly one row per
+field `affected_fields`'s own `"codex.entry.create"` arm declares
+(`/name`, `/summary`, `/aliases`, `/type`, `/content`, `/parentId`), all
+under the real `narrative_proposal_applications.id` and all
+`target_state = 'unchanged'`. As with everything else on this branch, this
+has not been through `cargo check`/`cargo test`.
+
+Of Wave 1's 8 lanes, G and H now have real transport landed; F needs none
+(a pure library); A's restore-path wiring is still open (see the bullet
+list above), same as Lane N's own restore-path piece and the Lane K/N
+admin-command question below.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

@@ -1708,3 +1708,84 @@ fn prepare_apply_then_status_first_retry_is_idempotent() {
         "proposal must be marked applied: {revision_err}"
     );
 }
+
+/// Gate C2 Lane H (`application_contributions.rs`, wired in C2-T1):
+/// applying a Commit must record one `narrative_application_contributions`
+/// row per field `field_authority::affected_fields` reports for the
+/// operation, all under the real `narrative_proposal_applications.id` --
+/// not a fabricated identifier -- and all `target_state = 'unchanged'`
+/// (this write just landed, so it matches exactly what was applied).
+#[test]
+fn apply_commit_records_application_contributions_per_affected_field() {
+    let db = migrated_db();
+    let items = [(
+        "codex.entry.create",
+        entry_create("entry-contrib", "Contrib Hero", "ent:contrib"),
+    )];
+    let pairs = seed_approved_proposals(&db, "run-contrib", "set-contrib", &items);
+    let applied = prepare_and_apply(
+        &db,
+        build_prepare(
+            "req-contrib",
+            "digest-contrib",
+            "set-contrib",
+            "run-contrib",
+            ops_from_pairs(&pairs, &items),
+            vec![],
+        ),
+    );
+    assert_eq!(applied["status"], "applied");
+
+    let proposal_id = pairs[0].0.clone();
+    let revision_id = pairs[0].1.clone();
+    let application_id: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM narrative_proposal_applications
+                  WHERE proposal_id = ?1 AND revision_id = ?2",
+                [&proposal_id, &revision_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("find application id");
+
+    let mut rows: Vec<(String, String, String)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT target_object_identity, field_path, target_state
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1
+                  ORDER BY field_path ASC",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read application contributions");
+    rows.sort();
+
+    let expected_fields = [
+        "/aliases",
+        "/content",
+        "/name",
+        "/parentId",
+        "/summary",
+        "/type",
+    ];
+    assert_eq!(
+        rows.len(),
+        expected_fields.len(),
+        "one contribution row per codex.entry.create affected field: {rows:?}"
+    );
+    for (identity, field_path, target_state) in &rows {
+        assert_eq!(identity, "codex-entry:entry-contrib");
+        assert!(
+            expected_fields.contains(&field_path.as_str()),
+            "unexpected field path: {field_path}"
+        );
+        assert_eq!(target_state, "unchanged");
+    }
+}
