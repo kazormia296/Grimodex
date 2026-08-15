@@ -136,12 +136,27 @@ section is the running status record, alongside PR history and this ADR.
 Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
-  Wave 1 foundation lanes:                    pending
+  Wave 1 foundation lanes:                    complete
   Wave 1 Transport Assembly (C2-T1):          pending
   Wave 2 runtime / read-model lanes:          pending
   Wave 2 Transport / Quality Assembly (C2-T2): pending
   Canonical Authority Cutover (C2-Z):         pending
 ```
+
+Wave 1 landed 7 new core Rust modules under
+`src-tauri/crates/grimodex-db/src/narrative_extraction/` — Lane A
+`semantic_epoch.rs`, Lane B `execution_state.rs` (also adds `"superseded"`
+to the TS `NarrativeExtractionRunStatus` union), Lane C
+`finding_observation.rs`, Lane D `attention.rs`, Lane E extends
+`source_revision.rs` with lazy canonical-text access, Lane F
+`evaluator.rs`, Lane G `dependency_edges.rs`, Lane H
+`application_contributions.rs`. None of them have an IPC/N-API entrypoint
+yet — that is C2-T1's job — so every export is currently reachable only
+from its own module's tests (`#[allow(unused_imports)]` on the `mod.rs`
+re-exports documents that intentionally). Lane C and Lane F independently
+defined the same `EvidenceFreshness`/`FindingReasonCode` pair in parallel;
+the Integration Owner collapsed it to a single definition in
+`evaluator.rs` during merge, with `finding_observation.rs` importing it.
 
 C2-01 bumps the workspace schema 22→23 and adds, per ADR 005's C2 scope
 list only:

@@ -1,13 +1,19 @@
 //! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
+mod application_contributions;
+mod attention;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod dependency_edges;
 mod detail_operations;
+mod evaluator;
+mod execution_state;
 mod field_authority;
+mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
 mod models;
@@ -19,6 +25,7 @@ mod plot_thread_undo;
 mod reconciliation_envelope;
 mod repository;
 mod semantic_bindings;
+mod semantic_epoch;
 mod source_revision;
 mod task_leases;
 mod temporal_constraints;
@@ -28,6 +35,44 @@ mod temporal_projections;
 mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
+
+// Gate C2 Wave 1 (core Rust modules only; no IPC/N-API entrypoint is wired
+// up yet, so every re-export below is unreachable from outside its own
+// module's tests until C2-T1 Transport Assembly adds a caller).
+#[allow(unused_imports)]
+pub(crate) use application_contributions::{
+    list_contributions_for_application, list_contributions_for_target, record_contribution_in_tx,
+    ApplicationContribution, ContributionTargetState,
+};
+#[allow(unused_imports)]
+pub(crate) use attention::{
+    clear_attention_in_tx, get_attention, is_attention_applicable, set_attention_in_tx,
+    AttentionDisposition, AttentionRow,
+};
+#[allow(unused_imports)]
+pub(crate) use dependency_edges::{
+    delete_edges_for_consumer_in_tx, find_edges_by_consumer, find_edges_by_source,
+    record_dependency_edge_in_tx, DependencyEdge,
+};
+#[allow(unused_imports)]
+pub(crate) use evaluator::{evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation};
+#[allow(unused_imports)]
+pub(crate) use execution_state::{
+    supersede_run_in_tx, transition_attempt_status_in_tx, transition_run_status_in_tx,
+    transition_task_status_in_tx, NarrativeAttemptStatus, NarrativeRunStatus, NarrativeTaskStatus,
+};
+#[allow(unused_imports)]
+pub(crate) use finding_observation::{
+    list_observations_for_epoch, record_finding_observation_in_tx, FindingObservationRow,
+};
+// EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
+// (Lane F); `finding_observation` (Lane C) imports them from there instead
+// of a second, drifting copy — both Lanes independently defined this pair
+// in parallel and the Integration Owner collapsed it during Wave 1 merge.
+#[allow(unused_imports)]
+pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
+#[allow(unused_imports)]
+pub(crate) use semantic_epoch::{create_epoch_in_tx, get_current_epoch, list_epochs, CurrentEpoch};
 
 pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
 pub(crate) use foreshadow_undo::{

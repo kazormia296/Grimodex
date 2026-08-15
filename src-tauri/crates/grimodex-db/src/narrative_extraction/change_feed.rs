@@ -436,7 +436,13 @@ fn collect_canonical_blocks(node: &Value, blocks: &mut Vec<String>) {
     }
 }
 
-fn scene_canonical_text(storage: &str) -> String {
+/// Extracts the canonical plain-text projection of a Scene's ProseMirror
+/// `content` storage (block text joined by `\n`, matching the shared
+/// TypeScript serializer's golden fixtures). Shared with
+/// `source_revision::load_canonical_text_for_revalidation` so Gate C2's
+/// lazy-load re-anchoring path stays byte-for-byte consistent with the text
+/// impact digests computed here.
+pub(crate) fn scene_canonical_text(storage: &str) -> String {
     let Ok(document) = serde_json::from_str::<Value>(storage) else {
         return storage.to_string();
     };
