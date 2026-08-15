@@ -451,15 +451,11 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     expect(h.invoke).toHaveBeenNthCalledWith(2, "agent_event_delete", {
       payload: expect.objectContaining({ requestId: "event-delete-retry-1" }),
     });
-    expect(h.invoke).toHaveBeenNthCalledWith(
-      3,
-      "event_participants_set",
-      {
-        payload: expect.objectContaining({
-          requestId: "event-participants-retry-1",
-        }),
-      },
-    );
+    expect(h.invoke).toHaveBeenNthCalledWith(3, "event_participants_set", {
+      payload: expect.objectContaining({
+        requestId: "event-participants-retry-1",
+      }),
+    });
   });
 
   it("ChroniclePanel の手動 UI 更新も open Editor session へ通知する", async () => {
@@ -521,17 +517,13 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
         baseVersion: 4,
       }),
     });
-    expect(h.invoke).toHaveBeenNthCalledWith(
-      2,
-      "event_participants_set",
-      {
-        payload: expect.objectContaining({
-          eventId: "e1",
-          codexEntryIds: ["c1"],
-          baseVersion: 4,
-        }),
-      },
-    );
+    expect(h.invoke).toHaveBeenNthCalledWith(2, "event_participants_set", {
+      payload: expect.objectContaining({
+        eventId: "e1",
+        codexEntryIds: ["c1"],
+        baseVersion: 4,
+      }),
+    });
   });
 
   it("Event row undo/redo も同一rendererのDocument Sessionへ通知する", async () => {

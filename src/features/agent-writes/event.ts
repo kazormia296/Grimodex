@@ -119,9 +119,11 @@ const RENDERER_EVENT_COMMANDS: Record<EventWriterCommand, string> = {
 
 function canonicalEventCommand(command: string): EventWriterCommand | null {
   if (command in RENDERER_EVENT_COMMANDS) return command as EventWriterCommand;
-  const agentCommand = (Object.entries(RENDERER_EVENT_COMMANDS) as Array<
-    [EventWriterCommand, string]
-  >).find(([, rendererCommand]) => rendererCommand === command)?.[0];
+  const agentCommand = (
+    Object.entries(RENDERER_EVENT_COMMANDS) as Array<
+      [EventWriterCommand, string]
+    >
+  ).find(([, rendererCommand]) => rendererCommand === command)?.[0];
   return agentCommand ?? null;
 }
 
@@ -180,8 +182,7 @@ async function trackedEventWrite(
   }
   const authority = capturedAuthority ?? captureEventWriteAuthority(opts);
   const { projectId } = authority;
-  const requiresRequestId =
-    commandKind !== null;
+  const requiresRequestId = commandKind !== null;
   const suppliedRequestId =
     opts?.requestId ??
     (typeof payload.requestId === "string" &&
