@@ -198,37 +198,31 @@ async function trackedEventWrite(
   }
   const authorityOrigin = eventWriteAuthorityOrigin(opts?.surface);
   const authorityContext = requestId
-    ? createCanonicalWriteContext(
-        authorityOrigin,
-        undefined,
-        requestId,
-        authorityOrigin === "ai-apply"
-          ? {
-              provenance: {
-                requestId,
-                traceId:
-                  (payload.traceId as string | undefined) ??
-                  opts?.chatMessageId ??
-                  requestId,
-                ...(opts?.chatMessageId
-                  ? { chatMessageId: opts.chatMessageId }
-                  : {}),
-                ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
-              },
-              ...(opts?.agentAuthorityCapability
-                ? { agentAuthorityCapability: opts.agentAuthorityCapability }
-                : {}),
-              ...(opts?.chatMessageId
-                ? { chatMessageId: opts.chatMessageId }
-                : {}),
-              ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
-              ...(opts?.executionId ? { executionId: opts.executionId } : {}),
-              ...(opts?.mainOwnedProvenanceId
-                ? { mainOwnedProvenanceId: opts.mainOwnedProvenanceId }
-                : {}),
-            }
-          : undefined,
-      )
+    ? authorityOrigin === "ai-apply"
+      ? createCanonicalWriteContext("ai-apply", undefined, requestId, {
+          authorityRoute: "interactive-agent-command",
+          provenance: {
+            requestId,
+            traceId:
+              (payload.traceId as string | undefined) ??
+              opts?.chatMessageId ??
+              requestId,
+            ...(opts?.chatMessageId
+              ? { chatMessageId: opts.chatMessageId }
+              : {}),
+            ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
+          },
+          ...(opts?.agentAuthorityCapability
+            ? { agentAuthorityCapability: opts.agentAuthorityCapability }
+            : {}),
+          ...(opts?.chatMessageId ? { chatMessageId: opts.chatMessageId } : {}),
+          ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
+          ...(opts?.executionId ? { executionId: opts.executionId } : {}),
+          ...(opts?.mainOwnedProvenanceId
+            ? { mainOwnedProvenanceId: opts.mainOwnedProvenanceId }
+            : {}),
+        })
+      : createCanonicalWriteContext(authorityOrigin, undefined, requestId)
     : null;
   const outcome = await runAuthoritativeMutation(
     authority,

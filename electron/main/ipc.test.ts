@@ -416,6 +416,24 @@ describe("registerIpcRouter fail-soft logging", () => {
     });
   });
 
+  it("rejects an ambiguous ai-apply origin on a non-Agent renderer command", () => {
+    const bound = bindRendererAuthorityForIpc("codex_create", {
+      payload: {
+        projectId: "p1",
+        requestId: "ambiguous-ai-request",
+        eventUid: "ambiguous-ai-event",
+        origin: "ai-apply",
+        entryId: "entry-1",
+        typeSlug: "character",
+        name: "ambiguous",
+      },
+    });
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
   it.each([
     "codex_mutate",
     "event_create",

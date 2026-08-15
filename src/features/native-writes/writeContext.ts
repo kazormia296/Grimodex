@@ -1,7 +1,7 @@
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import {
   assertMutationAuthorityContext,
-  authorityRouteForOrigin,
+  authorityRouteForUnambiguousOrigin,
   requiredControlsForRoute,
   type MutationAuthorityRoute,
   type MutationControl,
@@ -56,6 +56,13 @@ export interface CanonicalWriteAuthorityOptions {
   writesAuthorityProtectedField?: boolean;
 }
 
+export type CanonicalAiApplyAuthorityOptions = Omit<
+  CanonicalWriteAuthorityOptions,
+  "authorityRoute"
+> & {
+  authorityRoute: "interactive-agent-command" | "interpreter-projection";
+};
+
 export interface CanonicalWriteReceipt {
   changeEventUid: string;
   maintenanceTransactionId: string;
@@ -67,6 +74,18 @@ export interface CanonicalHistoryWriteLease {
   committed(): void;
 }
 
+export function createCanonicalWriteContext(
+  origin: "ai-apply",
+  lineage: CanonicalWriteLineage | undefined,
+  stableRequestId: string | undefined,
+  authorityOptions: CanonicalAiApplyAuthorityOptions,
+): CanonicalWriteContext;
+export function createCanonicalWriteContext(
+  origin?: Exclude<CanonicalWriteOrigin, "ai-apply">,
+  lineage?: CanonicalWriteLineage,
+  stableRequestId?: string,
+  authorityOptions?: CanonicalWriteAuthorityOptions,
+): CanonicalWriteContext;
 export function createCanonicalWriteContext(
   origin: CanonicalWriteOrigin = "human",
   lineage?: CanonicalWriteLineage,
@@ -81,7 +100,14 @@ export function createCanonicalWriteContext(
   }
   const requestId = stableRequestId ?? crypto.randomUUID();
   const authorityRoute =
-    authorityOptions?.authorityRoute ?? authorityRouteForOrigin(origin);
+    authorityOptions?.authorityRoute ??
+    (origin === "ai-apply"
+      ? (() => {
+          throw new Error(
+            "ai-apply writes require an explicit authorityRoute (interactive-agent-command or interpreter-projection)",
+          );
+        })()
+      : authorityRouteForUnambiguousOrigin(origin));
   const writesAuthorityProtectedField =
     authorityOptions?.writesAuthorityProtectedField === true;
   const controls = new Set(

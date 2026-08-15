@@ -90,8 +90,9 @@ not start here.
 The C1.5 machine-readable contracts are:
 
 - `mutation-authority-routes.json` — the six Mutation Authority Routes,
-  exact caller allowlists, route-specific required controls, and conditional
-  Field Authority requirements;
+  positive fail-closed caller allowlists, diagnostic-only forbidden caller
+  lists, route-specific required controls, and Human Direct's conditional
+  Field Authority requirement;
 - `semantic-state-vocabulary.json` — Review, Evidence Freshness,
   Reconciliation Signal, Build Action, Component Compatibility, and Projection
   Application State as separate axes;
@@ -115,4 +116,6 @@ audit attribute. The read-only validator
 missing route controls, false runtime-control claims for untrusted generic SQL,
 direct Interpreter/Maintenance imports of Agent Writers, mixed state
 vocabulary, and a second Freshness authority. C1.5 keeps workspace SCHEMA 22
-and does not create C2 tables.
+and does not create C2 tables. `ai-apply` must carry an explicit authority
+route because it is valid for both Interactive Agent Command and Interpreter
+Projection; no origin-only fallback is permitted.

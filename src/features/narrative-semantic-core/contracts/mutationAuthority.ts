@@ -82,7 +82,9 @@ const ROUTE_ORIGINS = {
 
 const CONDITIONAL_CONTROLS = {
   "human-direct": ["field-authority"],
-  "interactive-agent-command": ["field-authority"],
+  // Interactive Agent writes always pass Field Authority. Keeping it in the
+  // required set (below) makes this route's admission rule unambiguous.
+  "interactive-agent-command": [],
   "interpreter-projection": [],
   "import-apply": [],
   "history-replay": [],
@@ -218,14 +220,24 @@ export function conditionalControlsForRoute(
   return CONDITIONAL_CONTROLS[route];
 }
 
-export function authorityRouteForOrigin(
-  origin: MutationOrigin,
+export type UnambiguousMutationOrigin = Exclude<MutationOrigin, "ai-apply">;
+
+/**
+ * Return a route only when the low-level origin carries enough information to
+ * identify one. `ai-apply` intentionally has two valid routes and must be
+ * supplied explicitly by the caller.
+ */
+export function authorityRouteForUnambiguousOrigin(
+  origin: UnambiguousMutationOrigin,
 ): MutationAuthorityRoute {
+  if ((origin as MutationOrigin) === "ai-apply") {
+    throw new Error(
+      "ai-apply is ambiguous; an explicit authorityRoute is required",
+    );
+  }
   switch (origin) {
     case "human":
       return "human-direct";
-    case "ai-apply":
-      return "interactive-agent-command";
     case "import":
       return "import-apply";
     case "undo":

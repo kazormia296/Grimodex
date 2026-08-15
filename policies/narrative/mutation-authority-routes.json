@@ -1,6 +1,8 @@
 {
   "schemaVersion": 1,
   "contract": "narrative-mutation-authority-routes",
+  "callerAuthorizationPolicy": "positive-allowlist-fail-closed",
+  "forbiddenCallersSemantics": "diagnostic-only",
   "routes": [
     {
       "id": "human-direct",
@@ -14,10 +16,17 @@
         "change-feed"
       ],
       "conditionalControls": [
-        { "control": "field-authority", "when": "writes-authority-protected-field" }
+        {
+          "control": "field-authority",
+          "when": "writes-authority-protected-field"
+        }
       ],
       "allowedCallers": ["human-ui", "manual-wrapper", "typed-domain-api"],
-      "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
     },
     {
       "id": "interactive-agent-command",
@@ -33,11 +42,17 @@
         "change-event",
         "change-feed"
       ],
-      "conditionalControls": [
-        { "control": "field-authority", "when": "writes-authority-protected-field" }
+      "conditionalControls": [],
+      "allowedCallers": [
+        "chat-tool-executor",
+        "manual-wrapper",
+        "registered-agent-surface"
       ],
-      "allowedCallers": ["chat-tool-executor", "manual-wrapper", "registered-agent-surface"],
-      "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
     },
     {
       "id": "interpreter-projection",
@@ -52,7 +67,12 @@
         "typed-writer"
       ],
       "conditionalControls": [],
-      "allowedCallers": ["interpreter", "reconciler", "proposal-review", "prepared-commit-runner"],
+      "allowedCallers": [
+        "interpreter",
+        "reconciler",
+        "proposal-review",
+        "prepared-commit-runner"
+      ],
       "forbiddenCallers": ["background-maintenance", "idle-scheduler"]
     },
     {
@@ -83,7 +103,11 @@
       ],
       "conditionalControls": [],
       "allowedCallers": ["history-controller", "undo-redo-command"],
-      "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
     },
     {
       "id": "restore-or-migration",
@@ -94,8 +118,16 @@
         "full-rebuild-marker"
       ],
       "conditionalControls": [],
-      "allowedCallers": ["restore-controller", "migration-runner", "integrity-repair"],
-      "forbiddenCallers": ["background-maintenance", "reconciler", "idle-scheduler"]
+      "allowedCallers": [
+        "restore-controller",
+        "migration-runner",
+        "integrity-repair"
+      ],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
     }
   ],
   "auditOrigins": [

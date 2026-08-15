@@ -56,6 +56,8 @@ export type ForeshadowChangeOrigin =
 export interface ForeshadowMutationLineage {
   requestId?: string;
   origin?: ForeshadowChangeOrigin;
+  /** Required when origin is ai-apply because that origin has two routes. */
+  authorityRoute?: "interactive-agent-command" | "interpreter-projection";
   originalTransactionId?: string;
   undoJournalId?: string;
 }
@@ -81,11 +83,21 @@ export function foreshadowMutationIdentity(
   if (options.origin === "undo" || options.origin === "redo") {
     return identity;
   }
-  const authority = createCanonicalWriteContext(
-    options.origin ?? "human",
-    undefined,
-    requestId,
-  );
+  const origin = options.origin ?? "human";
+  const authority =
+    origin === "ai-apply"
+      ? (() => {
+          const authorityRoute = options.authorityRoute;
+          if (!authorityRoute) {
+            throw new Error(
+              "ai-apply foreshadow writes require an explicit authorityRoute",
+            );
+          }
+          return createCanonicalWriteContext("ai-apply", undefined, requestId, {
+            authorityRoute,
+          });
+        })()
+      : createCanonicalWriteContext(origin, undefined, requestId);
   return {
     ...identity,
     authorityRoute: authority.authorityRoute,
@@ -1000,6 +1012,9 @@ export async function createForeshadowSetup(
         projectId,
         {
           origin: data.attribution === "ai" ? "ai-apply" : "human",
+          ...(data.attribution === "ai"
+            ? { authorityRoute: "interactive-agent-command" as const }
+            : {}),
         },
         data.id,
       ),

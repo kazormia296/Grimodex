@@ -478,7 +478,7 @@ function validateRendererAuthorityParity(
   }
 
   const rendererBranch = mainSource.match(
-    /if \(\s*CODEX_RENDERER_COMMANDS\.has\(cmd\)[\s\S]*?return authorityRouteForOrigin\(payload\.origin,\s*\[([\s\S]*?)\]\)/,
+    /if \(\s*CODEX_RENDERER_COMMANDS\.has\(cmd\)[\s\S]*?return authorityRouteFor(?:Unambiguous)?Origin\(payload\.origin,\s*\[([\s\S]*?)\]\)/,
   )?.[1];
   const mainRoutes = new Set(
     rendererBranch?.match(/"([a-z-]+)"/g)?.map((value) => value.slice(1, -1)) ?? [],

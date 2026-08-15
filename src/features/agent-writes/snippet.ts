@@ -78,6 +78,7 @@ export async function agentCreateSnippet(
     undefined,
     input.requestId,
     {
+      authorityRoute: "interactive-agent-command",
       provenance: {
         requestId: input.requestId,
         traceId: input.traceId ?? chatMessageId ?? input.requestId,

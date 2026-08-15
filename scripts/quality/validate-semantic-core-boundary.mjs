@@ -135,8 +135,10 @@ const EXPECTED_ALLOWED_CALLERS = Object.freeze({
 });
 
 const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
-  "human-direct": [{ control: "field-authority", when: "writes-authority-protected-field" }],
-  "interactive-agent-command": [{ control: "field-authority", when: "writes-authority-protected-field" }],
+  "human-direct": [
+    { control: "field-authority", when: "writes-authority-protected-field" },
+  ],
+  "interactive-agent-command": [],
   "interpreter-projection": [],
   "import-apply": [],
   "history-replay": [],
@@ -215,9 +217,24 @@ function validateRouteRegistry(registry, errors) {
     errors.push("mutation authority route registry schemaVersion must be 1");
     return new Map();
   }
-  if (!Array.isArray(registry.routes) || registry.routes.length !== AUTHORITY_ROUTE_IDS.length) {
-    errors.push("mutation authority route registry must define exactly six routes");
+  if (
+    !Array.isArray(registry.routes) ||
+    registry.routes.length !== AUTHORITY_ROUTE_IDS.length
+  ) {
+    errors.push(
+      "mutation authority route registry must define exactly six routes",
+    );
     return new Map();
+  }
+  if (registry.callerAuthorizationPolicy !== "positive-allowlist-fail-closed") {
+    errors.push(
+      "mutation authority callers must use a positive allowlist and fail closed",
+    );
+  }
+  if (registry.forbiddenCallersSemantics !== "diagnostic-only") {
+    errors.push(
+      "forbiddenCallers must be diagnostic-only and never grant access",
+    );
   }
 
   const routes = new Map();
@@ -231,7 +248,8 @@ function validateRouteRegistry(registry, errors) {
       errors.push(`${label} has unknown route: ${route.id}`);
       continue;
     }
-    if (routes.has(route.id)) errors.push(`duplicate mutation authority route: ${route.id}`);
+    if (routes.has(route.id))
+      errors.push(`duplicate mutation authority route: ${route.id}`);
     routes.set(route.id, route);
     const required = REQUIRED_ROUTE_CONTROLS[route.id] ?? [];
     if (!Array.isArray(route.requiredControls)) {
@@ -239,26 +257,71 @@ function validateRouteRegistry(registry, errors) {
     } else {
       for (const control of required) {
         if (!route.requiredControls.includes(control)) {
-          errors.push(`${route.id} route is missing required control: ${control}`);
+          errors.push(
+            `${route.id} route is missing required control: ${control}`,
+          );
         }
       }
     }
     if (!Array.isArray(route.forbiddenCallers)) {
       errors.push(`${label} forbiddenCallers must be an array`);
+    } else if (
+      new Set(route.forbiddenCallers).size !== route.forbiddenCallers.length
+    ) {
+      errors.push(`${route.id} forbiddenCallers must be unique`);
     }
     const expectedCallers = EXPECTED_ALLOWED_CALLERS[route.id] ?? [];
-    if (!Array.isArray(route.allowedCallers) || route.allowedCallers.length === 0) {
+    if (
+      !Array.isArray(route.allowedCallers) ||
+      route.allowedCallers.length === 0
+    ) {
       errors.push(`${label} allowedCallers must be a non-empty allowlist`);
-    } else if (JSON.stringify(route.allowedCallers) !== JSON.stringify(expectedCallers)) {
-      errors.push(`${route.id} allowedCallers do not match the canonical allowlist`);
+    } else {
+      if (new Set(route.allowedCallers).size !== route.allowedCallers.length) {
+        errors.push(`${route.id} allowedCallers must be unique`);
+      }
+      if (
+        JSON.stringify(route.allowedCallers) !== JSON.stringify(expectedCallers)
+      ) {
+        errors.push(
+          `${route.id} allowedCallers do not match the canonical allowlist`,
+        );
+      }
+      const forbidden = new Set(route.forbiddenCallers ?? []);
+      const overlap = route.allowedCallers.filter((caller) =>
+        forbidden.has(caller),
+      );
+      if (overlap.length > 0) {
+        errors.push(
+          `${route.id} allowedCallers and forbiddenCallers must be disjoint: ${overlap.join(", ")}`,
+        );
+      }
+    }
+    const requiredControls = new Set(route.requiredControls ?? []);
+    const conditionalControls = Array.isArray(route.conditionalControls)
+      ? route.conditionalControls.map((entry) => entry?.control)
+      : [];
+    const controlOverlap = conditionalControls.filter((control) =>
+      requiredControls.has(control),
+    );
+    if (controlOverlap.length > 0) {
+      errors.push(
+        `${route.id} controls cannot be both required and conditional: ${controlOverlap.join(", ")}`,
+      );
     }
     const expectedConditional = EXPECTED_CONDITIONAL_CONTROLS[route.id] ?? [];
-    if (JSON.stringify(route.conditionalControls ?? []) !== JSON.stringify(expectedConditional)) {
-      errors.push(`${route.id} conditionalControls do not match the canonical contract`);
+    if (
+      JSON.stringify(route.conditionalControls ?? []) !==
+      JSON.stringify(expectedConditional)
+    ) {
+      errors.push(
+        `${route.id} conditionalControls do not match the canonical contract`,
+      );
     }
   }
   for (const routeId of AUTHORITY_ROUTE_IDS) {
-    if (!routes.has(routeId)) errors.push(`missing mutation authority route: ${routeId}`);
+    if (!routes.has(routeId))
+      errors.push(`missing mutation authority route: ${routeId}`);
   }
   if (registry.unknownRoutePolicy !== "fail-closed") {
     errors.push("unknown mutation authority routes must fail closed");
@@ -271,7 +334,9 @@ function validateWriterRoutes(manifest, routes, errors) {
     errors.push("change-feed writer manifest operations must be an array");
     return 0;
   }
-  const routeCounts = Object.fromEntries(AUTHORITY_ROUTE_IDS.map((id) => [id, 0]));
+  const routeCounts = Object.fromEntries(
+    AUTHORITY_ROUTE_IDS.map((id) => [id, 0]),
+  );
   for (const [index, operation] of manifest.operations.entries()) {
     const label = `change-feed operation ${operation?.id ?? index}`;
     if (!isObject(operation)) {
@@ -295,7 +360,9 @@ function validateWriterRoutes(manifest, routes, errors) {
       isNonEmptyString(operation.authorityRoute) &&
       operation.authorityRoute !== variants[0]?.authorityRoute
     ) {
-      errors.push(`${label} authorityRoute must match the first authority variant`);
+      errors.push(
+        `${label} authorityRoute must match the first authority variant`,
+      );
     }
     const untrustedExcluded =
       operation.feedPolicy === "excluded" &&
@@ -308,7 +375,9 @@ function validateWriterRoutes(manifest, routes, errors) {
       }
       const route = routes.get(variant.authorityRoute);
       if (!route) {
-        errors.push(`${variantLabel} has unknown authority route: ${variant.authorityRoute}`);
+        errors.push(
+          `${variantLabel} has unknown authority route: ${variant.authorityRoute}`,
+        );
         continue;
       }
       routeCounts[variant.authorityRoute] += 1;
@@ -318,22 +387,31 @@ function validateWriterRoutes(manifest, routes, errors) {
       }
       if (variant.allowedCallers !== undefined) {
         const expectedCallers = route.allowedCallers ?? [];
-        if (JSON.stringify(variant.allowedCallers) !== JSON.stringify(expectedCallers)) {
-          errors.push(`${variantLabel} allowedCallers do not match the route allowlist`);
+        if (
+          JSON.stringify(variant.allowedCallers) !==
+          JSON.stringify(expectedCallers)
+        ) {
+          errors.push(
+            `${variantLabel} allowedCallers do not match the route allowlist`,
+          );
         }
       }
       if (untrustedExcluded) {
         if (variant.controls.length > 0) {
-          errors.push(`${label} untrusted generic SQL must not self-report runtime controls`);
+          errors.push(
+            `${label} untrusted generic SQL must not self-report runtime controls`,
+          );
         }
         continue;
       }
       const required = Array.isArray(route.requiredControls)
         ? route.requiredControls
-        : REQUIRED_ROUTE_CONTROLS[variant.authorityRoute] ?? [];
+        : (REQUIRED_ROUTE_CONTROLS[variant.authorityRoute] ?? []);
       for (const control of required) {
         if (!variant.controls.includes(control)) {
-          errors.push(`${variantLabel} is missing required control '${control}' for ${variant.authorityRoute}`);
+          errors.push(
+            `${variantLabel} is missing required control '${control}' for ${variant.authorityRoute}`,
+          );
         }
       }
     }
@@ -343,7 +421,9 @@ function validateWriterRoutes(manifest, routes, errors) {
         operation.runtimeEvidence.status !== "excluded" ||
         operation.runtimeEvidence.reason !== "untrusted-generic-sql")
     ) {
-      errors.push(`${label} must declare excluded runtimeEvidence for untrusted generic SQL`);
+      errors.push(
+        `${label} must declare excluded runtimeEvidence for untrusted generic SQL`,
+      );
     }
   }
   return { operationCount: manifest.operations.length, routeCounts };
@@ -356,13 +436,16 @@ function validateStateVocabulary(vocabulary, errors) {
   }
   for (const field of REQUIRED_STATE_FIELDS) {
     if (!Array.isArray(vocabulary[field]) || vocabulary[field].length === 0) {
-      errors.push(`semantic state vocabulary ${field} must be a non-empty array`);
+      errors.push(
+        `semantic state vocabulary ${field} must be a non-empty array`,
+      );
     }
   }
   const values = new Map();
   for (const field of REQUIRED_STATE_FIELDS) {
     for (const value of vocabulary[field] ?? []) {
-      if (!isNonEmptyString(value)) errors.push(`${field} contains an empty state value`);
+      if (!isNonEmptyString(value))
+        errors.push(`${field} contains an empty state value`);
       const fields = values.get(value) ?? [];
       fields.push(field);
       values.set(value, fields);
@@ -375,7 +458,9 @@ function validateStateVocabulary(vocabulary, errors) {
     if (fields.length > 1) {
       const key = [...fields].sort().join("|") + `:${value}`;
       if (!allowedOverlap.has(key)) {
-        errors.push(`state vocabulary value '${value}' is mixed across axes: ${fields.join(", ")}`);
+        errors.push(
+          `state vocabulary value '${value}' is mixed across axes: ${fields.join(", ")}`,
+        );
       }
     }
   }
@@ -409,13 +494,21 @@ function validateAuthorityMatrix(matrix, errors) {
         errors.push("semantic authority entry must have a concern");
         continue;
       }
-      if (concerns.has(authority.concern)) errors.push(`duplicate semantic authority concern: ${authority.concern}`);
+      if (concerns.has(authority.concern))
+        errors.push(
+          `duplicate semantic authority concern: ${authority.concern}`,
+        );
       concerns.add(authority.concern);
       if (!isNonEmptyString(authority.canonicalAuthority)) {
         errors.push(`${authority.concern} must declare canonicalAuthority`);
       }
-      if (authority.concern === "evidence-freshness" && /index/i.test(authority.canonicalAuthority)) {
-        errors.push("Semantic Index cannot be the Evidence Freshness authority");
+      if (
+        authority.concern === "evidence-freshness" &&
+        /index/i.test(authority.canonicalAuthority)
+      ) {
+        errors.push(
+          "Semantic Index cannot be the Evidence Freshness authority",
+        );
       }
     }
   }
@@ -427,16 +520,25 @@ function validateAuthorityMatrix(matrix, errors) {
     "dirtyCacheFlag",
   ];
   if (
-    JSON.stringify(matrix.semanticIndexAllowedFields) !== JSON.stringify(allowedFields)
+    JSON.stringify(matrix.semanticIndexAllowedFields) !==
+    JSON.stringify(allowedFields)
   ) {
-    errors.push("semantic index allowed fields must be generation/build metadata only");
+    errors.push(
+      "semantic index allowed fields must be generation/build metadata only",
+    );
   }
   if (matrix.secondaryFreshnessAuthorityPolicy !== "forbid") {
     errors.push("secondary freshness authorities must be forbidden");
   }
-  for (const claim of ["assertion-is-authoritative-fresh", "assertionFresh", "isAuthoritativeFresh"]) {
+  for (const claim of [
+    "assertion-is-authoritative-fresh",
+    "assertionFresh",
+    "isAuthoritativeFresh",
+  ]) {
     if (!matrix.forbiddenFreshnessClaims?.includes(claim)) {
-      errors.push(`semantic authority matrix must forbid freshness claim: ${claim}`);
+      errors.push(
+        `semantic authority matrix must forbid freshness claim: ${claim}`,
+      );
     }
   }
 }
@@ -447,23 +549,31 @@ function validateDisclosurePolicy(policy, errors) {
     return;
   }
   if (policy.admissionStage !== "before-ranking-candidate-admission") {
-    errors.push("disclosure policy must run before candidate admission/ranking");
+    errors.push(
+      "disclosure policy must run before candidate admission/ranking",
+    );
   }
   if (
     JSON.stringify(policy.phaseResolutionModes) !==
     JSON.stringify(["reading", "story", "auto"])
   ) {
-    errors.push("disclosure policy phaseResolutionModes must preserve ADR 002 modes");
+    errors.push(
+      "disclosure policy phaseResolutionModes must preserve ADR 002 modes",
+    );
   }
   const rules = new Set(
-    (policy.rejectionRules ?? []).map((rule) => (isObject(rule) ? rule.id : rule)),
+    (policy.rejectionRules ?? []).map((rule) =>
+      isObject(rule) ? rule.id : rule,
+    ),
   );
   for (const rule of REQUIRED_DISCLOSURE_RULES) {
-    if (!rules.has(rule)) errors.push(`disclosure policy is missing rejection rule: ${rule}`);
+    if (!rules.has(rule))
+      errors.push(`disclosure policy is missing rejection rule: ${rule}`);
   }
   const fixtures = new Set(policy.fixtures ?? []);
   for (const fixture of REQUIRED_DISCLOSURE_FIXTURES) {
-    if (!fixtures.has(fixture)) errors.push(`disclosure policy is missing fixture: ${fixture}`);
+    if (!fixtures.has(fixture))
+      errors.push(`disclosure policy is missing fixture: ${fixture}`);
   }
   for (const field of [
     "projectId",
@@ -498,11 +608,15 @@ function validateArchitectureImports(repoRoot, manifest, errors) {
   const roots = new Set();
   for (const relativeRoot of boundary.scanRoots) {
     if (!isNonEmptyString(relativeRoot) || path.isAbsolute(relativeRoot)) {
-      errors.push(`semanticBoundary scan root is not repository-relative: ${String(relativeRoot)}`);
+      errors.push(
+        `semanticBoundary scan root is not repository-relative: ${String(relativeRoot)}`,
+      );
       continue;
     }
     if (relativeRoot.split(/[\\/]/).includes("..")) {
-      errors.push(`semanticBoundary scan root escapes the repository: ${relativeRoot}`);
+      errors.push(
+        `semanticBoundary scan root escapes the repository: ${relativeRoot}`,
+      );
       continue;
     }
     if (roots.has(relativeRoot)) continue;
@@ -512,10 +626,14 @@ function validateArchitectureImports(repoRoot, manifest, errors) {
       const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
       const isRustBoundaryViolation =
         file.endsWith(".rs") &&
-        FORBIDDEN_DIRECT_RUST_BOUNDARY_IMPORTS.some((pattern) => pattern.test(source)) &&
+        FORBIDDEN_DIRECT_RUST_BOUNDARY_IMPORTS.some((pattern) =>
+          pattern.test(source),
+        ) &&
         !ALLOWED_RUST_TYPED_WRITER_BRIDGES.has(relativeFile);
       if (
-        FORBIDDEN_DIRECT_BOUNDARY_IMPORTS.some((pattern) => pattern.test(source)) ||
+        FORBIDDEN_DIRECT_BOUNDARY_IMPORTS.some((pattern) =>
+          pattern.test(source),
+        ) ||
         FORBIDDEN_DIRECT_AGENT_COMMAND_CALL.test(source) ||
         isRustBoundaryViolation
       ) {
@@ -530,9 +648,7 @@ function validateArchitectureImports(repoRoot, manifest, errors) {
 function validateMutationCommandInventory(repoRoot, manifest, errors) {
   const inventory = manifest?.semanticBoundary?.commandInventory;
   if (!isObject(inventory) || inventory.schemaVersion !== 1) {
-    errors.push(
-      "semanticBoundary.commandInventory schemaVersion must be 1",
-    );
+    errors.push("semanticBoundary.commandInventory schemaVersion must be 1");
     return;
   }
   if (!Array.isArray(inventory.sources) || inventory.sources.length === 0) {
@@ -589,21 +705,27 @@ function validateMutationCommandInventory(repoRoot, manifest, errors) {
     const commandMatches =
       sourceSpec.extractor === "browser-command-cases"
         ? (() => {
-            const switchBody = /switch\s*\(cmd\)\s*\{([\s\S]*?)\n\s*default\s*:/m.exec(
-              source,
-            )?.[1];
+            const switchBody =
+              /switch\s*\(cmd\)\s*\{([\s\S]*?)\n\s*default\s*:/m.exec(
+                source,
+              )?.[1];
             return switchBody?.matchAll(extractors["switch-cases"]) ?? [];
           })()
         : source.matchAll(extractor);
     for (const match of commandMatches) {
       const command = match[1];
       if (
-        !inventory.mutationPrefixes.some((prefix) => command.startsWith(prefix)) ||
+        !inventory.mutationPrefixes.some((prefix) =>
+          command.startsWith(prefix),
+        ) ||
         ignoredCommands.has(command)
       ) {
         continue;
       }
-      if (sourceSpec.surface === "electron-ipc" && !manifestRoutes.has(command)) {
+      if (
+        sourceSpec.surface === "electron-ipc" &&
+        !manifestRoutes.has(command)
+      ) {
         errors.push(
           `unregistered mutation command ${sourceSpec.surface}:${command}; add it to the Change Feed writer manifest`,
         );
@@ -621,12 +743,19 @@ function validateContractFixtures(repoRoot, errors) {
     "mutation authority fixtures",
   );
   if (routeFixture) {
-    if (routeFixture.schemaVersion !== 1 || !Array.isArray(routeFixture.fixtures)) {
-      errors.push("mutation authority fixtures must declare schemaVersion 1 and fixtures");
+    if (
+      routeFixture.schemaVersion !== 1 ||
+      !Array.isArray(routeFixture.fixtures)
+    ) {
+      errors.push(
+        "mutation authority fixtures must declare schemaVersion 1 and fixtures",
+      );
     } else {
       for (const fixture of routeFixture.fixtures) {
         if (!AUTHORITY_ROUTE_IDS.includes(fixture?.authorityRoute)) {
-          errors.push(`mutation authority fixture has unknown route: ${fixture?.authorityRoute}`);
+          errors.push(
+            `mutation authority fixture has unknown route: ${fixture?.authorityRoute}`,
+          );
         }
       }
     }
@@ -645,10 +774,14 @@ function validateContractFixtures(repoRoot, errors) {
     !evidenceFixture ||
     evidenceFixture.schemaVersion !== 1 ||
     !Array.isArray(evidenceFixture.fixtures) ||
-    !evidenceFixture.fixtures.some((fixture) => fixture?.expected === "reject") ||
+    !evidenceFixture.fixtures.some(
+      (fixture) => fixture?.expected === "reject",
+    ) ||
     !evidenceFixture.fixtures.some((fixture) => fixture?.expected === "accept")
   ) {
-    errors.push("evidence policy fixtures must contain both accept and reject cases");
+    errors.push(
+      "evidence policy fixtures must contain both accept and reject cases",
+    );
   }
 
   const projectionFixture = readJson(
@@ -664,24 +797,17 @@ function validateContractFixtures(repoRoot, errors) {
     !Array.isArray(projectionFixture.projections) ||
     projectionFixture.projections.length < 4
   ) {
-    errors.push("projection state fixtures must cover multiple projections for one revision");
+    errors.push(
+      "projection state fixtures must cover multiple projections for one revision",
+    );
   }
 }
 
 function validatePolicySchemas(repoRoot, errors) {
   const schemaContracts = [
-    [
-      "mutation-authority-routes.schema.json",
-      "mutation-authority-routes.json",
-    ],
-    [
-      "semantic-state-vocabulary.schema.json",
-      "semantic-state-vocabulary.json",
-    ],
-    [
-      "semantic-core-authorities.schema.json",
-      "semantic-core-authorities.json",
-    ],
+    ["mutation-authority-routes.schema.json", "mutation-authority-routes.json"],
+    ["semantic-state-vocabulary.schema.json", "semantic-state-vocabulary.json"],
+    ["semantic-core-authorities.schema.json", "semantic-core-authorities.json"],
     ["retrieval-disclosure.schema.json", "retrieval-disclosure.json"],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });

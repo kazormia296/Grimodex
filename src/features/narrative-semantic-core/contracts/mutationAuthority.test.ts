@@ -5,6 +5,7 @@ import {
   assertMutationAuthorityContext,
   allowedCallersForRoute,
   conditionalControlsForRoute,
+  authorityRouteForUnambiguousOrigin,
   isMutationAuthorityRoute,
   requiredControlsForRoute,
   type MutationAuthorityContext,
@@ -26,6 +27,14 @@ describe("narrative mutation authority routes", () => {
     expect(context.origin).toBe("ai-apply");
     expect(context.authorityRoute).toBe("interactive-agent-command");
     expect(() => assertMutationAuthorityContext(context)).not.toThrow();
+  });
+
+  it("does not infer a route from the ambiguous ai-apply origin", () => {
+    expect(authorityRouteForUnambiguousOrigin("human")).toBe("human-direct");
+    expect(authorityRouteForUnambiguousOrigin("import")).toBe("import-apply");
+    expect(() =>
+      authorityRouteForUnambiguousOrigin("ai-apply" as never),
+    ).toThrow(/ai-apply|unambiguous/i);
   });
 
   it("fails closed for unknown routes and missing route controls", () => {
@@ -85,12 +94,34 @@ describe("narrative mutation authority routes", () => {
         provenance: { requestId: "request-1", traceId: "trace-1" },
       }),
     ).toThrow(/origin/i);
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "import",
+        authorityRoute: "import-apply",
+        caller: "reconciler",
+        controls: requiredControlsForRoute("import-apply"),
+      }),
+    ).toThrow(/forbidden caller/i);
   });
 
   it("requires Field Authority only when the mutation targets protected fields", () => {
     expect(conditionalControlsForRoute("human-direct")).toEqual([
       "field-authority",
     ]);
+    expect(conditionalControlsForRoute("interactive-agent-command")).toEqual(
+      [],
+    );
+    expect(() =>
+      assertMutationAuthorityContext({
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
+        controls: requiredControlsForRoute("interactive-agent-command").filter(
+          (control) => control !== "field-authority",
+        ),
+        provenance: { requestId: "request-1", traceId: "trace-1" },
+      }),
+    ).toThrow(/required control.*field-authority/i);
     const base = {
       origin: "human" as const,
       authorityRoute: "human-direct" as const,

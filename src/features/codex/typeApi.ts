@@ -102,7 +102,9 @@ export function builtinLabelRelabel(
 export async function ensureBuiltinTypes(
   projectId: string,
   lang?: string | null,
-  options: { origin?: CanonicalWriteOrigin } = {},
+  options: {
+    origin?: Exclude<CanonicalWriteOrigin, "ai-apply">;
+  } = {},
 ): Promise<void> {
   const builtinTypes = builtinTypesForLang(lang);
   const existing = await db

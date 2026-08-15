@@ -131,6 +131,7 @@ export async function agentCreateForeshadow(
     undefined,
     input.requestId,
     {
+      authorityRoute: "interactive-agent-command",
       ...authority,
       provenance: {
         requestId: input.requestId,
@@ -194,6 +195,7 @@ export async function agentUpdateForeshadow(
     undefined,
     input.requestId,
     {
+      authorityRoute: "interactive-agent-command",
       ...authority,
       provenance: {
         requestId: input.requestId,

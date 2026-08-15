@@ -101,40 +101,31 @@ function agentCodexWriteContext(
   >,
 ) {
   const stableRequestId = requestId ?? crypto.randomUUID();
-  return createCanonicalWriteContext(
-    surface === "manual" ? "human" : "ai-apply",
-    undefined,
-    stableRequestId,
-    surface === "manual"
-      ? undefined
-      : {
-          provenance: {
-            requestId: stableRequestId,
-            traceId: provenance?.traceId ?? stableRequestId,
-            ...(provenance?.chatMessageId
-              ? { chatMessageId: provenance.chatMessageId }
-              : {}),
-            ...(provenance?.toolCallId
-              ? { toolCallId: provenance.toolCallId }
-              : {}),
-          },
-          ...(authority?.agentAuthorityCapability
-            ? { agentAuthorityCapability: authority.agentAuthorityCapability }
-            : {}),
-          ...(authority?.chatMessageId
-            ? { chatMessageId: authority.chatMessageId }
-            : {}),
-          ...(authority?.toolCallId
-            ? { toolCallId: authority.toolCallId }
-            : {}),
-          ...(authority?.executionId
-            ? { executionId: authority.executionId }
-            : {}),
-          ...(authority?.mainOwnedProvenanceId
-            ? { mainOwnedProvenanceId: authority.mainOwnedProvenanceId }
-            : {}),
-        },
-  );
+  if (surface === "manual") {
+    return createCanonicalWriteContext("human", undefined, stableRequestId);
+  }
+  return createCanonicalWriteContext("ai-apply", undefined, stableRequestId, {
+    authorityRoute: "interactive-agent-command",
+    provenance: {
+      requestId: stableRequestId,
+      traceId: provenance?.traceId ?? stableRequestId,
+      ...(provenance?.chatMessageId
+        ? { chatMessageId: provenance.chatMessageId }
+        : {}),
+      ...(provenance?.toolCallId ? { toolCallId: provenance.toolCallId } : {}),
+    },
+    ...(authority?.agentAuthorityCapability
+      ? { agentAuthorityCapability: authority.agentAuthorityCapability }
+      : {}),
+    ...(authority?.chatMessageId
+      ? { chatMessageId: authority.chatMessageId }
+      : {}),
+    ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+    ...(authority?.executionId ? { executionId: authority.executionId } : {}),
+    ...(authority?.mainOwnedProvenanceId
+      ? { mainOwnedProvenanceId: authority.mainOwnedProvenanceId }
+      : {}),
+  });
 }
 
 function buildCodexAuthorshipSpans(

@@ -1515,7 +1515,7 @@ function consumeAgentAuthorityCapability(
   return bindMainOwnedAgentMutation(payload, record) ? record : null;
 }
 
-function authorityRouteForOrigin(
+function authorityRouteForUnambiguousOrigin(
   origin: unknown,
   allowedRoutes?: readonly CanonicalAuthorityRoute[],
 ): CanonicalAuthorityRoute | undefined {
@@ -1523,8 +1523,6 @@ function authorityRouteForOrigin(
     switch (origin) {
       case "human":
         return "human-direct";
-      case "ai-apply":
-        return "interactive-agent-command";
       case "import":
         return "import-apply";
       case "undo":
@@ -1590,7 +1588,7 @@ function authorityRouteForRendererCommand(
     CODEX_RENDERER_COMMANDS.has(cmd) ||
     RENDERER_CHRONICLE_COMMANDS.has(cmd)
   ) {
-    return authorityRouteForOrigin(payload.origin, [
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
       "human-direct",
       "import-apply",
       "history-replay",
@@ -1603,7 +1601,7 @@ function authorityRouteForRendererCommand(
     cmd === "foreshadow_update" ||
     cmd === "foreshadow_delete"
   ) {
-    return authorityRouteForOrigin(payload.origin, [
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
       "human-direct",
       "history-replay",
       "restore-or-migration",
@@ -1611,7 +1609,7 @@ function authorityRouteForRendererCommand(
   }
 
   if (cmd === "foreshadow_update_setup") {
-    return authorityRouteForOrigin(payload.origin, [
+    return authorityRouteForUnambiguousOrigin(payload.origin, [
       "human-direct",
       "history-replay",
       "restore-or-migration",
@@ -1619,14 +1617,15 @@ function authorityRouteForRendererCommand(
   }
 
   if (cmd === "foreshadow_setup_create_ai") {
-    return authorityRouteForOrigin(payload.origin, [
-      "human-direct",
-      "interactive-agent-command",
-    ]);
+    // This command is itself the explicit Interactive Agent surface. The
+    // route is selected by the trusted command contract, never inferred from
+    // the ambiguous ai-apply origin.
+    if (payload.origin === "ai-apply") return "interactive-agent-command";
+    return authorityRouteForUnambiguousOrigin(payload.origin, ["human-direct"]);
   }
 
   if (GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd)) {
-    return authorityRouteForOrigin(
+    return authorityRouteForUnambiguousOrigin(
       payload.origin,
       cmd === "snippet_create"
         ? ["human-direct", "import-apply", "restore-or-migration"]

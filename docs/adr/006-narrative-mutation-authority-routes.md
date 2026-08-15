@@ -9,6 +9,11 @@ It does not change the existing low-level `origin` field or introduce a new
 database table. The machine-readable contract is
 `policies/narrative/mutation-authority-routes.json`.
 
+Caller authorization is a positive, fail-closed allowlist. Only a route's
+`allowedCallers` can grant access; absence from `forbiddenCallers` never grants
+access. `forbiddenCallers` is diagnostic-only, and the two lists must be
+disjoint.
+
 ## Context
 
 The C1 Change Feed records the low-level origin of a mutation:
@@ -72,6 +77,7 @@ command, but it always requires:
 - stable request identity;
 - chat message, tool call, and trace provenance;
 - a Typed Writer and OCC;
+- Field Authority admission;
 - Undo Journal lineage;
 - canonical Change Event and Change Feed emission.
 
@@ -107,6 +113,10 @@ transaction and journal lineage. It is not semantic truth correction.
 operations. These may emit a Semantic Epoch Reset and request a full rebuild;
 they do not pretend to be a set of ordinary row-level mutations.
 
+`ai-apply` is intentionally ambiguous between the Interactive Agent Command
+and Interpreter Projection routes. Callers must provide `authorityRoute`
+explicitly; no canonical writer may infer a route from `ai-apply`.
+
 ## Invariants
 
 1. `origin` and `authorityRoute` are stored and reasoned about independently.
@@ -118,7 +128,12 @@ they do not pretend to be a set of ordinary row-level mutations.
 6. Semantic Interpretation mutation always uses Proposal, Decision, and
    Prepared Commit.
 7. Undo, Redo, Restore, and Migration remain independent system routes.
-8. An unknown or unclassified route is a hard validation error.
+8. Caller authority comes only from `allowedCallers`; `forbiddenCallers` is
+   diagnostic-only, and an unknown caller fails closed.
+9. `allowedCallers` and `forbiddenCallers` are disjoint, and each list is
+   unique where present.
+10. `ai-apply` never receives an implicitly inferred authority route.
+11. An unknown or unclassified route is a hard validation error.
 
 ## Consequences
 

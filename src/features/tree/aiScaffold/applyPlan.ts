@@ -308,42 +308,35 @@ async function applyAiTreePlanWithAuthority(
       originalTransactionId: null,
       undoJournalId: null,
     };
-    const authorityContext = createCanonicalWriteContext(
-      redo ? "redo" : "ai-apply",
-      redo
-        ? {
-            originalTransactionId: originalMaintenanceTransactionId!,
-            undoJournalId: originalUndoJournalId!,
-          }
-        : undefined,
+    const requestId =
       typeof payload.requestId === "string"
         ? payload.requestId
-        : initialRequest.payload.requestId,
-      redo
-        ? undefined
-        : {
-            provenance: {
-              requestId:
-                typeof payload.requestId === "string"
-                  ? payload.requestId
-                  : initialRequest.payload.requestId,
-              traceId:
-                ctx.traceId ??
-                (typeof payload.requestId === "string"
-                  ? payload.requestId
-                  : initialRequest.payload.requestId),
-            },
-            ...(ctx.agentAuthorityCapability
-              ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
-              : {}),
-            ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
-            ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
-            ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
-            ...(ctx.mainOwnedProvenanceId
-              ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
-              : {}),
+        : initialRequest.payload.requestId;
+    const authorityContext = redo
+      ? createCanonicalWriteContext(
+          "redo",
+          {
+            originalTransactionId: originalMaintenanceTransactionId!,
+            undoJournalId: originalUndoJournalId!,
           },
-    );
+          requestId,
+        )
+      : createCanonicalWriteContext("ai-apply", undefined, requestId, {
+          authorityRoute: "interactive-agent-command",
+          provenance: {
+            requestId,
+            traceId: ctx.traceId ?? requestId,
+          },
+          ...(ctx.agentAuthorityCapability
+            ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
+            : {}),
+          ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
+          ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
+          ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
+          ...(ctx.mainOwnedProvenanceId
+            ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
+            : {}),
+        });
     Object.assign(payload, {
       eventUid: authorityContext.eventUid,
       authorityRoute: authorityContext.authorityRoute,
