@@ -1,0 +1,936 @@
+//! Publish Runtime (Gate C2 Wave 2 Lane J): the single integrated
+//! transaction that turns a batch of already-evaluated Dependency Edge
+//! outcomes (`evaluator::EdgeObservation`, Lane F -- pure, no DB I/O) into
+//! every durable write a completed Freshness-evaluation Run must make.
+//!
+//! ADR 005 Amendment, "Mutation-time" flow (`docs/adr/005-narrative-semantic-core-boundary.md`):
+//!
+//! ```text
+//! Source mutation
+//!   -> Change Feed
+//!   -> Reverse Dependency Lookup      (dependency_edges::find_edges_by_source, Lane G)
+//!   -> Freshness re-evaluation        (evaluator::evaluate_edge, Lane F)
+//!   -> Publish                        (this module, Lane J)
+//! ```
+//!
+//! Two new typed writers land here -- nowhere else in the crate writes
+//! either table:
+//!
+//! - [`write_edge_state_in_tx`] -- `narrative_dependency_edge_states`
+//!   (SCHEMA_VERSION 23), one row per Edge, PK `edge_id`. A per-Edge
+//!   diagnostic snapshot of the *last* evaluation only; re-evaluating an
+//!   Edge overwrites this row rather than accumulating history.
+//! - [`write_consumer_freshness_in_tx`] -- `narrative_consumer_freshness`,
+//!   one row per Consumer, PK `(project_id, consumer_kind, consumer_key)`.
+//!   This *is* the Freshness authority
+//!   (`policies/narrative/semantic-core-authorities.json`'s
+//!   `evidence-freshness` concern): "C2 must not create a second durable
+//!   Freshness authority" (ADR 005 Amendment, "Authority matrix and C2
+//!   start condition"). `finding_observation.rs`'s diagnostic history and
+//!   `semantic_index_diagnostics.rs`'s dirty-cache flag are both explicitly
+//!   documented as *not* this authority; this module is the only writer of
+//!   it.
+//!
+//! [`publish_freshness_evaluation_in_tx`] is the orchestrator: one
+//! caller-owned transaction that, in fixed order, writes both tables above,
+//! records a Finding Observation (Lane C) for every Edge that has something
+//! to explain, completes the Run (Lane B), and acknowledges the Change Feed
+//! cursor reservation (Lane I). Like every other `_in_tx` helper in this
+//! crate it does not open or close the transaction itself -- unlike most of
+//! them, it *requires* one already be open (`!conn.is_autocommit()`):
+//! in autocommit mode each step below would commit independently, so a
+//! failure partway through (most plausibly the final cursor acknowledge)
+//! would leave Edge State / Consumer Freshness / Finding Observation / Run
+//! status changes durably committed with no matching cursor advance -- the
+//! same hazard `cursor_reservation.rs`'s own mutating functions guard
+//! against, for the same reason.
+
+use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+
+use super::cursor_reservation::acknowledge_cursor_in_tx;
+use super::evaluator::{EdgeObservation, EvidenceFreshness, FindingReasonCode};
+use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+use super::finding_observation::record_finding_observation_in_tx;
+
+/// Fail closed (mirrors `finding_observation.rs::ensure_epoch_project`,
+/// which this module cannot import -- that function is private to its own
+/// module) rather than let a Semantic Epoch that belongs to a different
+/// project silently attach state to the wrong project. The `evaluated_at_epoch_id`
+/// / `semantic_epoch_id` foreign keys only check bare existence, not project
+/// ownership.
+fn ensure_epoch_belongs_to_project(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<()> {
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM narrative_semantic_epochs WHERE id = ?1",
+            params![semantic_epoch_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match owner {
+        Some(owner) if owner == project_id => Ok(()),
+        Some(_) => anyhow::bail!(
+            "NEX_PUBLISH_RUNTIME_EPOCH_PROJECT_MISMATCH: semantic epoch '{semantic_epoch_id}' \
+             does not belong to project '{project_id}'"
+        ),
+        None => anyhow::bail!(
+            "NEX_PUBLISH_RUNTIME_EPOCH_MISSING: semantic epoch '{semantic_epoch_id}' was not found"
+        ),
+    }
+}
+
+/// Same fail-closed shape as [`ensure_epoch_belongs_to_project`], for the
+/// Edge's own project ownership. `narrative_dependency_edge_states.edge_id`
+/// FK-references `narrative_dependency_edges(id)` only, so an Edge that
+/// exists but belongs to a different project would otherwise pass silently.
+fn ensure_edge_belongs_to_project(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+) -> anyhow::Result<()> {
+    let owner: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM narrative_dependency_edges WHERE id = ?1",
+            params![edge_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    match owner {
+        Some(owner) if owner == project_id => Ok(()),
+        Some(_) => anyhow::bail!(
+            "NEX_PUBLISH_RUNTIME_EDGE_PROJECT_MISMATCH: dependency edge '{edge_id}' does not \
+             belong to project '{project_id}'"
+        ),
+        None => anyhow::bail!(
+            "NEX_PUBLISH_RUNTIME_EDGE_MISSING: dependency edge '{edge_id}' was not found"
+        ),
+    }
+}
+
+/// Upsert one Dependency Edge's latest evaluated outcome into
+/// `narrative_dependency_edge_states` (SCHEMA_VERSION 23, PK `edge_id`).
+/// This is a per-Edge diagnostic snapshot -- "what did the most recent
+/// evaluation of this specific Edge conclude" -- not itself the Freshness
+/// authority (see module docs, and [`write_consumer_freshness_in_tx`]).
+/// Re-running an evaluation for the same `edge_id` overwrites this row in
+/// place rather than accumulating history; history of *why* an Edge went
+/// stale lives in `narrative_maintenance_finding_observations`
+/// (`finding_observation.rs`, Lane C) instead.
+///
+/// Callers own the surrounding `BEGIN`/`COMMIT`.
+pub(crate) fn write_edge_state_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    observation: &EdgeObservation,
+    semantic_epoch_id: &str,
+    evaluated_at: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!edge_id.trim().is_empty(), "edgeId is required");
+    anyhow::ensure!(
+        !semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(!evaluated_at.trim().is_empty(), "evaluatedAt is required");
+
+    ensure_edge_belongs_to_project(conn, project_id, edge_id)?;
+    ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
+
+    conn.execute(
+        "INSERT INTO narrative_dependency_edge_states
+            (edge_id, project_id, evidence_freshness, reason_code, build_action,
+             evaluated_at_epoch_id, evaluated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(edge_id) DO UPDATE SET
+             evidence_freshness = excluded.evidence_freshness,
+             reason_code = excluded.reason_code,
+             build_action = excluded.build_action,
+             evaluated_at_epoch_id = excluded.evaluated_at_epoch_id,
+             evaluated_at = excluded.evaluated_at",
+        params![
+            edge_id,
+            project_id,
+            observation.freshness.as_str(),
+            observation.reason_code.map(FindingReasonCode::as_str),
+            observation.build_action.as_str(),
+            semantic_epoch_id,
+            evaluated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Upsert one Consumer's current Freshness row into
+/// `narrative_consumer_freshness` (PK `(project_id, consumer_kind,
+/// consumer_key)`) -- **the** durable Freshness authority (see module
+/// docs). Callers publishing an evaluation across several Edges for the
+/// same Consumer are expected to have already reduced those Edges'
+/// individual `EdgeObservation`s down to the single worst one (see
+/// [`publish_freshness_evaluation_in_tx`]'s `freshness_severity_rank`) and
+/// pass that here; this function itself has no visibility into any other
+/// Edge and performs no such reduction.
+///
+/// `last_evaluated_run_id` is nullable in the schema (a Consumer may have a
+/// Freshness row seeded by something other than a Run, e.g. legacy
+/// backfill) and is written exactly as passed, `None` included.
+///
+/// Callers own the surrounding `BEGIN`/`COMMIT`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_consumer_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    observation: &EdgeObservation,
+    semantic_epoch_id: &str,
+    last_evaluated_run_id: Option<&str>,
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
+    anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
+    anyhow::ensure!(
+        !semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(!updated_at.trim().is_empty(), "updatedAt is required");
+
+    ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
+
+    conn.execute(
+        "INSERT INTO narrative_consumer_freshness
+            (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
+             semantic_epoch_id, last_evaluated_run_id, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(project_id, consumer_kind, consumer_key) DO UPDATE SET
+             evidence_freshness = excluded.evidence_freshness,
+             build_action = excluded.build_action,
+             semantic_epoch_id = excluded.semantic_epoch_id,
+             last_evaluated_run_id = excluded.last_evaluated_run_id,
+             updated_at = excluded.updated_at",
+        params![
+            project_id,
+            consumer_kind,
+            consumer_key,
+            observation.freshness.as_str(),
+            observation.build_action.as_str(),
+            semantic_epoch_id,
+            last_evaluated_run_id,
+            updated_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Severity rank used to pick the single worst Freshness value across a
+/// Consumer's Edges for the one `narrative_consumer_freshness` row
+/// [`publish_freshness_evaluation_in_tx`] writes. Higher is worse. This is
+/// a design decision -- ADR 005's Amendment fixes the six Freshness values,
+/// not their relative severity for a multi-Edge Consumer rollup -- recorded
+/// here:
+///
+/// 1. `SourceMissing` (5, worst) -- data is gone; unrecoverable without a
+///    human decision (`BuildAction::Manual`). Nothing ranks worse: there is
+///    no dependency left to reconcile at all.
+/// 2. `Unknown` (4) -- Freshness could not even be determined (normalizer/
+///    component incompatibility, `evaluator::evaluate_edge` branches 2-3).
+///    This ranks above every *determinate* bad state because it blocks
+///    judgment entirely: the Consumer might be Stale, might be Fresh, and
+///    nothing here can tell without a recompile/resolve pass first.
+/// 3. `ReadSetDrift` / `AnchorMismatch` (3, tied) -- the Consumer's
+///    dependency *identity* itself moved (what it reads, or where its
+///    anchor resolves), not just the Source's content. This is a more
+///    fundamental break than ordinary staleness: the Consumer may be
+///    reading the wrong thing entirely, not an outdated version of the
+///    right thing.
+/// 4. `Stale` (2) -- the Source materially changed under an otherwise
+///    intact dependency. Serious, but well understood:
+///    `BuildAction::RebuildRequired` is a direct, mechanical fix.
+/// 5. `Fresh` (1, best) -- nothing to reconcile.
+///
+/// Ties (e.g. two Edges both Stale) keep the *first* Edge encountered in
+/// caller-supplied order -- see the strict `>` comparison in
+/// [`publish_freshness_evaluation_in_tx`], not `>=`.
+fn freshness_severity_rank(freshness: EvidenceFreshness) -> u8 {
+    match freshness {
+        EvidenceFreshness::SourceMissing => 5,
+        EvidenceFreshness::Unknown => 4,
+        EvidenceFreshness::ReadSetDrift | EvidenceFreshness::AnchorMismatch => 3,
+        EvidenceFreshness::Stale => 2,
+        EvidenceFreshness::Fresh => 1,
+    }
+}
+
+/// Stable Attention/Finding key for one Edge's diagnostic Finding row.
+/// `edge_id` alone is enough: `record_dependency_edge_in_tx` (Lane G)
+/// upserts on `(project_id, consumer_kind, consumer_key,
+/// source_object_identity)` and keeps the same `id` across re-declarations,
+/// so this key stays stable across repeated evaluations of the same Edge --
+/// required for a human's Attention disposition
+/// (`narrative_maintenance_attention`, keyed on this same string) to keep
+/// applying to the same recurring problem instead of resetting every Run.
+fn edge_finding_key(edge_id: &str) -> String {
+    format!("edge:{edge_id}")
+}
+
+/// Deterministic `sha256:`-prefixed digest standing in for
+/// `narrative_maintenance_finding_observations.material_basis_digest`.
+/// [`publish_freshness_evaluation_in_tx`]'s fixed signature receives only
+/// already-evaluated `EdgeObservation`s, not the raw
+/// `evaluator::EdgeComparisonInput` signals that produced them (that
+/// comparison happens upstream, before this module is ever called), so the
+/// material basis this function can attest to is exactly what it has in
+/// hand: which Edge, at which Semantic Epoch, evaluated to which
+/// (Freshness, reason code, Build Action) triple. That is enough for
+/// Attention's `material-basis-digest-match` check (`attention.rs`) to do
+/// its job: the digest changes whenever a re-evaluation's *result* changes,
+/// so a dismissal recorded against one observed outcome is correctly
+/// treated as stale once a later Run observes a different one.
+fn edge_material_basis_digest(
+    edge_id: &str,
+    semantic_epoch_id: &str,
+    observation: &EdgeObservation,
+) -> String {
+    let canonical = format!(
+        "{edge_id}|{semantic_epoch_id}|{}|{}|{}",
+        observation.freshness.as_str(),
+        observation
+            .reason_code
+            .map(FindingReasonCode::as_str)
+            .unwrap_or(""),
+        observation.build_action.as_str(),
+    );
+    format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(canonical.as_bytes()))
+    )
+}
+
+/// Publish the outcome of one Freshness-evaluation Run for one Consumer,
+/// across every Edge that Run evaluated, as a single integrated write
+/// inside the caller's own transaction. In fixed order:
+///
+/// a. [`write_edge_state_in_tx`] for every `(edge_id, observation)` pair.
+/// b. [`write_consumer_freshness_in_tx`] exactly once, with the single
+///    worst Freshness across all of `edges_and_observations`
+///    (`freshness_severity_rank`) as the Consumer's rolled-up current
+///    value.
+/// c. [`record_finding_observation_in_tx`] for every Edge whose
+///    `observation.reason_code` is `Some` -- `evaluator::evaluate_edge`'s
+///    own doc comment: "a Finding row is only worth recording when there
+///    is something to explain", so a Fresh Edge with `reason_code: None`
+///    produces no Finding.
+/// d. [`transition_run_status_in_tx`] to `Completed`.
+/// e. [`acknowledge_cursor_in_tx`] through `through_sequence`, releasing
+///    the Change Feed cursor reservation this Run held.
+///
+/// Requires `edges_and_observations` to be non-empty: with zero Edges
+/// there is no basis to pick a worst Freshness for step (b), and a Run
+/// that evaluated nothing has nothing to Publish -- the caller should not
+/// invoke this function at all in that case, rather than let it invent a
+/// value.
+///
+/// Like every other `_in_tx` helper in this crate, this does not open or
+/// close the transaction itself -- but unlike most of them (mirroring
+/// `cursor_reservation.rs`'s own mutating functions), it requires one to
+/// already be open: running the five steps above under autocommit would
+/// let each individually commit, so a mid-sequence failure could leave
+/// durable state committed with no matching Run completion or cursor
+/// advance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_freshness_evaluation_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    consumer_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    through_sequence: i64,
+    now: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
+    anyhow::ensure!(!consumer_id.trim().is_empty(), "consumerId is required");
+    anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
+    anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
+    anyhow::ensure!(
+        !semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+    anyhow::ensure!(
+        !edges_and_observations.is_empty(),
+        "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one edge observation is required to publish \
+         a Freshness evaluation"
+    );
+
+    // a. Per-Edge diagnostic snapshot, one row each.
+    for (edge_id, observation) in edges_and_observations {
+        write_edge_state_in_tx(
+            conn,
+            project_id,
+            edge_id,
+            observation,
+            semantic_epoch_id,
+            now,
+        )?;
+    }
+
+    // b. The single worst Freshness across all Edges becomes the Consumer's
+    //    rolled-up current value. Strict `>` (not `>=`) keeps the first
+    //    Edge encountered on a tie, matching freshness_severity_rank's doc.
+    let mut worst = &edges_and_observations[0].1;
+    let mut worst_rank = freshness_severity_rank(worst.freshness);
+    for (_, observation) in &edges_and_observations[1..] {
+        let rank = freshness_severity_rank(observation.freshness);
+        if rank > worst_rank {
+            worst = observation;
+            worst_rank = rank;
+        }
+    }
+    write_consumer_freshness_in_tx(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        worst,
+        semantic_epoch_id,
+        Some(run_id),
+        now,
+    )?;
+
+    // c. One Finding Observation per Edge with something to explain.
+    for (edge_id, observation) in edges_and_observations {
+        let Some(reason_code) = observation.reason_code else {
+            continue;
+        };
+        let finding_key = edge_finding_key(edge_id);
+        let material_basis_digest =
+            edge_material_basis_digest(edge_id, semantic_epoch_id, observation);
+        record_finding_observation_in_tx(
+            conn,
+            project_id,
+            run_id,
+            semantic_epoch_id,
+            Some(edge_id.as_str()),
+            &finding_key,
+            reason_code,
+            observation.freshness,
+            &material_basis_digest,
+            now,
+        )?;
+    }
+
+    // d. Complete the Run.
+    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
+
+    // e. Release the Change Feed cursor reservation this Run held.
+    acknowledge_cursor_in_tx(conn, project_id, consumer_id, through_sequence)?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::narrative_extraction::dependency_edges::record_dependency_edge_in_tx;
+    use crate::narrative_extraction::evaluator::BuildAction;
+    use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
+    use crate::narrative_extraction::task_leases::with_immediate_transaction;
+    use crate::Database;
+    use std::path::Path;
+
+    fn test_db() -> Database {
+        let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Other Project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed projects");
+        db
+    }
+
+    fn seed_epoch(conn: &Connection, project_id: &str) -> String {
+        create_epoch_in_tx(conn, project_id, "initial", None).expect("create epoch")
+    }
+
+    fn seed_run(conn: &Connection, run_id: &str, project_id: &str) {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, version)
+             VALUES (?1, ?2, 'chronicle.extract', '{}', '{}', 'digest-1',
+                     'running', '{}', datetime('now'), 0)",
+            params![run_id, project_id],
+        )
+        .expect("insert run");
+    }
+
+    fn seed_cursor(conn: &Connection, project_id: &str, consumer_id: &str) {
+        conn.execute(
+            "INSERT INTO narrative_change_cursors
+                (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+             VALUES (?1, ?2, 0, '2026-08-15T00:00:00.000Z')",
+            params![project_id, consumer_id],
+        )
+        .expect("insert cursor");
+    }
+
+    fn seed_edge(
+        conn: &Connection,
+        project_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+        source_object_identity: &str,
+    ) -> String {
+        record_dependency_edge_in_tx(
+            conn,
+            project_id,
+            consumer_kind,
+            consumer_key,
+            source_object_identity,
+            r#"["/body"]"#,
+            None,
+            "2026-08-15T00:00:00.000Z",
+        )
+        .expect("record edge")
+    }
+
+    fn fresh() -> EdgeObservation {
+        EdgeObservation {
+            freshness: EvidenceFreshness::Fresh,
+            reason_code: None,
+            build_action: BuildAction::None,
+        }
+    }
+
+    fn stale() -> EdgeObservation {
+        EdgeObservation {
+            freshness: EvidenceFreshness::Stale,
+            reason_code: Some(FindingReasonCode::SourceRevisionChanged),
+            build_action: BuildAction::RebuildRequired,
+        }
+    }
+
+    fn source_missing() -> EdgeObservation {
+        EdgeObservation {
+            freshness: EvidenceFreshness::SourceMissing,
+            reason_code: Some(FindingReasonCode::SourceMissing),
+            build_action: BuildAction::Manual,
+        }
+    }
+
+    fn finding_count(conn: &Connection, project_id: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_finding_observations WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .expect("count findings")
+    }
+
+    #[test]
+    fn single_fresh_edge_publishes_state_and_freshness_without_a_finding_observation() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
+
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id.clone(), fresh())],
+                    &epoch_id,
+                    5,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+
+            let (edge_freshness, edge_reason): (String, Option<String>) = conn.query_row(
+                "SELECT evidence_freshness, reason_code FROM narrative_dependency_edge_states
+                  WHERE edge_id = ?1",
+                params![edge_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(edge_freshness, "fresh");
+            assert_eq!(edge_reason, None);
+
+            let (consumer_freshness, run_id): (String, Option<String>) = conn.query_row(
+                "SELECT evidence_freshness, last_evaluated_run_id FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'proposal' AND consumer_key = 'proposal-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(consumer_freshness, "fresh");
+            assert_eq!(run_id.as_deref(), Some("run-1"));
+
+            assert_eq!(
+                finding_count(conn, "project-1"),
+                0,
+                "a Fresh edge with no reason code must not create a Finding Observation"
+            );
+
+            let run_status: String = conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(run_status, "completed");
+
+            let (acknowledged, active_run): (i64, Option<String>) = conn.query_row(
+                "SELECT acknowledged_through_sequence, active_run_id FROM narrative_change_cursors
+                  WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(acknowledged, 5);
+            assert_eq!(active_run, None);
+            Ok(())
+        })
+        .expect("publish fresh edge");
+    }
+
+    #[test]
+    fn single_stale_edge_creates_a_finding_observation() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
+
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id.clone(), stale())],
+                    &epoch_id,
+                    3,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+
+            assert_eq!(finding_count(conn, "project-1"), 1);
+            let (finding_key, reason_code, freshness_snapshot, stored_edge_id): (
+                String,
+                String,
+                String,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT finding_key, reason_code, evidence_freshness_snapshot, edge_id
+                   FROM narrative_maintenance_finding_observations WHERE project_id = 'project-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(finding_key, format!("edge:{edge_id}"));
+            assert_eq!(reason_code, "source-revision-changed");
+            assert_eq!(freshness_snapshot, "stale");
+            assert_eq!(stored_edge_id.as_deref(), Some(edge_id.as_str()));
+
+            let consumer_freshness: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'proposal' AND consumer_key = 'proposal-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(consumer_freshness, "stale");
+            Ok(())
+        })
+        .expect("publish stale edge");
+    }
+
+    #[test]
+    fn worst_freshness_across_edges_wins_the_consumer_freshness_row() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            let edge_fresh = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
+            let edge_stale = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-2");
+            let edge_missing = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-3");
+
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[
+                        (edge_fresh.clone(), fresh()),
+                        (edge_stale.clone(), stale()),
+                        (edge_missing.clone(), source_missing()),
+                    ],
+                    &epoch_id,
+                    7,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+
+            // Each Edge keeps its own individually evaluated state...
+            let edge_fresh_state: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_fresh],
+                |row| row.get(0),
+            )?;
+            assert_eq!(edge_fresh_state, "fresh");
+            let edge_stale_state: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_stale],
+                |row| row.get(0),
+            )?;
+            assert_eq!(edge_stale_state, "stale");
+            let edge_missing_state: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_missing],
+                |row| row.get(0),
+            )?;
+            assert_eq!(edge_missing_state, "source-missing");
+
+            // ...but the Consumer's single rolled-up row reflects the worst
+            // of the three: source-missing beats stale beats fresh.
+            let (consumer_freshness, build_action): (String, String) = conn.query_row(
+                "SELECT evidence_freshness, build_action FROM narrative_consumer_freshness
+                  WHERE project_id = 'project-1' AND consumer_kind = 'proposal' AND consumer_key = 'proposal-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(consumer_freshness, "source-missing");
+            assert_eq!(build_action, "manual");
+
+            // Only the two Edges with a reason code (stale, source-missing)
+            // produce a Finding Observation -- the fresh one does not.
+            assert_eq!(finding_count(conn, "project-1"), 2);
+            Ok(())
+        })
+        .expect("publish across multiple edges");
+    }
+
+    #[test]
+    fn run_and_cursor_transition_together_with_the_freshness_publish() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "codex-entry",
+                "entry-1",
+                "project:codex:entry-source",
+            );
+
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    "consumer-a",
+                    "codex-entry",
+                    "entry-1",
+                    &[(edge_id, fresh())],
+                    &epoch_id,
+                    42,
+                    "2026-08-15T02:00:00.000Z",
+                )
+            })?;
+
+            let (status, completed_at): (String, Option<String>) = conn.query_row(
+                "SELECT status, completed_at FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(status, "completed");
+            assert!(completed_at.is_some());
+
+            let (acknowledged, semantic_epoch, reserved, active_run): (
+                i64,
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT acknowledged_through_sequence, semantic_epoch_id, reserved_through_sequence,
+                        active_run_id
+                   FROM narrative_change_cursors
+                  WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(acknowledged, 42);
+            assert_eq!(semantic_epoch, None);
+            assert_eq!(reserved, None);
+            assert_eq!(active_run, None);
+            Ok(())
+        })
+        .expect("run and cursor updated together");
+    }
+
+    #[test]
+    fn empty_edges_list_fails_closed_before_any_write() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+
+            let error = with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[],
+                    &epoch_id,
+                    1,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })
+            .expect_err("empty edge list must be rejected");
+            assert!(error.to_string().contains("NEX_PUBLISH_RUNTIME_NO_EDGES"));
+
+            // Nothing must have been written: the Run must still be running
+            // and the cursor must still be unacknowledged.
+            let run_status: String = conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(run_status, "running");
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(acknowledged, 0);
+            Ok(())
+        })
+        .expect("query after rejected publish");
+    }
+
+    #[test]
+    fn publish_requires_a_caller_owned_transaction() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+            assert!(conn.is_autocommit());
+
+            let error = publish_freshness_evaluation_in_tx(
+                conn,
+                "project-1",
+                "run-1",
+                "consumer-a",
+                "proposal",
+                "proposal-1",
+                &[(edge_id, fresh())],
+                &epoch_id,
+                1,
+                "2026-08-15T01:00:00.000Z",
+            )
+            .expect_err("publish outside a transaction must be rejected");
+            assert!(error.to_string().contains("caller-owned transaction"));
+            Ok(())
+        })
+        .expect("autocommit guard runs outside any transaction");
+    }
+
+    #[test]
+    fn write_edge_state_fails_closed_when_edge_belongs_to_a_different_project() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            let edge_id = seed_edge(
+                conn,
+                "project-2",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+
+            let error = write_edge_state_in_tx(
+                conn,
+                "project-1",
+                &edge_id,
+                &fresh(),
+                &epoch_id,
+                "2026-08-15T01:00:00.000Z",
+            )
+            .expect_err("edge owned by another project must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_EDGE_PROJECT_MISMATCH"));
+            Ok(())
+        })
+        .expect("query after rejected write");
+    }
+
+    #[test]
+    fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let other_epoch_id = seed_epoch(conn, "project-2");
+
+            let error = write_consumer_freshness_in_tx(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                &fresh(),
+                &other_epoch_id,
+                None,
+                "2026-08-15T01:00:00.000Z",
+            )
+            .expect_err("epoch owned by another project must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_EPOCH_PROJECT_MISMATCH"));
+            Ok(())
+        })
+        .expect("query after rejected write");
+    }
+}

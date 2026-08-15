@@ -24,8 +24,10 @@ mod phase_snapshots;
 mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
+mod publish_runtime;
 mod reconciliation_envelope;
 mod repository;
+mod restore_rebuild;
 mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
@@ -88,6 +90,15 @@ pub(crate) use finding_observation::{
 pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::{backfill_project_semantic_build_graph_in_tx, BackfillSummary};
+#[allow(unused_imports)]
+pub(crate) use publish_runtime::{
+    publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,
+};
+#[allow(unused_imports)]
+pub(crate) use restore_rebuild::{
+    rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
+    rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
+};
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, get_current_epoch, list_epochs, CurrentEpoch};
 #[allow(unused_imports)]
