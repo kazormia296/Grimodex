@@ -223,8 +223,7 @@ function isDisclosureCandidateComplete(
   }
   const foreshadowRecord = foreshadow as Record<string, unknown>;
   const nullableString = (entry: unknown): boolean =>
-    entry === null ||
-    (typeof entry === "string" && entry.trim().length > 0);
+    entry === null || (typeof entry === "string" && entry.trim().length > 0);
   if (
     Object.hasOwn(foreshadowRecord, "revealSceneId") &&
     !nullableString(foreshadowRecord.revealSceneId)
@@ -298,7 +297,8 @@ export function evaluateNarrativeDisclosure(
     effectiveMode === "story" &&
     candidate.storyTime !== null &&
     candidate.storyTime !== undefined &&
-    (context.currentStoryTime === null || context.currentStoryTime === undefined)
+    (context.currentStoryTime === null ||
+      context.currentStoryTime === undefined)
   ) {
     addReason(reasons, "disclosure-context-unresolved");
   }
@@ -306,7 +306,8 @@ export function evaluateNarrativeDisclosure(
     effectiveMode === "reading" &&
     candidate.sceneOrder !== null &&
     candidate.sceneOrder !== undefined &&
-    (context.currentSceneOrder === null || context.currentSceneOrder === undefined)
+    (context.currentSceneOrder === null ||
+      context.currentSceneOrder === undefined)
   ) {
     addReason(reasons, "disclosure-context-unresolved");
   }

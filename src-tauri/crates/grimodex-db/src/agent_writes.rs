@@ -881,6 +881,7 @@ fn validate_or_record_agent_field_authority_for_entity(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn preflight_agent_field_authority(
     conn: &rusqlite::Connection,
     project_id: &str,
