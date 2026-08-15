@@ -137,11 +137,40 @@ Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
-  Wave 1 Transport Assembly (C2-T1):          pending
-  Wave 2 runtime / read-model lanes:          pending
-  Wave 2 Transport / Quality Assembly (C2-T2): pending
-  Canonical Authority Cutover (C2-Z):         pending
+  Wave 1 Transport Assembly (C2-T1):          blocked (see below)
+  Wave 2 runtime / read-model lanes:          complete
+  Wave 2 Transport / Quality Assembly (C2-T2): blocked (see below)
+  Canonical Authority Cutover (C2-Z):         blocked (see below)
 ```
+
+Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
+K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
+`contributionTargetStates`/`maintenanceOwnershipStates`), M
+(`semantic_index_diagnostics.rs`), N (`restore_rebuild.rs`), O
+(`inbox_read_model.rs`), and P
+(`tests/narrative_semantic_build_graph_adversarial.rs`, cross-Lane
+adversarial coverage). Lane P found and the Integration Owner fixed two
+real cross-Lane bugs before they could reach C2-T1: a SQL three-valued-logic
+gap in the `narrative_extraction_attempts` `next_attempt_at`/
+`retry_disposition` CHECK constraint (a `NULL` disposition silently bypassed
+it), and a `finding_key` convention mismatch between Lane J's writer and
+Lane O's reader that made every real diagnostic Finding Observation
+invisible to the Inbox. Both are now regression-tested.
+
+**C2-T1 / C2-T2 / C2-Z are blocked on this environment's Rust toolchain**,
+not on design or implementation gaps. `cargo check`/`cargo test` fail with
+a `libsqlite3-sys` build-script error (`cfg_select` unstable library
+feature) that reproduces identically on an unmodified checkout — a
+toolchain/dependency incompatibility, not something introduced by Gate C2.
+Writing N-API bindings (`electron/native/grimodex-node/src/lib.rs`) or
+Electron IPC entries without any way to compile-check them carries a
+materially higher risk than the pure-Rust-logic work above (a wrong type
+signature would break the whole crate's build, and rustfmt/Python-sqlite3
+verification — the substitute used throughout C2-00/C2-01/Wave 1/Wave 2 —
+cannot catch that class of error). All 15 Wave 1+2 lane modules are
+therefore complete, integrated, and tested, but reachable only from their
+own `#[cfg(test)]` modules until a working toolchain allows Transport
+Assembly to proceed.
 
 Wave 1 landed 7 new core Rust modules under
 `src-tauri/crates/grimodex-db/src/narrative_extraction/` — Lane A
