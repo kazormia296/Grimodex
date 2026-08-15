@@ -17,6 +17,7 @@ mod field_authority;
 mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
+mod inbox_read_model;
 mod legacy_backfill;
 mod models;
 mod phase_operations;
@@ -88,6 +89,10 @@ pub(crate) use finding_observation::{
 // in parallel and the Integration Owner collapsed it during Wave 1 merge.
 #[allow(unused_imports)]
 pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
+#[allow(unused_imports)]
+pub(crate) use inbox_read_model::{
+    build_maintenance_inbox, list_consumer_freshness, ConsumerFreshnessRow, InboxEntry,
+};
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::{backfill_project_semantic_build_graph_in_tx, BackfillSummary};
 #[allow(unused_imports)]
