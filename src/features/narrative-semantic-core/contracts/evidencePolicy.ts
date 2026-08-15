@@ -53,6 +53,19 @@ const PRODUCER_KIND_SET = new Set<string>(NARRATIVE_PRODUCER_KINDS);
 export function validateEvidencePolicy(
   input: EvidencePolicyInput,
 ): EvidencePolicyResult {
+  // JSON callers can still provide an explicit null or malformed array even
+  // though the TypeScript type is non-nullable. Treat that boundary as an
+  // invalid evidence claim rather than allowing a caller-side fallback to
+  // turn it into an admission.
+  if (input === null || typeof input !== "object") {
+    return { valid: false, reason: "unsupported-producer-kind" };
+  }
+  if (!Array.isArray(input.sourceBasis)) {
+    return { valid: false, reason: "source-basis-required" };
+  }
+  if (!Array.isArray(input.evidenceSet)) {
+    return { valid: false, reason: "evidence-required" };
+  }
   if (!PRODUCER_KIND_SET.has(input.producerKind)) {
     return { valid: false, reason: "unsupported-producer-kind" };
   }

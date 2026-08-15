@@ -888,11 +888,23 @@ fn preflight_agent_field_authority(
     entity_id: &str,
     paths: &[String],
     updated_at: &str,
+    surface: Option<&str>,
     renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<()> {
-    if renderer_context
-        .is_some_and(|context| context.authority_route == "interactive-agent-command")
-    {
+    // Renderer writes carry the full canonical context. Standalone MCP has no
+    // renderer context, but it is still an AI mutation surface and must run
+    // the same field-authority preflight inside the writer transaction.
+    let is_interactive_agent = renderer_context
+        .is_some_and(|context| context.authority_route == "interactive-agent-command");
+    let is_mcp = surface == Some("mcp");
+    if is_interactive_agent || is_mcp {
+        // An old non-empty value is treated as human until an explicit Field
+        // Authority row exists. MCP has no renderer migration context, so it
+        // must keep this fail-closed fallback as well as enforce explicit
+        // human/lock rows. Successful MCP writes record AI ownership below;
+        // a historical MCP journal is not sufficient evidence to promote an
+        // arbitrary field because it may describe a different field or an
+        // earlier human edit.
         validate_agent_field_authority_for_entity_with_legacy_check(
             conn,
             project_id,
@@ -1083,6 +1095,38 @@ fn append_agent_forward_change_in_tx(
             &affected_authority_paths,
         );
         annotated
+    } else if surface == Some("mcp") {
+        // MCP is a standalone AI surface, so it cannot provide the renderer
+        // capability context. It still participates in field ownership: the
+        // preflight above protects human/locked fields and successful MCP
+        // writes must establish AI ownership for their changed paths.
+        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
+        record_agent_field_authority(conn, project_id, canonical_event, &affected_authority_paths)?;
+        if matches!(
+            canonical_event.op_type.as_str(),
+            "event.relation_add" | "event.relation_remove"
+        ) {
+            let relation_payload = serde_json::from_str::<Value>(&canonical_event.payload)?;
+            let effect_event_id = relation_payload
+                .get("effectEventId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "MCP relation Change Event must carry a non-empty effectEventId"
+                    )
+                })?;
+            let relation_paths = vec!["/relations".to_string()];
+            record_agent_field_authority_for_entity(
+                conn,
+                project_id,
+                "event",
+                effect_event_id,
+                &relation_paths,
+                &change_occurred_at(canonical_event.timestamp)?,
+            )?;
+        }
+        canonical_event.clone()
     } else {
         canonical_event.clone()
     };
@@ -3487,10 +3531,19 @@ fn agent_codex_update_internal(
                 renderer_context.as_ref(),
             )?;
             let manual_fields = manual_update_fields(&payload);
-            let authority_paths = manual_fields
+            let mut authority_paths = manual_fields
                 .iter()
                 .map(|path| (*path).to_string())
                 .collect::<Vec<_>>();
+            if tags.is_some() {
+                authority_paths.push("/tagsCache".to_string());
+            }
+            if payload.surface.as_deref() == Some("mcp")
+                && authority_paths.is_empty()
+                && tags.is_none()
+            {
+                anyhow::bail!("MCP codex update must change at least one field or tag set");
+            }
             preflight_agent_field_authority(
                 conn,
                 &payload.project_id,
@@ -3498,6 +3551,7 @@ fn agent_codex_update_internal(
                 &payload.entry_id,
                 &authority_paths,
                 &change_occurred_at(timestamp)?,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
             let patched = apply_codex_entry_patch_in_tx(
@@ -3718,23 +3772,20 @@ fn agent_codex_delete_internal(
                 &payload.project_id,
                 &payload.entry_id,
             )?;
-            if renderer_context
-                .as_ref()
-                .is_some_and(|context| context.authority_route == "interactive-agent-command")
-            {
-                let authority_paths = all_authority_paths("codex_entry")
-                    .iter()
-                    .map(|path| (*path).to_string())
-                    .collect::<Vec<_>>();
-                validate_agent_field_authority_for_entity(
-                    conn,
-                    &payload.project_id,
-                    "codex-entry",
-                    &payload.entry_id,
-                    &authority_paths,
-                    &change_occurred_at(timestamp)?,
-                )?;
-            }
+            let authority_paths = all_authority_paths("codex_entry")
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "codex-entry",
+                &payload.entry_id,
+                &authority_paths,
+                &change_occurred_at(timestamp)?,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
             let before_json =
                 codex_delete_journal_snapshot(before_snapshot.clone(), cascade_snapshot.clone())
                     .to_string();
@@ -3969,19 +4020,33 @@ pub fn renderer_agent_snippet_create_impl(
         request_id == context.request_id,
         "requestId must match canonical authority context"
     );
-    agent_snippet_create_with_renderer_context(db, payload, Some(&context))
+    agent_snippet_create_with_surface_and_renderer_context(
+        db,
+        payload,
+        "in-app-agent",
+        Some(&context),
+    )
 }
 
 pub fn agent_snippet_create_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
 ) -> anyhow::Result<Value> {
-    agent_snippet_create_with_renderer_context(db, payload, None)
+    agent_snippet_create_with_surface_impl(db, payload, "in-app-agent")
 }
 
-fn agent_snippet_create_with_renderer_context(
+pub fn agent_snippet_create_with_surface_impl(
     db: &Database,
     payload: AgentSnippetCreatePayload,
+    surface: &str,
+) -> anyhow::Result<Value> {
+    agent_snippet_create_with_surface_and_renderer_context(db, payload, surface, None)
+}
+
+fn agent_snippet_create_with_surface_and_renderer_context(
+    db: &Database,
+    payload: AgentSnippetCreatePayload,
+    surface: &str,
     renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<Value> {
     require_agent_request_id(payload.request_id.as_deref())?;
@@ -4124,7 +4189,7 @@ fn agent_snippet_create_with_renderer_context(
                 UndoJournalInsert {
                     id: &undo_id,
                     project_id: &payload.project_id,
-                    surface: "in-app-agent",
+                    surface,
                     entity_kind: "snippet",
                     entity_id: &snippet_id,
                     op_kind: "create",
@@ -4150,7 +4215,7 @@ fn agent_snippet_create_with_renderer_context(
                 conn,
                 &payload.project_id,
                 &payload.session_id,
-                Some("in-app-agent"),
+                Some(surface),
                 request_id.as_deref(),
                 &undo_id,
                 &canonical_event,
@@ -4496,6 +4561,43 @@ pub struct AgentUndoJournalPayload {
     pub journal_id: String,
     /// "undo" | "redo"
     pub direction: String,
+    pub authority_route: String,
+    pub origin: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+}
+
+fn validate_undo_journal_authority(payload: &AgentUndoJournalPayload) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        payload.authority_route == "history-replay",
+        "undo journal requires the history-replay authority route"
+    );
+    anyhow::ensure!(
+        payload.direction == "undo" || payload.direction == "redo",
+        "undo journal direction must be undo or redo"
+    );
+    anyhow::ensure!(
+        payload.origin == payload.direction,
+        "undo journal origin must match direction"
+    );
+    anyhow::ensure!(
+        payload.caller == "undo-redo-command",
+        "undo journal caller must be undo-redo-command"
+    );
+    for control in [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+    ] {
+        anyhow::ensure!(
+            payload.controls.iter().any(|value| value == control),
+            "undo journal authority is missing control '{control}'"
+        );
+    }
+    Ok(())
 }
 
 fn legacy_journal_forward_origin(surface: &str) -> NarrativeChangeOrigin {
@@ -5074,6 +5176,7 @@ pub fn agent_undo_journal_impl(
     db: &Database,
     payload: AgentUndoJournalPayload,
 ) -> anyhow::Result<Value> {
+    validate_undo_journal_authority(&payload)?;
     anyhow::ensure!(
         !payload.request_id.trim().is_empty(),
         "undo journal requestId must not be empty"
@@ -5584,6 +5687,7 @@ fn agent_foreshadow_update_with_context_impl(
                 &payload.foreshadow_id,
                 &authority_paths,
                 &authority_updated_at,
+                Some(surface),
                 renderer_context.as_ref(),
             )
         };
@@ -8021,6 +8125,7 @@ fn agent_event_update_with_request_and_authority_impl(
                 &payload.event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
 
@@ -8245,23 +8350,20 @@ fn agent_event_delete_with_request_and_authority_impl(
                 .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
             let before = before_value.to_string();
 
-            if renderer_context
-                .as_ref()
-                .is_some_and(|context| context.authority_route == "interactive-agent-command")
-            {
-                let authority_paths = EVENT_AUTHORITY_FIELDS
-                    .iter()
-                    .map(|path| (*path).to_string())
-                    .collect::<Vec<_>>();
-                validate_agent_field_authority_for_entity(
-                    conn,
-                    &payload.project_id,
-                    "event",
-                    &payload.event_id,
-                    &authority_paths,
-                    &now,
-                )?;
-            }
+            let authority_paths = EVENT_AUTHORITY_FIELDS
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                payload.surface.as_deref(),
+                renderer_context.as_ref(),
+            )?;
 
             let deleted = conn.execute(
                 "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
@@ -8498,6 +8600,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
                 &payload.event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
 
@@ -8769,6 +8872,7 @@ pub fn agent_scene_event_mutate_with_authority_impl(
                 &payload.event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
@@ -9028,6 +9132,7 @@ pub fn agent_scene_event_link_batch_with_authority_impl(
                 &payload.event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
@@ -9245,6 +9350,7 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 &payload.cause_event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
             preflight_agent_field_authority(
@@ -9254,6 +9360,7 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 &payload.effect_event_id,
                 &authority_paths,
                 &now,
+                payload.surface.as_deref(),
                 renderer_context.as_ref(),
             )?;
 
@@ -9865,6 +9972,256 @@ mod tests {
     }
 
     #[test]
+    fn mcp_codex_update_preflights_human_field_without_renderer_context() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "mcp-authority-entry", "Human name", 0);
+        let version = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_field_authority
+                        SET owner_kind = 'human'
+                      WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                        AND entity_id = 'mcp-authority-entry' AND field_path = '/name'",
+                    rusqlite::params![project_id],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'mcp-authority-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("seed MCP authority fixture");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "mcp-authority-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "mcp-authority-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: Some("MCP overwrite".to_string()),
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-authority-request"),
+            None,
+        )
+        .expect_err("MCP must not overwrite a human-owned field");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, i64) = conn.query_row(
+                "SELECT name, version FROM codex_entries WHERE id = 'mcp-authority-entry'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, ("Human name".to_string(), version));
+            Ok(())
+        })
+        .expect("inspect unchanged MCP Codex after denied update");
+    }
+
+    #[test]
+    fn mcp_codex_tag_update_preflights_tags_cache_authority() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "mcp-tags-entry", "Tagged", 0);
+        let version = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_field_authority
+                        SET owner_kind = 'human'
+                      WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                        AND entity_id = 'mcp-tags-entry' AND field_path = '/tagsCache'",
+                    rusqlite::params![project_id],
+                )?;
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'mcp-tags-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("seed human tag authority");
+        let tags = vec!["new-tag".to_string()];
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "mcp-tags-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "mcp-tags-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-tags-request"),
+            Some(&tags),
+        )
+        .expect_err("MCP tag updates must honor tagsCache field authority");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+    }
+
+    #[test]
+    fn mcp_codex_empty_update_is_rejected_without_promoting_legacy_fields() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let entry_id = insert_codex(&db, &project_id, "Legacy MCP entry");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = ?2",
+                rusqlite::params![project_id, entry_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove authority rows from legacy fixture");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id,
+                session_id: "mcp-empty-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id,
+                base_version: 1,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("mcp-empty-request"),
+            None,
+        )
+        .expect_err("MCP empty patches must not create an ownership claim");
+        assert!(error.to_string().contains("must change at least one field"));
+        assert_eq!(table_count(&db, "narrative_field_authority"), 0);
+    }
+
+    #[test]
+    fn mcp_legacy_field_without_authority_remains_fail_closed() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-mcp-entry", "Before", 0);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE undo_journal SET surface = 'mcp'
+                  WHERE project_id = ?1 AND entity_kind = 'codex_entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+            )?;
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy MCP provenance");
+
+        let error = agent_codex_update_with_request_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-mcp-session".to_string(),
+                surface: Some("mcp".to_string()),
+                entry_id: "legacy-mcp-entry".to_string(),
+                base_version: 1,
+                type_slug: None,
+                name: Some("After".to_string()),
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            Some("legacy-mcp-update"),
+            None,
+        )
+        .expect_err("historical MCP provenance must not promote a legacy field");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let authority_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-mcp-entry'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(authority_rows, 0);
+            let name: String = conn.query_row(
+                "SELECT name FROM codex_entries WHERE id = 'legacy-mcp-entry'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(name, "Before");
+            Ok(())
+        })
+        .expect("inspect unchanged legacy MCP field");
+    }
+
+    #[test]
     fn renderer_codex_update_allows_first_ai_value_for_empty_legacy_summary() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -10263,6 +10620,51 @@ mod tests {
         .expect_err("legacy relation must deny AI add before insert");
         assert!(add_error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
         assert_eq!(relation_count(&db, &cause_id, &new_effect_id), 0);
+    }
+
+    #[test]
+    fn mcp_relation_records_field_authority_for_both_endpoints() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause_id, _) = create_event(&db, &project_id, "MCP cause", vec![], vec![]);
+        let (effect_id, _) = create_event(&db, &project_id, "MCP effect", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id IN (?2, ?3)",
+                rusqlite::params![project_id, cause_id, effect_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed MCP events without authority rows");
+
+        let mut add = relation_payload(&project_id, &cause_id, &effect_id);
+        add.surface = Some("mcp".to_string());
+        agent_event_relation_mutate_with_authority_impl(&db, add, true, None)
+            .expect("MCP relation add must establish both endpoint authorities");
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 1);
+
+        db.with_conn(|conn| {
+            for event_id in [&cause_id, &effect_id] {
+                let owner: String = conn.query_row(
+                    "SELECT owner_kind FROM narrative_field_authority
+                      WHERE project_id = ?1 AND entity_kind = 'event'
+                        AND entity_id = ?2 AND field_path = '/relations'",
+                    rusqlite::params![project_id, event_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(owner, "ai");
+            }
+            Ok(())
+        })
+        .expect("inspect MCP relation authorities");
+
+        let mut remove = relation_payload(&project_id, &cause_id, &effect_id);
+        remove.surface = Some("mcp".to_string());
+        agent_event_relation_mutate_with_authority_impl(&db, remove, false, None)
+            .expect("MCP relation remove must validate both endpoint authorities");
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 0);
     }
 
     #[test]
@@ -10715,6 +11117,51 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    #[test]
+    fn mcp_codex_create_records_ai_field_authority() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let result = agent_codex_create_with_tags_impl(
+            &db,
+            AgentCodexCreatePayload {
+                request_id: Some("mcp-codex-create-authority".to_string()),
+                entry_id: None,
+                project_id: project_id.clone(),
+                session_id: "mcp-session".to_string(),
+                surface: Some("mcp".to_string()),
+                type_slug: "character".to_string(),
+                name: "MCP Character".to_string(),
+                summary: Some("Created by MCP".to_string()),
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                source_chat_message_id: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: Vec::new(),
+            },
+            None,
+        )
+        .expect("MCP Codex create must succeed");
+        let entry_id = result["entityId"].as_str().expect("entity id");
+        db.with_conn(|conn| {
+            let authority_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = ?2 AND owner_kind = 'ai'",
+                rusqlite::params![project_id, entry_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(authority_rows, CODEX_ENTRY_AUTHORITY_FIELDS.len() as i64);
+            Ok(())
+        })
+        .expect("inspect MCP Codex field authority");
     }
 
     #[test]
@@ -11704,6 +12151,10 @@ mod tests {
                 session_id: "undo-session".to_string(),
                 journal_id,
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect_err("Feed failure must abort the Undo domain replay");
@@ -11773,6 +12224,10 @@ mod tests {
                 session_id: "history-session".to_string(),
                 journal_id: journal_id.clone(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("modernize and undo pre-Feed journal");
@@ -13113,7 +13568,25 @@ mod tests {
             session_id: "sess".to_string(),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: history_replay_controls(),
         }
+    }
+
+    fn history_replay_controls() -> Vec<String> {
+        [
+            "original-transaction",
+            "journal-lineage",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 
     fn relation_payload(project_id: &str, cause: &str, effect: &str) -> AgentEventRelationPayload {

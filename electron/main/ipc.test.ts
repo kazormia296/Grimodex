@@ -55,6 +55,7 @@ vi.mock("./windows.js", () => ({
 const {
   applyMainOwnedAuthorshipMarks,
   bindRendererAuthorityForIpc,
+  recordRendererHistoryJournalForIpc,
   registerIpcRouter,
 } = await import("./ipc.js");
 
@@ -1254,6 +1255,122 @@ describe("registerIpcRouter fail-soft logging", () => {
       ],
       provenance: null,
     });
+  });
+
+  it("binds undo journal replay to the Main-owned history actor and direction", () => {
+    const bound = bindRendererAuthorityForIpc("agent_apply_undo_journal", {
+      payload: {
+        projectId: "p1",
+        requestId: "undo-main-binding",
+        sessionId: "renderer-session",
+        journalId: "journal-1",
+        direction: "undo",
+        origin: "redo",
+        caller: "renderer-forged",
+        controls: ["renderer-control"],
+      },
+    });
+
+    expect(bound.payload).toMatchObject({
+      authorityRoute: "history-replay",
+      origin: "undo",
+      caller: "undo-redo-command",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+    });
+  });
+
+  it("requires a journal issued by the same renderer session for replay", () => {
+    const payload = {
+      projectId: "p1",
+      requestId: "undo-capability-binding",
+      sessionId: "renderer-session",
+      journalId: "journal-not-issued",
+      direction: "undo",
+      origin: "undo",
+    };
+    const denied = bindRendererAuthorityForIpc(
+      "agent_apply_undo_journal",
+      { payload },
+      740,
+    );
+    expect((denied.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+
+    recordRendererHistoryJournalForIpc(740, "p1", "journal-issued");
+    const allowed = bindRendererAuthorityForIpc(
+      "agent_apply_undo_journal",
+      { payload: { ...payload, journalId: "journal-issued" } },
+      740,
+    );
+    expect((allowed.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "history-replay",
+    );
+  });
+
+  it("requires a Main-issued journal for AI tree undo and redo", () => {
+    const undoPayload = {
+      projectId: "p1",
+      requestId: "tree-undo-capability-binding",
+      sessionId: "renderer-session",
+      undoJournalId: "tree-journal-not-issued",
+      originalTransactionId: "tree-transaction",
+    };
+    const deniedUndo = bindRendererAuthorityForIpc(
+      "ai_tree_plan_undo",
+      { payload: undoPayload },
+      741,
+    );
+    expect(
+      (deniedUndo.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+
+    const redoPayload = {
+      projectId: "p1",
+      requestId: "tree-redo-capability-binding",
+      sessionId: "renderer-session",
+      undoJournalId: "tree-journal-not-issued",
+      originalTransactionId: "tree-transaction",
+      redo: true,
+    };
+    const deniedRedo = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      { payload: redoPayload },
+      742,
+    );
+    expect(
+      (deniedRedo.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+
+    recordRendererHistoryJournalForIpc(741, "p1", "tree-journal-issued");
+    recordRendererHistoryJournalForIpc(742, "p1", "tree-journal-issued");
+    const allowedUndo = bindRendererAuthorityForIpc(
+      "ai_tree_plan_undo",
+      {
+        payload: { ...undoPayload, undoJournalId: "tree-journal-issued" },
+      },
+      741,
+    );
+    const allowedRedo = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      {
+        payload: { ...redoPayload, undoJournalId: "tree-journal-issued" },
+      },
+      742,
+    );
+    expect(
+      (allowedUndo.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("history-replay");
+    expect(
+      (allowedRedo.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("history-replay");
   });
 
   it("rejects renderer routes that are absent from the operation manifest", async () => {

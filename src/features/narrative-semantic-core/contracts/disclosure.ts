@@ -60,6 +60,7 @@ export type NarrativeDisclosureRejection =
   | "disclosure-context-unresolved"
   | "project-mismatch"
   | "unresolved-scope"
+  | "invalid-candidate"
   | "invalid-resolution"
   | "future-phase"
   | "future-story-time"
@@ -190,6 +191,55 @@ function isDisclosureContextComplete(
   );
 }
 
+function isDisclosureCandidateComplete(
+  value: unknown,
+): value is NarrativeDisclosureCandidate {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (
+    typeof candidate.projectId !== "string" ||
+    candidate.projectId.trim().length === 0
+  ) {
+    return false;
+  }
+  const nullableSafeInteger = (entry: unknown): boolean =>
+    entry === null || Number.isSafeInteger(entry);
+  for (const key of ["phase", "storyTime", "sceneOrder"]) {
+    if (Object.hasOwn(candidate, key) && !nullableSafeInteger(candidate[key])) {
+      return false;
+    }
+  }
+  if (!Object.hasOwn(candidate, "foreshadow")) return true;
+  const foreshadow = candidate.foreshadow;
+  if (
+    foreshadow === null ||
+    typeof foreshadow !== "object" ||
+    Array.isArray(foreshadow) ||
+    typeof (foreshadow as Record<string, unknown>).secret !== "boolean"
+  ) {
+    return false;
+  }
+  const foreshadowRecord = foreshadow as Record<string, unknown>;
+  const nullableString = (entry: unknown): boolean =>
+    entry === null ||
+    (typeof entry === "string" && entry.trim().length > 0);
+  if (
+    Object.hasOwn(foreshadowRecord, "revealSceneId") &&
+    !nullableString(foreshadowRecord.revealSceneId)
+  ) {
+    return false;
+  }
+  if (
+    Object.hasOwn(foreshadowRecord, "revealSceneOrder") &&
+    !nullableSafeInteger(foreshadowRecord.revealSceneOrder)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 export function evaluateNarrativeDisclosure(
   context: NarrativeDisclosureContext,
   candidate: NarrativeDisclosureCandidate,
@@ -198,6 +248,12 @@ export function evaluateNarrativeDisclosure(
     return {
       admitted: false,
       reasons: ["disclosure-context-unresolved"],
+    };
+  }
+  if (!isDisclosureCandidateComplete(candidate)) {
+    return {
+      admitted: false,
+      reasons: ["invalid-candidate"],
     };
   }
   const reasons: NarrativeDisclosureRejection[] = [];
@@ -225,6 +281,34 @@ export function evaluateNarrativeDisclosure(
     )
   ) {
     addReason(reasons, "invalid-resolution");
+  }
+
+  // A nullable temporal value is an unresolved disclosure boundary, not an
+  // unconstrained one. Only require the axis that the candidate actually
+  // uses so a reading-order context can still admit candidates without a
+  // story-time assertion (and vice versa).
+  if (
+    candidate.phase !== null &&
+    candidate.phase !== undefined &&
+    (context.currentPhase === null || context.currentPhase === undefined)
+  ) {
+    addReason(reasons, "disclosure-context-unresolved");
+  }
+  if (
+    effectiveMode === "story" &&
+    candidate.storyTime !== null &&
+    candidate.storyTime !== undefined &&
+    (context.currentStoryTime === null || context.currentStoryTime === undefined)
+  ) {
+    addReason(reasons, "disclosure-context-unresolved");
+  }
+  if (
+    effectiveMode === "reading" &&
+    candidate.sceneOrder !== null &&
+    candidate.sceneOrder !== undefined &&
+    (context.currentSceneOrder === null || context.currentSceneOrder === undefined)
+  ) {
+    addReason(reasons, "disclosure-context-unresolved");
   }
 
   if (
@@ -338,9 +422,9 @@ export function evaluateNarrativeDisclosure(
       !context.allowSecrets ||
       foreshadow.revealSceneOrder === null ||
       foreshadow.revealSceneOrder === undefined ||
-      (context.currentSceneOrder !== null &&
-        context.currentSceneOrder !== undefined &&
-        foreshadow.revealSceneOrder > context.currentSceneOrder);
+      context.currentSceneOrder === null ||
+      context.currentSceneOrder === undefined ||
+      foreshadow.revealSceneOrder > context.currentSceneOrder;
     if (beforeReveal) addReason(reasons, "secret-before-reveal");
   }
 

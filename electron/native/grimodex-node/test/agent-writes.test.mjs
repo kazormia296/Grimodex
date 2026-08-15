@@ -896,6 +896,17 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     sessionId: "sess-bulk",
     journalId: result.undoJournalId,
     direction: "undo",
+    authorityRoute: "history-replay",
+    origin: "undo",
+    caller: "undo-redo-command",
+    controls: [
+      "original-transaction",
+      "journal-lineage",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
   });
   const eventUndo = await rows("SELECT version FROM events WHERE id = ?", [
     eventId,

@@ -4672,6 +4672,36 @@ function requireUndoJournalPayload(args: CommandArgs): CommandArgs {
       `invalid args \`direction\` for command \`${command}\`: expected "undo" or "redo"`,
     );
   }
+  if (requireString(payload, "authorityRoute", command) !== "history-replay") {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: undo/redo requires history-replay`,
+    );
+  }
+  if (requireString(payload, "origin", command) !== direction) {
+    throw new Error(
+      `invalid authority origin for command \`${command}\`: must match direction`,
+    );
+  }
+  if (requireString(payload, "caller", command) !== "undo-redo-command") {
+    throw new Error(
+      `invalid authority caller for command \`${command}\`: expected undo-redo-command`,
+    );
+  }
+  const controls = requireArray(payload, "controls", command);
+  for (const control of [
+    "original-transaction",
+    "journal-lineage",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+  ]) {
+    if (!controls.includes(control)) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: missing ${control}`,
+      );
+    }
+  }
   return payload;
 }
 

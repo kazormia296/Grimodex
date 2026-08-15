@@ -246,4 +246,50 @@ describe("narrative retrieval disclosure", () => {
       reasons: ["disclosure-context-unresolved"],
     });
   });
+
+  it("rejects a future-phase candidate when currentPhase is explicitly null", () => {
+    const decision = evaluateNarrativeDisclosure(
+      { ...context, currentPhase: null },
+      { projectId: "project-1", scope, phase: 999 },
+    );
+
+    expect(decision.admitted).toBe(false);
+    expect(decision.reasons).toContain("disclosure-context-unresolved");
+  });
+
+  it("rejects a secret candidate when currentSceneOrder is explicitly null", () => {
+    const decision = evaluateNarrativeDisclosure(
+      { ...context, allowSecrets: true, currentSceneOrder: null },
+      {
+        projectId: "project-1",
+        scope,
+        foreshadow: { secret: true, revealSceneOrder: 3 },
+      },
+    );
+
+    expect(decision.admitted).toBe(false);
+    expect(decision.reasons).toContain("secret-before-reveal");
+  });
+
+  it("rejects malformed candidate temporal values before disclosure comparison", () => {
+    const stringOrder = evaluateNarrativeDisclosure(context, {
+      projectId: "project-1",
+      scope,
+      foreshadow: { secret: true, revealSceneOrder: "0" as never },
+    });
+    const nonFiniteOrder = evaluateNarrativeDisclosure(context, {
+      projectId: "project-1",
+      scope,
+      foreshadow: { secret: true, revealSceneOrder: Number.NaN },
+    });
+
+    expect(stringOrder).toEqual({
+      admitted: false,
+      reasons: ["invalid-candidate"],
+    });
+    expect(nonFiniteOrder).toEqual({
+      admitted: false,
+      reasons: ["invalid-candidate"],
+    });
+  });
 });

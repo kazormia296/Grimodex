@@ -64,4 +64,23 @@ describe("narrative evidence policy", () => {
       }),
     ).toEqual({ valid: false, reason: "unsupported-producer-kind" });
   });
+
+  it("rejects explicit null evidence fields instead of applying a permissive fallback", () => {
+    expect(
+      validateEvidencePolicy({
+        producerKind: "ai-inference",
+        supportClass: "single-source-inference",
+        evidenceSet: null as never,
+        sourceBasis: ["scene:1"],
+      }),
+    ).toEqual({ valid: false, reason: "evidence-required" });
+    expect(
+      validateEvidencePolicy({
+        producerKind: "ai-inference",
+        supportClass: "single-source-inference",
+        evidenceSet: [],
+        sourceBasis: null as never,
+      }),
+    ).toEqual({ valid: false, reason: "source-basis-required" });
+  });
 });

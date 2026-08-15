@@ -21,6 +21,10 @@
       "reason": "A missing phase, temporal anchor, or disclosure axis rejects the context before candidate admission."
     },
     {
+      "id": "invalid-candidate",
+      "reason": "Malformed temporal or foreshadow candidate values are rejected before disclosure comparison."
+    },
+    {
       "id": "future-phase",
       "reason": "A candidate in a future phase is not admitted."
     },
@@ -67,6 +71,7 @@
   ],
   "fixtures": [
     "missing-disclosure-context-rejected",
+    "malformed-candidate-rejected",
     "reading-future-phase-rejected",
     "story-future-time-rejected",
     "auto-matches-adr-002",

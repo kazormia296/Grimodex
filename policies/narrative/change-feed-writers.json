@@ -8,10 +8,6 @@
       "src/features/narrative-extraction",
       "src/features/semantic-search",
       "src/application/narrative-extraction",
-      "src/application/scheduler",
-      "src/application/background-maintenance",
-      "src/features/scheduler",
-      "src/features/background-maintenance",
       "src-tauri/crates/grimodex-db/src/narrative_extraction",
       "src-tauri/crates/grimodex-semantic/src",
       "electron/main",
@@ -136,6 +132,104 @@
       "undo-journal",
       "change-event",
       "change-feed"
+    ]
+  },
+  "mcpAuthorityContract": {
+    "schemaVersion": 1,
+    "fieldAuthority": "native-transactional-preflight",
+    "coverageStatus": "verified",
+    "executionSurface": "mcp-tool-native",
+    "runtimeTestCommand": "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db agent_writes::tests && cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp",
+    "evidenceTests": [
+      {
+        "file": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbols": [
+          "mcp_codex_update_preflights_human_field_without_renderer_context",
+          "mcp_codex_tag_update_preflights_tags_cache_authority",
+          "mcp_codex_empty_update_is_rejected_without_promoting_legacy_fields",
+          "mcp_legacy_field_without_authority_remains_fail_closed",
+          "mcp_relation_records_field_authority_for_both_endpoints",
+          "mcp_codex_create_records_ai_field_authority"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/codex.rs",
+        "symbols": [
+          "create_codex_entry_is_atomic_and_idempotent_on_mcp_surface",
+          "update_codex_entry_uses_client_occ_and_deduplicates_retry"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/foreshadow.rs",
+        "symbols": [
+          "create_foreshadow_tool_is_tracked",
+          "update_foreshadow_tool_is_tracked"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/snippets.rs",
+        "symbols": [
+          "create_snippet_is_idempotent_and_appends_the_feed_on_mcp_surface"
+        ]
+      },
+      {
+        "file": "src-tauri/crates/grimodex-mcp/src/tools/chronicle.rs",
+        "symbols": [
+          "create_event_is_tracked_with_mcp_surface",
+          "update_event_changes_calendar_fields",
+          "delete_event_cascades_and_snapshots_associations",
+          "stamp_and_unstamp_scene_event",
+          "set_participants_replaces_and_tracks"
+        ]
+      }
+    ],
+    "operationEvidence": [
+      {
+        "operationId": "mcp.foreshadow.create",
+        "symbols": ["create_foreshadow_tool_is_tracked"]
+      },
+      {
+        "operationId": "mcp.foreshadow.update",
+        "symbols": ["update_foreshadow_tool_is_tracked"]
+      },
+      {
+        "operationId": "mcp.snippet.create",
+        "symbols": [
+          "create_snippet_is_idempotent_and_appends_the_feed_on_mcp_surface"
+        ]
+      },
+      {
+        "operationId": "mcp.codex.create",
+        "symbols": ["create_codex_entry_is_atomic_and_idempotent_on_mcp_surface"]
+      },
+      {
+        "operationId": "mcp.codex.update",
+        "symbols": ["mcp_codex_update_preflights_human_field_without_renderer_context"]
+      },
+      {
+        "operationId": "mcp.event.create",
+        "symbols": ["create_event_is_tracked_with_mcp_surface"]
+      },
+      {
+        "operationId": "mcp.event.update",
+        "symbols": ["update_event_changes_calendar_fields"]
+      },
+      {
+        "operationId": "mcp.event.delete",
+        "symbols": ["delete_event_cascades_and_snapshots_associations"]
+      },
+      {
+        "operationId": "mcp.event.scene-link",
+        "symbols": ["stamp_and_unstamp_scene_event"]
+      },
+      {
+        "operationId": "mcp.event.participants",
+        "symbols": ["set_participants_replaces_and_tracks"]
+      },
+      {
+        "operationId": "mcp.event.relation",
+        "symbols": ["mcp_relation_records_field_authority_for_both_endpoints"]
+      }
     ]
   },
   "writerMatrix": [

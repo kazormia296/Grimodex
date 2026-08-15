@@ -312,6 +312,7 @@ mod tests {
     use super::*;
     use crate::db::tests::make_simple_db;
     use crate::server::GrimodexServer;
+    use rusqlite::params;
 
     #[test]
     fn validate_load_bearing_accepts_known_and_none() {
@@ -345,6 +346,34 @@ mod tests {
             "sess-mcp".to_string(),
             policy,
         )
+    }
+
+    fn seed_foreshadow(server: &GrimodexServer, id: &str, title: &str) {
+        let conn = server.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO foreshadows
+             (id, project_id, title, secret, created_at, updated_at)
+             VALUES (?1, 'p1', ?2, 1, 1000, 1000)",
+            params![id, title],
+        )
+        .unwrap();
+        for field_path in [
+            "/title",
+            "/intent",
+            "/notes",
+            "/loadBearing",
+            "/payoffConfirmed",
+            "/abandoned",
+            "/secret",
+        ] {
+            conn.execute(
+                "INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+                 VALUES ('p1', 'foreshadow', ?1, ?2, 'ai', datetime('now'))",
+                params![id, field_path],
+            )
+            .unwrap();
+        }
     }
 
     #[tokio::test]
@@ -390,16 +419,7 @@ mod tests {
     #[tokio::test]
     async fn update_foreshadow_tool_is_tracked() {
         let server = make_writable_server();
-        {
-            let conn = server.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO foreshadows
-                 (id, project_id, title, secret, created_at, updated_at)
-                 VALUES ('f1', 'p1', 'Original', 1, 1000, 1000)",
-                [],
-            )
-            .unwrap();
-        }
+        seed_foreshadow(&server, "f1", "Original");
 
         update_foreshadow(
             &server,
@@ -435,16 +455,7 @@ mod tests {
     #[tokio::test]
     async fn update_foreshadow_tool_rejects_stale_base_without_mutation() {
         let server = make_writable_server();
-        {
-            let conn = server.conn.lock().unwrap();
-            conn.execute(
-                "INSERT INTO foreshadows
-                 (id, project_id, title, secret, created_at, updated_at)
-                 VALUES ('f-stale', 'p1', 'Original', 1, 1000, 1000)",
-                [],
-            )
-            .unwrap();
-        }
+        seed_foreshadow(&server, "f-stale", "Original");
 
         let params = |title: &str| UpdateForeshadowParams {
             request_id: uuid::Uuid::new_v4().to_string(),

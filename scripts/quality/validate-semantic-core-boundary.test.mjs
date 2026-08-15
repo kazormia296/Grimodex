@@ -1,5 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -117,8 +123,14 @@ function minimalFixtureRoot() {
     semanticBoundary: {
       schemaVersion: 1,
       scanRoots: [
-        "src/features/narrative-extraction/reconciler",
+        "src/features/narrative-semantic-core",
+        "src/features/narrative-extraction",
+        "src/features/semantic-search",
+        "src/application/narrative-extraction",
+        "src-tauri/crates/grimodex-db/src/narrative_extraction",
         "src-tauri/crates/grimodex-semantic/src",
+        "electron/main",
+        "electron/preload",
       ],
       commandInventory: {
         schemaVersion: 1,
@@ -154,6 +166,18 @@ function minimalFixtureRoot() {
     path.join(root, "electron/shared/fixture.ts"),
     "const handlers = {\n  fixture_write: {},\n};\n",
   );
+  for (const relativeRoot of [
+    "src/features/narrative-semantic-core",
+    "src/features/narrative-extraction",
+    "src/features/semantic-search",
+    "src/application/narrative-extraction",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction",
+    "src-tauri/crates/grimodex-semantic/src",
+    "electron/main",
+    "electron/preload",
+  ]) {
+    mkdirSync(path.join(root, relativeRoot), { recursive: true });
+  }
   return root;
 }
 
@@ -167,6 +191,15 @@ describe("validate-semantic-core-boundary", () => {
 
   it("fails closed for an unknown route and a forbidden interpreter import", () => {
     const root = minimalFixtureRoot();
+    const baseline = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      !baseline.errors.some((error) => /unknown authority route/i.test(error)),
+      "the fixture must not already contain an unknown route finding",
+    );
+    assert.ok(
+      !baseline.errors.some((error) => /agent writer or domain api directly/i.test(error)),
+      "the fixture must not already contain a direct-call finding",
+    );
     const manifest = path.join(
       root,
       "policies/narrative/change-feed-writers.json",
@@ -179,7 +212,7 @@ describe("validate-semantic-core-boundary", () => {
     });
     writeFileSync(
       path.join(root, "src/features/narrative-extraction/reconciler/bad.ts"),
-      'import { agentCreateCodexEntry } from "@/features/agent-writes/codex";\nimport { createCodexEntry } from "@/features/codex/api";\n',
+      'import { agentCreateCodexEntry } from "@/features/agent-writes/codex";\nimport { createCodexEntry } from "@/features/codex/api";\ninvoke("agent_chronicle_bulk_mutate");\nexecute("ai_tree_plan_apply");\ninvoke(\n  "agent_chronicle_multiline",\n);\n',
     );
     mkdirSync(path.join(root, "src-tauri/crates/grimodex-semantic/src"), {
       recursive: true,
@@ -201,10 +234,19 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(
       result.errors.some((error) => /Domain API directly/i.test(error)),
     );
+    assert.ok(
+      result.errors.some((error) => /agent writer or domain api directly/i.test(error)),
+      "direct Chronicle and AI Tree command calls must stay inside the typed boundary",
+    );
   });
 
   it("validates every authority variant instead of trusting one static label", () => {
     const root = minimalFixtureRoot();
+    const baseline = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      !baseline.errors.some((error) => /unknown authority route/i.test(error)),
+      "the fixture must not already contain an unknown route finding",
+    );
     const manifest = path.join(
       root,
       "policies/narrative/change-feed-writers.json",
@@ -223,6 +265,13 @@ describe("validate-semantic-core-boundary", () => {
 
   it("fails closed when an interactive Agent operation omits field authority", () => {
     const root = minimalFixtureRoot();
+    const baseline = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      !baseline.errors.some((error) =>
+        error.includes("missing required control 'field-authority'"),
+      ),
+      "the fixture must not already omit field authority",
+    );
     const manifest = path.join(
       root,
       "policies/narrative/change-feed-writers.json",
@@ -280,6 +329,51 @@ describe("validate-semantic-core-boundary", () => {
       result.errors.some((error) =>
         error.includes(
           "unregistered mutation command electron-ipc:fixture_unknown",
+        ),
+      ),
+    );
+  });
+
+  it("does not allow the manifest to shrink the minimum boundary scan roots", () => {
+    const root = minimalFixtureRoot();
+    const baseline = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      !baseline.errors.some((error) =>
+        error.includes(
+          "semanticBoundary.scanRoots is missing required minimum root: electron/main",
+        ),
+      ),
+      "the fixture must include the full minimum root set before mutation",
+    );
+    const manifest = path.join(
+      root,
+      "policies/narrative/change-feed-writers.json",
+    );
+    const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+    parsed.semanticBoundary.scanRoots = parsed.semanticBoundary.scanRoots.filter(
+      (relativeRoot) => relativeRoot !== "electron/main",
+    );
+    writeFileSync(manifest, JSON.stringify(parsed));
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "semanticBoundary.scanRoots is missing required minimum root: electron/main",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a declared required root that is absent on disk", () => {
+    const root = minimalFixtureRoot();
+    rmSync(path.join(root, "electron/main"), { recursive: true, force: true });
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "semanticBoundary required scan root is missing or not a directory: electron/main",
         ),
       ),
     );

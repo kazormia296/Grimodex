@@ -138,7 +138,7 @@ pub async fn create_snippet(
             None,
         ));
     }
-    let write = grimodex_db::agent_writes::agent_snippet_create_impl(
+    let write = grimodex_db::agent_writes::agent_snippet_create_with_surface_impl(
         &server.conn,
         grimodex_db::agent_writes::AgentSnippetCreatePayload {
             request_id: Some(request_id.to_string()),
@@ -154,6 +154,7 @@ pub async fn create_snippet(
             trace_id: None,
             authorship_spans: spans,
         },
+        "mcp",
     )
     .map_err(internal_err)?;
     let snippet_id = write["entityId"]
@@ -214,7 +215,7 @@ mod tests {
         }
 
         let conn = server.conn.lock().expect("lock MCP database");
-        let counts: (i64, i64, i64, i64) = conn
+        let counts: (i64, i64, i64, i64, String, i64) = conn
             .query_row(
                 "SELECT
                     (SELECT COUNT(*) FROM snippets WHERE project_id = 'p1'),
@@ -227,11 +228,28 @@ mod tests {
                       JOIN narrative_change_transactions tx
                         ON tx.project_id = event.project_id
                        AND tx.id = event.transaction_id
-                      WHERE tx.request_id = ?1)",
+                      WHERE tx.request_id = ?1),
+                    (SELECT surface FROM undo_journal
+                      WHERE project_id = 'p1' AND id = ?1),
+                    (SELECT COUNT(*) FROM narrative_field_authority
+                      WHERE project_id = 'p1'
+                        AND entity_kind = 'snippet'
+                        AND entity_id = (SELECT entity_id FROM undo_journal
+                                          WHERE project_id = 'p1' AND id = ?1)
+                        AND owner_kind = 'ai')",
                 [request_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .expect("query canonical Snippet ledgers");
-        assert_eq!(counts, (1, 1, 1, 1));
+        assert_eq!(counts, (1, 1, 1, 1, "mcp".to_string(), 3));
     }
 }

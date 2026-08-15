@@ -1942,6 +1942,20 @@ mod tests {
         )
     }
 
+    fn history_replay_controls() -> Vec<String> {
+        [
+            "original-transaction",
+            "journal-lineage",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
+    }
+
     fn latest_change_payload(db: &Database) -> Value {
         db.with_conn(|conn| {
             let raw: String = conn.query_row(
@@ -2346,6 +2360,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo bulk");
@@ -2392,6 +2410,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo bulk");
@@ -2627,6 +2649,10 @@ mod tests {
                     .expect("journal id")
                     .to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo legacy journal");
@@ -2653,6 +2679,10 @@ mod tests {
                     .expect("journal id")
                     .to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo legacy journal");
@@ -2892,6 +2922,10 @@ mod tests {
             session_id: "session".to_string(),
             journal_id: forward["undoJournalId"].as_str().unwrap().to_string(),
             direction: "undo".to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: "undo".to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: history_replay_controls(),
         };
 
         let first =
@@ -2933,6 +2967,7 @@ mod tests {
         let redo = crate::agent_writes::AgentUndoJournalPayload {
             request_id: "same-redo-retry".to_string(),
             direction: "redo".to_string(),
+            origin: "redo".to_string(),
             ..undo
         };
         let first_redo =
@@ -3003,6 +3038,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo lane");
@@ -3200,6 +3239,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo dates");
@@ -3230,6 +3273,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo dates");

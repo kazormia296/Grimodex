@@ -12,6 +12,22 @@ const REPO_ROOT = path.resolve(
 
 export const EXPECTED_SCHEMA_VERSION = 22;
 
+// The manifest may add narrower roots as the architecture evolves, but it
+// may not remove the roots that currently contain semantic interpreters,
+// maintenance callers, or the typed Native boundary. Keeping this minimum
+// set in code prevents a data-only manifest edit from silently shrinking the
+// boundary that CI audits.
+export const REQUIRED_SEMANTIC_BOUNDARY_SCAN_ROOTS = Object.freeze([
+  "src/features/narrative-semantic-core",
+  "src/features/narrative-extraction",
+  "src/features/semantic-search",
+  "src/application/narrative-extraction",
+  "src-tauri/crates/grimodex-db/src/narrative_extraction",
+  "src-tauri/crates/grimodex-semantic/src",
+  "electron/main",
+  "electron/preload",
+]);
+
 export const AUTHORITY_ROUTE_IDS = Object.freeze([
   "human-direct",
   "interactive-agent-command",
@@ -84,6 +100,7 @@ const REQUIRED_STATE_FIELDS = Object.freeze([
 
 const REQUIRED_DISCLOSURE_RULES = Object.freeze([
   "disclosure-context-unresolved",
+  "invalid-candidate",
   "future-phase",
   "future-story-time",
   "secret-before-reveal",
@@ -99,6 +116,7 @@ const REQUIRED_DISCLOSURE_RULES = Object.freeze([
 
 const REQUIRED_DISCLOSURE_FIXTURES = Object.freeze([
   "missing-disclosure-context-rejected",
+  "malformed-candidate-rejected",
   "reading-future-phase-rejected",
   "story-future-time-rejected",
   "auto-matches-adr-002",
@@ -162,8 +180,10 @@ const FORBIDDEN_DIRECT_BOUNDARY_IMPORTS = [
   /\b(?:import|require)\s*\(\s*["'`][^"'`]*features\/(?:codex|chronicle|foreshadow|plot-threads|snippets)\/(?:api|detailApi|relationApi|sceneCodexPinsApi|tagApi|phaseApi|codexRelationApi|typeApi|codexQuickPinApi)(?:["'`]|$)/,
 ];
 
-const FORBIDDEN_DIRECT_AGENT_COMMAND_CALL =
-  /\b(?:invoke\w*|call\w*|execute\w*|dispatch\w*)\s*\([^\n]{0,160}["'`]agent_(?:codex|event|foreshadow|snippet|write_bundle)(?:_|["'`])/;
+const FORBIDDEN_DIRECT_AGENT_COMMAND_CALLEE =
+  /\b(?:invoke\w*|call\w*|execute\w*|dispatch\w*)\s*\(/gi;
+const FORBIDDEN_DIRECT_AGENT_COMMAND_LITERAL =
+  /["'`](?:agent_[a-z0-9_]+|ai_tree_plan_[a-z0-9_]+)["'`]/i;
 
 const FORBIDDEN_DIRECT_RUST_BOUNDARY_IMPORTS = [
   /\buse\s+(?:crate|grimodex_db)::agent_writes(?:::|\s*;)/,
@@ -210,6 +230,74 @@ function listSourceFiles(repoRoot, relativeRoot) {
   };
   visit(absoluteRoot);
   return files;
+}
+
+function containsForbiddenDirectAgentCommandCall(source) {
+  for (const match of source.matchAll(FORBIDDEN_DIRECT_AGENT_COMMAND_CALLEE)) {
+    const openIndex = (match.index ?? 0) + match[0].length - 1;
+    let depth = 1;
+    let quote = null;
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+
+    for (let index = openIndex + 1; index < source.length; index += 1) {
+      const char = source[index];
+      const next = source[index + 1];
+
+      if (lineComment) {
+        if (char === "\n") lineComment = false;
+        continue;
+      }
+      if (blockComment) {
+        if (char === "*" && next === "/") {
+          blockComment = false;
+          index += 1;
+        }
+        continue;
+      }
+      if (quote !== null) {
+        if (escaped) {
+          escaped = false;
+        } else if (char === "\\") {
+          escaped = true;
+        } else if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+      if (char === "/" && next === "/") {
+        lineComment = true;
+        index += 1;
+        continue;
+      }
+      if (char === "/" && next === "*") {
+        blockComment = true;
+        index += 1;
+        continue;
+      }
+      if (char === "'" || char === '"' || char === "`") {
+        quote = char;
+        continue;
+      }
+      if (char === "(") {
+        depth += 1;
+      } else if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          if (
+            FORBIDDEN_DIRECT_AGENT_COMMAND_LITERAL.test(
+              source.slice(openIndex + 1, index),
+            )
+          ) {
+            return true;
+          }
+          break;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 function validateRouteRegistry(registry, errors) {
@@ -605,6 +693,24 @@ function validateArchitectureImports(repoRoot, manifest, errors) {
     errors.push("semanticBoundary.scanRoots must be a non-empty array");
     return;
   }
+  const declaredRoots = new Set(boundary.scanRoots);
+  for (const requiredRoot of REQUIRED_SEMANTIC_BOUNDARY_SCAN_ROOTS) {
+    if (!declaredRoots.has(requiredRoot)) {
+      errors.push(
+        `semanticBoundary.scanRoots is missing required minimum root: ${requiredRoot}`,
+      );
+      continue;
+    }
+    const absoluteRequiredRoot = path.join(repoRoot, requiredRoot);
+    if (
+      !existsSync(absoluteRequiredRoot) ||
+      !statSync(absoluteRequiredRoot).isDirectory()
+    ) {
+      errors.push(
+        `semanticBoundary required scan root is missing or not a directory: ${requiredRoot}`,
+      );
+    }
+  }
   const roots = new Set();
   for (const relativeRoot of boundary.scanRoots) {
     if (!isNonEmptyString(relativeRoot) || path.isAbsolute(relativeRoot)) {
@@ -634,7 +740,7 @@ function validateArchitectureImports(repoRoot, manifest, errors) {
         FORBIDDEN_DIRECT_BOUNDARY_IMPORTS.some((pattern) =>
           pattern.test(source),
         ) ||
-        FORBIDDEN_DIRECT_AGENT_COMMAND_CALL.test(source) ||
+        containsForbiddenDirectAgentCommandCall(source) ||
         isRustBoundaryViolation
       ) {
         errors.push(

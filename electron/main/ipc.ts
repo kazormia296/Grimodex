@@ -206,6 +206,78 @@ const AGENT_AUTHORITY_COMMANDS = new Set([
   ...AGENT_CHRONICLE_COMMANDS,
 ]);
 
+// Undo/redo is a renderer-facing command, but its journal lineage must be
+// issued by this main-process session. Keep the route explicit instead of
+// letting the generic Agent command set accidentally classify it as an
+// interactive tool call.
+const HISTORY_REPLAY_COMMANDS = new Set(["agent_apply_undo_journal"]);
+
+// Only successful forward writers may mint a journal capability for a later
+// history replay. A response from a read command must never be able to plant
+// an arbitrary journal id into this registry merely because it happens to
+// contain an `undoJournalId`-shaped field.
+const HISTORY_JOURNAL_WRITER_COMMANDS = new Set([
+  ...AGENT_AUTHORITY_COMMANDS,
+  ...GENERIC_CANONICAL_WRITER_COMMANDS,
+  ...CODEX_RENDERER_COMMANDS,
+  ...RENDERER_CHRONICLE_COMMANDS,
+  ...HUMAN_ONLY_CANONICAL_WRITER_COMMANDS,
+  "tree_node_create",
+  "tree_node_patch",
+  "tree_node_delete",
+  "ai_tree_plan_apply",
+  "ai_tree_plan_undo",
+  "foreshadow_create",
+  "foreshadow_update",
+  "foreshadow_delete",
+  "foreshadow_update_setup",
+  "foreshadow_setup_create_ai",
+]);
+
+const MAX_RENDERER_HISTORY_JOURNALS = 4096;
+const rendererHistoryJournals = new Map<string, number>();
+
+function rendererHistoryJournalKey(
+  senderId: number,
+  projectId: string,
+  journalId: string,
+): string {
+  return `${senderId}\u0000${projectId}\u0000${journalId}`;
+}
+
+/** Record a Main-issued journal identity for the current renderer session. */
+export function recordRendererHistoryJournalForIpc(
+  senderId: number,
+  projectId: string,
+  journalId: string,
+): void {
+  if (
+    !Number.isInteger(senderId) ||
+    !isNonEmptyTrimmedString(projectId) ||
+    !isNonEmptyTrimmedString(journalId)
+  ) {
+    return;
+  }
+  const key = rendererHistoryJournalKey(senderId, projectId, journalId);
+  rendererHistoryJournals.delete(key);
+  rendererHistoryJournals.set(key, Date.now());
+  while (rendererHistoryJournals.size > MAX_RENDERER_HISTORY_JOURNALS) {
+    const oldest = rendererHistoryJournals.keys().next().value;
+    if (typeof oldest !== "string") break;
+    rendererHistoryJournals.delete(oldest);
+  }
+}
+
+function hasRendererHistoryJournal(
+  senderId: number,
+  projectId: string,
+  journalId: string,
+): boolean {
+  return rendererHistoryJournals.has(
+    rendererHistoryJournalKey(senderId, projectId, journalId),
+  );
+}
+
 function isNonEmptyTrimmedString(value: unknown): value is string {
   return (
     typeof value === "string" &&
@@ -1571,13 +1643,30 @@ function isRecord(value: unknown): value is CommandArgs {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function isHistoryReplayCommand(cmd: string, payload: CommandArgs): boolean {
+  return (
+    HISTORY_REPLAY_COMMANDS.has(cmd) ||
+    cmd === "ai_tree_plan_undo" ||
+    (cmd === "ai_tree_plan_apply" && payload.redo === true)
+  );
+}
+
+function historyJournalIdForRendererCommand(
+  cmd: string,
+  payload: CommandArgs,
+): unknown {
+  return cmd === "agent_apply_undo_journal"
+    ? payload.journalId
+    : payload.undoJournalId;
+}
+
 function authorityRouteForRendererCommand(
   cmd: string,
   payload: CommandArgs,
 ): CanonicalAuthorityRoute | undefined {
   // Every Agent mutation is a capability-bound interactive command. Never
   // derive an Agent route from renderer-controlled origin/surface metadata.
-  if (cmd === "ai_tree_plan_apply" && payload.redo === true) {
+  if (isHistoryReplayCommand(cmd, payload)) {
     return "history-replay";
   }
   if (AGENT_AUTHORITY_COMMANDS.has(cmd)) {
@@ -1635,10 +1724,6 @@ function authorityRouteForRendererCommand(
 
   if (HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd)) {
     return payload.origin === "human" ? "human-direct" : undefined;
-  }
-
-  if (cmd === "ai_tree_plan_undo") {
-    return "history-replay";
   }
 
   if (
@@ -1700,7 +1785,8 @@ export function bindRendererAuthorityForIpc(
       cmd === "tree_node_patch" ||
       cmd === "tree_node_delete" ||
       cmd === "ai_tree_plan_apply" ||
-      cmd === "ai_tree_plan_undo";
+      cmd === "ai_tree_plan_undo" ||
+      isHistoryReplayCommand(cmd, payload);
     if (!requiresAuthority) return args;
     const invalidPayload = { ...payload, authorityRoute: "" };
     return directPayloadCommand
@@ -1709,6 +1795,20 @@ export function bindRendererAuthorityForIpc(
   }
   let payloadForBinding = payload;
   if (typeof senderId === "number" && Number.isInteger(senderId)) {
+    if (isHistoryReplayCommand(cmd, payload)) {
+      const projectId = payload.projectId;
+      const journalId = historyJournalIdForRendererCommand(cmd, payload);
+      if (
+        !isNonEmptyTrimmedString(projectId) ||
+        !isNonEmptyTrimmedString(journalId) ||
+        !hasRendererHistoryJournal(senderId, projectId, journalId)
+      ) {
+        const invalidPayload = { ...payload, authorityRoute: "" };
+        return directPayloadCommand
+          ? invalidPayload
+          : { ...args, [payloadKey]: invalidPayload };
+      }
+    }
     if (
       route === "interactive-agent-command" &&
       AGENT_AUTHORITY_COMMANDS.has(cmd)
@@ -1742,6 +1842,15 @@ export function bindRendererAuthorityForIpc(
     rendererAuthoritySessions.set(senderId, authoritySession);
   }
   const boundPayload = bindCanonicalAuthorityContext(payloadForBinding, route);
+  if (HISTORY_REPLAY_COMMANDS.has(cmd)) {
+    // The replay direction is part of the typed request, but the route,
+    // caller, and controls are Main-owned. This prevents a renderer from
+    // self-attesting a different history actor or a copied control list.
+    if (payload.direction === "undo" || payload.direction === "redo") {
+      boundPayload.origin = payload.direction;
+    }
+    boundPayload.caller = "undo-redo-command";
+  }
   if (typeof senderId === "number" && Number.isInteger(senderId)) {
     {
       const authoritySession = rendererAuthoritySessions.get(senderId);
@@ -1825,9 +1934,14 @@ export function registerIpcRouter(
             ? extraShellHandlers(win)
             : extraShellHandlers;
         const rawArgs = isRecord(args) ? args : {};
+        const boundArgs = bindRendererAuthorityForIpc(
+          cmd,
+          rawArgs,
+          event.sender.id,
+        );
         const envelope = await dispatchInvoke(
           cmd,
-          bindRendererAuthorityForIpc(cmd, rawArgs, event.sender.id),
+          boundArgs,
           {
             backend,
             shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
@@ -1842,6 +1956,27 @@ export function registerIpcRouter(
               ),
           },
         );
+        if (
+          envelope.ok &&
+          HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) &&
+          isRecord(envelope.value)
+        ) {
+          const payload = isRecord(boundArgs.payload)
+            ? boundArgs.payload
+            : boundArgs;
+          const projectId = payload.projectId;
+          const journalId = envelope.value.undoJournalId;
+          if (
+            isNonEmptyTrimmedString(projectId) &&
+            isNonEmptyTrimmedString(journalId)
+          ) {
+            recordRendererHistoryJournalForIpc(
+              event.sender.id,
+              projectId,
+              journalId,
+            );
+          }
+        }
         workspaceOpenResult = envelope.ok ? "success" : "failure";
         if (!envelope.ok) {
           if (envelope.error.startsWith(IPC_UNIMPLEMENTED_MARKER)) {

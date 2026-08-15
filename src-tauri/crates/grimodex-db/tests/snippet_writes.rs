@@ -108,6 +108,17 @@ fn replay(db: &Database, journal_id: &str, direction: &str, request_id: &str) {
             session_id: format!("session:{request_id}"),
             journal_id: journal_id.to_string(),
             direction: direction.to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: direction.to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: vec![
+                "original-transaction".to_string(),
+                "journal-lineage".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
         },
     )
     .expect("replay snippet journal");

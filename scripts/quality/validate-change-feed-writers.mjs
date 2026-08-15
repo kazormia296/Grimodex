@@ -627,6 +627,139 @@ function validateRuntimeEvidence(manifest, operation, repoRoot, errors) {
   }
 }
 
+function validateMcpAuthorityContract(manifest, repoRoot, errors) {
+  const mcpOperations = (manifest.operations ?? []).filter((operation) =>
+    (operation.routes ?? []).some((route) => route?.surface === "mcp-tool"),
+  );
+  if (mcpOperations.length === 0) return;
+
+  const contract = manifest.mcpAuthorityContract;
+  if (
+    !isObject(contract) ||
+    contract.schemaVersion !== 1 ||
+    contract.fieldAuthority !== "native-transactional-preflight" ||
+    contract.coverageStatus !== "verified" ||
+    contract.executionSurface !== "mcp-tool-native"
+  ) {
+    errors.push(
+      "MCP mutation operations require a verified native-transactional field-authority preflight contract with mcp-tool-native execution",
+    );
+    return;
+  }
+
+  if (
+    !nonEmptyString(contract.runtimeTestCommand) ||
+    !contract.runtimeTestCommand.includes("-p grimodex-db") ||
+    !contract.runtimeTestCommand.includes("-p grimodex-mcp")
+  ) {
+    errors.push(
+      "mcpAuthorityContract.runtimeTestCommand must execute both grimodex-db and grimodex-mcp tests",
+    );
+  }
+
+  const evidenceTests = Array.isArray(contract.evidenceTests)
+    ? contract.evidenceTests
+    : [];
+  if (evidenceTests.length === 0) {
+    errors.push(
+      "mcpAuthorityContract.evidenceTests must list executable native authority test files",
+    );
+  }
+  const evidenceSymbols = new Set();
+  for (const [index, evidence] of evidenceTests.entries()) {
+    const label = `mcpAuthorityContract.evidenceTests[${index}]`;
+    if (!isObject(evidence) || !nonEmptyString(evidence.file)) {
+      errors.push(`${label} must declare a test file`);
+      continue;
+    }
+    const evidencePath = safeRepoPath(
+      repoRoot,
+      evidence.file,
+      `${label}.file`,
+      errors,
+    );
+    if (!evidencePath || !existsSync(evidencePath)) {
+      errors.push(`${label} test file does not exist: ${evidence.file}`);
+      continue;
+    }
+    const evidenceSource = readFileSync(evidencePath, "utf8");
+    if (
+      !/\#\[(?:tokio::)?test\]/.test(evidenceSource) &&
+      !/\b(?:describe|it|test)\s*\(/.test(evidenceSource)
+    ) {
+      errors.push(
+        `${label} must contain executable test declarations: ${evidence.file}`,
+      );
+    }
+    if (
+      !Array.isArray(evidence.symbols) ||
+      evidence.symbols.length === 0 ||
+      evidence.symbols.some((symbol) => !nonEmptyString(symbol))
+    ) {
+      errors.push(`${label}.symbols must list executable test symbols`);
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const executableRustTest = new RegExp(
+        `#\\[(?:tokio::)?test\\]\\s*(?:#\\[[^\\]\\n]+\\]\\s*)*(?:pub(?:\\([^\\)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${escaped}\\b`,
+      ).test(evidenceSource);
+      const executableJsTest = new RegExp(
+        `\\b(?:describe|it|test)\\s*\\([\\s\\S]{0,240}\\b${escaped}\\b`,
+      ).test(evidenceSource);
+      if (!executableRustTest && !executableJsTest) {
+        errors.push(
+          `mcpAuthorityContract evidence test symbol is not an executable test in ${evidence.file}: ${symbol}`,
+        );
+      }
+      evidenceSymbols.add(symbol);
+    }
+  }
+
+  const operationEvidence = Array.isArray(contract.operationEvidence)
+    ? contract.operationEvidence
+    : [];
+  const evidenceByOperation = new Map();
+  for (const entry of operationEvidence) {
+    if (isObject(entry) && nonEmptyString(entry.operationId)) {
+      evidenceByOperation.set(entry.operationId, entry);
+    }
+  }
+  for (const operation of mcpOperations) {
+    if (
+      operation.feedPolicy !== "excluded" &&
+      (!Array.isArray(operation.controls) ||
+        !operation.controls.includes("field-authority"))
+    ) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must declare field-authority alongside the native preflight contract`,
+      );
+    }
+    const evidence = evidenceByOperation.get(operation.id);
+    if (!evidence || !Array.isArray(evidence.symbols) || evidence.symbols.length === 0) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must link operation-specific executable evidence`,
+      );
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      if (!evidenceSymbols.has(symbol)) {
+        errors.push(
+          `operation ${operation.id} MCP evidence symbol is not linked to an executable evidence test: ${symbol}`,
+        );
+      }
+    }
+  }
+  const mcpOperationIds = new Set(mcpOperations.map((operation) => operation.id));
+  for (const operationId of evidenceByOperation.keys()) {
+    if (!mcpOperationIds.has(operationId)) {
+      errors.push(
+        `mcpAuthorityContract.operationEvidence references a non-MCP operation: ${operationId}`,
+      );
+    }
+  }
+}
+
 export function validateChangeFeedWriters({
   repoRoot = REPO_ROOT,
   manifestPath = MANIFEST_PATH,
@@ -802,6 +935,8 @@ export function validateChangeFeedWriters({
       sourceCache,
     );
   }
+
+  validateMcpAuthorityContract(manifest, repoRoot, errors);
 
   for (const writerId of [...activeWriterIds].sort()) {
     if (!coveredWriterIds.has(writerId)) {

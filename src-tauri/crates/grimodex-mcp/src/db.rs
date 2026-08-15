@@ -3691,6 +3691,19 @@ pub(crate) mod tests {
                 tombstone_json TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY(domain, request_id)
+            );
+            CREATE TABLE narrative_field_authority (
+                project_id TEXT NOT NULL,
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                field_path TEXT NOT NULL,
+                owner_kind TEXT NOT NULL
+                    CHECK(owner_kind IN ('human','ai','system','unknown')),
+                explicit_lock INTEGER NOT NULL DEFAULT 0
+                    CHECK(explicit_lock IN (0,1)),
+                version INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
             );",
         )
         .unwrap();

@@ -4466,12 +4466,15 @@ impl Backend {
 
     #[napi]
     pub async fn agent_apply_undo_journal(&self, payload: serde_json::Value) -> Result<String> {
-        agent_write_cmd(
-            Arc::clone(&self.state),
-            "payload",
-            payload,
-            agent_writes::agent_undo_journal_impl,
-        )
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let payload: agent_writes::AgentUndoJournalPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                Ok(serde_json::to_string(&agent_writes::agent_undo_journal_impl(
+                    db, payload,
+                )?)?)
+            })
+        })
         .await
     }
 

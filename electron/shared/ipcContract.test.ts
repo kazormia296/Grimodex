@@ -7145,6 +7145,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sessionId: "s1",
       journalId: "journal-1",
       direction: "undo",
+      authorityRoute: "history-replay",
+      origin: "undo",
+      caller: "undo-redo-command",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
     };
 
     const env = await dispatchInvoke(
@@ -7179,6 +7190,117 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             },
             invalid,
           ),
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["authority route", { authorityRoute: "interactive-agent-command" }],
+    ["origin", { origin: "redo" }],
+    ["caller", { caller: "history-controller" }],
+    [
+      "original-transaction control",
+      {
+        controls: [
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "journal-lineage control",
+      {
+        controls: [
+          "original-transaction",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "typed-writer control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "occ control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "change-event control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "change-feed control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-event",
+        ],
+      },
+    ],
+  ])(
+    "agent_apply_undo_journal: %s は単独の権限要素欠落を拒否する",
+    async (_label, invalid) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_apply_undo_journal",
+        {
+          payload: {
+            requestId: "undo-authority-request",
+            projectId: "p1",
+            sessionId: "s1",
+            journalId: "journal-1",
+            direction: "undo",
+            authorityRoute: "history-replay",
+            origin: "undo",
+            caller: "undo-redo-command",
+            controls: [
+              "original-transaction",
+              "journal-lineage",
+              "typed-writer",
+              "occ",
+              "change-event",
+              "change-feed",
+            ],
+            ...invalid,
+          },
         },
         { backend, shell: noShell },
       );

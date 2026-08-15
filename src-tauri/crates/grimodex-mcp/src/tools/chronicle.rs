@@ -1056,6 +1056,36 @@ mod tests {
             params![id, project, title, ordinal],
         )
         .unwrap();
+        for field_path in [
+            "/title",
+            "/note",
+            "/detail",
+            "/ordinal",
+            "/primaryCodexId",
+            "/laneGroup",
+            "/locationCodexId",
+            "/startTime",
+            "/endTime",
+            "/startMinute",
+            "/endMinute",
+            "/startGranularity",
+            "/endGranularity",
+            "/precision",
+            "/kind",
+            "/secret",
+            "/revealSceneId",
+            "/participants",
+            "/sceneIds",
+            "/relations",
+        ] {
+            conn.execute(
+                "INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+                 VALUES (?1, 'event', ?2, ?3, 'ai', datetime('now'))",
+                params![project, id, field_path],
+            )
+            .unwrap();
+        }
     }
 
     fn seed_scene(server: &GrimodexServer, project: &str, id: &str) {
