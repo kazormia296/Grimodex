@@ -135,13 +135,60 @@ section is the running status record, alongside PR history and this ADR.
 ```text
 Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
-  Schema / Transport Extension Spine (C2-01): pending
+  Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    pending
   Wave 1 Transport Assembly (C2-T1):          pending
   Wave 2 runtime / read-model lanes:          pending
   Wave 2 Transport / Quality Assembly (C2-T2): pending
   Canonical Authority Cutover (C2-Z):         pending
 ```
+
+C2-01 bumps the workspace schema 22→23 and adds, per ADR 005's C2 scope
+list only:
+
+- `narrative_semantic_epochs`, `narrative_dependency_edges`,
+  `narrative_dependency_edge_states`, `narrative_consumer_freshness`
+  (the one durable Freshness authority),
+  `narrative_application_contributions`,
+  `narrative_maintenance_finding_observations` (epoch-bound rebuildable
+  diagnostic history), and `narrative_maintenance_attention` (durable,
+  non-epoch-bound, no-backflow, typed-writer-only).
+- New `narrative_extraction_runs` columns (`run_kind`, `consumer_id`,
+  `semantic_epoch_id`, `work_key`, `terminal_reason_code`,
+  `superseded_by_run_id`) and entity-owned SQL `CHECK` constraints on
+  Run/Task/Attempt `status`, replacing the previously unconstrained shared
+  `status TEXT` column — matching
+  `narrative-execution-state.json`. Legacy `failed` Attempts are normalized
+  to `NEX_LEGACY_UNCLASSIFIED`/`terminal`/`legacy`; any other unrecognized
+  status fails the migration closed instead of silently coercing.
+- New `narrative_extraction_attempts` typed-failure columns
+  (`failure_code`, `retry_disposition`, `policy_version`,
+  `next_attempt_at`), with `next_attempt_at` constrained to only be set
+  when `retry_disposition = 'retryable'`.
+- `narrative_change_cursors` reservation columns (`semantic_epoch_id`,
+  `reserved_through_sequence`, `active_run_id`) — the same existing
+  Change-Feed-consumer-cursor table, not a new Run cursor concept; NULL for
+  pre-C2 consumers.
+- `workspace_schema.rs`'s `has_current_schema_checkpoint_invariants` gates
+  on all of the above so a partially-migrated database cannot look
+  current.
+
+Verification note: this sandbox's Rust toolchain cannot build
+`libsqlite3-sys` (`cfg_select` unstable-feature error, pre-existing and
+reproducible on an unmodified checkout), so `cargo check`/`cargo test`
+could not run here. Every `CREATE TABLE`/rebuild statement was instead
+extracted verbatim and executed against real SQLite (Python's bundled
+`sqlite3`) to confirm the DDL is valid, the rebuild preserves row counts,
+legacy-attempt normalization behaves as specified, and every `CHECK`
+constraint accepts/rejects exactly the cases above — including a
+byte-for-byte cross-check of the `workspace_schema.rs` invariant
+substrings against real `sqlite_master.sql` output. `src/db/schema.ts`
+type-checks cleanly (`npx tsc --noEmit`, 0 errors). Rust unit tests were
+added mirroring this same verification; they still need a real `cargo
+test -p grimodex-db -p grimodex-core` run once a working toolchain is
+available. `src/db/generated/schema-contract.json` also needs
+regenerating (`pnpm generate:db-contract`) once `cargo run` works again —
+it was intentionally left stale rather than hand-edited.
 
 C2-00 added, on top of the existing C1.5 contracts:
 

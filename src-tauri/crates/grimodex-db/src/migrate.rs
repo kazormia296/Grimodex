@@ -3227,6 +3227,172 @@ impl Database {
         Self::migrate_narrative_change_transactions_v22(&conn)?;
         Self::backfill_narrative_change_object_heads(&conn)?;
 
+        // SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph persistence.
+        // ADR 005 fixes the contract this schema implements: Dependency Edge,
+        // Edge State, Consumer Freshness, Application Contribution, Reverse
+        // Lookup, Incremental Evaluator, Cursor, and Backfill
+        // persistence/runtime, and nothing else. narrative_consumer_freshness
+        // is the one durable Freshness authority (semantic-core-authorities
+        // concern `evidence-freshness`); narrative_maintenance_finding_observations
+        // is epoch-bound rebuildable diagnostic history and is never read as
+        // the current value; narrative_maintenance_attention is durable
+        // user state that never backflows into the Change Feed or into
+        // Freshness. A Semantic Epoch is the generation boundary a restore,
+        // migration, or full rebuild advances; see
+        // `docs/adr/006-narrative-mutation-authority-routes.md`'s
+        // `semantic-epoch-event` control.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (
+                id                             TEXT NOT NULL,
+                project_id                     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                epoch_number                   INTEGER NOT NULL CHECK(epoch_number >= 0),
+                reason                         TEXT NOT NULL
+                    CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')),
+                triggered_by_change_event_uid  TEXT,
+                created_at                     TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, epoch_number)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_edges (
+                id                          TEXT NOT NULL,
+                project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind               TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key                TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                source_object_identity      TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                read_set_json                TEXT NOT NULL DEFAULT '[]'
+                    CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'),
+                generated_by_transaction_id TEXT,
+                created_at                  TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_edge_states (
+                edge_id               TEXT NOT NULL,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                evidence_freshness    TEXT NOT NULL
+                    CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                reason_code           TEXT
+                    CHECK(reason_code IS NULL OR reason_code IN (
+                        'source-revision-changed','source-missing','evidence-overlap','context-overlap',
+                        'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift',
+                        'normalizer-incompatible','component-incompatible','target-modified'
+                    )),
+                build_action          TEXT NOT NULL
+                    CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')),
+                evaluated_at_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                evaluated_at          TEXT NOT NULL,
+                PRIMARY KEY(edge_id),
+                FOREIGN KEY(edge_id) REFERENCES narrative_dependency_edges(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS narrative_consumer_freshness (
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind         TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key          TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                evidence_freshness    TEXT NOT NULL
+                    CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                build_action          TEXT NOT NULL
+                    CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')),
+                semantic_epoch_id     TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                last_evaluated_run_id TEXT,
+                updated_at            TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_application_contributions (
+                id                     TEXT NOT NULL,
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                application_id         TEXT NOT NULL CHECK(length(application_id) > 0),
+                target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0),
+                field_path             TEXT NOT NULL CHECK(length(field_path) > 0),
+                target_state           TEXT NOT NULL
+                    CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
+                created_at             TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_observations (
+                id                           TEXT NOT NULL,
+                project_id                   TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id                       TEXT NOT NULL,
+                semantic_epoch_id            TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                edge_id                      TEXT,
+                finding_key                  TEXT NOT NULL CHECK(length(finding_key) > 0),
+                reason_code                  TEXT NOT NULL CHECK(reason_code IN (
+                        'source-revision-changed','source-missing','evidence-overlap','context-overlap',
+                        'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift',
+                        'normalizer-incompatible','component-incompatible','target-modified'
+                    )),
+                evidence_freshness_snapshot  TEXT NOT NULL
+                    CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
+                material_basis_digest        TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                observed_at                  TEXT NOT NULL,
+                PRIMARY KEY(id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_attention (
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                finding_key            TEXT NOT NULL CHECK(length(finding_key) > 0),
+                disposition            TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')),
+                material_basis_digest  TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                snoozed_until          TEXT,
+                set_at                 TEXT NOT NULL,
+                set_by                 TEXT,
+                PRIMARY KEY(project_id, finding_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_semantic_epochs_project
+                ON narrative_semantic_epochs(project_id, epoch_number);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_source
+                ON narrative_dependency_edges(project_id, source_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_consumer
+                ON narrative_dependency_edges(project_id, consumer_kind, consumer_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edge_states_project
+                ON narrative_dependency_edge_states(project_id, evidence_freshness);
+            CREATE INDEX IF NOT EXISTS idx_narrative_consumer_freshness_epoch
+                ON narrative_consumer_freshness(project_id, semantic_epoch_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
+                ON narrative_application_contributions(project_id, target_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
+                ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
+        )?;
+
+        // New Run columns: run_kind distinguishes cursor-bound Runs (the
+        // Freshness evaluator) from non-cursor-bound Runs (interpretation,
+        // Semantic Index rebuild, manual rebuild, backfill); the Cursor
+        // table remains the reservation authority, not the Run row.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "run_kind",
+            "TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill'))",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_extraction_runs", "consumer_id", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "semantic_epoch_id",
+            "TEXT REFERENCES narrative_semantic_epochs(id)",
+        )?;
+        Self::add_column_if_missing(&conn, "narrative_extraction_runs", "work_key", "TEXT")?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "terminal_reason_code",
+            "TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*')",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_extraction_runs",
+            "superseded_by_run_id",
+            "TEXT REFERENCES narrative_extraction_runs(id)",
+        )?;
+
+        // Run/Task/Attempt each own a separate status vocabulary and CHECK
+        // constraint; adding one requires the rebuild pattern since SQLite
+        // cannot ALTER TABLE ADD a multi-value CHECK to a populated table.
+        Self::migrate_narrative_extraction_status_v23(&conn)?;
+        // Cursor reservation columns for the Change Feed consumer that
+        // drives the Freshness evaluator Run; existing pre-C2 consumers keep
+        // using only acknowledged_through_sequence/lease.
+        Self::migrate_narrative_change_cursors_v23(&conn)?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
@@ -3288,8 +3454,7 @@ impl Database {
             // SCHEMA 21 accepted the project aggregate marker without an
             // explicit projectId. Preserve that historical row by deriving
             // the identity from its already-scoped project column.
-            if object_key.get("kind").and_then(serde_json::Value::as_str)
-                == Some("project")
+            if object_key.get("kind").and_then(serde_json::Value::as_str) == Some("project")
                 && object_key.get("projectId").is_none()
             {
                 if let Some(object) = object_key.as_object_mut() {
@@ -3517,6 +3682,387 @@ impl Database {
         anyhow::ensure!(
             foreign_key_errors == 0,
             "SCHEMA 22 Change Feed origin migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 23: Run, Task, and Attempt each get their own status
+    /// CHECK constraint instead of sharing one untyped `status TEXT`
+    /// column — `policies/narrative/narrative-execution-state.json` is the
+    /// contract this enforces physically. Attempt also gains typed failure
+    /// columns (`failure_code`/`retry_disposition`/`policy_version`/
+    /// `next_attempt_at`) per `narrative-failure-policy.json`. SQLite cannot
+    /// ALTER TABLE ADD a CHECK constraint to a populated table, so this
+    /// rebuilds all three tables in one transaction.
+    fn migrate_narrative_extraction_status_v23(conn: &Connection) -> anyhow::Result<()> {
+        let runs_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !runs_exists {
+            return Ok(());
+        }
+        let runs_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let compact_runs_sql = Self::compact(&runs_sql);
+        let schema_ready = compact_runs_sql.contains(
+            "check(statusin('pending','running','completed','failed','cancelled','superseded'))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        // Fail closed on any status value the new CHECK does not allow,
+        // rather than silently coercing it — NEX_EXECUTION_STATUS_INVALID
+        // is a manual-intervention failure code, not something this
+        // migration should assign itself.
+        let invalid_run_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_runs
+                  WHERE status NOT IN ('pending','running','completed','failed','cancelled','superseded')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_run_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_runs rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_run_statuses:?}"
+        );
+        let invalid_task_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_tasks
+                  WHERE status NOT IN ('queued','running','completed','failed','cancelled')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_task_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_tasks rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_task_statuses:?}"
+        );
+        let invalid_attempt_statuses: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT status FROM narrative_extraction_attempts
+                  WHERE status NOT IN ('running','completed','failed')",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_attempt_statuses.is_empty(),
+            "SCHEMA 23 execution-state migration found narrative_extraction_attempts rows with an \
+             unrecognized status (NEX_EXECUTION_STATUS_INVALID): {invalid_attempt_statuses:?}"
+        );
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 23 execution-state migration requires autocommit"
+        );
+        let run_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        let task_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempt_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_attempts",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_extraction_runs_v23;
+                     CREATE TABLE narrative_extraction_runs_v23 (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        surface_path_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        spec_digest TEXT NOT NULL,
+                        snapshot_digest TEXT,
+                        catalog_digest TEXT,
+                        registry_digest TEXT,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                        coverage_json TEXT NOT NULL DEFAULT '{}',
+                        outcome_summary_json TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0,
+                        run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                            CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill')),
+                        consumer_id TEXT,
+                        semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                        work_key TEXT,
+                        terminal_reason_code TEXT
+                            CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                        superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+                     );
+                     INSERT INTO narrative_extraction_runs_v23
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                         outcome_summary_json, created_at, started_at, completed_at, version,
+                         run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                         superseded_by_run_id)
+                     SELECT id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                            snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                            outcome_summary_json, created_at, started_at, completed_at, version,
+                            run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                            superseded_by_run_id
+                       FROM narrative_extraction_runs;
+                     DROP TABLE narrative_extraction_runs;
+                     ALTER TABLE narrative_extraction_runs_v23 RENAME TO narrative_extraction_runs;
+
+                     DROP TABLE IF EXISTS narrative_extraction_tasks_v23;
+                     CREATE TABLE narrative_extraction_tasks_v23 (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        task_kind TEXT NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('queued','running','completed','failed','cancelled')),
+                        input_json TEXT NOT NULL DEFAULT '{}',
+                        output_json TEXT,
+                        priority INTEGER NOT NULL DEFAULT 0,
+                        attempt_count INTEGER NOT NULL DEFAULT 0,
+                        lease_owner TEXT,
+                        lease_expires_at TEXT,
+                        heartbeat_at TEXT,
+                        error_message TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0
+                     );
+                     INSERT INTO narrative_extraction_tasks_v23
+                        (id, run_id, task_kind, status, input_json, output_json, priority,
+                         attempt_count, lease_owner, lease_expires_at, heartbeat_at, error_message,
+                         created_at, started_at, completed_at, version)
+                     SELECT id, run_id, task_kind, status, input_json, output_json, priority,
+                            attempt_count, lease_owner, lease_expires_at, heartbeat_at, error_message,
+                            created_at, started_at, completed_at, version
+                       FROM narrative_extraction_tasks;
+                     DROP TABLE narrative_extraction_tasks;
+                     ALTER TABLE narrative_extraction_tasks_v23 RENAME TO narrative_extraction_tasks;
+
+                     DROP TABLE IF EXISTS narrative_extraction_attempts_v23;
+                     CREATE TABLE narrative_extraction_attempts_v23 (
+                        id TEXT PRIMARY KEY,
+                        task_id TEXT NOT NULL,
+                        attempt_number INTEGER NOT NULL,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('running','completed','failed')),
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        error_message TEXT,
+                        output_json TEXT,
+                        failure_code TEXT
+                            CHECK(failure_code IS NULL OR failure_code GLOB 'NEX_*'),
+                        retry_disposition TEXT
+                            CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')),
+                        policy_version TEXT,
+                        next_attempt_at TEXT,
+                        CHECK((next_attempt_at IS NULL) OR (retry_disposition = 'retryable'))
+                     );
+                     INSERT INTO narrative_extraction_attempts_v23
+                        (id, task_id, attempt_number, status, started_at, completed_at,
+                         error_message, output_json, failure_code, retry_disposition,
+                         policy_version, next_attempt_at)
+                     SELECT id, task_id, attempt_number, status, started_at, completed_at,
+                            error_message, output_json,
+                            CASE WHEN status = 'failed' THEN 'NEX_LEGACY_UNCLASSIFIED' ELSE NULL END,
+                            CASE WHEN status = 'failed' THEN 'terminal' ELSE NULL END,
+                            CASE WHEN status = 'failed' THEN 'legacy' ELSE NULL END,
+                            NULL
+                       FROM narrative_extraction_attempts;
+                     DROP TABLE narrative_extraction_attempts;
+                     ALTER TABLE narrative_extraction_attempts_v23 RENAME TO narrative_extraction_attempts;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let run_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        let task_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks",
+            [],
+            |row| row.get(0),
+        )?;
+        let attempt_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_attempts",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            run_count_after == run_count_before
+                && task_count_after == task_count_before
+                && attempt_count_after == attempt_count_before,
+            "SCHEMA 23 execution-state migration changed row counts (runs {run_count_before}->{run_count_after}, \
+             tasks {task_count_before}->{task_count_after}, attempts {attempt_count_before}->{attempt_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" IN ('narrative_extraction_runs','narrative_extraction_tasks','narrative_extraction_attempts')",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 23 execution-state migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 23: the Change Feed consumer cursor gains reservation
+    /// columns so the Freshness evaluator Run can reserve an unacknowledged
+    /// range instead of only acknowledging a completed one. Pre-C2 consumers
+    /// keep using only `acknowledged_through_sequence`/lease; the new
+    /// columns stay NULL for them.
+    fn migrate_narrative_change_cursors_v23(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_change_cursors'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+        let table_sql: String = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_change_cursors'",
+            [],
+            |row| row.get(0),
+        )?;
+        let compact_table_sql = Self::compact(&table_sql);
+        let schema_ready = compact_table_sql.contains(
+            "check((active_run_idisnullandreserved_through_sequenceisnull)or(active_run_idisnotnullandreserved_through_sequenceisnotnullandsemantic_epoch_idisnotnull))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 23 cursor reservation migration requires autocommit"
+        );
+        let row_count_before: i64 =
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_cursors", [], |row| {
+                row.get(0)
+            })?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_change_cursors_v23;
+                     CREATE TABLE narrative_change_cursors_v23 (
+                        project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                        acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                            CHECK(acknowledged_through_sequence >= 0),
+                        lease_owner                   TEXT,
+                        lease_expires_at              TEXT,
+                        last_error                    TEXT,
+                        updated_at                    TEXT NOT NULL,
+                        semantic_epoch_id             TEXT REFERENCES narrative_semantic_epochs(id),
+                        reserved_through_sequence     INTEGER,
+                        active_run_id                 TEXT REFERENCES narrative_extraction_runs(id),
+                        PRIMARY KEY(project_id, consumer_id),
+                        CHECK(
+                            (active_run_id IS NULL AND reserved_through_sequence IS NULL)
+                            OR (active_run_id IS NOT NULL AND reserved_through_sequence IS NOT NULL
+                                AND semantic_epoch_id IS NOT NULL)
+                        ),
+                        CHECK(
+                            reserved_through_sequence IS NULL
+                            OR reserved_through_sequence >= acknowledged_through_sequence
+                        )
+                     );
+                     INSERT INTO narrative_change_cursors_v23
+                        (project_id, consumer_id, acknowledged_through_sequence, lease_owner,
+                         lease_expires_at, last_error, updated_at)
+                     SELECT project_id, consumer_id, acknowledged_through_sequence, lease_owner,
+                            lease_expires_at, last_error, updated_at
+                       FROM narrative_change_cursors;
+                     DROP TABLE narrative_change_cursors;
+                     ALTER TABLE narrative_change_cursors_v23 RENAME TO narrative_change_cursors;
+                     CREATE INDEX IF NOT EXISTS idx_narrative_change_cursors_project
+                        ON narrative_change_cursors(project_id, consumer_id);",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 =
+            conn.query_row("SELECT COUNT(*) FROM narrative_change_cursors", [], |row| {
+                row.get(0)
+            })?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 23 cursor reservation migration changed row count"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_change_cursors'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 23 cursor reservation migration left foreign key violations"
         );
         Ok(())
     }
@@ -5152,6 +5698,16 @@ impl Database {
             "ALTER TABLE {table} ADD COLUMN {column} {column_def};"
         ))?;
         Ok(())
+    }
+
+    /// Lowercased, whitespace-stripped `sqlite_master.sql` for idempotency
+    /// checks that need to detect a specific CHECK/constraint clause
+    /// regardless of the formatting SQLite echoes it back with.
+    fn compact(sql: &str) -> String {
+        sql.chars()
+            .filter(|character| !character.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
     }
 }
 
@@ -7085,5 +7641,282 @@ mod tests {
             Ok(())
         })
         .expect("probe previous marker compatibility");
+    }
+
+    // -- SCHEMA_VERSION 23: Gate C2-01 Semantic Build Graph -----------------
+
+    #[test]
+    fn schema_23_full_migration_creates_semantic_build_graph_and_status_checks() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            for table in [
+                "narrative_semantic_epochs",
+                "narrative_dependency_edges",
+                "narrative_dependency_edge_states",
+                "narrative_consumer_freshness",
+                "narrative_application_contributions",
+                "narrative_maintenance_finding_observations",
+                "narrative_maintenance_attention",
+            ] {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )?;
+                assert!(exists, "expected SCHEMA 23 table to exist: {table}");
+            }
+            assert!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 23 Semantic Build Graph tables");
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test')",
+                [],
+            )
+            .ok();
+            let rejected = conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+                 VALUES ('bad-run', 'proj-1', 's', '{}', '{}', 'd', 'bogus', 'now')",
+                [],
+            );
+            assert!(rejected.is_err(), "unknown Run status must violate the SCHEMA 23 CHECK");
+
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+                 VALUES ('superseded-run', 'proj-1', 's', '{}', '{}', 'd', 'superseded', 'now')",
+                [],
+            )?;
+
+            let bad_failure_code = conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, failure_code)
+                 VALUES ('bad-attempt', 'missing-task', 1, 'failed', 'now', 'NOT_NEX_PREFIXED')",
+                [],
+            );
+            assert!(
+                bad_failure_code.is_err(),
+                "failure_code without the NEX_ prefix must violate the SCHEMA 23 CHECK"
+            );
+
+            let bad_next_attempt = conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at, retry_disposition, next_attempt_at)
+                 VALUES ('bad-attempt-2', 'missing-task', 1, 'failed', 'now', 'terminal', '2026-01-01')",
+                [],
+            );
+            assert!(
+                bad_next_attempt.is_err(),
+                "next_attempt_at must require retry_disposition = retryable"
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 23 status/failure CHECK constraints");
+    }
+
+    #[test]
+    fn schema_23_migration_is_idempotent() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("first migrate to current schema");
+        db.migrate()
+            .expect("second migrate on an already-current database must be a no-op");
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("schema version stable after repeated migrate");
+    }
+
+    fn seed_pre_v23_execution_state_tables(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE narrative_extraction_tasks (
+                id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                task_kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                input_json TEXT NOT NULL DEFAULT '{}',
+                output_json TEXT,
+                priority INTEGER NOT NULL DEFAULT 0,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                lease_owner TEXT,
+                lease_expires_at TEXT,
+                heartbeat_at TEXT,
+                error_message TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE narrative_extraction_attempts (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                attempt_number INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                error_message TEXT,
+                output_json TEXT
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at)
+             VALUES ('run-1', 'proj-1', 's', '{}', '{}', 'd', 'completed', 'now');
+             INSERT INTO narrative_extraction_tasks (id, run_id, task_kind, status, created_at)
+             VALUES ('task-1', 'run-1', 'kind-a', 'completed', 'now');
+             INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at)
+             VALUES
+                ('attempt-legacy-failed', 'task-1', 1, 'failed', 'now'),
+                ('attempt-ok', 'task-1', 2, 'completed', 'now');",
+        )
+        .expect("seed pre-SCHEMA-23 execution-state tables");
+    }
+
+    #[test]
+    fn migrate_narrative_extraction_status_v23_normalizes_legacy_failed_attempts() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v23_execution_state_tables(&conn);
+
+        Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect("SCHEMA 23 execution-state migration");
+
+        let (failure_code, retry_disposition, policy_version): (
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT failure_code, retry_disposition, policy_version
+                   FROM narrative_extraction_attempts WHERE id = 'attempt-legacy-failed'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read normalized legacy attempt");
+        assert_eq!(failure_code.as_deref(), Some("NEX_LEGACY_UNCLASSIFIED"));
+        assert_eq!(retry_disposition.as_deref(), Some("terminal"));
+        assert_eq!(policy_version.as_deref(), Some("legacy"));
+
+        let clean: (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT failure_code, retry_disposition
+                   FROM narrative_extraction_attempts WHERE id = 'attempt-ok'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read non-failed attempt");
+        assert_eq!(clean, (None, None));
+
+        // Idempotent: a second run against the now-current shape is a no-op.
+        Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect("second SCHEMA 23 execution-state migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_narrative_extraction_status_v23_rejects_unrecognized_status() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v23_execution_state_tables(&conn);
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET status = 'bogus-status' WHERE id = 'run-1'",
+            [],
+        )
+        .expect("corrupt run status");
+
+        let error = Database::migrate_narrative_extraction_status_v23(&conn)
+            .expect_err("unrecognized status must fail closed, not silently coerce");
+        assert!(
+            error.to_string().contains("NEX_EXECUTION_STATUS_INVALID"),
+            "unexpected error: {error:#}"
+        );
+
+        // Failing closed must not have left a partial rebuild behind.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original row must remain readable");
+        assert_eq!(status, "bogus-status");
+    }
+
+    #[test]
+    fn migrate_narrative_change_cursors_v23_keeps_pre_c2_consumers_reservation_free() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_change_cursors (
+                project_id                    TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_id                   TEXT NOT NULL CHECK(length(consumer_id) > 0),
+                acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0
+                    CHECK(acknowledged_through_sequence >= 0),
+                lease_owner                   TEXT,
+                lease_expires_at              TEXT,
+                last_error                    TEXT,
+                updated_at                    TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_id)
+             );
+             INSERT INTO narrative_change_cursors
+                (project_id, consumer_id, acknowledged_through_sequence, updated_at)
+             VALUES ('proj-1', 'legacy-consumer', 42, 'now');",
+        )
+        .expect("seed pre-SCHEMA-23 cursor table");
+
+        Database::migrate_narrative_change_cursors_v23(&conn)
+            .expect("SCHEMA 23 cursor reservation migration");
+
+        let (semantic_epoch_id, reserved_through_sequence, active_run_id): (
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT semantic_epoch_id, reserved_through_sequence, active_run_id
+                   FROM narrative_change_cursors WHERE consumer_id = 'legacy-consumer'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read migrated legacy cursor");
+        assert_eq!(semantic_epoch_id, None);
+        assert_eq!(reserved_through_sequence, None);
+        assert_eq!(active_run_id, None);
+
+        let acknowledged: i64 = conn
+            .query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE consumer_id = 'legacy-consumer'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read preserved acknowledgment");
+        assert_eq!(acknowledged, 42);
+
+        Database::migrate_narrative_change_cursors_v23(&conn)
+            .expect("second SCHEMA 23 cursor reservation migration must be a no-op");
     }
 }
