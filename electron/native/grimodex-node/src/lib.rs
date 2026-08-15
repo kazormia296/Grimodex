@@ -4309,6 +4309,43 @@ impl Backend {
         .await
     }
 
+    /// Human/import/history renderer Codex writer. Agent tool calls use the
+    /// capability-bound `agent_codex_*` surface above; this alias keeps the
+    /// non-Agent renderer writer contract separate at the IPC boundary while
+    /// sharing the same tracked native implementation.
+    #[napi]
+    pub async fn codex_create(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::renderer_codex_create_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_update(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::renderer_codex_update_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn codex_delete(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::agent_writes::renderer_codex_delete_impl,
+        )
+        .await
+    }
+
     #[napi]
     pub async fn agent_codex_mutate(&self, payload: serde_json::Value) -> Result<String> {
         canonical_agent_write_cmd(

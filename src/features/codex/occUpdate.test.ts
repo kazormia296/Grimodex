@@ -98,7 +98,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
       { baseVersion: 2 },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
@@ -182,7 +182,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
 
     const result = await updateCodexEntry("p", "e1", { content: "x" });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         projectId: "p",
         entryId: "e1",
@@ -211,7 +211,7 @@ describe("updateCodexEntry OCC (base_version)", () => {
       },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_update", {
       payload: expect.objectContaining({
         entryId: "e1",
         baseVersion: 2,
@@ -284,7 +284,7 @@ describe("updateCodexEntry IME refresh trigger", () => {
 
       await updateCodexEntry("p", "e1", patch);
 
-      expect(invokeMock).toHaveBeenCalledWith("agent_codex_update", {
+      expect(invokeMock).toHaveBeenCalledWith("codex_update", {
         payload: expect.objectContaining({
           projectId: "p",
           entryId: "e1",

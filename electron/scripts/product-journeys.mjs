@@ -536,7 +536,7 @@ async function prepareCodexContextEntry(harness) {
         `project '${projectId}' is missing its canonical character type`,
       );
     }
-    await harness.invokeOk(prepared.page, "agent_codex_create", {
+    await harness.invokeOk(prepared.page, "codex_create", {
       payload: {
         requestId: `product-codex-create-${entryId}`,
         eventUid: `product-codex-create-event:${entryId}`,

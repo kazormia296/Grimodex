@@ -49,6 +49,15 @@ const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_delete",
 ]);
 
+// Codex has two renderer-facing writer families. The `agent_codex_*` commands
+// are reserved for capability-bound Agent tool calls; these aliases preserve
+// the human/import/history renderer API without weakening that boundary.
+const CODEX_RENDERER_COMMANDS = new Set([
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+]);
+
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
   "entity_tags_set",
   "project_create",
@@ -1560,6 +1569,15 @@ function authorityRouteForRendererCommand(
     return "interactive-agent-command";
   }
 
+  if (CODEX_RENDERER_COMMANDS.has(cmd)) {
+    return authorityRouteForOrigin(payload.origin, [
+      "human-direct",
+      "import-apply",
+      "history-replay",
+      "restore-or-migration",
+    ]);
+  }
+
   if (
     cmd === "foreshadow_create" ||
     cmd === "foreshadow_update" ||
@@ -1652,6 +1670,7 @@ export function bindRendererAuthorityForIpc(
   if (!route) {
     const requiresAuthority =
       GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
+      CODEX_RENDERER_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       AGENT_AUTHORITY_COMMANDS.has(cmd) ||
       cmd === "foreshadow_create" ||

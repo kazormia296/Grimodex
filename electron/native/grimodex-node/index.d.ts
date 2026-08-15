@@ -584,6 +584,15 @@ export declare class Backend {
   agentCodexCreate(payload: any): Promise<string>
   agentCodexUpdate(payload: any): Promise<string>
   agentCodexDelete(payload: any): Promise<string>
+  /**
+   * Human/import/history renderer Codex writer. Agent tool calls use the
+   * capability-bound `agent_codex_*` surface above; this alias keeps the
+   * non-Agent renderer writer contract separate at the IPC boundary while
+   * sharing the same tracked native implementation.
+   */
+  codexCreate(payload: any): Promise<string>
+  codexUpdate(payload: any): Promise<string>
+  codexDelete(payload: any): Promise<string>
   agentCodexMutate(payload: any): Promise<string>
   agentWriteBundle(payload: any): Promise<string>
   agentSnippetCreate(payload: any): Promise<string>

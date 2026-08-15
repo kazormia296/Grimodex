@@ -928,7 +928,13 @@ fn validate_renderer_codex_identity(
     );
     validate_renderer_authority_context_for_routes(
         context,
-        &["interactive-agent-command", "history-replay"],
+        &[
+            "human-direct",
+            "interactive-agent-command",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
     )?;
     let replay = matches!(
         context.origin,

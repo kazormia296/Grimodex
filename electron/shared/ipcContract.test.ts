@@ -453,6 +453,9 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     agentCodexCreate: record("agentCodexCreate", AGENT_WRITE_RESULT) as never,
     agentCodexUpdate: record("agentCodexUpdate", AGENT_WRITE_RESULT) as never,
     agentCodexDelete: record("agentCodexDelete", AGENT_WRITE_RESULT) as never,
+    codexCreate: record("codexCreate", AGENT_WRITE_RESULT) as never,
+    codexUpdate: record("codexUpdate", AGENT_WRITE_RESULT) as never,
+    codexDelete: record("codexDelete", AGENT_WRITE_RESULT) as never,
     agentCodexMutate: record("agentCodexMutate", AGENT_WRITE_RESULT) as never,
     agentWriteBundle: record("agentWriteBundle", AGENT_WRITE_RESULT) as never,
     agentSnippetCreate: record(
@@ -4202,6 +4205,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "chat_index_status",
       "chat_message_search",
       "chat_reindex_all",
+      "codex_create",
+      "codex_delete",
       "codex_index_entry",
       "codex_index_status",
       "codex_match_text",
@@ -4210,6 +4215,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "codex_rename_apply",
       "codex_rename_undo",
       "codex_semantic_search",
+      "codex_update",
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
@@ -6172,6 +6178,33 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       },
     });
     expect(linked.ok).toBe(true);
+  });
+
+  it("renderer Codex alias: human-direct writer is mapped separately from Agent command", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      ...mutationIdentity("renderer-codex-create"),
+      entryId: "renderer-entry-1",
+      typeSlug: "character",
+      name: "太郎",
+    };
+    const created = await dispatchInvoke(
+      "codex_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "codexCreate", args: [payload] },
+    ]);
+    expect(created).toEqual({
+      ok: true,
+      value: {
+        entityId: "e1",
+        version: 1,
+        changeEventUid: "ce1",
+        undoJournalId: "uj1",
+      },
+    });
   });
 
   it("agent_event_create: required identity を検証して N-API へ渡す", async () => {

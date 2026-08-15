@@ -303,7 +303,8 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /changeEvent:\s*\{/);
   assert.match(source, /eventUid/);
   assert.match(source, /sessionId:\s*"external-product-journey"/);
-  assert.match(source, /"agent_codex_create"/);
+  assert.match(source, /"codex_create"/);
+  assert.doesNotMatch(source, /"agent_codex_create"/);
   assert.doesNotMatch(source, /INSERT INTO codex_entries/);
   assert.doesNotMatch(source, /UPDATE tree_nodes SET content/);
   assert.doesNotMatch(source, /INSERT INTO change_events/);

@@ -2844,6 +2844,156 @@
       "canonical": { "origin": "agent", "opType": "codex.delete" }
     },
     {
+      "id": "codex.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex creation uses the tracked writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_create_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_create",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_create",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.create" }
+    },
+    {
+      "id": "codex.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex updates use the tracked writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_update_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_update",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_update",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.update" }
+    },
+    {
+      "id": "codex.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {
+          "authorityRoute": "human-direct",
+          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
+        },
+        {
+          "authorityRoute": "import-apply",
+          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["import-session","import-review"]
+        },
+        {
+          "authorityRoute": "history-replay",
+          "controls": ["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],
+          "allowedCallers": ["history-controller","undo-redo-command"]
+        },
+        {
+          "authorityRoute": "restore-or-migration",
+          "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+          "allowedCallers": ["restore-controller","migration-runner","integrity-repair"]
+        }
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history renderer Codex deletion uses the tracked cascade writer while remaining separate from capability-bound Agent commands.",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
+        "symbol": "renderer_codex_delete_impl"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "codex_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "codex_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["codex.entry","codex.relation","codex.phase","codex.detail"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": { "origin": "renderer", "opType": "codex.delete" }
+    },
+    {
       "id": "agent.codex.mutate",
       "authorityRoute": "interactive-agent-command",
       "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],

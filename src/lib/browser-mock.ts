@@ -26905,10 +26905,13 @@ export async function createBrowserMock(
         return undefined as T;
       }
       case "agent_codex_create":
+      case "codex_create":
         return handleAgentCodexCreate(args) as T;
       case "agent_codex_update":
+      case "codex_update":
         return handleAgentCodexUpdate(args) as T;
       case "agent_codex_delete":
+      case "codex_delete":
         return handleAgentCodexDelete(args) as T;
       case "agent_codex_mutate":
         return handleAgentCodexMutate(args) as T;

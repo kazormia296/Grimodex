@@ -710,10 +710,15 @@ export interface NapiBackendLike {
   foreshadowResolveOrphan(payload: unknown): Promise<string>;
   foreshadowSaveAnchorsForScene(payload: unknown): Promise<string>;
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
-  // agent_writes 20 コマンド（すべて単一 payload → tracked write result）
+  // agent_writes commands（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
   agentCodexUpdate(payload: unknown): Promise<string>;
   agentCodexDelete(payload: unknown): Promise<string>;
+  // Human/import/history renderer Codex writers. Optional は旧 .node との
+  // version skew を requireNapiMethod で明示エラー化するため。
+  codexCreate?(payload: unknown): Promise<string>;
+  codexUpdate?(payload: unknown): Promise<string>;
+  codexDelete?(payload: unknown): Promise<string>;
   agentCodexMutate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
   agentSnippetCreate(payload: unknown): Promise<string>;
@@ -6888,6 +6893,57 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         await b.agentCodexDelete(
           requireCanonicalWriterIdentity(a, "agent_codex_delete", [
             "interactive-agent-command",
+          ]),
+        ),
+      ),
+  },
+  codex_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexCreate,
+          "codexCreate",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_create", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+          ]),
+        ),
+      ),
+  },
+  codex_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexUpdate,
+          "codexUpdate",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_update", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+          ]),
+        ),
+      ),
+  },
+  codex_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexDelete,
+          "codexDelete",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_delete", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
           ]),
         ),
       ),

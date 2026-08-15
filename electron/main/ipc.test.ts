@@ -381,6 +381,41 @@ describe("registerIpcRouter fail-soft logging", () => {
     );
   });
 
+  it("binds the non-Agent Codex renderer alias to the human route", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "codex_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "renderer-codex-create",
+          sessionId: "renderer-session",
+          eventUid: "renderer-codex-event",
+          origin: "human",
+          caller: "renderer-forged-caller",
+          controls: [],
+          entryId: "entry-1",
+          typeSlug: "character",
+          name: "正常な作成",
+        },
+      },
+      704,
+    );
+
+    expect(bound.payload).toMatchObject({
+      authorityRoute: "human-direct",
+      origin: "human",
+      caller: "human-ui",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+    });
+  });
+
   it("issues a tool-scoped capability only for the main chat-agent turn", async () => {
     const sendAgentMessage = vi.fn(async () =>
       JSON.stringify({

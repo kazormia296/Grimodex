@@ -66,7 +66,7 @@ export async function setParentRelation(
     .limit(1);
   const entry = current[0];
   if (!entry) return;
-  await invoke("agent_codex_update", {
+  await invoke("codex_update", {
     payload: {
       ...createCanonicalWriteContext(),
       projectId: entry.projectId,
