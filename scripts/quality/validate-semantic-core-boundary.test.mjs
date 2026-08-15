@@ -61,6 +61,11 @@ function minimalFixtureRoot() {
         requiredControls: ["semantic-epoch-event"],
         forbiddenCallers: [],
       },
+      {
+        id: "attention-typed-writer",
+        requiredControls: ["typed-writer"],
+        forbiddenCallers: ["background-maintenance"],
+      },
     ],
   });
   writeJson(root, "policies/narrative/semantic-state-vocabulary.json", {

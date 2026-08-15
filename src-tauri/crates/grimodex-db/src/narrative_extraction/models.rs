@@ -304,3 +304,39 @@ pub struct HumanFieldLockPayload {
 pub(crate) fn default_object_json() -> Value {
     Value::Object(Default::default())
 }
+
+// ─────────────────────── Gate C2-T1 Transport Assembly ───────────────────
+// Wire payloads for the C2 commands promoted from pub(crate) to pub during
+// Transport Assembly: Lane D's Attention typed writer and Lane O's
+// Maintenance Inbox read model.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionSetPayload {
+    pub project_id: String,
+    pub finding_key: String,
+    /// One of `AttentionDisposition::as_str()`'s three values
+    /// (`"snoozed"`/`"dismissed"`/`"flagged"`); validated by
+    /// `AttentionDisposition::try_from` in the N-API handler, not here, so
+    /// the fail-closed error path stays the same as every other Gate C2
+    /// disposition/reason-code string.
+    pub disposition: String,
+    pub material_basis_digest: String,
+    #[serde(default)]
+    pub snoozed_until: Option<String>,
+    #[serde(default)]
+    pub set_by: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionClearPayload {
+    pub project_id: String,
+    pub finding_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceInboxListPayload {
+    pub project_id: String,
+}

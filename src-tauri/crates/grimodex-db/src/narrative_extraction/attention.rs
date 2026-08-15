@@ -19,10 +19,18 @@
 //! different Lane's responsibility.
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 
 /// Disposition a human or agent has recorded against a Maintenance finding.
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
-pub(crate) enum AttentionDisposition {
+///
+/// `pub` (not `pub(crate)`): C2-T1 Transport Assembly exposes
+/// `set_attention_in_tx`/`clear_attention_in_tx` through
+/// `narrative_maintenance_attention_set`/`_clear`, so this type crosses the
+/// `grimodex-node` N-API crate boundary as part of that command's payload
+/// and (via `AttentionRow`) the Maintenance Inbox response.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AttentionDisposition {
     Snoozed,
     Dismissed,
     Flagged,
@@ -53,8 +61,10 @@ impl TryFrom<&str> for AttentionDisposition {
 
 /// A `narrative_maintenance_attention` row exactly as stored. Rows are
 /// returned as-is by [`get_attention`]; nothing here filters or mutates them.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct AttentionRow {
+/// `pub`: reachable from `InboxEntry` (`inbox_read_model.rs`), which
+/// crosses the N-API boundary.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct AttentionRow {
     pub project_id: String,
     pub finding_key: String,
     pub disposition: AttentionDisposition,
@@ -95,8 +105,11 @@ fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRo
 ///
 /// This function never appends to the Change Feed: `narrative_maintenance_attention`
 /// is `backflowPolicy: "forbid"` durable user state, not Change Feed output.
+///
+/// `pub`: called directly from `grimodex-node`'s
+/// `narrative_maintenance_attention_set` N-API binding (C2-T1).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn set_attention_in_tx(
+pub fn set_attention_in_tx(
     conn: &Connection,
     project_id: &str,
     finding_key: &str,
@@ -152,7 +165,10 @@ pub(crate) fn set_attention_in_tx(
 
 /// Clear (delete) a Maintenance Attention row. A no-op, not an error, when
 /// no row exists for `(project_id, finding_key)`.
-pub(crate) fn clear_attention_in_tx(
+///
+/// `pub`: called directly from `grimodex-node`'s
+/// `narrative_maintenance_attention_clear` N-API binding (C2-T1).
+pub fn clear_attention_in_tx(
     conn: &Connection,
     project_id: &str,
     finding_key: &str,

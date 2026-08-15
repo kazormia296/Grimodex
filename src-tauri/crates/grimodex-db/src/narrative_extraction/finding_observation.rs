@@ -15,6 +15,7 @@
 //! different Lane's responsibility).
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use uuid::Uuid;
 
 use super::evaluator::{EvidenceFreshness, FindingReasonCode};
@@ -28,8 +29,11 @@ use super::evaluator::{EvidenceFreshness, FindingReasonCode};
 /// Never read this as the current Freshness value: that is
 /// `narrative_consumer_freshness` alone (`currentFreshnessLookup`), which
 /// this module does not read or write.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct FindingObservationRow {
+///
+/// `pub`: reachable from `InboxEntry` (`inbox_read_model.rs`), which
+/// crosses the N-API boundary (C2-T1).
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct FindingObservationRow {
     pub id: String,
     pub project_id: String,
     pub run_id: String,

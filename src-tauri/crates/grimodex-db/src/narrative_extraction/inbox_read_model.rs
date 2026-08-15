@@ -104,6 +104,7 @@
 //! nothing to show.
 
 use rusqlite::{params, Connection};
+use serde::Serialize;
 
 use super::attention::{
     get_attention, is_attention_applicable, AttentionDisposition, AttentionRow,
@@ -187,8 +188,12 @@ pub(crate) fn list_consumer_freshness(
 /// time. See the module doc for the `finding_key` convention and the
 /// snooze-resurfacing rule that decides which Consumers make it into the
 /// returned Vec at all.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub(crate) struct InboxEntry {
+///
+/// `pub`: this is [`build_maintenance_inbox`]'s return type, called
+/// directly from `grimodex-node`'s `narrative_maintenance_inbox_list`
+/// N-API binding (C2-T1).
+#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+pub struct InboxEntry {
     pub consumer_kind: String,
     pub consumer_key: String,
     pub evidence_freshness: String,
@@ -217,7 +222,10 @@ fn consumer_finding_key(consumer_kind: &str, consumer_key: &str) -> String {
 /// (`consumer_kind`, `consumer_key`), minus any Consumer currently hidden by
 /// an active, unexpired snooze (see module doc). Returns an empty Vec when
 /// `project_id` has no current Semantic Epoch yet.
-pub(crate) fn build_maintenance_inbox(
+///
+/// `pub`: called directly from `grimodex-node`'s
+/// `narrative_maintenance_inbox_list` N-API binding (C2-T1).
+pub fn build_maintenance_inbox(
     conn: &Connection,
     project_id: &str,
     now: &str,

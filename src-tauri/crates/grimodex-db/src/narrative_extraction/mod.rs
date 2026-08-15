@@ -52,9 +52,11 @@ pub(crate) use application_contributions::{
     ApplicationContribution, ContributionTargetState,
 };
 #[allow(unused_imports)]
-pub(crate) use attention::{
-    clear_attention_in_tx, get_attention, is_attention_applicable, set_attention_in_tx,
-    AttentionDisposition, AttentionRow,
+pub(crate) use attention::{get_attention, is_attention_applicable};
+// C2-T1: exposed through narrative_maintenance_attention_set/_clear
+// (electron/native/grimodex-node/src/lib.rs).
+pub use attention::{
+    clear_attention_in_tx, set_attention_in_tx, AttentionDisposition, AttentionRow,
 };
 // cursor_reservation::acknowledge_cursor_in_tx is the SCHEMA_VERSION 23
 // reservation-aware acknowledge (Lane I); it is a distinct function from
@@ -81,8 +83,11 @@ pub(crate) use execution_state::{
 };
 #[allow(unused_imports)]
 pub(crate) use finding_observation::{
-    list_observations_for_epoch, record_finding_observation_in_tx, FindingObservationRow,
+    list_observations_for_epoch, record_finding_observation_in_tx,
 };
+// C2-T1: FindingObservationRow crosses the N-API boundary as a field of
+// InboxEntry (narrative_maintenance_inbox_list).
+pub use finding_observation::FindingObservationRow;
 // EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
 // (Lane F); `finding_observation` (Lane C) imports them from there instead
 // of a second, drifting copy — both Lanes independently defined this pair
@@ -90,9 +95,10 @@ pub(crate) use finding_observation::{
 #[allow(unused_imports)]
 pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
 #[allow(unused_imports)]
-pub(crate) use inbox_read_model::{
-    build_maintenance_inbox, list_consumer_freshness, ConsumerFreshnessRow, InboxEntry,
-};
+pub(crate) use inbox_read_model::{list_consumer_freshness, ConsumerFreshnessRow};
+// C2-T1: called from narrative_maintenance_inbox_list
+// (electron/native/grimodex-node/src/lib.rs).
+pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::{backfill_project_semantic_build_graph_in_tx, BackfillSummary};
 #[allow(unused_imports)]
@@ -131,9 +137,10 @@ pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    HumanFieldLockPayload, ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed,
-    ReconciliationEnvelopeInheritance, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    HumanFieldLockPayload, ListResumableRunsPayload, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    PrepareCommitPayload, ProposalSeed, ReconciliationEnvelopeInheritance, ReviseAndDecidePayload,
+    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
 };
 pub use repository::ensure_test_schema;
 pub use temporal_operations::TemporalScenePatchPayload;

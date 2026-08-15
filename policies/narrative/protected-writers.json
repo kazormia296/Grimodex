@@ -367,5 +367,12 @@
     "protection": "table",
     "writer": "narrative.maintenance-feed",
     "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-maintenance-attention",
+    "table": "narrative_maintenance_attention",
+    "protection": "table",
+    "writer": "narrative.maintenance-attention",
+    "enforcement": "active"
   }
 ]

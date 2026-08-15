@@ -46,8 +46,7 @@ use grimodex_db::domain_writes::{
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
-    self, ForeshadowCreatePayload, ForeshadowDeletePayload, ForeshadowPatch,
-    ForeshadowSetupPatch,
+    self, ForeshadowCreatePayload, ForeshadowDeletePayload, ForeshadowPatch, ForeshadowSetupPatch,
 };
 use grimodex_db::ime_export::{
     clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
@@ -61,7 +60,9 @@ use grimodex_db::lint_terms::{
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
-    self, ListResumableRunsPayload, RunRefPayload, TemporalScenePatchPayload,
+    self, AttentionDisposition, ListResumableRunsPayload,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, RunRefPayload, TemporalScenePatchPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -728,20 +729,18 @@ where
             let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
                 from_wire(label, payload.clone())?;
             agent_writes::validate_renderer_authority_context(&context)?;
-            Some(
-                serde_json::to_value(context)
-                    .map_err(|error| AppError::Anyhow(error.into()))?,
-            )
+            Some(serde_json::to_value(context).map_err(|error| AppError::Anyhow(error.into()))?)
         } else {
             None
         };
         let dto: T = from_wire(label, payload)?;
         with_db_state(&state.ws, |db| {
             let result = match authority_context {
-                Some(context) => grimodex_db::change_events::with_renderer_authority_context(
-                    context,
-                    || f(db, dto),
-                )?,
+                Some(context) => {
+                    grimodex_db::change_events::with_renderer_authority_context(context, || {
+                        f(db, dto)
+                    })?
+                }
                 None => f(db, dto)?,
             };
             Ok(serde_json::to_string(&result)?)
@@ -773,13 +772,12 @@ where
         let dto: T = from_wire(label, payload.clone())?;
         let context = from_wire(label, payload)?;
         agent_writes::validate_renderer_authority_context(&context)?;
-        let context_json = serde_json::to_value(&context)
-            .map_err(|error| AppError::Anyhow(error.into()))?;
+        let context_json =
+            serde_json::to_value(&context).map_err(|error| AppError::Anyhow(error.into()))?;
         with_db_state(&state.ws, |db| {
-            grimodex_db::change_events::with_renderer_authority_context(
-                context_json,
-                || Ok(serde_json::to_string(&f(db, dto, context)?)?),
-            )
+            grimodex_db::change_events::with_renderer_authority_context(context_json, || {
+                Ok(serde_json::to_string(&f(db, dto, context)?)?)
+            })
         })
     })
     .await
@@ -4242,12 +4240,8 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                foreshadow::save_anchors_for_scene_with_renderer_authority(
-                    db,
-                    payload,
-                    context,
-                )
-                .map(serde_json::Value::Array)
+                foreshadow::save_anchors_for_scene_with_renderer_authority(db, payload, context)
+                    .map(serde_json::Value::Array)
             },
         )
         .await
@@ -4470,9 +4464,9 @@ impl Backend {
         run_blocking(move || {
             let payload: agent_writes::AgentUndoJournalPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&agent_writes::agent_undo_journal_impl(
-                    db, payload,
-                )?)?)
+                Ok(serde_json::to_string(
+                    &agent_writes::agent_undo_journal_impl(db, payload)?,
+                )?)
             })
         })
         .await
@@ -4509,11 +4503,7 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                agent_writes::agent_event_create_with_authority_impl(
-                    db,
-                    payload,
-                    Some(context),
-                )
+                agent_writes::agent_event_create_with_authority_impl(db, payload, Some(context))
             },
         )
         .await
@@ -4668,11 +4658,7 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                agent_writes::agent_event_create_with_authority_impl(
-                    db,
-                    payload,
-                    Some(context),
-                )
+                agent_writes::agent_event_create_with_authority_impl(db, payload, Some(context))
             },
         )
         .await
@@ -5109,6 +5095,93 @@ impl Backend {
             payload,
             narrative_extraction::narrative_extraction_redo_commit,
         )
+        .await
+    }
+
+    // ─────────────────────── Gate C2-T1 Transport Assembly (Wave 1/2 core
+    // Rust modules promoted from pub(crate) to pub; see narrative_extraction
+    // mod.rs). set_attention_in_tx / clear_attention_in_tx / build_maintenance_inbox
+    // are each a single statement or read-only, so unlike publish_runtime's
+    // multi-table writer none of them requires an explicit caller-held
+    // transaction — db.with_conn's implicit autocommit is sufficient. NOTE:
+    // this project's cargo/napi toolchain is unavailable in the environment
+    // this was written in (see policies/narrative/README.md's Gate C2
+    // section); these three functions have not been through `cargo check`
+    // or `napi build` and index.d.ts has not been regenerated. ─────────────
+
+    /// Set (upsert) a Maintenance Attention disposition. Never touches the
+    /// Change Feed: `narrative_maintenance_attention` is durable,
+    /// non-epoch-bound, `backflowPolicy: "forbid"` user state.
+    #[napi]
+    pub async fn narrative_maintenance_attention_set(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceAttentionSetPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let disposition = AttentionDisposition::try_from(dto.disposition.as_str())?;
+                let set_at = grimodex_core::now_rfc3339_millis();
+                db.with_conn(|conn| {
+                    narrative_extraction::set_attention_in_tx(
+                        conn,
+                        &dto.project_id,
+                        &dto.finding_key,
+                        disposition,
+                        &dto.material_basis_digest,
+                        dto.snoozed_until.as_deref(),
+                        &set_at,
+                        dto.set_by.as_deref(),
+                    )
+                })?;
+                Ok(serde_json::to_string(&serde_json::json!({ "ok": true }))?)
+            })
+        })
+        .await
+    }
+
+    /// Clear a Maintenance Attention disposition. A no-op, not an error,
+    /// when none exists for `(projectId, findingKey)`.
+    #[napi]
+    pub async fn narrative_maintenance_attention_clear(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceAttentionClearPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                db.with_conn(|conn| {
+                    narrative_extraction::clear_attention_in_tx(
+                        conn,
+                        &dto.project_id,
+                        &dto.finding_key,
+                    )
+                })?;
+                Ok(serde_json::to_string(&serde_json::json!({ "ok": true }))?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only: assemble the Maintenance Inbox for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_inbox_list(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceInboxListPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let entries = db.with_conn(|conn| {
+                    narrative_extraction::build_maintenance_inbox(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&entries)?)
+            })
+        })
         .await
     }
 

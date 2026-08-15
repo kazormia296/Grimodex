@@ -23,6 +23,14 @@ pub fn commit_or_rollback(conn: &rusqlite::Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Millisecond-precision, `Z`-suffixed RFC3339 timestamp for the current
+/// instant. Centralizes the `chrono` dependency for crates (e.g.
+/// `grimodex-node`) that need a wall-clock stamp but don't otherwise pull in
+/// `chrono` directly.
+pub fn now_rfc3339_millis() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
 pub mod change_events;
 pub mod chronicle_time;
 pub mod codex_matching;

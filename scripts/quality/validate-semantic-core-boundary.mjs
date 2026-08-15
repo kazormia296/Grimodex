@@ -35,6 +35,7 @@ export const AUTHORITY_ROUTE_IDS = Object.freeze([
   "import-apply",
   "history-replay",
   "restore-or-migration",
+  "attention-typed-writer",
 ]);
 
 const REQUIRED_ROUTE_CONTROLS = Object.freeze({
@@ -87,6 +88,7 @@ const REQUIRED_ROUTE_CONTROLS = Object.freeze({
     "semantic-epoch-event",
     "full-rebuild-marker",
   ],
+  "attention-typed-writer": ["typed-writer"],
 });
 
 const REQUIRED_STATE_FIELDS = Object.freeze([
@@ -175,6 +177,7 @@ const EXPECTED_ALLOWED_CALLERS = Object.freeze({
     "migration-runner",
     "integrity-repair",
   ],
+  "attention-typed-writer": ["human-ui"],
 });
 
 const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
@@ -186,6 +189,7 @@ const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
   "import-apply": [],
   "history-replay": [],
   "restore-or-migration": [],
+  "attention-typed-writer": [],
 });
 
 // These are the small Native typed-writer bridges that intentionally call
@@ -335,7 +339,7 @@ function validateRouteRegistry(registry, errors) {
     registry.routes.length !== AUTHORITY_ROUTE_IDS.length
   ) {
     errors.push(
-      "mutation authority route registry must define exactly six routes",
+      `mutation authority route registry must define exactly ${AUTHORITY_ROUTE_IDS.length} routes`,
     );
     return new Map();
   }

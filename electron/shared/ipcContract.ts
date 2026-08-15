@@ -776,6 +776,10 @@ export interface NapiBackendLike {
   narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
   narrativeExtractionUndoCommit(payload: unknown): Promise<string>;
   narrativeExtractionRedoCommit(payload: unknown): Promise<string>;
+  // Gate C2-T1: Attention typed writer / Maintenance Inbox read model
+  narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
+  narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
+  narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
   // post_effect pure-db 7 コマンド
   listPostEffectRuns(
     projectId: string,
@@ -1066,6 +1070,81 @@ function requireNarrativeRuntimePolicySetPayload(
     genericImportEnabled: payload.genericImportEnabled,
     backgroundAiEnabled: payload.backgroundAiEnabled,
   };
+}
+
+const NARRATIVE_MAINTENANCE_ATTENTION_DISPOSITIONS = new Set([
+  "snoozed",
+  "dismissed",
+  "flagged",
+]);
+
+function requireNarrativeMaintenanceAttentionSetPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_attention_set";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "findingKey",
+    "disposition",
+    "materialBasisDigest",
+    "snoozedUntil",
+    "setBy",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "findingKey", command);
+  const disposition = requireString(payload, "disposition", command);
+  if (!NARRATIVE_MAINTENANCE_ATTENTION_DISPOSITIONS.has(disposition)) {
+    throw new Error(
+      `invalid args \`disposition\` for command \`${command}\`: expected snoozed|dismissed|flagged`,
+    );
+  }
+  requireNonEmptyString(payload, "materialBasisDigest", command);
+  optionalString(payload, "snoozedUntil", command);
+  optionalString(payload, "setBy", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceAttentionClearPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_attention_clear";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId", "findingKey"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "findingKey", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceInboxListPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_inbox_list";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
 }
 
 function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
@@ -2937,7 +3016,9 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   if (interactiveAgentTreePlan) {
     const ops = requireArray(payload, "ops", command);
     if (ops.length === 0) {
-      throw new Error(`invalid args \`ops\` for command \`${command}\`: empty plan`);
+      throw new Error(
+        `invalid args \`ops\` for command \`${command}\`: empty plan`,
+      );
     }
   }
   const originalTransactionId = requireNullableStringField(
@@ -7007,7 +7088,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   codex_mutate: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.codexMutate, "codexMutate")(
+        await requireNapiMethod(
+          b,
+          b.codexMutate,
+          "codexMutate",
+        )(
           requireCanonicalWriterIdentity(
             a,
             "codex_mutate",
@@ -7101,7 +7186,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_create: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventCreate, "eventCreate")(
+        await requireNapiMethod(
+          b,
+          b.eventCreate,
+          "eventCreate",
+        )(
           requireAgentChroniclePayload(
             a,
             "event_create",
@@ -7121,7 +7210,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_update: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventUpdate, "eventUpdate")(
+        await requireNapiMethod(
+          b,
+          b.eventUpdate,
+          "eventUpdate",
+        )(
           requireEventMutationPayload(
             a,
             "event_update",
@@ -7141,7 +7234,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_delete: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventDelete, "eventDelete")(
+        await requireNapiMethod(
+          b,
+          b.eventDelete,
+          "eventDelete",
+        )(
           requireEventMutationPayload(
             a,
             "event_delete",
@@ -7211,7 +7308,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   scene_event_link: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.sceneEventLink, "sceneEventLink")(
+        await requireNapiMethod(
+          b,
+          b.sceneEventLink,
+          "sceneEventLink",
+        )(
           requireAgentChroniclePayload(
             a,
             "scene_event_link",
@@ -7257,7 +7358,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   scene_event_unlink: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.sceneEventUnlink, "sceneEventUnlink")(
+        await requireNapiMethod(
+          b,
+          b.sceneEventUnlink,
+          "sceneEventUnlink",
+        )(
           requireAgentChroniclePayload(
             a,
             "scene_event_unlink",
@@ -7510,6 +7615,37 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrative_extraction_redo_commit",
           ),
         ),
+      ),
+  },
+  // Gate C2-T1: Attention typed writer / Maintenance Inbox read model
+  narrative_maintenance_attention_set: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceAttentionSet,
+          "narrativeMaintenanceAttentionSet",
+        )(requireNarrativeMaintenanceAttentionSetPayload(a)),
+      ),
+  },
+  narrative_maintenance_attention_clear: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceAttentionClear,
+          "narrativeMaintenanceAttentionClear",
+        )(requireNarrativeMaintenanceAttentionClearPayload(a)),
+      ),
+  },
+  narrative_maintenance_inbox_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceInboxList,
+          "narrativeMaintenanceInboxList",
+        )(requireNarrativeMaintenanceInboxListPayload(a)),
       ),
   },
   // post_effect pure-db 7 コマンド（Phase 3 バッチ1）。effectType / status は

@@ -89,7 +89,8 @@ not start here.
 
 The C1.5 machine-readable contracts are:
 
-- `mutation-authority-routes.json` — the six Mutation Authority Routes,
+- `mutation-authority-routes.json` — the seven Mutation Authority Routes
+  (the C1.5-ratified six plus C2-T1's `attention-typed-writer`, see below),
   positive fail-closed caller allowlists, diagnostic-only forbidden caller
   lists, route-specific required controls, and Human Direct's conditional
   Field Authority requirement;
@@ -137,11 +138,69 @@ Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
-  Wave 1 Transport Assembly (C2-T1):          blocked (see below)
+  Wave 1 Transport Assembly (C2-T1):          in progress (see below)
   Wave 2 runtime / read-model lanes:          complete
   Wave 2 Transport / Quality Assembly (C2-T2): blocked (see below)
   Canonical Authority Cutover (C2-Z):         blocked (see below)
 ```
+
+C2-T1 has wired its first slice end-to-end: Lane D's Attention typed writer
+(`narrative_maintenance_attention_set`/`_clear`) and Lane O's Maintenance
+Inbox read model (`narrative_maintenance_inbox_list`), from Rust
+(`set_attention_in_tx`/`clear_attention_in_tx`/`build_maintenance_inbox`,
+promoted `pub(crate)` → `pub` in `attention.rs`/`finding_observation.rs`/
+`inbox_read_model.rs`/`mod.rs`) through three new `#[napi]` functions in
+`electron/native/grimodex-node/src/lib.rs` to three new
+`electron/shared/ipcContract.ts` commands (`NapiBackendLike` optional
+methods, payload validators, `requireNapiMethod`-wrapped command-table
+entries). `narrative_maintenance_attention` is a new active writer in
+`protected-writers.json`/`validate-native-writer-ownership.mjs`
+(`narrative.maintenance-attention`).
+
+Wiring the Attention writer into `change-feed-writers.json`'s per-writer
+coverage requirement (every active `protected-writers.json` writer id needs
+an operation entry) surfaced a real gap, not a paperwork one: none of the
+six C1.5 Mutation Authority Routes fit an operation that is, by contract,
+permanently excluded from OCC, the Proposal/Decision/Prepared-Commit
+pipeline, and the Change Feed alike (`maintenance-attention-contract.json`:
+`backflowPolicy: "forbid"`). Rather than force a false `requiredControls`
+claim onto an existing route, ADR 006 was amended (2026-08-15) to add a
+seventh route, `attention-typed-writer` — `requiredControls: ["typed-writer"]`
+only, `allowedCallers: ["human-ui"]`, same `forbiddenCallers` as every other
+route (`background-maintenance`/`reconciler`/`idle-scheduler`). This
+required consistent edits across
+`policies/narrative/mutation-authority-routes.json`,
+`policies/narrative/schemas/mutation-authority-routes.schema.json`,
+`scripts/quality/validate-semantic-core-boundary.mjs`'s four hardcoded
+per-route expectation tables, and its test fixture. The two new
+`change-feed-writers.json` operations
+(`narrative.maintenance-attention.set`/`.clear`) declare
+`feedPolicy: "excluded"`, `exclusionReason: "non-backflow-invariant"` (the
+C2-00-added reason, used here for the first time), and
+`coverageStatus: "verified"` — matching the existing
+`narrative.field-authority.set-lock`/`narrative.commit.prepare` pattern
+where "verified" certifies the operation's Change-Feed-exclusion is a
+structural, provable fact from its contract, not a claim that
+`narrative_maintenance_attention_set` itself has been through a runtime
+test in this environment.
+
+`narrative_maintenance_inbox_list` is read-only and mutates nothing, so it
+needed no `protected-writers.json`/`change-feed-writers.json` entry.
+
+As with C2-01/Wave 1/Wave 2, this environment's broken Rust toolchain
+(`libsqlite3-sys` `cfg_select` build-script failure, pre-existing) means
+none of C2-T1's Rust changes have been through `cargo check`/`napi build`.
+Verification here used `rustfmt --edition 2021 --check`, a brace/paren
+balance check, `npx tsc --noEmit` (both root and
+`electron/tsconfig.json`), and the full `pnpm test:quality` suite (149
+tests; 148 pass, 1 pre-existing failure unrelated to this branch — a
+sandboxed-environment "unable to resolve GitHub repo slug from origin"
+error in `certify-gate-b2-bindings.test.mjs`, confirmed via `git stash` to
+reproduce identically on an unmodified checkout).
+`electron/native/grimodex-node/index.d.ts` was not regenerated (needs a
+working `pnpm napi:build`); the remaining Wave 1/2 lanes (semantic epoch,
+dependency edges, freshness publish, restore/rebuild, etc.) still have no
+IPC/N-API entrypoint and remain C2-T1/C2-T2 work.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
