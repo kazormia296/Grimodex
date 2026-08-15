@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use super::Database;
 use crate::agent_writes::{
     canonical_payload_with_authority_context, canonical_payload_with_derived_authority_context,
-    validate_and_record_agent_field_authority_for_entity, validate_renderer_authority_context,
+    validate_agent_field_authority_for_entity, validate_renderer_authority_context,
     validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
     RendererMutationProvenance,
 };
@@ -22,9 +22,8 @@ use crate::idempotency::{
 };
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
-    require_replay_lineage_in_project, AppendNarrativeChangeTransactionInput,
-    scene_text_impact, NarrativeChangeCauseKind, NarrativeChangeEventInput,
-    NarrativeChangeOrigin,
+    require_replay_lineage_in_project, scene_text_impact, AppendNarrativeChangeTransactionInput,
+    NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
 };
 
 fn json_pointer_segment(value: &str) -> String {
@@ -1694,8 +1693,7 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
         NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
     );
     anyhow::ensure!(
-        replay
-            == (payload.original_transaction_id.is_some() && payload.undo_journal_id.is_some())
+        replay == (payload.original_transaction_id.is_some() && payload.undo_journal_id.is_some())
             && (replay
                 || (payload.original_transaction_id.is_none()
                     && payload.undo_journal_id.is_none())),
@@ -1729,10 +1727,8 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
                     .ok_or_else(|| anyhow::anyhow!("missing undoJournalId"))?,
             )?;
         }
-        let before = crate::canonical_feed_snapshots::canonical_project_snapshot(
-            &tx,
-            &payload.project_id,
-        )?;
+        let before =
+            crate::canonical_feed_snapshots::canonical_project_snapshot(&tx, &payload.project_id)?;
         let before_updated_at = before
             .get("updatedAt")
             .and_then(Value::as_str)
@@ -1757,7 +1753,9 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
         assignments.push(format!("updated_at = ?{}", values.len() + 1));
         values.push(rusqlite::types::Value::Text(payload.updated_at.clone()));
         values.push(rusqlite::types::Value::Text(payload.project_id.clone()));
-        values.push(rusqlite::types::Value::Text(payload.base_updated_at.clone()));
+        values.push(rusqlite::types::Value::Text(
+            payload.base_updated_at.clone(),
+        ));
         let sql = format!(
             "UPDATE projects SET {} WHERE id = ?{} AND updated_at = ?{}",
             assignments.join(", "),
@@ -1770,10 +1768,8 @@ pub fn project_patch(db: &Database, payload: ProjectPatchPayload) -> anyhow::Res
             "PROJECT_VERSION_MISMATCH: project '{}' update lost its OCC race",
             payload.project_id
         );
-        let after = crate::canonical_feed_snapshots::canonical_project_snapshot(
-            &tx,
-            &payload.project_id,
-        )?;
+        let after =
+            crate::canonical_feed_snapshots::canonical_project_snapshot(&tx, &payload.project_id)?;
         let changed_paths = changed_paths.into_iter().collect::<Vec<_>>();
         let before_json = serde_json::to_string(&before)?;
         let after_json = serde_json::to_string(&after)?;
@@ -2849,11 +2845,7 @@ pub fn tree_node_delete_with_authority(
     if let Some(context) = renderer_context.as_ref() {
         validate_renderer_authority_context_for_routes(
             context,
-            &[
-                "human-direct",
-                "history-replay",
-                "restore-or-migration",
-            ],
+            &["human-direct", "history-replay", "restore-or-migration"],
         )?;
         anyhow::ensure!(
             context.request_id == payload.request_id,
@@ -3661,10 +3653,7 @@ fn validate_ai_tree_lineage(
 }
 
 fn snapshot_field(snapshot: &Value, field: &str) -> Value {
-    snapshot
-        .get(field)
-        .cloned()
-        .unwrap_or(Value::Null)
+    snapshot.get(field).cloned().unwrap_or(Value::Null)
 }
 
 fn snapshot_id<'a>(snapshot: &'a Value, label: &str) -> anyhow::Result<&'a str> {
@@ -3687,18 +3676,14 @@ fn validate_ai_tree_redo_plan_in_tx(
         "reorganize" => "tree.aiReorganize",
         _ => anyhow::bail!("AI tree plan kind is invalid for redo"),
     };
-    let (entity_kind, op_kind, before_json, after_json): (
-        String,
-        String,
-        String,
-        String,
-    ) = conn.query_row(
-        "SELECT entity_kind, op_kind, before_json, after_json
+    let (entity_kind, op_kind, before_json, after_json): (String, String, String, String) = conn
+        .query_row(
+            "SELECT entity_kind, op_kind, before_json, after_json
            FROM undo_journal
           WHERE id = ?1 AND project_id = ?2",
-        params![undo_journal_id, project_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
+            params![undo_journal_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
     anyhow::ensure!(
         entity_kind == "tree_batch" && op_kind == expected_op_type,
         "AI tree plan redo journal does not match the requested kind"
@@ -3714,10 +3699,9 @@ fn validate_ai_tree_redo_plan_in_tx(
         .ok_or_else(|| anyhow::anyhow!("AI tree plan redo journal has no createdIds"))?
         .iter()
         .map(|value| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| anyhow::anyhow!("AI tree plan redo createdIds contains a non-string"))
+            value.as_str().map(str::to_owned).ok_or_else(|| {
+                anyhow::anyhow!("AI tree plan redo createdIds contains a non-string")
+            })
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     let after_updated = after_object
@@ -3746,7 +3730,7 @@ fn validate_ai_tree_redo_plan_in_tx(
     let journal_updated_ids = journal
         .updated_before
         .iter()
-        .map(|snapshot| snapshot_id(snapshot, "AI tree plan before") .map(str::to_owned))
+        .map(|snapshot| snapshot_id(snapshot, "AI tree plan before").map(str::to_owned))
         .collect::<anyhow::Result<Vec<_>>>()?;
     let after_updated_ids = after_updated
         .iter()
@@ -3768,14 +3752,20 @@ fn validate_ai_tree_redo_plan_in_tx(
                     .into_iter()
                     .flatten(),
             )
-            .find(|snapshot| snapshot_id(snapshot, "AI tree plan after").ok() == Some(create.id.as_str()))
-            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo create '{}' is missing", create.id))?;
+            .find(|snapshot| {
+                snapshot_id(snapshot, "AI tree plan after").ok() == Some(create.id.as_str())
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!("AI tree plan redo create '{}' is missing", create.id)
+            })?;
         anyhow::ensure!(
             snapshot_field(after_snapshot, "parentId")
                 == create.parent_id.clone().map_or(Value::Null, Value::String)
-                && snapshot_field(after_snapshot, "nodeType") == Value::String(create.node_type.clone())
+                && snapshot_field(after_snapshot, "nodeType")
+                    == Value::String(create.node_type.clone())
                 && snapshot_field(after_snapshot, "title") == Value::String(create.title.clone())
-                && snapshot_field(after_snapshot, "sortOrder") == Value::String(create.sort_order.clone())
+                && snapshot_field(after_snapshot, "sortOrder")
+                    == Value::String(create.sort_order.clone())
                 && snapshot_field(after_snapshot, "synopsis")
                     == create.synopsis.clone().map_or(Value::Null, Value::String),
             "AI tree plan redo create '{}' does not match the forward snapshot",
@@ -3787,16 +3777,33 @@ fn validate_ai_tree_redo_plan_in_tx(
         let before_snapshot = journal
             .updated_before
             .iter()
-            .find(|snapshot| snapshot_id(snapshot, "AI tree plan before").ok() == Some(update.id.as_str()))
-            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo update '{}' has no before snapshot", update.id))?;
+            .find(|snapshot| {
+                snapshot_id(snapshot, "AI tree plan before").ok() == Some(update.id.as_str())
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "AI tree plan redo update '{}' has no before snapshot",
+                    update.id
+                )
+            })?;
         let after_snapshot = after_updated
             .iter()
-            .find(|snapshot| snapshot_id(snapshot, "AI tree plan after").ok() == Some(update.id.as_str()))
-            .ok_or_else(|| anyhow::anyhow!("AI tree plan redo update '{}' has no after snapshot", update.id))?;
+            .find(|snapshot| {
+                snapshot_id(snapshot, "AI tree plan after").ok() == Some(update.id.as_str())
+            })
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "AI tree plan redo update '{}' has no after snapshot",
+                    update.id
+                )
+            })?;
         if let Some(placement) = &update.placement {
             anyhow::ensure!(
                 snapshot_field(after_snapshot, "parentId")
-                    == placement.parent_id.clone().map_or(Value::Null, Value::String)
+                    == placement
+                        .parent_id
+                        .clone()
+                        .map_or(Value::Null, Value::String)
                     && snapshot_field(after_snapshot, "sortOrder")
                         == Value::String(placement.sort_order.clone()),
                 "AI tree plan redo update '{}' placement does not match the forward snapshot",
@@ -3833,8 +3840,7 @@ fn validate_ai_tree_redo_plan_in_tx(
 // as the UI. Interactive Native calls repeat that small algorithm against the
 // transaction snapshot so `creates`/`updates` cannot be altered while keeping
 // the original model ops and capability alive.
-const TREE_ORDER_DIGITS: &[u8] =
-    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const TREE_ORDER_DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
 #[derive(Clone, Debug)]
 enum NativeTreeAfter {
@@ -3858,8 +3864,7 @@ struct NativeTreeNodeSnapshot {
     sort_order: String,
 }
 
-type NativeTreeExpectedUpdate =
-    (Option<(Option<String>, NativeTreeAfter)>, Option<String>);
+type NativeTreeExpectedUpdate = (Option<(Option<String>, NativeTreeAfter)>, Option<String>);
 
 fn tree_order_integer_length(head: u8) -> anyhow::Result<usize> {
     match head {
@@ -4071,9 +4076,8 @@ fn tree_generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result
             if integer < b {
                 Ok(integer.to_string())
             } else {
-                tree_decrement_integer(integer)?.ok_or_else(|| {
-                    anyhow::anyhow!("cannot decrement tree order key any more")
-                })
+                tree_decrement_integer(integer)?
+                    .ok_or_else(|| anyhow::anyhow!("cannot decrement tree order key any more"))
             }
         }
         (Some(a), None) => {
@@ -4186,7 +4190,9 @@ fn native_tree_after(value: &Value) -> anyhow::Result<NativeTreeAfter> {
     match position.get("afterRef") {
         None => Ok(NativeTreeAfter::Append),
         Some(Value::Null) => Ok(NativeTreeAfter::Prepend),
-        Some(Value::String(value)) if !value.is_empty() => Ok(NativeTreeAfter::After(value.clone())),
+        Some(Value::String(value)) if !value.is_empty() => {
+            Ok(NativeTreeAfter::After(value.clone()))
+        }
         Some(_) => anyhow::bail!("AI tree op afterRef must be a string or null"),
     }
 }
@@ -4254,8 +4260,11 @@ fn validate_ai_tree_native_projection_in_tx(
     })? {
         current.push(row?);
     }
-    let current_by_id: HashMap<String, NativeTreeNodeSnapshot> =
-        current.iter().cloned().map(|node| (node.id.clone(), node)).collect();
+    let current_by_id: HashMap<String, NativeTreeNodeSnapshot> = current
+        .iter()
+        .cloned()
+        .map(|node| (node.id.clone(), node))
+        .collect();
     for update in &payload.updates {
         anyhow::ensure!(
             current_by_id.contains_key(&update.id),
@@ -4310,7 +4319,9 @@ fn validate_ai_tree_native_projection_in_tx(
             "interactive AI tree create tempId is invalid"
         );
         anyhow::ensure!(
-            temp_ids.insert(temp_id.to_string(), create.id.clone()).is_none(),
+            temp_ids
+                .insert(temp_id.to_string(), create.id.clone())
+                .is_none(),
             "interactive AI tree create tempIds must be unique"
         );
         anyhow::ensure!(
@@ -4335,9 +4346,18 @@ fn validate_ai_tree_native_projection_in_tx(
             native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)? == create.parent_id,
             "interactive AI tree create '{temp_id}' parent does not match ops"
         );
-        anyhow::ensure!(create.node_type == *node_type, "interactive AI tree create nodeType does not match ops");
-        anyhow::ensure!(create.title == *title, "interactive AI tree create title does not match ops");
-        anyhow::ensure!(create.synopsis == *synopsis, "interactive AI tree create synopsis does not match ops");
+        anyhow::ensure!(
+            create.node_type == *node_type,
+            "interactive AI tree create nodeType does not match ops"
+        );
+        anyhow::ensure!(
+            create.title == *title,
+            "interactive AI tree create title does not match ops"
+        );
+        anyhow::ensure!(
+            create.synopsis == *synopsis,
+            "interactive AI tree create synopsis does not match ops"
+        );
     }
 
     let mut expected_updates: HashMap<String, NativeTreeExpectedUpdate> = HashMap::new();
@@ -4348,11 +4368,17 @@ fn validate_ai_tree_native_projection_in_tx(
             "tree node '{node_id}' not found in project '{}'",
             payload.project_id
         );
-        anyhow::ensure!(moved_ids.insert(node_id.clone()), "AI tree move is duplicated for '{node_id}'");
+        anyhow::ensure!(
+            moved_ids.insert(node_id.clone()),
+            "AI tree move is duplicated for '{node_id}'"
+        );
         expected_updates
             .entry(node_id.clone())
             .or_insert((None, None))
-            .0 = Some((native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?, after.clone()));
+            .0 = Some((
+            native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?,
+            after.clone(),
+        ));
     }
     for (node_id, title) in &rename_ops {
         anyhow::ensure!(
@@ -4360,8 +4386,13 @@ fn validate_ai_tree_native_projection_in_tx(
             "tree node '{node_id}' is not in project '{}'",
             payload.project_id
         );
-        let entry = expected_updates.entry(node_id.clone()).or_insert((None, None));
-        anyhow::ensure!(entry.1.is_none(), "AI tree rename is duplicated for '{node_id}'");
+        let entry = expected_updates
+            .entry(node_id.clone())
+            .or_insert((None, None));
+        anyhow::ensure!(
+            entry.1.is_none(),
+            "AI tree rename is duplicated for '{node_id}'"
+        );
         entry.1 = Some(title.clone());
     }
     anyhow::ensure!(
@@ -4369,19 +4400,26 @@ fn validate_ai_tree_native_projection_in_tx(
         "interactive AI tree update ops do not match updates"
     );
     for update in &payload.updates {
-        let expected = expected_updates
-            .get(&update.id)
-            .ok_or_else(|| anyhow::anyhow!("interactive AI tree update '{}' is not in ops", update.id))?;
+        let expected = expected_updates.get(&update.id).ok_or_else(|| {
+            anyhow::anyhow!("interactive AI tree update '{}' is not in ops", update.id)
+        })?;
         match (&expected.0, &update.placement) {
             (Some(_), Some(_)) => {}
             (Some(_), None) => anyhow::bail!("interactive AI tree move placement is missing"),
-            (None, Some(_)) => anyhow::bail!("interactive AI tree update has an unauthorized placement"),
+            (None, Some(_)) => {
+                anyhow::bail!("interactive AI tree update has an unauthorized placement")
+            }
             (None, None) => {}
         }
         match (&expected.1, &update.title) {
-            (Some(expected), Some(actual)) => anyhow::ensure!(expected == actual, "interactive AI tree rename does not match ops"),
+            (Some(expected), Some(actual)) => anyhow::ensure!(
+                expected == actual,
+                "interactive AI tree rename does not match ops"
+            ),
             (Some(_), None) => anyhow::bail!("interactive AI tree rename title is missing"),
-            (None, Some(_)) => anyhow::bail!("interactive AI tree update has an unauthorized title"),
+            (None, Some(_)) => {
+                anyhow::bail!("interactive AI tree update has an unauthorized title")
+            }
             (None, None) => {}
         }
     }
@@ -4421,7 +4459,8 @@ fn validate_ai_tree_native_projection_in_tx(
         let _ = temp_id;
     }
 
-    let mut children_by_parent: HashMap<Option<String>, Vec<NativeTreeNodeSnapshot>> = HashMap::new();
+    let mut children_by_parent: HashMap<Option<String>, Vec<NativeTreeNodeSnapshot>> =
+        HashMap::new();
     for node in &current {
         children_by_parent
             .entry(node.parent_id.clone())
@@ -4430,7 +4469,9 @@ fn validate_ai_tree_native_projection_in_tx(
     }
     let mut inserted_by_parent: HashMap<Option<String>, Vec<NativeTreeInserted>> = HashMap::new();
     for (order, temp_id, parent_ref, _, _, _, after) in &create_ops {
-        let create = create_rows.get(temp_id).expect("create row was checked above");
+        let create = create_rows
+            .get(temp_id)
+            .expect("create row was checked above");
         let parent = native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?;
         let after = match after {
             NativeTreeAfter::Append => NativeTreeAfter::Append,
@@ -4443,7 +4484,11 @@ fn validate_ai_tree_native_projection_in_tx(
         inserted_by_parent
             .entry(parent)
             .or_default()
-            .push(NativeTreeInserted { id: create.id.clone(), after, order: *order });
+            .push(NativeTreeInserted {
+                id: create.id.clone(),
+                after,
+                order: *order,
+            });
     }
     for (order, node_id, parent_ref, after) in &move_ops {
         let parent = native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?;
@@ -4458,7 +4503,11 @@ fn validate_ai_tree_native_projection_in_tx(
         inserted_by_parent
             .entry(parent)
             .or_default()
-            .push(NativeTreeInserted { id: node_id.clone(), after, order: *order });
+            .push(NativeTreeInserted {
+                id: node_id.clone(),
+                after,
+                order: *order,
+            });
     }
 
     let mut expected_placements: HashMap<String, (Option<String>, String)> = HashMap::new();
@@ -4466,7 +4515,9 @@ fn validate_ai_tree_native_projection_in_tx(
         inserted.sort_by_key(|item| item.order);
         let inserted_ids: HashSet<String> = inserted.iter().map(|item| item.id.clone()).collect();
         let mut anchors = children_by_parent.remove(&parent).unwrap_or_default();
-        anchors.retain(|node| !moved_ids.contains(&node.id) && tree_validate_order_key(&node.sort_order).is_ok());
+        anchors.retain(|node| {
+            !moved_ids.contains(&node.id) && tree_validate_order_key(&node.sort_order).is_ok()
+        });
         anchors.sort_by(|left, right| left.sort_order.cmp(&right.sort_order));
         let anchor_ids: HashSet<String> = anchors.iter().map(|node| node.id.clone()).collect();
         let mut after_map: HashMap<String, Vec<NativeTreeInserted>> = HashMap::new();
@@ -4498,7 +4549,13 @@ fn validate_ai_tree_native_projection_in_tx(
         for anchor in &anchors {
             ordered.push((anchor.id.clone(), Some(anchor.sort_order.clone())));
             for item in after_map.get(&anchor.id).into_iter().flatten() {
-                native_tree_emit_inserted(item, &after_map, &mut visiting, &mut placed, &mut ordered)?;
+                native_tree_emit_inserted(
+                    item,
+                    &after_map,
+                    &mut visiting,
+                    &mut placed,
+                    &mut ordered,
+                )?;
             }
         }
         for item in &append {
@@ -4518,8 +4575,16 @@ fn validate_ai_tree_native_projection_in_tx(
             while end < ordered.len() && ordered[end].1.is_none() {
                 end += 1;
             }
-            let before = if index > 0 { ordered[index - 1].1.as_deref() } else { None };
-            let after = if end < ordered.len() { ordered[end].1.as_deref() } else { None };
+            let before = if index > 0 {
+                ordered[index - 1].1.as_deref()
+            } else {
+                None
+            };
+            let after = if end < ordered.len() {
+                ordered[end].1.as_deref()
+            } else {
+                None
+            };
             let keys = tree_generate_n_keys_between(before, after, end - index)?;
             for (offset, (id, _)) in ordered[index..end].iter().enumerate() {
                 expected_placements.insert(id.clone(), (parent.clone(), keys[offset].clone()));
@@ -4703,7 +4768,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     "/synopsis".to_string(),
                 ];
                 affected_authority_paths.extend(paths.iter().cloned());
-                validate_and_record_agent_field_authority_for_entity(
+                validate_agent_field_authority_for_entity(
                     &tx,
                     &payload.project_id,
                     "tree_node",
@@ -4721,7 +4786,7 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     paths.push("/title".to_string());
                 }
                 affected_authority_paths.extend(paths.iter().cloned());
-                validate_and_record_agent_field_authority_for_entity(
+                validate_agent_field_authority_for_entity(
                     &tx,
                     &payload.project_id,
                     "tree_node",
@@ -5321,7 +5386,13 @@ mod tests {
 
     fn seed_ai_tree_authority(db: &Database, node_id: &str) {
         db.with_conn(|conn| {
-            for path in ["/parentId", "/nodeType", "/title", "/sortOrder", "/synopsis"] {
+            for path in [
+                "/parentId",
+                "/nodeType",
+                "/title",
+                "/sortOrder",
+                "/synopsis",
+            ] {
                 conn.execute(
                     "INSERT INTO narrative_field_authority
                         (project_id, entity_kind, entity_id, field_path, owner_kind,
@@ -6882,17 +6953,11 @@ mod tests {
         let second_after = db
             .with_conn(|conn| select_tree_node(conn, "p1", "replay-target-b"))
             .expect("second target remains");
-        assert_eq!(
-            second_after["id"],
-            second["id"]
-        );
+        assert_eq!(second_after["id"], second["id"]);
         let first_after = db
             .with_conn(|conn| select_tree_node(conn, "p1", "replay-target-a"))
             .expect("first target remains");
-        assert_eq!(
-            first_after["id"],
-            "replay-target-a"
-        );
+        assert_eq!(first_after["id"], "replay-target-a");
     }
 
     #[test]
@@ -7478,10 +7543,7 @@ mod tests {
                       ORDER BY event.canonical_sequence",
                 )?
                 .query_map([], |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                    ))
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             assert_eq!(impacts.len(), 3);
@@ -7500,11 +7562,26 @@ mod tests {
                 );
                 assert_eq!(impact["mapping"]["kind"], "whole-document");
             }
-            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[1]["oldCanonicalDigest"]);
-            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[1]["newCanonicalDigest"]);
-            assert_eq!(parsed[1]["newCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
-            assert_eq!(parsed[0]["oldCanonicalDigest"], parsed[2]["oldCanonicalDigest"]);
-            assert_eq!(parsed[0]["newCanonicalDigest"], parsed[2]["newCanonicalDigest"]);
+            assert_eq!(
+                parsed[0]["newCanonicalDigest"],
+                parsed[1]["oldCanonicalDigest"]
+            );
+            assert_eq!(
+                parsed[0]["oldCanonicalDigest"],
+                parsed[1]["newCanonicalDigest"]
+            );
+            assert_eq!(
+                parsed[1]["newCanonicalDigest"],
+                parsed[2]["oldCanonicalDigest"]
+            );
+            assert_eq!(
+                parsed[0]["oldCanonicalDigest"],
+                parsed[2]["oldCanonicalDigest"]
+            );
+            assert_eq!(
+                parsed[0]["newCanonicalDigest"],
+                parsed[2]["newCanonicalDigest"]
+            );
             Ok(())
         })
         .expect("verify forward undo redo text impacts");

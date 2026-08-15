@@ -49,8 +49,11 @@ vi.mock("./windows.js", () => ({
   openPanelWindow: mocks.openPanelWindow,
 }));
 
-const { bindRendererAuthorityForIpc, registerIpcRouter } =
-  await import("./ipc.js");
+const {
+  applyMainOwnedAuthorshipMarks,
+  bindRendererAuthorityForIpc,
+  registerIpcRouter,
+} = await import("./ipc.js");
 
 function invokeHandler(): (
   event: { sender: unknown },
@@ -356,14 +359,18 @@ describe("registerIpcRouter fail-soft logging", () => {
         rows: [[JSON.stringify({ preset: "full", toggles: { chat: true } })]],
       }),
     );
-    registerIpcRouter({
-      dbExecute,
-      getAiSettings,
-      sendAgentMessage,
-    } as unknown as NapiBackendLike, {}, {
-      resolveApiKeyForRequest: vi.fn(() => "test-key"),
-      getApiKeyForRequest: vi.fn(() => null),
-    });
+    registerIpcRouter(
+      {
+        dbExecute,
+        getAiSettings,
+        sendAgentMessage,
+      } as unknown as NapiBackendLike,
+      {},
+      {
+        resolveApiKeyForRequest: vi.fn(() => "test-key"),
+        getApiKeyForRequest: vi.fn(() => null),
+      },
+    );
 
     const envelope = await invokeHandler()(
       { sender: { id: 704 } },
@@ -408,13 +415,16 @@ describe("registerIpcRouter fail-soft logging", () => {
       .digest("hex")}`;
     const firstGrant = (
       envelope.value as {
-        agentAuthorityCapabilities: Record<string, {
-          capability: string;
-          executionId: string;
-          chatMessageId: string;
-          mainOwnedProvenanceId: string;
-          expectedEntityId: string;
-        }>;
+        agentAuthorityCapabilities: Record<
+          string,
+          {
+            capability: string;
+            executionId: string;
+            chatMessageId: string;
+            mainOwnedProvenanceId: string;
+            expectedEntityId: string;
+          }
+        >;
       }
     ).agentAuthorityCapabilities["call-1"];
     const bound = bindRendererAuthorityForIpc(
@@ -470,13 +480,16 @@ describe("registerIpcRouter fail-soft logging", () => {
     if (!secondEnvelope.ok) return;
     const secondGrant = (
       secondEnvelope.value as {
-        agentAuthorityCapabilities: Record<string, {
-          capability: string;
-          executionId: string;
-          chatMessageId: string;
-          mainOwnedProvenanceId: string;
-          expectedEntityId: string;
-        }>;
+        agentAuthorityCapabilities: Record<
+          string,
+          {
+            capability: string;
+            executionId: string;
+            chatMessageId: string;
+            mainOwnedProvenanceId: string;
+            expectedEntityId: string;
+          }
+        >;
       }
     ).agentAuthorityCapabilities["call-1"];
     const retargeted = bindRendererAuthorityForIpc(
@@ -722,6 +735,124 @@ describe("registerIpcRouter fail-soft logging", () => {
     ).toBe("");
   });
 
+  it("rebuilds main-owned authorship marks for Codex, Snippet, and Event detail", async () => {
+    const documentWithForgedAuthorship = JSON.stringify({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "AI text",
+              marks: [
+                {
+                  type: "authorship",
+                  attrs: {
+                    source: "human",
+                    model: "renderer-model",
+                    chatMessageId: "renderer-message",
+                    traceId: "renderer-trace",
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    const firstTextNode = (value: unknown) => {
+      const document = JSON.parse(String(value)) as {
+        content?: Array<{ content?: Array<{ marks?: unknown[] }> }>;
+      };
+      return document.content?.[0]?.content?.[0];
+    };
+    const authorshipMark = (value: unknown) =>
+      firstTextNode(value)?.marks?.find(
+        (mark) =>
+          typeof mark === "object" &&
+          mark !== null &&
+          (mark as { type?: unknown }).type === "authorship",
+      ) as { attrs?: Record<string, unknown> } | undefined;
+
+    const codexGrant = await issueAgentCapability(
+      "create_codex_entry",
+      {
+        type: "lore",
+        name: "Marked Codex",
+        content: documentWithForgedAuthorship,
+      },
+      711,
+    );
+    expect(codexGrant.expectedEntityId).toEqual(expect.any(String));
+    const codexBound = bindRendererAuthorityForIpc(
+      "agent_codex_create",
+      {
+        payload: agentCapabilityPayload(codexGrant, {
+          typeSlug: "lore",
+          name: "Marked Codex",
+          entryId: codexGrant.expectedEntityId,
+          content: documentWithForgedAuthorship,
+        }),
+      },
+      711,
+    );
+    expect(
+      authorshipMark((codexBound.payload as { content?: unknown }).content)
+        ?.attrs,
+    ).toMatchObject({
+      source: "ai",
+      model: "gpt-test",
+      chatMessageId: codexGrant.chatMessageId,
+      traceId: codexGrant.mainOwnedProvenanceId,
+    });
+
+    const snippetGrant = await issueAgentCapability(
+      "create_snippet",
+      { title: "Marked Snippet", content: documentWithForgedAuthorship },
+      712,
+    );
+    expect(snippetGrant.expectedEntityId).toEqual(expect.any(String));
+    const snippetBound = bindRendererAuthorityForIpc(
+      "agent_snippet_create",
+      {
+        payload: agentCapabilityPayload(snippetGrant, {
+          title: "Marked Snippet",
+          snippetId: snippetGrant.expectedEntityId,
+          content: documentWithForgedAuthorship,
+        }),
+      },
+      712,
+    );
+    expect(
+      authorshipMark((snippetBound.payload as { content?: unknown }).content)
+        ?.attrs,
+    ).toMatchObject({
+      source: "ai",
+      model: "gpt-test",
+      chatMessageId: snippetGrant.chatMessageId,
+      traceId: snippetGrant.mainOwnedProvenanceId,
+    });
+
+    const eventDetail = applyMainOwnedAuthorshipMarks(
+      JSON.parse(documentWithForgedAuthorship),
+      {
+        source: "ai",
+        timestamp: null,
+        model: "gpt-test",
+        chatMessageId: "event-message",
+        traceId: "event-trace",
+      },
+    );
+    expect(authorshipMark(JSON.stringify(eventDetail))?.attrs).toEqual({
+      source: "ai",
+      timestamp: null,
+      model: "gpt-test",
+      chatMessageId: "event-message",
+      traceId: "event-trace",
+    });
+  });
+
   it("accepts the normal tree ops projection and denies changed creates", async () => {
     const ops = [
       {
@@ -764,9 +895,9 @@ describe("registerIpcRouter fail-soft logging", () => {
       makePayload(validGrant, "Opening"),
       708,
     );
-    expect(
-      (valid.payload as { authorityRoute?: string }).authorityRoute,
-    ).toBe("interactive-agent-command");
+    expect((valid.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
 
     const tamperedGrant = await issueAgentCapability(
       "apply_ai_tree_plan",
@@ -879,11 +1010,9 @@ describe("registerIpcRouter fail-soft logging", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const envelope = await invokeHandler()(
-        { sender: {} },
-        testCase.cmd,
-        { payload: testCase.payload },
-      );
+      const envelope = await invokeHandler()({ sender: {} }, testCase.cmd, {
+        payload: testCase.payload,
+      });
       expect(envelope.ok).toBe(false);
       expect(String(envelope.ok ? "" : envelope.error)).toMatch(
         /authorityRoute|authority route/,
@@ -952,7 +1081,9 @@ describe("registerIpcRouter fail-soft logging", () => {
         undoJournalId: "bulk-journal-1",
       }),
     );
-    registerIpcRouter({ agentChronicleBulkMutate } as unknown as NapiBackendLike);
+    registerIpcRouter({
+      agentChronicleBulkMutate,
+    } as unknown as NapiBackendLike);
 
     const envelope = await invokeHandler()(
       { sender: {} },

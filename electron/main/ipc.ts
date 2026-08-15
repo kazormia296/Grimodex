@@ -120,8 +120,14 @@ const agentAuthorityCapabilities = new Map<
 const AGENT_TOOL_COMMANDS: Readonly<
   Record<string, { command: string; policy: AgentAuthorityPolicy }>
 > = {
-  create_codex_entry: { command: "agent_codex_create", policy: "knowledgeWrite" },
-  update_codex_entry: { command: "agent_codex_update", policy: "knowledgeWrite" },
+  create_codex_entry: {
+    command: "agent_codex_create",
+    policy: "knowledgeWrite",
+  },
+  update_codex_entry: {
+    command: "agent_codex_update",
+    policy: "knowledgeWrite",
+  },
   create_foreshadow: {
     command: "agent_foreshadow_create",
     policy: "knowledgeWrite",
@@ -154,25 +160,30 @@ const AGENT_TOOL_COMMANDS: Readonly<
     command: "agent_event_relation_remove",
     policy: "knowledgeWrite",
   },
-  apply_ai_tree_plan: { command: "ai_tree_plan_apply", policy: "structureWrite" },
+  apply_ai_tree_plan: {
+    command: "ai_tree_plan_apply",
+    policy: "structureWrite",
+  },
   propose_scene_body: {
     command: "agent_propose_scene_body",
     policy: "bodyWrite",
   },
 };
-const AGENT_AUTHORITY_COMMANDS = new Set(
-  [
-    ...Object.values(AGENT_TOOL_COMMANDS).map(({ command }) => command),
-    // These compatibility writers are still allowed to classify an AI
-    // payload as interactive, so they must not become a capability bypass
-    // merely because no current chat tool targets them directly.
-    "agent_codex_mutate",
-    ...AGENT_CHRONICLE_COMMANDS,
-  ],
-);
+const AGENT_AUTHORITY_COMMANDS = new Set([
+  ...Object.values(AGENT_TOOL_COMMANDS).map(({ command }) => command),
+  // These compatibility writers are still allowed to classify an AI
+  // payload as interactive, so they must not become a capability bypass
+  // merely because no current chat tool targets them directly.
+  "agent_codex_mutate",
+  ...AGENT_CHRONICLE_COMMANDS,
+]);
 
 function isNonEmptyTrimmedString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0 && value === value.trim();
+  return (
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    value === value.trim()
+  );
 }
 
 function agentToolRequestId(
@@ -569,6 +580,51 @@ function canonicalRichTextValue(value: unknown): unknown {
   }
 }
 
+export interface MainOwnedAuthorshipMarkAttrs {
+  readonly source: "ai";
+  readonly timestamp: null;
+  readonly model: string | null;
+  readonly chatMessageId: string;
+  readonly traceId: string;
+}
+
+/**
+ * Rebuild authorship marks after the renderer-authorship projection has been
+ * stripped. The capability boundary owns these values; renderer-provided
+ * source/model/chat/trace attrs must never be persisted as provenance.
+ */
+export function applyMainOwnedAuthorshipMarks(
+  value: unknown,
+  attrs: MainOwnedAuthorshipMarkAttrs,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((child) => applyMainOwnedAuthorshipMarks(child, attrs));
+  }
+  if (!isRecord(value)) return value;
+
+  const normalized: CommandArgs = { ...value };
+  if (normalized.type === "text" && typeof normalized.text === "string") {
+    const marks = Array.isArray(normalized.marks)
+      ? normalized.marks.filter(
+          (mark) => !isRecord(mark) || mark.type !== "authorship",
+        )
+      : [];
+    normalized.marks = [
+      ...marks,
+      {
+        type: "authorship",
+        attrs: { ...attrs },
+      },
+    ];
+  }
+  if (Array.isArray(normalized.content)) {
+    normalized.content = normalized.content.map((child) =>
+      applyMainOwnedAuthorshipMarks(child, attrs),
+    );
+  }
+  return normalized;
+}
+
 function canonicalAgentInputValue(field: string, value: unknown): unknown {
   if (field === "content" || field === "detail") {
     return canonicalRichTextValue(value);
@@ -630,9 +686,11 @@ function canonicalAgentToolInput(
     ? "model"
     : "effective",
 ): string | null {
-  const spec = (projection === "model"
-    ? MODEL_TOOL_INPUT_SPECS
-    : EFFECTIVE_NATIVE_MUTATION_SPECS)[toolName];
+  const spec = (
+    projection === "model"
+      ? MODEL_TOOL_INPUT_SPECS
+      : EFFECTIVE_NATIVE_MUTATION_SPECS
+  )[toolName];
   if (!spec || !isRecord(source)) return null;
   if (enforceModelShape) {
     const acceptedKeys = new Set(spec.fields);
@@ -675,7 +733,10 @@ function canonicalAgentToolInputDigest(
   return createHash("sha256").update(canonical).digest("hex");
 }
 
-function parsePolicyAllows(raw: unknown, policy: AgentAuthorityPolicy): boolean {
+function parsePolicyAllows(
+  raw: unknown,
+  policy: AgentAuthorityPolicy,
+): boolean {
   // `parseAiPolicy` treats a legacy NULL policy as the documented default
   // (full). Keep this main-side gate aligned with that canonical policy
   // contract while still failing closed for an unknown serialized preset.
@@ -707,7 +768,11 @@ function parsePolicyAllows(raw: unknown, policy: AgentAuthorityPolicy): boolean 
         bodyWrite: false,
       },
       off: { knowledgeWrite: false, structureWrite: false, bodyWrite: false },
-      custom: { knowledgeWrite: false, structureWrite: false, bodyWrite: false },
+      custom: {
+        knowledgeWrite: false,
+        structureWrite: false,
+        bodyWrite: false,
+      },
     };
     return typeof preset !== "string"
       ? false
@@ -742,12 +807,14 @@ async function policyAllowsAgentTool(
 
 function responseBlocks(response: unknown): Array<Record<string, unknown>> {
   if (!isRecord(response) || !Array.isArray(response.blocks)) return [];
-  return response.blocks.filter(
-    (block): block is Record<string, unknown> => isRecord(block),
+  return response.blocks.filter((block): block is Record<string, unknown> =>
+    isRecord(block),
   );
 }
 
-function cloneJsonRecord(value: Record<string, unknown>): Record<string, unknown> {
+function cloneJsonRecord(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
   return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
@@ -793,7 +860,11 @@ function readAgentProjectionField(
       ),
     };
   }
-  if (defaults && Object.hasOwn(defaults, field) && defaults[field] !== undefined) {
+  if (
+    defaults &&
+    Object.hasOwn(defaults, field) &&
+    defaults[field] !== undefined
+  ) {
     return {
       present: true,
       fromDefault: true,
@@ -801,7 +872,12 @@ function readAgentProjectionField(
       value: canonicalAgentInputValue(field, defaults[field]),
     };
   }
-  return { present: false, fromDefault: false, conflict: false, value: undefined };
+  return {
+    present: false,
+    fromDefault: false,
+    conflict: false,
+    value: undefined,
+  };
 }
 
 /** Compare every effectful field before provenance binding reaches Native. */
@@ -816,7 +892,12 @@ function agentMutationProjectionMatches(
   }
   const defaults = AGENT_TOOL_INPUT_DEFAULTS[toolName];
   for (const field of spec.fields) {
-    const expected = readAgentProjectionField(spec, field, modelInput, defaults);
+    const expected = readAgentProjectionField(
+      spec,
+      field,
+      modelInput,
+      defaults,
+    );
     const actual = readAgentProjectionField(spec, field, payload, undefined);
     if (expected.conflict || actual.conflict) return false;
     if (!expected.present) {
@@ -829,17 +910,16 @@ function agentMutationProjectionMatches(
       if (!expected.fromDefault) return false;
       continue;
     }
-    if (stableCanonicalJson(expected.value) !== stableCanonicalJson(actual.value)) {
+    if (
+      stableCanonicalJson(expected.value) !== stableCanonicalJson(actual.value)
+    ) {
       return false;
     }
   }
   return true;
 }
 
-function mainOwnedEntityId(
-  toolName: string,
-  requestId: string,
-): string | null {
+function mainOwnedEntityId(toolName: string, requestId: string): string | null {
   switch (toolName) {
     case "create_codex_entry":
       return `codex-entry:${requestId}`;
@@ -875,7 +955,11 @@ function treeMutationProjectionMatches(
   const modelOps = modelInput.ops;
   const creates = payload.creates;
   const updates = payload.updates;
-  if (!Array.isArray(modelOps) || !Array.isArray(creates) || !Array.isArray(updates)) {
+  if (
+    !Array.isArray(modelOps) ||
+    !Array.isArray(creates) ||
+    !Array.isArray(updates)
+  ) {
     return false;
   }
   const createOps = modelOps.filter(
@@ -888,12 +972,16 @@ function treeMutationProjectionMatches(
     (op): op is CommandArgs => isRecord(op) && op.op === "rename",
   );
   const createRows = creates.filter(isRecord);
-  if (createRows.length !== creates.length || createRows.length !== createOps.length) {
+  if (
+    createRows.length !== creates.length ||
+    createRows.length !== createOps.length
+  ) {
     return false;
   }
   const tempToId = new Map<string, string>();
   for (const row of createRows) {
-    if (typeof row.tempId !== "string" || typeof row.id !== "string") return false;
+    if (typeof row.tempId !== "string" || typeof row.id !== "string")
+      return false;
     if (tempToId.has(row.tempId)) return false;
     tempToId.set(row.tempId, row.id);
   }
@@ -912,7 +1000,10 @@ function treeMutationProjectionMatches(
     }
   }
 
-  const expectedUpdates = new Map<string, { move?: CommandArgs; rename?: CommandArgs }>();
+  const expectedUpdates = new Map<
+    string,
+    { move?: CommandArgs; rename?: CommandArgs }
+  >();
   for (const op of moveOps) {
     if (typeof op.nodeId !== "string") return false;
     const entry = expectedUpdates.get(op.nodeId) ?? {};
@@ -928,7 +1019,10 @@ function treeMutationProjectionMatches(
     expectedUpdates.set(op.nodeId, entry);
   }
   const updateRows = updates.filter(isRecord);
-  if (updateRows.length !== updates.length || updateRows.length !== expectedUpdates.size) {
+  if (
+    updateRows.length !== updates.length ||
+    updateRows.length !== expectedUpdates.size
+  ) {
     return false;
   }
   for (const row of updateRows) {
@@ -1049,12 +1143,20 @@ function bindMainOwnedRichTextFields(
     );
     if (!expected.present || expected.conflict) continue;
     const wireField = spec.aliases?.[field] ?? field;
-    // The model projection is the only accepted document. Remove renderer
-    // authorship marks/attrs and let the main-owned spans carry provenance.
+    // The model projection is the only accepted document. Renderer
+    // authorship marks/attrs are discarded by canonicalRichTextValue, then
+    // rebuilt from main-owned provenance before Native persists the document.
+    const mainOwnedValue = applyMainOwnedAuthorshipMarks(expected.value, {
+      source: "ai",
+      timestamp: null,
+      model: capability.model,
+      chatMessageId: capability.chatMessageId,
+      traceId: capability.mainOwnedProvenanceId,
+    });
     bound[wireField] =
-      expected.value === null || typeof expected.value === "string"
-        ? expected.value
-        : JSON.stringify(expected.value);
+      mainOwnedValue === null || typeof mainOwnedValue === "string"
+        ? mainOwnedValue
+        : JSON.stringify(mainOwnedValue);
     if (wireField !== field) delete bound[field];
   }
 }
@@ -1195,8 +1297,13 @@ async function issueAgentAuthorityCapabilitiesForSender(
     if (block.type !== "tool_use") continue;
     const toolCallId = block.id;
     const toolName = block.name;
-    const definition = AGENT_TOOL_COMMANDS[typeof toolName === "string" ? toolName : ""];
-    if (!definition || !isNonEmptyTrimmedString(toolCallId) || !isNonEmptyTrimmedString(toolName)) {
+    const definition =
+      AGENT_TOOL_COMMANDS[typeof toolName === "string" ? toolName : ""];
+    if (
+      !definition ||
+      !isNonEmptyTrimmedString(toolCallId) ||
+      !isNonEmptyTrimmedString(toolName)
+    ) {
       continue;
     }
     if (!(await policyAllowsAgentTool(backend, projectId, definition.policy))) {
@@ -1284,7 +1391,9 @@ function consumeAgentAuthorityCapability(
     mainOwnedProvenanceId === record.mainOwnedProvenanceId &&
     inputDigest === record.canonicalInputDigest;
   if (!matches) return null;
-  if (!agentMutationProjectionMatches(record.toolName, record.modelInput, payload)) {
+  if (
+    !agentMutationProjectionMatches(record.toolName, record.modelInput, payload)
+  ) {
     return null;
   }
   return bindMainOwnedAgentMutation(payload, record) ? record : null;
@@ -1424,10 +1533,7 @@ function authorityRouteForRendererCommand(
     return payload.origin === "human" ? "human-direct" : undefined;
   }
 
-  if (
-    cmd === "ai_tree_plan_apply" ||
-    cmd === "ai_tree_plan_undo"
-  ) {
+  if (cmd === "ai_tree_plan_apply" || cmd === "ai_tree_plan_undo") {
     return cmd === "ai_tree_plan_undo" || payload.redo === true
       ? "history-replay"
       : "interactive-agent-command";
@@ -1511,7 +1617,11 @@ export function bindRendererAuthorityForIpc(
       route === "interactive-agent-command" &&
       AGENT_AUTHORITY_COMMANDS.has(cmd)
     ) {
-      const capability = consumeAgentAuthorityCapability(cmd, payload, senderId);
+      const capability = consumeAgentAuthorityCapability(
+        cmd,
+        payload,
+        senderId,
+      );
       if (!capability) {
         const invalidPayload = { ...payload, authorityRoute: "" };
         return directPayloadCommand

@@ -322,11 +322,9 @@ fn allowed_callers_for_route(route: &str) -> Option<&'static [&'static str]> {
         ]),
         "import-apply" => Some(&["import-session", "import-review"]),
         "history-replay" => Some(&["history-controller", "undo-redo-command"]),
-        "restore-or-migration" => Some(&[
-            "restore-controller",
-            "migration-runner",
-            "integrity-repair",
-        ]),
+        "restore-or-migration" => {
+            Some(&["restore-controller", "migration-runner", "integrity-repair"])
+        }
         _ => None,
     }
 }
@@ -410,7 +408,10 @@ pub fn validate_renderer_authority_context(
     }
     if context.authority_route == "interactive-agent-command" {
         anyhow::ensure!(
-            context.controls.iter().any(|value| value == "field-authority"),
+            context
+                .controls
+                .iter()
+                .any(|value| value == "field-authority"),
             "Interactive agent mutation requires field-authority control"
         );
     }
@@ -419,13 +420,25 @@ pub fn validate_renderer_authority_context(
             .provenance
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Interactive agent command requires provenance"))?;
-        anyhow::ensure!(!provenance.request_id.trim().is_empty(), "provenance requestId is required");
-        anyhow::ensure!(!provenance.trace_id.trim().is_empty(), "provenance traceId is required");
+        anyhow::ensure!(
+            !provenance.request_id.trim().is_empty(),
+            "provenance requestId is required"
+        );
+        anyhow::ensure!(
+            !provenance.trace_id.trim().is_empty(),
+            "provenance traceId is required"
+        );
         if let Some(execution_id) = provenance.execution_id.as_deref() {
-            anyhow::ensure!(!execution_id.trim().is_empty(), "provenance executionId must not be empty");
+            anyhow::ensure!(
+                !execution_id.trim().is_empty(),
+                "provenance executionId must not be empty"
+            );
         }
         if let Some(main_owned_id) = provenance.main_owned_provenance_id.as_deref() {
-            anyhow::ensure!(!main_owned_id.trim().is_empty(), "provenance mainOwnedProvenanceId must not be empty");
+            anyhow::ensure!(
+                !main_owned_id.trim().is_empty(),
+                "provenance mainOwnedProvenanceId must not be empty"
+            );
             anyhow::ensure!(
                 provenance.execution_id.is_some(),
                 "mainOwnedProvenanceId requires provenance executionId"
@@ -496,8 +509,8 @@ pub(crate) fn canonical_payload_with_derived_authority_context(
     context: &RendererCanonicalWriteContext,
     affected_authority_paths: &[String],
 ) -> String {
-    let parsed = serde_json::from_str::<Value>(payload)
-        .unwrap_or_else(|_| json!({ "rawPayload": payload }));
+    let parsed =
+        serde_json::from_str::<Value>(payload).unwrap_or_else(|_| json!({ "rawPayload": payload }));
     let mut evidence = json!({
         "validated": true,
         "status": "validated",
@@ -526,7 +539,10 @@ pub(crate) fn canonical_payload_with_derived_authority_context(
             "authorityRoute".to_string(),
             Value::String(context.authority_route.clone()),
         );
-        object.insert("authorityCaller".to_string(), Value::String(context.caller.clone()));
+        object.insert(
+            "authorityCaller".to_string(),
+            Value::String(context.caller.clone()),
+        );
         object.insert("authorityEvidence".to_string(), evidence);
         Value::Object(object).to_string()
     } else {
@@ -638,7 +654,10 @@ fn authority_paths_for_canonical_event(event: &AppendChangeEvent) -> Vec<String>
         _ => &[],
     };
     if !operation_paths.is_empty() {
-        return operation_paths.iter().map(|path| (*path).to_string()).collect();
+        return operation_paths
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect();
     }
 
     let op_is_create = event.op_type.ends_with(".create")
@@ -660,8 +679,10 @@ fn authority_paths_for_canonical_event(event: &AppendChangeEvent) -> Vec<String>
     let mut paths = Vec::new();
     let mut unknown_field = false;
     for field in object.keys() {
-        if matches!(field.as_str(), "requestHash" | "eventId" | "causeEventId" | "effectEventId")
-        {
+        if matches!(
+            field.as_str(),
+            "requestHash" | "eventId" | "causeEventId" | "effectEventId"
+        ) {
             continue;
         }
         if let Some(path) = authority_path_for_field(entity_type, field, all_paths) {
@@ -686,7 +707,7 @@ fn authority_entity_kind(entity_type: &str) -> &str {
     }
 }
 
-pub(crate) fn validate_and_record_agent_field_authority_for_entity(
+pub(crate) fn validate_agent_field_authority_for_entity(
     conn: &rusqlite::Connection,
     project_id: &str,
     entity_kind: &str,
@@ -694,7 +715,7 @@ pub(crate) fn validate_and_record_agent_field_authority_for_entity(
     paths: &[String],
     updated_at: &str,
 ) -> anyhow::Result<()> {
-    validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+    validate_agent_field_authority_for_entity_with_legacy_check(
         conn,
         project_id,
         entity_kind,
@@ -705,14 +726,13 @@ pub(crate) fn validate_and_record_agent_field_authority_for_entity(
     )
 }
 
-fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+pub(crate) fn record_agent_field_authority_for_entity(
     conn: &rusqlite::Connection,
     project_id: &str,
     entity_kind: &str,
     entity_id: &str,
     paths: &[String],
     updated_at: &str,
-    check_legacy_value: bool,
 ) -> anyhow::Result<()> {
     validate_or_record_agent_field_authority_for_entity(
         conn,
@@ -721,7 +741,7 @@ fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
         entity_id,
         paths,
         updated_at,
-        AgentFieldAuthorityAction::Record { check_legacy_value },
+        AgentFieldAuthorityAction::Record,
     )
 }
 
@@ -747,7 +767,7 @@ fn validate_agent_field_authority_for_entity_with_legacy_check(
 
 enum AgentFieldAuthorityAction {
     Validate { check_legacy_value: bool },
-    Record { check_legacy_value: bool },
+    Record,
 }
 
 fn validate_or_record_agent_field_authority_for_entity(
@@ -760,10 +780,8 @@ fn validate_or_record_agent_field_authority_for_entity(
     action: AgentFieldAuthorityAction,
 ) -> anyhow::Result<()> {
     let (check_legacy_value, record) = match action {
-        AgentFieldAuthorityAction::Validate { check_legacy_value } => {
-            (check_legacy_value, false)
-        }
-        AgentFieldAuthorityAction::Record { check_legacy_value } => (check_legacy_value, true),
+        AgentFieldAuthorityAction::Validate { check_legacy_value } => (check_legacy_value, false),
+        AgentFieldAuthorityAction::Record => (false, true),
     };
     if paths.is_empty() {
         return Ok(());
@@ -834,9 +852,9 @@ fn preflight_agent_field_authority(
     updated_at: &str,
     renderer_context: Option<&RendererCanonicalWriteContext>,
 ) -> anyhow::Result<()> {
-    if renderer_context.is_some_and(|context| {
-        context.authority_route == "interactive-agent-command"
-    }) {
+    if renderer_context
+        .is_some_and(|context| context.authority_route == "interactive-agent-command")
+    {
         validate_agent_field_authority_for_entity_with_legacy_check(
             conn,
             project_id,
@@ -850,32 +868,36 @@ fn preflight_agent_field_authority(
     Ok(())
 }
 
-fn validate_and_record_agent_field_authority(
+fn record_agent_field_authority(
     conn: &rusqlite::Connection,
     project_id: &str,
     event: &AppendChangeEvent,
     paths: &[String],
 ) -> anyhow::Result<()> {
     let Some(entity_type) = event.entity_type.as_deref() else {
-        anyhow::ensure!(paths.is_empty(), "Agent field authority requires an entity type");
+        anyhow::ensure!(
+            paths.is_empty(),
+            "Agent field authority requires an entity type"
+        );
         return Ok(());
     };
     let Some(entity_id) = event.entity_id.as_deref() else {
-        anyhow::ensure!(paths.is_empty(), "Agent field authority requires an entity id");
+        anyhow::ensure!(
+            paths.is_empty(),
+            "Agent field authority requires an entity id"
+        );
         return Ok(());
     };
     let updated_at = chrono::DateTime::<chrono::Utc>::from_timestamp_millis(event.timestamp)
         .unwrap_or_else(chrono::Utc::now)
         .to_rfc3339();
-    let check_legacy_value = !event.op_type.ends_with(".create");
-    validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+    record_agent_field_authority_for_entity(
         conn,
         project_id,
         authority_entity_kind(entity_type),
         entity_id,
         paths,
         &updated_at,
-        check_legacy_value,
     )
 }
 
@@ -998,10 +1020,9 @@ fn append_agent_forward_change_in_tx(
     normalize_foreshadow_feed_events_in_tx(conn, project_id, &mut events)?;
     let canonical_event = if let Some(context) = renderer_context {
         validate_renderer_authority_context(context)?;
-        let affected_authority_paths =
-            authority_paths_for_canonical_event(canonical_event);
+        let affected_authority_paths = authority_paths_for_canonical_event(canonical_event);
         if context.authority_route == "interactive-agent-command" {
-            validate_and_record_agent_field_authority(
+            record_agent_field_authority(
                 conn,
                 project_id,
                 canonical_event,
@@ -2673,7 +2694,9 @@ fn codex_delete_cascade_restore_feed_events(
             detail
                 .get("definitionId")
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("Codex detail restore snapshot has no definitionId"))?,
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Codex detail restore snapshot has no definitionId")
+                })?,
         )?;
         events.push(restored_cascade_event(
             json!({ "kind": "codex-detail-value", "valueId": value_id }),
@@ -3265,9 +3288,10 @@ fn agent_codex_create_internal(
                 )?;
             }
             let mut canonical_event = created.canonical_event.clone();
-            if renderer_context.as_ref().is_none_or(|context| {
-                context.authority_route != "interactive-agent-command"
-            }) {
+            if renderer_context
+                .as_ref()
+                .is_none_or(|context| context.authority_route != "interactive-agent-command")
+            {
                 if let Some(audit_payload) = renderer_context
                     .as_ref()
                     .and_then(|context| context.canonical_payload.as_ref())
@@ -3467,9 +3491,10 @@ fn agent_codex_update_internal(
                 },
             )?;
             let mut canonical_event = patched.canonical_event.clone();
-            if renderer_context.as_ref().is_none_or(|context| {
-                context.authority_route != "interactive-agent-command"
-            }) {
+            if renderer_context
+                .as_ref()
+                .is_none_or(|context| context.authority_route != "interactive-agent-command")
+            {
                 if let Some(audit_payload) = renderer_context
                     .as_ref()
                     .and_then(|context| context.canonical_payload.as_ref())
@@ -3646,14 +3671,15 @@ fn agent_codex_delete_internal(
                 &payload.project_id,
                 &payload.entry_id,
             )?;
-            if renderer_context.as_ref().is_some_and(|context| {
-                context.authority_route == "interactive-agent-command"
-            }) {
+            if renderer_context
+                .as_ref()
+                .is_some_and(|context| context.authority_route == "interactive-agent-command")
+            {
                 let authority_paths = all_authority_paths("codex_entry")
                     .iter()
                     .map(|path| (*path).to_string())
                     .collect::<Vec<_>>();
-                validate_and_record_agent_field_authority_for_entity(
+                validate_agent_field_authority_for_entity(
                     conn,
                     &payload.project_id,
                     "codex-entry",
@@ -3891,10 +3917,7 @@ pub fn renderer_agent_snippet_create_impl(
     context: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
     let request_id = require_agent_request_id(payload.request_id.as_deref())?;
-    validate_renderer_authority_context_for_routes(
-        &context,
-        &["interactive-agent-command"],
-    )?;
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
     anyhow::ensure!(
         request_id == context.request_id,
         "requestId must match canonical authority context"
@@ -5351,8 +5374,14 @@ pub fn renderer_agent_foreshadow_create_impl(
     payload: AgentForeshadowCreatePayload,
     context: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
-    anyhow::ensure!(!payload.project_id.trim().is_empty(), "projectId is required");
-    anyhow::ensure!(!payload.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
     anyhow::ensure!(
         payload.request_id == context.request_id,
         "agent foreshadow requestId does not match canonical authority context"
@@ -5429,13 +5458,7 @@ pub fn agent_foreshadow_update_impl(
     payload: AgentForeshadowUpdatePayload,
 ) -> anyhow::Result<Value> {
     let request_id = payload.request_id.clone();
-    agent_foreshadow_update_with_context_impl(
-        db,
-        payload,
-        &request_id,
-        "in-app-agent",
-        None,
-    )
+    agent_foreshadow_update_with_context_impl(db, payload, &request_id, "in-app-agent", None)
 }
 
 pub fn renderer_agent_foreshadow_update_impl(
@@ -5443,8 +5466,14 @@ pub fn renderer_agent_foreshadow_update_impl(
     payload: AgentForeshadowUpdatePayload,
     context: RendererCanonicalWriteContext,
 ) -> anyhow::Result<Value> {
-    anyhow::ensure!(!payload.project_id.trim().is_empty(), "projectId is required");
-    anyhow::ensure!(!payload.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(
+        !payload.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !payload.session_id.trim().is_empty(),
+        "sessionId is required"
+    );
     anyhow::ensure!(
         payload.request_id == context.request_id,
         "agent foreshadow update requestId does not match canonical authority context"
@@ -8169,14 +8198,15 @@ fn agent_event_delete_with_request_and_authority_impl(
                 .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
             let before = before_value.to_string();
 
-            if renderer_context.as_ref().is_some_and(|context| {
-                context.authority_route == "interactive-agent-command"
-            }) {
+            if renderer_context
+                .as_ref()
+                .is_some_and(|context| context.authority_route == "interactive-agent-command")
+            {
                 let authority_paths = EVENT_AUTHORITY_FIELDS
                     .iter()
                     .map(|path| (*path).to_string())
                     .collect::<Vec<_>>();
-                validate_and_record_agent_field_authority_for_entity(
+                validate_agent_field_authority_for_entity(
                     conn,
                     &payload.project_id,
                     "event",
@@ -9369,7 +9399,8 @@ mod tests {
             origin: NarrativeChangeOrigin::AiApply,
             authority_route: "interactive-agent-command".to_string(),
             caller: "chat-tool-executor".to_string(),
-            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor").2,
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor")
+                .2,
             provenance: Some(RendererMutationProvenance {
                 request_id: request_id.to_string(),
                 trace_id: format!("{request_id}:trace"),
@@ -9397,7 +9428,8 @@ mod tests {
             origin: NarrativeChangeOrigin::AiApply,
             authority_route: "interactive-agent-command".to_string(),
             caller: "background-maintenance-v2".to_string(),
-            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor").2,
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor")
+                .2,
             provenance: Some(RendererMutationProvenance {
                 request_id: "request-1".to_string(),
                 trace_id: "trace-1".to_string(),
@@ -9459,14 +9491,13 @@ mod tests {
                     AND entity_id = 'authority-entry'",
                 rusqlite::params![project_id],
             )?;
-            validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+            record_agent_field_authority_for_entity(
                 conn,
                 &project_id,
                 "codex-entry",
                 "authority-entry",
                 &paths,
                 "2026-08-15T00:00:00Z",
-                false,
             )?;
             let owner: String = conn.query_row(
                 "SELECT owner_kind FROM narrative_field_authority
@@ -9483,7 +9514,7 @@ mod tests {
                     AND entity_id = 'authority-entry' AND field_path = '/name'",
                 rusqlite::params![project_id],
             )?;
-            let error = validate_and_record_agent_field_authority_for_entity(
+            let error = validate_agent_field_authority_for_entity(
                 conn,
                 &project_id,
                 "codex-entry",
@@ -9533,7 +9564,8 @@ mod tests {
     fn renderer_event_delete_preflights_legacy_fields_before_domain_delete() {
         let db = test_db();
         let project_id = insert_project(&db);
-        let (event_id, _) = create_event(&db, &project_id, "Legacy chronicle title", vec![], vec![]);
+        let (event_id, _) =
+            create_event(&db, &project_id, "Legacy chronicle title", vec![], vec![]);
         let version: i64 = db
             .with_conn(|conn| {
                 Ok(conn.query_row(
@@ -9783,6 +9815,214 @@ mod tests {
     }
 
     #[test]
+    fn renderer_codex_update_allows_first_ai_value_for_empty_legacy_summary() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        insert_codex(&db, &project_id, "Legacy");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET summary = NULL
+                  WHERE project_id = ?1 AND name = 'Legacy'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed empty legacy summary");
+        let entry_id: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT id FROM codex_entries
+                      WHERE project_id = ?1 AND name = 'Legacy'",
+                    rusqlite::params![project_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex id");
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = ?1",
+                    rusqlite::params![entry_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-summary-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: entry_id.clone(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: Some("AI summary".to_string()),
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-empty-summary-request", "legacy-empty-summary:event"),
+        )
+        .expect("first AI value must fill an empty legacy summary");
+
+        db.with_conn(|conn| {
+            let state: (Option<String>, String) = conn.query_row(
+                "SELECT summary, owner_kind FROM codex_entries
+                  JOIN narrative_field_authority
+                    ON narrative_field_authority.project_id = codex_entries.project_id
+                   AND narrative_field_authority.entity_kind = 'codex-entry'
+                   AND narrative_field_authority.entity_id = codex_entries.id
+                   AND narrative_field_authority.field_path = '/summary'
+                 WHERE codex_entries.project_id = ?1
+                   AND codex_entries.id = ?2",
+                rusqlite::params![project_id, entry_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, (Some("AI summary".to_string()), "ai".to_string()));
+            Ok(())
+        })
+        .expect("inspect filled legacy summary");
+    }
+
+    #[test]
+    fn renderer_event_first_participant_scene_link_and_relation_are_allowed() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant = insert_codex(&db, &project_id, "AI participant");
+        let scene = insert_scene(&db, &project_id);
+        let (participant_event, _) =
+            create_event(&db, &project_id, "Empty participant event", vec![], vec![]);
+        let (stamp_event, _) = create_event(&db, &project_id, "Empty stamp event", vec![], vec![]);
+        let (cause_event, _) = create_event(&db, &project_id, "Empty cause event", vec![], vec![]);
+        let (effect_event, _) =
+            create_event(&db, &project_id, "Empty effect event", vec![], vec![]);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy events without authority rows");
+
+        let participant_request = "legacy-empty-participant";
+        agent_event_set_participants_with_authority_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-participant-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: participant_event.clone(),
+                base_version: event_version(&db, &participant_event),
+                codex_entry_ids: vec![participant.clone()],
+                participant_roles: None,
+            },
+            renderer_agent_context(participant_request, "legacy-empty-participant:event"),
+        )
+        .expect("first AI participant must be allowed");
+        assert!(participant_has(&db, &participant_event, &participant));
+
+        let stamp_request = "legacy-empty-scene-link";
+        let mut stamp = scene_payload(&project_id, &scene, &stamp_event);
+        stamp.request_id = stamp_request.to_string();
+        agent_scene_event_mutate_with_authority_impl(
+            &db,
+            stamp,
+            true,
+            Some(renderer_agent_context(
+                stamp_request,
+                "legacy-empty-scene-link:event",
+            )),
+        )
+        .expect("first AI scene link must be allowed");
+        assert!(scene_link_has(&db, &stamp_event, &scene));
+
+        let relation_request = "legacy-empty-relation";
+        let mut relation = relation_payload(&project_id, &cause_event, &effect_event);
+        relation.request_id = relation_request.to_string();
+        agent_event_relation_mutate_with_authority_impl(
+            &db,
+            relation,
+            true,
+            Some(renderer_agent_context(
+                relation_request,
+                "legacy-empty-relation:event",
+            )),
+        )
+        .expect("first AI relation must be allowed");
+        assert_eq!(relation_count(&db, &cause_event, &effect_event), 1);
+    }
+
+    #[test]
+    fn renderer_foreshadow_update_allows_first_ai_value_for_empty_legacy_intent() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'foreshadow' AND entity_id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed empty legacy Foreshadow");
+
+        let request_id = "legacy-empty-foreshadow-intent";
+        renderer_agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                request_id: request_id.to_string(),
+                project_id: project_id.clone(),
+                session_id: "legacy-empty-foreshadow-session".to_string(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                title: None,
+                intent: Some("AI intent".to_string()),
+                notes: None,
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+            renderer_agent_context(request_id, "legacy-empty-foreshadow-intent:event"),
+        )
+        .expect("first AI value must fill an empty legacy Foreshadow intent");
+
+        db.with_conn(|conn| {
+            let state: (String, String) = conn.query_row(
+                "SELECT intent, owner_kind FROM foreshadows
+                   JOIN narrative_field_authority
+                     ON narrative_field_authority.project_id = foreshadows.project_id
+                    AND narrative_field_authority.entity_kind = 'foreshadow'
+                    AND narrative_field_authority.entity_id = foreshadows.id
+                    AND narrative_field_authority.field_path = '/intent'
+                 WHERE foreshadows.project_id = ?1 AND foreshadows.id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(state, ("AI intent".to_string(), "ai".to_string()));
+            Ok(())
+        })
+        .expect("inspect filled legacy Foreshadow intent");
+    }
+
+    #[test]
     fn legacy_tree_node_presence_protects_title_move_and_empty_synopsis() {
         let db = test_db();
         let project_id = insert_project(&db);
@@ -9800,14 +10040,13 @@ mod tests {
         db.with_conn(|conn| {
             for path in ["/title", "/parentId", "/sortOrder", "/synopsis"] {
                 let paths = vec![path.to_string()];
-                let error = validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+                let error = validate_agent_field_authority_for_entity(
                     conn,
                     &project_id,
                     "tree_node",
                     "legacy-tree-scene",
                     &paths,
                     "2026-08-15T00:00:00Z",
-                    true,
                 )
                 .expect_err("legacy tree node fields must fail closed");
                 assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
@@ -10024,7 +10263,10 @@ mod tests {
                 rusqlite::params![foreshadow_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?;
-            assert_eq!(state, ("Human intent".to_string(), "Human notes".to_string(), 0));
+            assert_eq!(
+                state,
+                ("Human intent".to_string(), "Human notes".to_string(), 0)
+            );
             Ok(())
         })
         .expect("inspect unchanged Foreshadow after denied update");
@@ -10054,8 +10296,7 @@ mod tests {
             op_type: "event.participants".to_string(),
             entity_type: Some("event".to_string()),
             entity_id: Some("event-1".to_string()),
-            payload: json!({ "eventId": "event-1", "codexEntryIds": ["entry-1"] })
-                .to_string(),
+            payload: json!({ "eventId": "event-1", "codexEntryIds": ["entry-1"] }).to_string(),
             timestamp: 1,
         };
         assert_eq!(
@@ -10703,7 +10944,9 @@ mod tests {
                 ]
             );
             assert_eq!(
-                rows.iter().map(|(_, mutation)| mutation.as_str()).collect::<Vec<_>>(),
+                rows.iter()
+                    .map(|(_, mutation)| mutation.as_str())
+                    .collect::<Vec<_>>(),
                 vec!["delete", "delete", "delete", "delete", "update"]
             );
             let canonical_payload: String = conn.query_row(
@@ -10716,11 +10959,26 @@ mod tests {
             assert_eq!(canonical_payload["authorityRoute"], "human-direct");
             assert_eq!(canonical_payload["authorityCaller"], "human-ui");
             assert_eq!(canonical_payload["authorityEvidence"]["validated"], true);
-            assert_eq!(canonical_payload["cascade"]["relationIds"], json!(["cascade-relation"]));
-            assert_eq!(canonical_payload["cascade"]["phaseIds"], json!(["cascade-phase"]));
-            assert_eq!(canonical_payload["cascade"]["detailValueIds"], json!(["cascade-detail"]));
-            assert_eq!(canonical_payload["cascade"]["tagIds"], json!(["cascade-tag"]));
-            assert_eq!(canonical_payload["cascade"]["childEntryIds"], json!(["cascade-child"]));
+            assert_eq!(
+                canonical_payload["cascade"]["relationIds"],
+                json!(["cascade-relation"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["phaseIds"],
+                json!(["cascade-phase"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["detailValueIds"],
+                json!(["cascade-detail"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["tagIds"],
+                json!(["cascade-tag"])
+            );
+            assert_eq!(
+                canonical_payload["cascade"]["childEntryIds"],
+                json!(["cascade-child"])
+            );
             let child_parent: Option<String> = conn.query_row(
                 "SELECT parent_id FROM codex_entries WHERE id = 'cascade-child'",
                 [],

@@ -612,7 +612,10 @@ describe("durable mutation tool request identity", () => {
   });
 
   it("forwards the main-issued entity id through both create tools", async () => {
-    mockAgentCreateEvent.mockResolvedValue({ id: "event-from-main", title: "Arrival" });
+    mockAgentCreateEvent.mockResolvedValue({
+      id: "event-from-main",
+      title: "Arrival",
+    });
     mockAgentCreateForeshadow.mockResolvedValue({
       id: "foreshadow-from-main",
       title: "The seal",
