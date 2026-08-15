@@ -55,6 +55,10 @@ export interface TrackedWriteOpts {
   /** Persisted assistant message and model tool-call identities. */
   chatMessageId?: string;
   toolCallId?: string;
+  /** Main-issued audit execution identity for this tool call. */
+  executionId?: string;
+  /** Main-issued provenance identity for this tool call. */
+  mainOwnedProvenanceId?: string;
 }
 
 function isAiAuthorshipSurface(surface: string | undefined): boolean {
@@ -176,6 +180,10 @@ async function trackedEventWrite(
                 ? { chatMessageId: opts.chatMessageId }
                 : {}),
               ...(opts?.toolCallId ? { toolCallId: opts.toolCallId } : {}),
+              ...(opts?.executionId ? { executionId: opts.executionId } : {}),
+              ...(opts?.mainOwnedProvenanceId
+                ? { mainOwnedProvenanceId: opts.mainOwnedProvenanceId }
+                : {}),
             }
           : undefined,
       )

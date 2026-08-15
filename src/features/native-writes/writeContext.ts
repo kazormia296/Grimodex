@@ -30,6 +30,10 @@ export interface CanonicalWriteContext {
   /** Duplicated top-level for main-bound request validation. */
   chatMessageId?: string;
   toolCallId?: string;
+  /** Main-owned execution identity bound to the issued capability. */
+  executionId?: string;
+  /** Main-owned provenance identity bound to the issued capability. */
+  mainOwnedProvenanceId?: string;
   writesAuthorityProtectedField: boolean;
   originalTransactionId: string | null;
   undoJournalId: string | null;
@@ -43,6 +47,8 @@ export interface CanonicalWriteAuthorityOptions {
   agentAuthorityCapability?: string;
   chatMessageId?: string;
   toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
   writesAuthorityProtectedField?: boolean;
 }
 
@@ -77,9 +83,20 @@ export function createCanonicalWriteContext(
   const controls = new Set(
     authorityOptions?.controls ?? requiredControlsForRoute(authorityRoute),
   );
-  const provenance =
+  const baseProvenance =
     authorityOptions?.provenance ??
     (origin === "ai-apply" ? { requestId, traceId: requestId } : null);
+  const provenance = baseProvenance
+    ? {
+        ...baseProvenance,
+        ...(authorityOptions?.executionId
+          ? { executionId: authorityOptions.executionId }
+          : {}),
+        ...(authorityOptions?.mainOwnedProvenanceId
+          ? { mainOwnedProvenanceId: authorityOptions.mainOwnedProvenanceId }
+          : {}),
+      }
+    : null;
   const context = {
     requestId,
     sessionId: getRecorderSessionId(),
@@ -101,6 +118,12 @@ export function createCanonicalWriteContext(
       : {}),
     ...(authorityOptions?.toolCallId
       ? { toolCallId: authorityOptions.toolCallId }
+      : {}),
+    ...(authorityOptions?.executionId
+      ? { executionId: authorityOptions.executionId }
+      : {}),
+    ...(authorityOptions?.mainOwnedProvenanceId
+      ? { mainOwnedProvenanceId: authorityOptions.mainOwnedProvenanceId }
       : {}),
     writesAuthorityProtectedField,
     originalTransactionId: lineage?.originalTransactionId ?? null,

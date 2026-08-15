@@ -165,6 +165,10 @@ export interface MutationProvenance {
   readonly traceId: string;
   readonly chatMessageId?: string;
   readonly toolCallId?: string;
+  /** Electron main-owned execution identity for capability-bound writes. */
+  readonly executionId?: string;
+  /** Electron main-owned provenance identity; renderer values are ignored. */
+  readonly mainOwnedProvenanceId?: string;
 }
 
 export interface MutationAuthorityContext {

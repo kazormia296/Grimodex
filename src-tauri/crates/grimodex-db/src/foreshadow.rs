@@ -24,6 +24,7 @@ use super::{
 use crate::change_events::AppendChangeEvent;
 use crate::agent_writes::{
     canonical_payload_with_authority_context,
+    validate_and_record_agent_field_authority_for_entity,
     validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
 };
 use crate::narrative_extraction::change_feed::{
@@ -1438,6 +1439,7 @@ pub fn delete_with_renderer_authority(
                 "human-direct",
                 "history-replay",
                 "restore-or-migration",
+                "interactive-agent-command",
             ],
         )?;
         anyhow::ensure!(
@@ -1510,6 +1512,23 @@ pub fn delete_with_renderer_authority(
                 &before,
                 base_version,
             )?;
+
+            if renderer_context.as_ref().is_some_and(|context| {
+                context.authority_route == "interactive-agent-command"
+            }) {
+                let authority_paths = FORESHADOW_AUTHORITY_FIELDS
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>();
+                validate_and_record_agent_field_authority_for_entity(
+                    conn,
+                    &project_id,
+                    "foreshadow",
+                    &id,
+                    &authority_paths,
+                    &chrono::Utc::now().to_rfc3339(),
+                )?;
+            }
 
             let deleted = conn.execute(
                 "DELETE FROM foreshadows

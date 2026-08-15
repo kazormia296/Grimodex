@@ -50,6 +50,8 @@ export interface TrackedWriteOpts {
   /** Persisted assistant message and model tool-call identities. */
   chatMessageId?: string;
   toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
 }
 
 export interface AgentCodexUpdateInput {
@@ -91,7 +93,11 @@ function agentCodexWriteContext(
   },
   authority?: Pick<
     TrackedWriteOpts,
-    "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+    | "agentAuthorityCapability"
+    | "chatMessageId"
+    | "toolCallId"
+    | "executionId"
+    | "mainOwnedProvenanceId"
   >,
 ) {
   const stableRequestId = requestId ?? crypto.randomUUID();
@@ -120,6 +126,12 @@ function agentCodexWriteContext(
             : {}),
           ...(authority?.toolCallId
             ? { toolCallId: authority.toolCallId }
+            : {}),
+          ...(authority?.executionId
+            ? { executionId: authority.executionId }
+            : {}),
+          ...(authority?.mainOwnedProvenanceId
+            ? { mainOwnedProvenanceId: authority.mainOwnedProvenanceId }
             : {}),
         },
   );

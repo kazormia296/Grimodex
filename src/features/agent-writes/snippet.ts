@@ -42,7 +42,11 @@ export async function agentCreateSnippet(
   chatMessageId?: string | null,
   authority?: Pick<
     CanonicalWriteAuthorityOptions,
-    "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+    | "agentAuthorityCapability"
+    | "chatMessageId"
+    | "toolCallId"
+    | "executionId"
+    | "mainOwnedProvenanceId"
   >,
 ): Promise<Snippet> {
   if (blockIfPolicyOff("knowledgeWrite")) {

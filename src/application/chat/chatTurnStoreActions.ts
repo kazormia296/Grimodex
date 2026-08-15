@@ -1205,7 +1205,6 @@ function createChatTurnStoreActions(
                 })
               : executeTool(name, toolCallId, params);
           };
-
           // クライアントツールは private Agent のときだけ渡す。Public RAG は
           // tools=[] とし、Web検索だけを使う分離済み経路にする。
           const agentTools = agentModeForThisSend ? turnAgentToolsSnapshot : [];
@@ -1288,6 +1287,7 @@ function createChatTurnStoreActions(
                     operationId: sendTurnId,
                     executionId,
                     parentExecutionId: parentAuditExecutionId,
+                    chatMessageId: assistantMsg.id,
                   },
                   agentThinkingParams,
                   finalized

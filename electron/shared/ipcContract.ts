@@ -2344,6 +2344,17 @@ function requireCanonicalAuthorityContext(
     const provenance = requireRecord(payload, "provenance", command);
     requireNonEmptyString(provenance, "requestId", command);
     requireNonEmptyString(provenance, "traceId", command);
+    if (Object.hasOwn(provenance, "executionId")) {
+      requireNonEmptyString(provenance, "executionId", command);
+    }
+    if (Object.hasOwn(provenance, "mainOwnedProvenanceId")) {
+      requireNonEmptyString(provenance, "mainOwnedProvenanceId", command);
+      if (!Object.hasOwn(provenance, "executionId")) {
+        throw new Error(
+          `invalid authority provenance for command \`${command}\`: mainOwnedProvenanceId requires executionId`,
+        );
+      }
+    }
     if (provenance.requestId !== payload.requestId) {
       throw new Error(
         `invalid authority provenance for command \`${command}\`: requestId must match canonical requestId`,
@@ -2401,6 +2412,16 @@ export function bindCanonicalAuthorityContext(
     payload.toolCallId.trim().length > 0
       ? payload.toolCallId
       : undefined;
+  const executionId =
+    typeof payload.executionId === "string" &&
+    payload.executionId.trim().length > 0
+      ? payload.executionId
+      : undefined;
+  const mainOwnedProvenanceId =
+    typeof payload.mainOwnedProvenanceId === "string" &&
+    payload.mainOwnedProvenanceId.trim().length > 0
+      ? payload.mainOwnedProvenanceId
+      : undefined;
   return {
     ...payload,
     eventUid,
@@ -2417,6 +2438,8 @@ export function bindCanonicalAuthorityContext(
             traceId,
             ...(chatMessageId ? { chatMessageId } : {}),
             ...(toolCallId ? { toolCallId } : {}),
+            ...(executionId ? { executionId } : {}),
+            ...(mainOwnedProvenanceId ? { mainOwnedProvenanceId } : {}),
           }
         : null,
     writesAuthorityProtectedField: false,

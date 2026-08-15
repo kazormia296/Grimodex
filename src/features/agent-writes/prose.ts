@@ -23,6 +23,8 @@ export interface AgentProposeSceneBodyInput {
   agentAuthorityCapability?: string;
   chatMessageId?: string;
   toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
 }
 
 export interface ProseStageResult {
@@ -108,6 +110,10 @@ export async function agentProposeSceneBody(
         : {}),
       ...(input.chatMessageId ? { chatMessageId: input.chatMessageId } : {}),
       ...(input.toolCallId ? { toolCallId: input.toolCallId } : {}),
+      ...(input.executionId ? { executionId: input.executionId } : {}),
+      ...(input.mainOwnedProvenanceId
+        ? { mainOwnedProvenanceId: input.mainOwnedProvenanceId }
+        : {}),
       replaceFrom: input.replaceFrom ?? null,
       replaceTo: input.replaceTo ?? null,
     },

@@ -310,7 +310,7 @@ export async function runAgentLoop(
 
       // helper `result()` と衝突しないよう ToolResult は toolRes 名で受ける。
       const capability = response.agentAuthorityCapabilities?.[tu.id];
-      const authorization = capability ? { capability } : undefined;
+      const authorization = capability ? { ...capability } : undefined;
       const toolRes = authorization
         ? await executeTool(tu.name, tu.id, tu.input, authorization)
         : await executeTool(tu.name, tu.id, tu.input);

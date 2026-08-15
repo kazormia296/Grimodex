@@ -55,6 +55,7 @@ function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
           "knowledge-write-policy",
           "stable-request-id",
           "agent-provenance",
+          "field-authority",
           "typed-writer",
           "occ",
           "undo-journal",
@@ -76,7 +77,12 @@ function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
             "change-feed",
           ],
     provenance: isInteractiveAgent
-      ? { requestId, traceId: `${requestId}:trace` }
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
       : null,
     writesAuthorityProtectedField: false,
     originalTransactionId: null,

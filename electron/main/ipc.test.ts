@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import { IPC } from "../shared/ipcContract.js";
@@ -274,6 +275,7 @@ describe("registerIpcRouter fail-soft logging", () => {
         messages: [{ role: "user", content: "write a clue" }],
         tools: [{ name: "create_foreshadow" }],
         provider: "openai",
+        chatMessageId: "assistant-1",
         auditContext: {
           expectedWorkspacePath: "/tmp/workspace",
           projectId: "p1",
@@ -289,7 +291,12 @@ describe("registerIpcRouter fail-soft logging", () => {
     if (!envelope.ok) return;
     expect(envelope.value).toMatchObject({
       agentAuthorityCapabilities: {
-        "call-1": expect.any(String),
+        "call-1": {
+          capability: expect.any(String),
+          executionId: "execution-1",
+          chatMessageId: "assistant-1",
+          mainOwnedProvenanceId: expect.any(String),
+        },
       },
     });
     expect(dbExecute).toHaveBeenCalledWith(
@@ -297,6 +304,99 @@ describe("registerIpcRouter fail-soft logging", () => {
       ["p1"],
       "get",
     );
+
+    const requestId = `agent-tool:${createHash("sha256")
+      .update("create_foreshadow\0p1\0call-1")
+      .digest("hex")}`;
+    const firstGrant = (
+      envelope.value as {
+        agentAuthorityCapabilities: Record<string, {
+          capability: string;
+          executionId: string;
+          chatMessageId: string;
+          mainOwnedProvenanceId: string;
+        }>;
+      }
+    ).agentAuthorityCapabilities["call-1"];
+    const bound = bindRendererAuthorityForIpc(
+      "agent_foreshadow_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId,
+          eventUid: "agent-event-1",
+          origin: "ai-apply",
+          title: "from the model",
+          chatMessageId: firstGrant.chatMessageId,
+          toolCallId: "call-1",
+          executionId: firstGrant.executionId,
+          mainOwnedProvenanceId: firstGrant.mainOwnedProvenanceId,
+          agentAuthorityCapability: firstGrant.capability,
+        },
+      },
+      704,
+    );
+    expect(bound.payload).toMatchObject({
+      authorityRoute: "interactive-agent-command",
+      provenance: {
+        requestId,
+        traceId: firstGrant.mainOwnedProvenanceId,
+        executionId: firstGrant.executionId,
+        mainOwnedProvenanceId: firstGrant.mainOwnedProvenanceId,
+        chatMessageId: firstGrant.chatMessageId,
+        toolCallId: "call-1",
+      },
+    });
+
+    const secondEnvelope = await invokeHandler()(
+      { sender: { id: 704 } },
+      "send_agent_message",
+      {
+        messages: [{ role: "user", content: "write another clue" }],
+        tools: [{ name: "create_foreshadow" }],
+        provider: "openai",
+        chatMessageId: "assistant-2",
+        auditContext: {
+          expectedWorkspacePath: "/tmp/workspace",
+          projectId: "p1",
+          operationId: "turn-2",
+          executionId: "execution-2",
+          parentExecutionId: null,
+          pathId: "chat_agent_main",
+        },
+      },
+    );
+    expect(secondEnvelope.ok).toBe(true);
+    if (!secondEnvelope.ok) return;
+    const secondGrant = (
+      secondEnvelope.value as {
+        agentAuthorityCapabilities: Record<string, {
+          capability: string;
+          executionId: string;
+          chatMessageId: string;
+          mainOwnedProvenanceId: string;
+        }>;
+      }
+    ).agentAuthorityCapabilities["call-1"];
+    const retargeted = bindRendererAuthorityForIpc(
+      "agent_foreshadow_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId,
+          eventUid: "agent-event-2",
+          origin: "ai-apply",
+          title: "retargeted by renderer",
+          chatMessageId: secondGrant.chatMessageId,
+          toolCallId: "call-1",
+          executionId: secondGrant.executionId,
+          mainOwnedProvenanceId: secondGrant.mainOwnedProvenanceId,
+          agentAuthorityCapability: secondGrant.capability,
+        },
+      },
+      704,
+    );
+    expect(retargeted.payload).toMatchObject({ authorityRoute: "" });
 
     const backgroundEnvelope = await invokeHandler()(
       { sender: { id: 704 } },

@@ -87,6 +87,8 @@ export interface ApplyContext {
   agentAuthorityCapability?: string;
   chatMessageId?: string;
   toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
   scope: AiTreeScope;
 }
 

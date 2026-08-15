@@ -26,6 +26,8 @@ export interface AiAuditTransportContext {
   readonly operationId?: string;
   readonly executionId?: string;
   readonly parentExecutionId?: string | null;
+  /** Persisted assistant message identity for the main chat-agent turn. */
+  readonly chatMessageId?: string;
   readonly metadata?: AiAuditJsonObject;
 }
 

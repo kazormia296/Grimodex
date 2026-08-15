@@ -152,6 +152,10 @@ pub struct RendererMutationProvenance {
     pub chat_message_id: Option<String>,
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    #[serde(default)]
+    pub execution_id: Option<String>,
+    #[serde(default)]
+    pub main_owned_provenance_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -417,6 +421,16 @@ pub fn validate_renderer_authority_context(
             .ok_or_else(|| anyhow::anyhow!("Interactive agent command requires provenance"))?;
         anyhow::ensure!(!provenance.request_id.trim().is_empty(), "provenance requestId is required");
         anyhow::ensure!(!provenance.trace_id.trim().is_empty(), "provenance traceId is required");
+        if let Some(execution_id) = provenance.execution_id.as_deref() {
+            anyhow::ensure!(!execution_id.trim().is_empty(), "provenance executionId must not be empty");
+        }
+        if let Some(main_owned_id) = provenance.main_owned_provenance_id.as_deref() {
+            anyhow::ensure!(!main_owned_id.trim().is_empty(), "provenance mainOwnedProvenanceId must not be empty");
+            anyhow::ensure!(
+                provenance.execution_id.is_some(),
+                "mainOwnedProvenanceId requires provenance executionId"
+            );
+        }
         anyhow::ensure!(
             provenance.request_id == context.request_id,
             "provenance requestId must match canonical requestId"
@@ -3540,6 +3554,22 @@ fn agent_codex_delete_internal(
                 &payload.project_id,
                 &payload.entry_id,
             )?;
+            if renderer_context.as_ref().is_some_and(|context| {
+                context.authority_route == "interactive-agent-command"
+            }) {
+                let authority_paths = all_authority_paths("codex_entry")
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>();
+                validate_and_record_agent_field_authority_for_entity(
+                    conn,
+                    &payload.project_id,
+                    "codex-entry",
+                    &payload.entry_id,
+                    &authority_paths,
+                    &change_occurred_at(timestamp)?,
+                )?;
+            }
             let before_json =
                 codex_delete_journal_snapshot(before_snapshot.clone(), cascade_snapshot.clone())
                     .to_string();
@@ -7999,6 +8029,23 @@ fn agent_event_delete_with_request_and_authority_impl(
                 .collect::<anyhow::Result<std::collections::BTreeMap<_, _>>>()?;
             let before = before_value.to_string();
 
+            if renderer_context.as_ref().is_some_and(|context| {
+                context.authority_route == "interactive-agent-command"
+            }) {
+                let authority_paths = EVENT_AUTHORITY_FIELDS
+                    .iter()
+                    .map(|path| (*path).to_string())
+                    .collect::<Vec<_>>();
+                validate_and_record_agent_field_authority_for_entity(
+                    conn,
+                    &payload.project_id,
+                    "event",
+                    &payload.event_id,
+                    &authority_paths,
+                    &now,
+                )?;
+            }
+
             let deleted = conn.execute(
                 "DELETE FROM events WHERE id = ?1 AND project_id = ?2 AND version = ?3",
                 rusqlite::params![payload.event_id, payload.project_id, base_version],
@@ -9140,6 +9187,33 @@ mod tests {
         )
     }
 
+    fn renderer_agent_context(request_id: &str, event_uid: &str) -> RendererCanonicalWriteContext {
+        RendererCanonicalWriteContext {
+            request_id: request_id.to_string(),
+            event_uid: event_uid.to_string(),
+            origin: NarrativeChangeOrigin::AiApply,
+            authority_route: "interactive-agent-command".to_string(),
+            caller: "chat-tool-executor".to_string(),
+            controls: renderer_authority_fields("interactive-agent-command", "chat-tool-executor").2,
+            provenance: Some(RendererMutationProvenance {
+                request_id: request_id.to_string(),
+                trace_id: format!("{request_id}:trace"),
+                chat_message_id: Some(format!("{request_id}:message")),
+                tool_call_id: Some(format!("{request_id}:tool")),
+                execution_id: Some(format!("{request_id}:execution")),
+                main_owned_provenance_id: Some(format!("{request_id}:main")),
+            }),
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            context_mode: None,
+            icon: None,
+            children_budget: None,
+            notes: None,
+            canonical_payload: None,
+        }
+    }
+
     #[test]
     fn renderer_authority_rejects_versioned_background_callers() {
         let context = RendererCanonicalWriteContext {
@@ -9154,6 +9228,8 @@ mod tests {
                 trace_id: "trace-1".to_string(),
                 chat_message_id: None,
                 tool_call_id: None,
+                execution_id: None,
+                main_owned_provenance_id: None,
             }),
             writes_authority_protected_field: false,
             original_transaction_id: None,
@@ -9245,6 +9321,98 @@ mod tests {
             Ok(())
         })
         .expect("field authority transaction");
+    }
+
+    #[test]
+    fn renderer_codex_delete_preflights_legacy_fields_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-delete-entry", "Legacy name", 0);
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'legacy-delete-entry'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        let error = renderer_codex_delete_impl(
+            &db,
+            AgentCodexDeletePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-delete-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-delete-entry".to_string(),
+                base_version: version,
+            },
+            renderer_agent_context("legacy-codex-delete", "legacy-codex-delete:event"),
+        )
+        .expect_err("legacy Codex fields without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "codex_entries"), 1);
+    }
+
+    #[test]
+    fn renderer_event_delete_preflights_legacy_fields_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "Legacy chronicle title", vec![], vec![]);
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM events WHERE id = ?1",
+                    rusqlite::params![event_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy event version");
+
+        let error = agent_event_delete_with_authority_impl(
+            &db,
+            AgentEventIdPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-event-delete-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: version,
+            },
+            renderer_agent_context("legacy-event-delete", "legacy-event-delete:event"),
+        )
+        .expect_err("legacy event fields without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "events"), 1);
+    }
+
+    #[test]
+    fn renderer_foreshadow_delete_preflights_legacy_title_before_domain_delete() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+
+        let request_id = "legacy-foreshadow-delete";
+        let event_uid = "legacy-foreshadow-delete:event";
+        let error = crate::foreshadow::delete_with_renderer_authority(
+            &db,
+            crate::foreshadow::ForeshadowDeletePayload {
+                id: foreshadow_id,
+                project_id: project_id.clone(),
+                base_version: 0,
+                context: crate::foreshadow::RendererWriteContext {
+                    request_id: request_id.to_string(),
+                    session_id: "legacy-foreshadow-delete-session".to_string(),
+                    event_uid: event_uid.to_string(),
+                    origin: NarrativeChangeOrigin::AiApply,
+                    original_transaction_id: None,
+                    undo_journal_id: None,
+                },
+            },
+            Some(renderer_agent_context(request_id, event_uid)),
+        )
+        .expect_err("legacy Foreshadow title without authority must deny AI delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(table_count(&db, "foreshadows"), 1);
     }
 
     #[test]

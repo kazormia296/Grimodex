@@ -4946,6 +4946,8 @@ mod tests {
                 trace_id: "trace-1".to_string(),
                 chat_message_id: None,
                 tool_call_id: None,
+                execution_id: None,
+                main_owned_provenance_id: None,
             }),
             writes_authority_protected_field: false,
             creates: vec![AiTreePlanCreateInput {

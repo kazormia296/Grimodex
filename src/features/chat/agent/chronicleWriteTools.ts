@@ -37,6 +37,8 @@ function agentWriteOptions(
           agentAuthorityCapability: authorization.capability,
           chatMessageId: authorization.chatMessageId,
           toolCallId: authorization.toolCallId,
+          executionId: authorization.executionId,
+          mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
         }
       : {}),
   };

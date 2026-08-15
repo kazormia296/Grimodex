@@ -23,7 +23,11 @@ export type AgentForeshadowLoadBearing = "critical" | "supporting" | "optional";
 
 export type AgentAuthorityWriteOptions = Pick<
   CanonicalWriteAuthorityOptions,
-  "agentAuthorityCapability" | "chatMessageId" | "toolCallId"
+  | "agentAuthorityCapability"
+  | "chatMessageId"
+  | "toolCallId"
+  | "executionId"
+  | "mainOwnedProvenanceId"
 >;
 
 export interface AgentForeshadowCreateInput {

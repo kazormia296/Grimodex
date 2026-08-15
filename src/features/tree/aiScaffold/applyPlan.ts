@@ -336,6 +336,10 @@ async function applyAiTreePlanWithAuthority(
               : {}),
             ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
             ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
+            ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
+            ...(ctx.mainOwnedProvenanceId
+              ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
+              : {}),
           },
     );
     Object.assign(payload, {
@@ -354,6 +358,12 @@ async function applyAiTreePlanWithAuthority(
         : {}),
       ...(authorityContext.toolCallId
         ? { toolCallId: authorityContext.toolCallId }
+        : {}),
+      ...(authorityContext.executionId
+        ? { executionId: authorityContext.executionId }
+        : {}),
+      ...(authorityContext.mainOwnedProvenanceId
+        ? { mainOwnedProvenanceId: authorityContext.mainOwnedProvenanceId }
         : {}),
       writesAuthorityProtectedField:
         authorityContext.writesAuthorityProtectedField,

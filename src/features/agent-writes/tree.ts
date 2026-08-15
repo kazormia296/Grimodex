@@ -19,6 +19,8 @@ export async function agentApplyTreePlan(
     agentAuthorityCapability?: string;
     chatMessageId?: string;
     toolCallId?: string;
+    executionId?: string;
+    mainOwnedProvenanceId?: string;
   } = {},
 ): Promise<ApplyResult> {
   if (blockIfPolicyOff("structureWrite")) {
@@ -61,6 +63,8 @@ export async function agentApplyTreePlan(
     agentAuthorityCapability: opts.agentAuthorityCapability,
     chatMessageId: opts.chatMessageId,
     toolCallId: opts.toolCallId,
+    executionId: opts.executionId,
+    mainOwnedProvenanceId: opts.mainOwnedProvenanceId,
     scope: {
       allowedOps: [...scope.allowedOps],
       rootRef: scope.rootRef,

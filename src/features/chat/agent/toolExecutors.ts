@@ -1390,6 +1390,8 @@ async function createCodexEntryTool(
             agentAuthorityCapability: authorization.capability,
             chatMessageId: authorization.chatMessageId,
             toolCallId: authorization.toolCallId,
+            executionId: authorization.executionId,
+            mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
           }
         : undefined,
     );
@@ -1454,6 +1456,8 @@ async function updateCodexEntryTool(
               agentAuthorityCapability: authorization.capability,
               chatMessageId: authorization.chatMessageId,
               toolCallId: authorization.toolCallId,
+              executionId: authorization.executionId,
+              mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
             }
           : undefined,
       },
@@ -1797,6 +1801,8 @@ async function createSnippetTool(
             agentAuthorityCapability: authorization.capability,
             chatMessageId: authorization.chatMessageId,
             toolCallId: authorization.toolCallId,
+            executionId: authorization.executionId,
+            mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
           }
         : undefined,
     );
@@ -1852,6 +1858,8 @@ async function applyAiTreePlanTool(
       agentAuthorityCapability: authorization?.capability,
       chatMessageId: authorization?.chatMessageId,
       toolCallId: authorization?.toolCallId,
+      executionId: authorization?.executionId,
+      mainOwnedProvenanceId: authorization?.mainOwnedProvenanceId,
     });
     const content = result;
     const json = JSON.stringify(content);
@@ -1903,6 +1911,8 @@ async function proposeSceneBodyTool(
       agentAuthorityCapability: authorization?.capability,
       chatMessageId: authorization?.chatMessageId,
       toolCallId: authorization?.toolCallId,
+      executionId: authorization?.executionId,
+      mainOwnedProvenanceId: authorization?.mainOwnedProvenanceId,
     });
     useProseStagingStore.getState().enqueue({
       stagingId: result.stagingId,
@@ -1969,6 +1979,8 @@ async function createForeshadowTool(
           agentAuthorityCapability: authorization.capability,
           chatMessageId: authorization.chatMessageId,
           toolCallId: authorization.toolCallId,
+          executionId: authorization.executionId,
+          mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
         })
       : await agentCreateForeshadow(input);
     const content = { id: item.id, title: item.title, secret: item.secret };
@@ -2054,6 +2066,8 @@ async function updateForeshadowTool(
           agentAuthorityCapability: authorization.capability,
           chatMessageId: authorization.chatMessageId,
           toolCallId: authorization.toolCallId,
+          executionId: authorization.executionId,
+          mainOwnedProvenanceId: authorization.mainOwnedProvenanceId,
         })
       : await agentUpdateForeshadow(input);
     const content = {
