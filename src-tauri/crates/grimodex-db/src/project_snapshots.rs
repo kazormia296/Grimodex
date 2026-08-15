@@ -3231,24 +3231,25 @@ mod tests {
             assert_eq!(days_per_year, 400);
             assert_eq!(version, 9);
             assert_ne!(updated_at, "2000-01-01T00:00:00.000Z");
-            let recorded: (String, String, Option<i64>, Option<i64>, String, String) = conn.query_row(
-                "SELECT object_key_json, mutation_kind, before_version,
+            let recorded: (String, String, Option<i64>, Option<i64>, String, String) = conn
+                .query_row(
+                    "SELECT object_key_json, mutation_kind, before_version,
                         after_version, before_digest, after_digest
                    FROM narrative_change_events
                   WHERE project_id = 'p1'
                     AND object_key_json LIKE '%\"kind\":\"project\"%'",
-                [],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )?;
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )?;
             assert_eq!(
                 serde_json::from_str::<Value>(&recorded.0)?,
                 json!({ "kind": "project", "projectId": "p1" })

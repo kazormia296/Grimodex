@@ -493,10 +493,7 @@ pub(crate) fn validate_agent_chronicle_renderer_context(
     request_id: &str,
     context: &RendererCanonicalWriteContext,
 ) -> anyhow::Result<()> {
-    validate_renderer_authority_context_for_routes(
-        context,
-        &["interactive-agent-command"],
-    )?;
+    validate_renderer_authority_context_for_routes(context, &["interactive-agent-command"])?;
     anyhow::ensure!(
         context.request_id == request_id,
         "agent Chronicle requestId does not match canonical authority context"
@@ -11300,10 +11297,8 @@ mod tests {
             trace_id: None,
             authorship_spans: vec![],
         };
-        let mut context = renderer_agent_context(
-            "renderer-create-request",
-            "renderer-create-event",
-        );
+        let mut context =
+            renderer_agent_context("renderer-create-request", "renderer-create-event");
         context.context_mode = Some("always".to_string());
         context.icon = Some("star".to_string());
         context.children_budget = Some("standard".to_string());
@@ -11386,10 +11381,8 @@ mod tests {
                 base_version: 1,
             },
             {
-                let mut context = renderer_agent_context(
-                    "cascade-delete-request",
-                    "cascade-delete-event",
-                );
+                let mut context =
+                    renderer_agent_context("cascade-delete-request", "cascade-delete-event");
                 context.canonical_payload = Some(json!({ "name": "Root", "type": "character" }));
                 context
             },
@@ -13874,17 +13867,17 @@ mod tests {
         let mut update = empty_update(&project_id, &event_id);
         update.surface = Some("mcp".to_string());
 
-        let error = agent_event_update_with_request_impl(
-            &db,
-            update,
-            Some("mcp-empty-event-update"),
-        )
-        .expect_err("MCP empty event updates must not create an ownership claim");
+        let error =
+            agent_event_update_with_request_impl(&db, update, Some("mcp-empty-event-update"))
+                .expect_err("MCP empty event updates must not create an ownership claim");
         assert!(error
             .to_string()
             .contains("MCP event update must change at least one field"));
         assert_eq!(event_version(&db, &event_id), 1);
-        assert_eq!(event_title(&db, &event_id).as_deref(), Some("Legacy MCP event"));
+        assert_eq!(
+            event_title(&db, &event_id).as_deref(),
+            Some("Legacy MCP event")
+        );
         assert_eq!(table_count(&db, "narrative_field_authority"), 0);
     }
 

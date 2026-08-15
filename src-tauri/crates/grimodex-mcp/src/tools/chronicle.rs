@@ -1688,7 +1688,10 @@ mod tests {
         .expect_err("empty MCP event updates must be rejected");
 
         assert_eq!(error.message, "internal error");
-        assert_eq!(scalar(&server, "SELECT version FROM events WHERE id = ?1", "e1"), 0);
+        assert_eq!(
+            scalar(&server, "SELECT version FROM events WHERE id = ?1", "e1"),
+            0
+        );
         assert_eq!(
             scalar(
                 &server,

@@ -9,11 +9,11 @@ use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::change_events::AppendChangeEvent;
 use crate::agent_writes::{
     canonical_payload_with_authority_context, validate_renderer_authority_context,
     RendererCanonicalWriteContext, RendererMutationProvenance,
 };
+use crate::change_events::AppendChangeEvent;
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
     IdempotencyRequest,

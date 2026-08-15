@@ -297,7 +297,12 @@ pub(crate) fn previous_event_after_state(
            FROM narrative_change_object_heads
           WHERE project_id = ?1 AND object_identity = ?2",
         params![project_id, identity],
-        |row| Ok((row.get::<_, Option<i64>>(0)?, row.get::<_, Option<String>>(1)?)),
+        |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        },
     )
     .optional()
     .map_err(Into::into)
@@ -499,10 +504,7 @@ fn ensure_event_history_continuity(
         // explicit trigger for C2's full rebuild and intentionally does not
         // need to chain from the immediately preceding project marker: a
         // normal domain write may have occurred between two restores.
-        let is_epoch_reset = event
-            .object_key
-            .get("kind")
-            .and_then(Value::as_str)
+        let is_epoch_reset = event.object_key.get("kind").and_then(Value::as_str)
             == Some("project")
             && event
                 .structural_impact
@@ -510,9 +512,7 @@ fn ensure_event_history_continuity(
                 .and_then(Value::as_object)
                 .and_then(|impact| impact.get("event"))
                 .and_then(Value::as_str)
-                .is_some_and(|event| {
-                    matches!(event, "project-restored" | "semantic-epoch-reset")
-                });
+                .is_some_and(|event| matches!(event, "project-restored" | "semantic-epoch-reset"));
         if !is_epoch_reset {
             if let Some(prior_after) = prior_after {
                 let current_before = (event.before_version, event.before_digest.clone());
@@ -580,10 +580,7 @@ fn normalize_structural_impact(value: &mut Value) -> anyhow::Result<()> {
             "structuralImpact.event is unsupported"
         );
         anyhow::ensure!(
-            object
-                .get("requiresFullRebuild")
-                .and_then(Value::as_bool)
-                == Some(true),
+            object.get("requiresFullRebuild").and_then(Value::as_bool) == Some(true),
             "structuralImpact epoch markers require requiresFullRebuild=true"
         );
     }
@@ -2543,10 +2540,7 @@ mod tests {
             CANONICAL_TEXT_NORMALIZER_VERSION
         );
         assert_eq!(forward["mapping"]["kind"], "whole-document");
-        assert_ne!(
-            forward["oldCanonicalDigest"],
-            forward["newCanonicalDigest"]
-        );
+        assert_ne!(forward["oldCanonicalDigest"], forward["newCanonicalDigest"]);
 
         let undo = scene_text_impact(Some(&after), Some(&before))
             .expect("build undo impact")

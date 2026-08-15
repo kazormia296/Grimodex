@@ -213,7 +213,10 @@ fn object_head_lookup_is_index_backed_after_a_large_head_fixture() {
                       AND object_identity = ?2",
             )?
             .query_map(
-                [PROJECT_ONE, "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}"],
+                [
+                    PROJECT_ONE,
+                    "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}",
+                ],
                 |row| row.get::<_, String>(3),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
