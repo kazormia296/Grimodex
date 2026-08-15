@@ -6,6 +6,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::dependency_edges::{
+    record_dependency_edge_in_tx, source_object_identity_for, RUN_CONSUMER_KIND,
+};
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -760,6 +763,16 @@ fn insert_proposal_seed(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
+    record_run_dependency_edges_in_tx(
+        conn,
+        project_id,
+        run_id,
+        validated_envelope
+            .as_ref()
+            .map(|envelope| envelope.source_basis.as_slice())
+            .unwrap_or(&[]),
+        &created_at,
+    )?;
 
     Ok(json!({
         "proposalId": proposal_id,
@@ -789,6 +802,46 @@ fn insert_source_basis_rows(
                 row.revision_token,
                 row.observed_at,
             ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Producer-time Dependency Edge declaration (ADR 005 Amendment /
+/// `dependency_edges.rs`, C2-T1): for every `SourceBasisRow` a Proposal's
+/// validated Reconciliation Envelope carries, declares that this Proposal's
+/// owning Run read that Source. Consumer identity is always
+/// `(RUN_CONSUMER_KIND, run_id)`, never the individual Proposal -- Edges
+/// accumulate across every Proposal/Revision the Run produces (an upsert
+/// per Source, see `record_dependency_edge_in_tx`'s own doc comment), so
+/// this never deletes a Run's existing Edges; it only adds/refreshes the
+/// ones this Proposal's current envelope declares. `rows` empty (a
+/// legacy-unbound Proposal/Revision with no envelope) is a no-op.
+///
+/// `read_set_json` per Edge is a one-element JSON array holding the
+/// `SourceBasisRow`'s own `revision_token` -- the Reconciliation Envelope
+/// has no field-path-level read-set below the whole-Source granularity
+/// `sourceBasis` already validates, so this is the most specific true claim
+/// available rather than a fabricated field list.
+fn record_run_dependency_edges_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    rows: &[SourceBasisRow],
+    created_at: &str,
+) -> anyhow::Result<()> {
+    for row in rows {
+        let source_object_identity = source_object_identity_for(&row.source_kind, &row.source_key)?;
+        let read_set_json = serde_json::to_string(&[row.revision_token.as_str()])?;
+        record_dependency_edge_in_tx(
+            conn,
+            project_id,
+            RUN_CONSUMER_KIND,
+            run_id,
+            &source_object_identity,
+            &read_set_json,
+            None,
+            created_at,
         )?;
     }
     Ok(())
@@ -945,6 +998,16 @@ fn append_revision_on_conn(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
+    record_run_dependency_edges_in_tx(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        validated_envelope
+            .as_ref()
+            .map(|envelope| envelope.source_basis.as_slice())
+            .unwrap_or(&[]),
+        &created_at,
+    )?;
 
     let updated = conn.execute(
         "UPDATE narrative_proposals
@@ -1627,6 +1690,28 @@ mod unit_tests {
         db
     }
 
+    /// `ensure_test_schema` above is a hand-rolled, deliberately narrow
+    /// schema subset for fast isolated tests -- it has no `tree_nodes` and
+    /// no Gate C2 tables (`narrative_dependency_edges`, ...). Tests that
+    /// exercise a real Reconciliation Envelope's `sourceBasis` (which
+    /// re-resolves Source revisions against real domain tables, e.g.
+    /// `scene-body` against `tree_nodes`) or Dependency Edge recording need
+    /// the full real migration instead, matching every `tests/*.rs`
+    /// integration test's own `migrated_db()` helper.
+    fn full_migrated_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project");
+        db
+    }
+
     #[test]
     fn create_and_get_run_round_trip() {
         let db = test_db();
@@ -1660,5 +1745,180 @@ mod unit_tests {
         assert_eq!(loaded["run"]["status"], "running");
         assert_eq!(loaded["tasks"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(loaded["taskCounts"]["queued"], 1);
+    }
+
+    /// Inserts a minimal `tree_nodes` scene row so `scene_body_envelope`
+    /// below can build an envelope whose `sourceBasis`/`readSet`
+    /// `revisionToken` actually matches what
+    /// `source_revision::resolve_source_revision`'s `scene-body` resolver
+    /// (`format!("v{version}@{updated_at}")`) will independently compute --
+    /// `validate_envelope_source_tokens` re-resolves and compares against
+    /// this live row, so a fabricated token would fail closed.
+    fn seed_scene(db: &Database, scene_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, version)
+                 VALUES (?1, 'project-1', 'scene', 'Scene', 0)",
+                params![scene_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed scene");
+    }
+
+    fn scene_body_envelope(db: &Database, run_id: &str, task_id: &str, scene_id: &str) -> Value {
+        use super::super::commit::digest_plan;
+        let (version, updated_at): (i64, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT version, updated_at FROM tree_nodes
+                      WHERE id = ?1 AND project_id = 'project-1'",
+                    params![scene_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("scene source revision");
+        let source_key = format!("project:scene:{scene_id}");
+        let revision_token = format!("v{version}@{updated_at}");
+        let read_set = json!([{
+            "kind": "snapshot-document",
+            "inputRef": source_key.clone(),
+            "sourceKind": "scene-body",
+            "revisionToken": revision_token.clone()
+        }]);
+        json!({
+            "changeKind": "revise",
+            "readSetDigest": format!("sha256:{}", digest_plan(&read_set)),
+            "readSet": read_set,
+            "evidenceSet": [],
+            "sourceBasis": [{
+                "revisionToken": revision_token,
+                "sourceKey": source_key,
+                "sourceKind": "scene-body"
+            }],
+            "proposalSchemaVersion": "1",
+            "proposalSchemaId": "chronicle.event",
+            "reconcilerVersion": "1.0.0",
+            "reconcilerId": "test.reconciler",
+            "taskId": task_id,
+            "runId": run_id,
+            "schemaVersion": 1
+        })
+    }
+
+    #[test]
+    fn saving_proposals_declares_dependency_edges_under_the_owning_run() {
+        use super::super::dependency_edges::find_edges_by_consumer;
+
+        let db = full_migrated_db();
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("run-1".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({ "domain": "chronicle" }),
+                spec_digest: "digest-1".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![CreateTaskSeed {
+                    task_id: Some("task-1".to_string()),
+                    task_kind: "plan_windows".to_string(),
+                    input_json: None,
+                    priority: None,
+                }],
+            },
+        )
+        .expect("create run");
+        seed_scene(&db, "scene-1");
+        seed_scene(&db, "scene-2");
+
+        // Two sibling Proposals in one Proposal Set, each reading a
+        // different Source.
+        let envelope_1 = scene_body_envelope(&db, "run-1", "task-1", "scene-1");
+        let envelope_2 = scene_body_envelope(&db, "run-1", "task-1", "scene-2");
+        save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: "run-1".to_string(),
+                project_id: "project-1".to_string(),
+                proposal_set_id: Some("set-1".to_string()),
+                set_kind: "chronicle.extract.review@1".to_string(),
+                summary_json: None,
+                proposals: vec![
+                    ProposalSeed {
+                        proposal_id: Some("proposal-1".to_string()),
+                        proposal_key: "key-1".to_string(),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": "A" }),
+                        reconciliation_envelope: Some(envelope_1),
+                    },
+                    ProposalSeed {
+                        proposal_id: Some("proposal-2".to_string()),
+                        proposal_key: "key-2".to_string(),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": "B" }),
+                        reconciliation_envelope: Some(envelope_2),
+                    },
+                ],
+            },
+        )
+        .expect("save proposal set");
+
+        let edges = db
+            .with_conn(|conn| {
+                find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
+            })
+            .expect("find edges by consumer");
+        assert_eq!(
+            edges.len(),
+            2,
+            "sibling Proposals' Edges must both survive under the same Run consumer"
+        );
+        let identities: Vec<&str> = edges
+            .iter()
+            .map(|edge| edge.source_object_identity.as_str())
+            .collect();
+        assert!(identities.contains(&"project:scene:scene-1"));
+        assert!(identities.contains(&"project:scene:scene-2"));
+        assert!(edges
+            .iter()
+            .all(|edge| edge.read_set_json.starts_with(r#"["v0@"#)));
+
+        // A legacy-unbound Proposal (no envelope) in the same Run must not
+        // fail or declare any Edge.
+        save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: "run-1".to_string(),
+                project_id: "project-1".to_string(),
+                proposal_set_id: Some("set-2".to_string()),
+                set_kind: "chronicle.extract.review@1".to_string(),
+                summary_json: None,
+                proposals: vec![ProposalSeed {
+                    proposal_id: Some("proposal-3".to_string()),
+                    proposal_key: "key-3".to_string(),
+                    kind: "chronicle.event.create@1".to_string(),
+                    payload_json: json!({ "title": "C" }),
+                    reconciliation_envelope: None,
+                }],
+            },
+        )
+        .expect("save legacy-unbound proposal set");
+
+        let edges_after = db
+            .with_conn(|conn| {
+                find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
+            })
+            .expect("find edges by consumer after legacy-unbound proposal");
+        assert_eq!(
+            edges_after.len(),
+            2,
+            "a legacy-unbound Proposal must not add or remove the Run's existing Edges"
+        );
     }
 }

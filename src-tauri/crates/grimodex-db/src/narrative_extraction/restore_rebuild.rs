@@ -9,7 +9,7 @@
 
 use rusqlite::{params_from_iter, Connection};
 
-use super::dependency_edges::{find_edges_by_consumer, DependencyEdge};
+use super::dependency_edges::{find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND};
 use super::semantic_epoch::create_epoch_in_tx;
 use super::source_revision::resolve_current_source_state;
 
@@ -68,19 +68,13 @@ pub(crate) fn rotate_epoch_for_restore_in_tx(
 // 2. Rebuild verify diagnostics (read-only)
 // ---------------------------------------------------------------------
 
-/// The Dependency Edge Consumer identity a full Rebuild Run's own declared
-/// Edges are stored under: `consumer_kind = RUN_CONSUMER_KIND`,
-/// `consumer_key = run_id`. Lane G's `narrative_dependency_edges` table has
-/// no separate `run_id` column -- only `(consumer_kind, consumer_key)`
-/// identify a Consumer -- so a Run-scoped diagnostic needs a fixed
-/// `consumer_kind` convention to look its own Edges up through
-/// `find_edges_by_consumer` the same way any other Consumer would. Wiring an
-/// actual Producer to declare Edges under this identity is out of scope for
-/// this Lane (no IPC/N-API entrypoint exists yet, same status as every other
-/// Gate C2 Wave 2 Lane); this constant only fixes the lookup key so
-/// `rebuild_verify_dependency_edges` has a stable convention to query.
-const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
-
+/// This diagnostic looks a Run's own declared Edges up through
+/// `find_edges_by_consumer(project_id, RUN_CONSUMER_KIND, run_id)` --
+/// [`RUN_CONSUMER_KIND`] and the `consumer_key = run_id` convention live in
+/// `dependency_edges.rs`, which also owns the Producer side that now
+/// declares Edges under this identity (`repository.rs`'s
+/// `insert_proposal_seed`/`append_revision_on_conn`, wired in C2-T1).
+///
 /// Read-only diagnostic report: how many of a Run's declared Dependency
 /// Edges point at a Source that no longer resolves. Never written to a
 /// table -- callers that want this persisted (e.g. as a Finding Observation,

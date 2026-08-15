@@ -22,8 +22,61 @@
 //! Producer-time commit path) is expected to invoke them inside its own
 //! `BEGIN IMMEDIATE` / commit block. Wiring those call sites is out of scope
 //! for this Lane; see Gate C2-T1.
+//!
+//! C2-T1 wires the Producer side in: `repository.rs`'s `insert_proposal_seed`
+//! and `append_revision_on_conn` call [`record_dependency_edge_in_tx`] for
+//! every `SourceBasisRow` a Proposal's Reconciliation Envelope carries,
+//! keyed under [`RUN_CONSUMER_KIND`]/the owning Run's id -- the same
+//! Consumer identity `restore_rebuild.rs`'s Lane N diagnostics already
+//! queried by convention before any Producer declared Edges under it.
+//! Edges accumulate per Run across every Proposal/Revision it produces
+//! (an upsert per Source, never a delete-then-redeclare at this
+//! granularity): deleting a Run's whole Edge set on one Proposal's revision
+//! would erase sibling Proposals' Edges from the same Run. When a Run's
+//! Edge set as a whole should be cleared (a full re-run/redo) is a
+//! separate, not-yet-wired question left to Run/Task/Attempt lifecycle
+//! code (Lane B, `execution_state.rs`).
 
 use rusqlite::{params, Connection, Row};
+
+/// The Dependency Edge Consumer identity a Run's own declared Edges are
+/// stored under: `consumer_kind = RUN_CONSUMER_KIND`, `consumer_key =
+/// run_id`. `narrative_dependency_edges` has no separate `run_id` column --
+/// only `(consumer_kind, consumer_key)` identify a Consumer -- so every
+/// Run-scoped caller (Producer-time recording in `repository.rs`,
+/// Rebuild-time lookup in `restore_rebuild.rs`) shares this one constant
+/// rather than each fixing its own literal.
+pub(crate) const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
+
+/// Builds a `source_object_identity` string from a Source's `(kind, key)`
+/// pair. The prefixes are the same ones `restore_rebuild.rs`'s
+/// `infer_source_kind` recognizes in reverse (`project:scene:` for
+/// `scene-body`, `snapshot:` for `snapshot-document`, ...) and the same
+/// `sourceKind` vocabulary `reconciliation_envelope.rs`'s
+/// `read_set_kind_for_source_kind`/`source_kind_for_read_set` validate
+/// against. Kept here because this module owns the `source_object_identity`
+/// string format; `restore_rebuild.rs` re-derives the reverse mapping
+/// independently rather than importing this function (see that module's own
+/// doc comment on why it duplicates rather than imports from a read-only
+/// Lane).
+pub(crate) fn source_object_identity_for(
+    source_kind: &str,
+    source_key: &str,
+) -> anyhow::Result<String> {
+    let prefix = match source_kind {
+        "scene-body" => "project:scene:",
+        "snapshot-document" => "snapshot:",
+        "codex-catalog" => "project:codex-catalog:",
+        "domain-projection" => "projection:",
+        "narrative-artifact" => "artifact:",
+        "import-capture" => "capture:",
+        "evidence-anchor" => "evidence:",
+        other => {
+            anyhow::bail!("NEX_DEPENDENCY_SOURCE_KIND_INVALID: unsupported source kind '{other}'")
+        }
+    };
+    Ok(format!("{prefix}{source_key}"))
+}
 
 /// One row of `narrative_dependency_edges`: a declaration that Consumer
 /// `(consumer_kind, consumer_key)` read Source `source_object_identity` when
@@ -419,5 +472,47 @@ mod tests {
             Ok(())
         })
         .expect("delete edges for consumer");
+    }
+
+    #[test]
+    fn source_object_identity_for_covers_every_recognized_source_kind() {
+        assert_eq!(
+            source_object_identity_for("scene-body", "scene-1").unwrap(),
+            "project:scene:scene-1"
+        );
+        assert_eq!(
+            source_object_identity_for("snapshot-document", "snap-1").unwrap(),
+            "snapshot:snap-1"
+        );
+        assert_eq!(
+            source_object_identity_for("codex-catalog", "entry-1").unwrap(),
+            "project:codex-catalog:entry-1"
+        );
+        assert_eq!(
+            source_object_identity_for("domain-projection", "proj-1").unwrap(),
+            "projection:proj-1"
+        );
+        assert_eq!(
+            source_object_identity_for("narrative-artifact", "art-1").unwrap(),
+            "artifact:art-1"
+        );
+        assert_eq!(
+            source_object_identity_for("import-capture", "cap-1").unwrap(),
+            "capture:cap-1"
+        );
+        assert_eq!(
+            source_object_identity_for("evidence-anchor", "ev-1").unwrap(),
+            "evidence:ev-1"
+        );
+    }
+
+    #[test]
+    fn source_object_identity_for_rejects_an_unrecognized_source_kind() {
+        let result = source_object_identity_for("unknown-kind", "key-1");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("NEX_DEPENDENCY_SOURCE_KIND_INVALID"));
     }
 }

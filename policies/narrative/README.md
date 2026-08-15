@@ -218,19 +218,24 @@ their own module doc comments, as internal helpers meant to be called from
 - `evaluator.rs` (Lane F): pure, I/O-free computation (its own doc
   comment says so) — a library called by `publish_runtime.rs`, never an
   IPC entrypoint itself.
-- `dependency_edges.rs` (Lane G) and `application_contributions.rs`
-  (Lane H): both doc comments say, verbatim, that wiring their call sites
-  into "an existing Producer-time commit path" — `commit.rs`'s
-  `narrative_extraction_apply_commit` — "is out of scope for this Lane;
-  see Gate C2-T1." `commit.rs` is a 2200+ line, already-shipped, live
-  commit engine dispatching ~15 operation kinds (chronicle, codex, detail,
-  foreshadow, phase, plot-thread, semantic-binding, temporal ×4); it
-  already tracks Source-side read-set/source-basis data per operation via
-  `reconciliation_envelope.rs`. Wiring dependency-edge recording in
-  correctly means mapping that existing Source-basis tracking onto
-  `dependency_edges.rs`'s Consumer/Source edge model for every operation
-  kind, inside the same commit transaction, without duplicating or
-  conflicting with what `reconciliation_envelope.rs` already does.
+- `dependency_edges.rs` (Lane G): **wired (C2-T1, see below)** — its
+  "Producer-time commit path" turned out, on closer reading, to mean
+  Proposal/Revision *generation* (`repository.rs`), not `commit.rs`'s
+  *apply*, and needed no change to `commit.rs` at all.
+- `application_contributions.rs` (Lane H): still open. Its own doc comment
+  says call-site wiring into `commit.rs`'s apply path "lands in C2-T1."
+  Unlike Lane G, this genuinely is an apply-time concern — "which
+  Application most recently touched which field" can only be known once a
+  Proposal Revision is actually applied — so it needs a call from inside
+  `commit.rs`'s `narrative_extraction_apply_commit`, which dispatches ~15
+  operation kinds (chronicle, codex, detail, foreshadow, phase,
+  plot-thread, semantic-binding, temporal ×4) across a 2200+ line,
+  already-shipped, live commit engine. This is materially higher-risk than
+  everything landed so far: a mistake risks regressing already-shipped
+  commit paths for every operation kind, not just leaving new code
+  unreachable, and — like everything else in this section — cannot be
+  `cargo check`ed in this environment. Not yet attempted, pending an
+  explicit decision on how to proceed given that risk.
 - `cursor_reservation.rs` (Lane I) and `publish_runtime.rs` (Lane J):
   internal bookkeeping for the Run execution pipeline and the (not yet
   built) Change Feed → Reverse Lookup → evaluator → publish background
@@ -251,14 +256,53 @@ No frontend UI exists yet for any of this beyond a Gate C0 placeholder
 (`src/features/narrative-extraction/.../StructureHealthPanel.tsx`,
 `liveCountsAvailable: false`, no IPC calls).
 
-The `dependency_edges.rs`/`application_contributions.rs` → `commit.rs`
-wiring in particular is materially higher-risk than everything landed so
-far: it modifies a live, load-bearing commit engine used by every existing
-narrative extraction operation kind, not additive/isolated new code, and —
-like everything else in this section — cannot be `cargo check`ed in this
-environment. A mistake there risks regressing already-shipped commit
-paths, not just leaving new code unreachable. This has not been attempted
-yet pending an explicit decision on how to proceed given that risk.
+**Lane G (`dependency_edges.rs`) Producer-time wiring landed in C2-T1.**
+`repository.rs`'s `insert_proposal_seed` (first revision) and
+`append_revision_on_conn` (subsequent revisions) now call a new
+`record_run_dependency_edges_in_tx` helper for every `SourceBasisRow` a
+Proposal's validated Reconciliation Envelope carries. Two things only
+became clear by reading `restore_rebuild.rs` (Lane N) closely: Edges are
+declared under Consumer identity `(RUN_CONSUMER_KIND =
+"narrative-extraction-run", run_id)` — the *Run*, never the individual
+Proposal — because Lane N's Rebuild-verify diagnostic already queried Edges
+by that exact convention before any Producer declared them; and
+`source_object_identity` uses fixed prefixes (`project:scene:`,
+`snapshot:`, `project:codex-catalog:`, `projection:`, `artifact:`,
+`capture:`, `evidence:`) that `restore_rebuild.rs`'s `infer_source_kind`
+already reads in reverse, so a new `dependency_edges::source_object_identity_for`
+builds the same strings forward from a `SourceBasisRow`'s `(sourceKind,
+sourceKey)`, cross-checked against `reconciliation_envelope.rs`'s own
+`sourceKind` vocabulary. `RUN_CONSUMER_KIND` moved from a private const in
+`restore_rebuild.rs` into `dependency_edges.rs` (which owns the Consumer/
+Source model) so both the Producer and the Rebuild-time reader share one
+definition. Edges accumulate per Run across every Proposal/Revision it
+produces — an upsert per Source, never a delete-then-redeclare at Proposal
+granularity, since that would erase sibling Proposals' Edges from the same
+Run; when a Run's whole Edge set should be cleared (a full re-run/redo) is
+a separate, still-open question left to Run/Task/Attempt lifecycle code
+(Lane B). `commit.rs` needed no changes at all for this piece — the
+"Producer-time commit path" its own doc comment referred to turned out to
+mean Proposal/Revision generation, not commit *apply*.
+
+Verified via `rustfmt --edition 2021 --check`, a brace/paren balance check,
+a Python `sqlite3` replay of the exact `narrative_dependency_edges` upsert
+SQL confirming two sibling Proposals' Edges survive independently and a
+re-declared Source upserts in place, and a new
+`repository.rs::unit_tests::saving_proposals_declares_dependency_edges_under_the_owning_run`
+test (using the real migrated schema, not the lightweight
+`ensure_test_schema` fixture, since it needs `tree_nodes` and the Gate C2
+tables) that saves two Proposals against real `tree_nodes` scene rows and
+asserts both Edges land under the Run, then that a legacy-unbound Proposal
+in the same Run neither adds nor removes them. As with everything else on
+this branch, this has not been through `cargo check`/`cargo test`.
+
+**`application_contributions.rs` (Lane H) → `commit.rs` remains the one
+piece of Wave 1/2 transport still not attempted.** Unlike Lane G, it is a
+genuine apply-time concern that needs a call from inside
+`narrative_extraction_apply_commit`'s ~15-operation-kind dispatch — see the
+bullet list above for the full risk assessment. This has not been
+attempted yet, pending an explicit decision on how to proceed given that
+risk.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
