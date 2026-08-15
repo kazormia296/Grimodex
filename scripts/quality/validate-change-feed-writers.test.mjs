@@ -50,7 +50,7 @@ function fixtureOperation(overrides = {}) {
   };
 }
 
-function writeFixture(operations) {
+function writeFixture(operations, { operationFragments, fragmentFiles } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "change-feed-writers-"));
   const policyDir = path.join(root, "policies/narrative");
   const rustDir = path.join(root, "src-tauri/crates/fixture/src");
@@ -75,6 +75,7 @@ function writeFixture(operations) {
     JSON.stringify({
       schemaVersion: 1,
       gateId: "gate-c1",
+      ...(operationFragments ? { operationFragments } : {}),
       writerMatrix: [
         {
           writer: "fixture.writer",
@@ -91,6 +92,13 @@ function writeFixture(operations) {
       operations,
     }),
   );
+  if (fragmentFiles) {
+    const fragmentDir = path.join(policyDir, "change-feed-operations");
+    mkdirSync(fragmentDir, { recursive: true });
+    for (const [name, content] of Object.entries(fragmentFiles)) {
+      writeFileSync(path.join(fragmentDir, name), JSON.stringify(content));
+    }
+  }
   writeFileSync(
     path.join(rustDir, "writer.rs"),
     "pub fn fixture_writer() {}\npub async fn fixture_write() {}\n",
@@ -423,6 +431,155 @@ describe("validate-change-feed-writers", () => {
     assert.ok(
       result.errors.some((error) =>
         error.includes("known route mcp-tool:missing_mcp_write is not covered"),
+      ),
+    );
+  });
+
+  it("merges a verified, non-backflow-invariant operation fragment into the manifest", () => {
+    const root = writeFixture([fixtureOperation()], {
+      operationFragments: [
+        "policies/narrative/change-feed-operations/*.json",
+      ],
+      fragmentFiles: {
+        "c2-attention.json": {
+          schemaVersion: 1,
+          owner: "lane-d-attention",
+          operations: [
+            {
+              id: "fixture.fragment-excluded",
+              feedPolicy: "excluded",
+              exclusionReason: "non-backflow-invariant",
+              coverageStatus: "verified",
+              reason:
+                "Attention rows are user bookkeeping and must never backflow into the Change Feed.",
+              implementation: {
+                module: "src-tauri/crates/fixture/src/writer.rs",
+                symbol: "fixture_writer",
+              },
+              routes: [],
+              writerIds: [],
+              scope: "project",
+              requiredIdentities: [],
+              canonical: null,
+              runtimeEvidence: {
+                schemaVersion: 1,
+                status: "excluded",
+                reason: "non-backflow-invariant",
+              },
+            },
+          ],
+        },
+      },
+    });
+    const result = validateFixture(root);
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.operationCount, 2);
+    assert.equal(result.policyCounts.excluded, 1);
+  });
+
+  it("rejects a fragment operation that is not coverageStatus verified", () => {
+    const root = writeFixture([fixtureOperation()], {
+      operationFragments: [
+        "policies/narrative/change-feed-operations/*.json",
+      ],
+      fragmentFiles: {
+        "c2-attention.json": {
+          schemaVersion: 1,
+          owner: "lane-d-attention",
+          operations: [
+            {
+              id: "fixture.fragment-declared",
+              feedPolicy: "excluded",
+              exclusionReason: "non-backflow-invariant",
+              coverageStatus: "declared",
+              reason: "Not yet implemented.",
+              implementation: {
+                module: "src-tauri/crates/fixture/src/writer.rs",
+                symbol: "fixture_writer",
+              },
+              routes: [],
+              writerIds: [],
+              scope: "project",
+              requiredIdentities: [],
+              canonical: null,
+            },
+          ],
+        },
+      },
+    });
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "fixture.fragment-declared must have coverageStatus verified",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a fragment file with the wrong schemaVersion", () => {
+    const root = writeFixture([fixtureOperation()], {
+      operationFragments: [
+        "policies/narrative/change-feed-operations/*.json",
+      ],
+      fragmentFiles: {
+        "c2-attention.json": {
+          schemaVersion: 2,
+          owner: "lane-d-attention",
+          operations: [],
+        },
+      },
+    });
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) => error.includes("schemaVersion must be 1")),
+    );
+  });
+
+  it("rejects a duplicate operation id between the root manifest and a fragment", () => {
+    const root = writeFixture([fixtureOperation()], {
+      operationFragments: [
+        "policies/narrative/change-feed-operations/*.json",
+      ],
+      fragmentFiles: {
+        "c2-attention.json": {
+          schemaVersion: 1,
+          owner: "lane-d-attention",
+          operations: [
+            fixtureOperation({
+              routes: [
+                {
+                  surface: "electron-ipc",
+                  name: "fixture_write_2",
+                  module: "electron/shared/fixture.ts",
+                },
+                {
+                  surface: "napi",
+                  name: "fixture_write_2",
+                  module: "src-tauri/crates/fixture/src/writer.rs",
+                },
+              ],
+            }),
+          ],
+        },
+      },
+    });
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("duplicate operation id fixture.write"),
+      ),
+    );
+  });
+
+  it("rejects an operationFragments pattern that does not end in /*.json", () => {
+    const root = writeFixture([fixtureOperation()], {
+      operationFragments: ["policies/narrative/change-feed-operations"],
+    });
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("must end with '/*.json'"),
       ),
     );
   });

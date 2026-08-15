@@ -119,3 +119,67 @@ vocabulary, and a second Freshness authority. C1.5 keeps workspace SCHEMA 22
 and does not create C2 tables. `ai-apply` must carry an explicit authority
 route because it is valid for both Interactive Agent Command and Interpreter
 Projection; no origin-only fallback is permitted.
+
+## Gate C2 — IN PROGRESS
+
+Gate C2 begins from ADR 005's existing "Authority matrix and C2 start
+condition" checklist (Mutation Route / Source Event Contract / Object
+Addressing / State Vocabulary / Authority Matrix / Disclosure Policy /
+Evidence-Scope, all fixed at C1.5) and implements only Dependency Edge, Edge
+State, Consumer Freshness, Application Contribution, Reverse Lookup,
+Incremental Evaluator, Cursor, and Backfill persistence/runtime, per that
+ADR. There is no separate `docs/certification/gate-c2/` directory or base-SHA
+file; the C2 branch base is simply `master` at branch creation, and this
+section is the running status record, alongside PR history and this ADR.
+
+```text
+Gate C2 — IN PROGRESS
+  Contract / Registry / Ledger Spine (C2-00): complete
+  Schema / Transport Extension Spine (C2-01): pending
+  Wave 1 foundation lanes:                    pending
+  Wave 1 Transport Assembly (C2-T1):          pending
+  Wave 2 runtime / read-model lanes:          pending
+  Wave 2 Transport / Quality Assembly (C2-T2): pending
+  Canonical Authority Cutover (C2-Z):         pending
+```
+
+C2-00 added, on top of the existing C1.5 contracts:
+
+- `narrative-execution-state.json` — Run/Task/Attempt each own a separate
+  status vocabulary and derived phase/outcome view; no entity shares another
+  entity's enum or SQL CHECK constraint.
+- `narrative-failure-policy.json` — every C2 failure code is `NEX_`-prefixed
+  and carries a `retryDisposition`, `maxAttempts`, `backoffPolicy`,
+  `nextAttemptPolicy`, and `policyVersion`; `nextAttemptPolicy` is `"none"`
+  if and only if `retryDisposition` is not `"retryable"`.
+- `narrative-finding-contract.json` — the Finding `reasonCode` registry
+  (`fail-closed` on unknown codes) plus the Finding Observation durability
+  contract: `rebuildable-derived-state`, epoch-bound, diagnostic-only
+  snapshot, current Freshness always read from
+  `narrative-consumer-freshness`, never from an Observation row.
+- `maintenance-attention-contract.json` — the Attention durability contract:
+  `durable-user-state`, not epoch-bound, `backflowPolicy: "forbid"`, written
+  only by the Attention typed writer.
+- Two new `semantic-core-authorities.json` concerns —
+  `maintenance-finding-observation` and `maintenance-attention` — using the
+  existing four-field authority-matrix shape (`concern` /
+  `canonicalAuthority` / `compatibilityMirror` / `writePolicy`). The matrix's
+  `schemaVersion` stays `1`; the durability/epoch dimensions the two new
+  concerns need live in the finding/attention contract files above, not as
+  new fields bolted onto the C1.5-ratified matrix schema.
+- `change-feed-writers.json` gained `operationFragments`
+  (`policies/narrative/change-feed-operations/*.json`) and a new
+  `non-backflow-invariant` exclusion reason, so each Wave lane owns one
+  fragment file instead of editing the ~4500-line root manifest directly.
+  A fragment operation must land `coverageStatus: "verified"`; there is no
+  interim `"declared"` state for a C2 operation on `master`.
+- `scripts/quality/validate-execution-state-authority.mjs`
+  (`pnpm test:narrative:execution-state`) checks these four contracts'
+  internal consistency, their linkage back into
+  `semantic-core-authorities.json`, that ADR 005's C2 start-condition
+  checklist is still present and `fixed`, and that the new status
+  vocabulary is a superset of the existing
+  `NarrativeExtractionRunStatus`/`Task`/`AttemptStatus` TypeScript unions.
+  It does not assert that a Rust status enum or SQL CHECK constraint exists
+  yet — C2-01 adds the SQL CHECK, Lane B adds the Rust enum and transition
+  functions, and C2-T1 adds the stricter cross-artifact parity check.

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/maintenance-attention-contract-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "storageClass",
+    "epochBinding",
+    "backflowPolicy",
+    "writerAuthority",
+    "applicationConditions",
+    "negativeFixture"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "maintenance-attention-contract" },
+    "storageClass": { "const": "durable-user-state" },
+    "epochBinding": { "const": "none" },
+    "backflowPolicy": { "const": "forbid" },
+    "writerAuthority": { "const": "attention-typed-writer" },
+    "applicationConditions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "negativeFixture": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "gateId": "gate-c1",
+  "operationFragments": ["policies/narrative/change-feed-operations/*.json"],
   "semanticBoundary": {
     "schemaVersion": 1,
     "scanRoots": [

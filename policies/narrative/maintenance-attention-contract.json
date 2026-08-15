@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "contract": "maintenance-attention-contract",
+  "storageClass": "durable-user-state",
+  "epochBinding": "none",
+  "backflowPolicy": "forbid",
+  "writerAuthority": "attention-typed-writer",
+  "applicationConditions": ["finding-key-match", "material-basis-digest-match", "snooze-not-expired"],
+  "negativeFixture": "Attention rows are never mutated by Run publish, Finding Observation writes, or epoch rotation; only the typed Attention writer sets or clears them"
+}

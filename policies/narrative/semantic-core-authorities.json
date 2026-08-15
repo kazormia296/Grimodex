@@ -31,6 +31,18 @@
       "canonicalAuthority": "decision ledger",
       "compatibilityMirror": "none",
       "writePolicy": "decision-only"
+    },
+    {
+      "concern": "maintenance-finding-observation",
+      "canonicalAuthority": "freshness-run-publish-transaction",
+      "compatibilityMirror": null,
+      "writePolicy": "evaluator-publish-only"
+    },
+    {
+      "concern": "maintenance-attention",
+      "canonicalAuthority": "attention-typed-writer",
+      "compatibilityMirror": null,
+      "writePolicy": "typed-writer-only"
     }
   ],
   "semanticIndexAllowedFields": [
