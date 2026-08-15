@@ -8106,6 +8106,10 @@ fn agent_event_update_with_request_and_authority_impl(
                 fields.push("revealSceneId");
             }
 
+            if payload.surface.as_deref() == Some("mcp") && fields.is_empty() {
+                anyhow::bail!("MCP event update must change at least one field");
+            }
+
             let authority_paths = fields
                 .iter()
                 .map(|field| {
@@ -13859,6 +13863,28 @@ mod tests {
             feed_count
         );
         assert_eq!(table_count(&db, "undo_journal"), journal_count);
+    }
+
+    #[test]
+    fn mcp_event_empty_update_is_rejected_without_promoting_legacy_fields() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (event_id, _) = create_event(&db, &project_id, "Legacy MCP event", vec![], vec![]);
+        let mut update = empty_update(&project_id, &event_id);
+        update.surface = Some("mcp".to_string());
+
+        let error = agent_event_update_with_request_impl(
+            &db,
+            update,
+            Some("mcp-empty-event-update"),
+        )
+        .expect_err("MCP empty event updates must not create an ownership claim");
+        assert!(error
+            .to_string()
+            .contains("MCP event update must change at least one field"));
+        assert_eq!(event_version(&db, &event_id), 1);
+        assert_eq!(event_title(&db, &event_id).as_deref(), Some("Legacy MCP event"));
+        assert_eq!(table_count(&db, "narrative_field_authority"), 0);
     }
 
     #[test]

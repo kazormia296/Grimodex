@@ -2955,6 +2955,7 @@ mod tests {
 
         let mut changed_direction = undo.clone();
         changed_direction.direction = "redo".to_string();
+        changed_direction.origin = "redo".to_string();
         let error = crate::agent_writes::agent_undo_journal_impl(&db, changed_direction)
             .expect_err("request id must be bound to replay direction");
         assert!(

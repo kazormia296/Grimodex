@@ -139,7 +139,7 @@
     "fieldAuthority": "native-transactional-preflight",
     "coverageStatus": "verified",
     "executionSurface": "mcp-tool-native",
-    "runtimeTestCommand": "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db agent_writes::tests && cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp",
+    "runtimeTestCommand": "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib && cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-mcp",
     "evidenceTests": [
       {
         "file": "src-tauri/crates/grimodex-db/src/agent_writes.rs",
@@ -177,6 +177,7 @@
         "symbols": [
           "create_event_is_tracked_with_mcp_surface",
           "update_event_changes_calendar_fields",
+          "update_event_rejects_empty_patch",
           "delete_event_cascades_and_snapshots_associations",
           "stamp_and_unstamp_scene_event",
           "set_participants_replaces_and_tracks"
@@ -212,7 +213,10 @@
       },
       {
         "operationId": "mcp.event.update",
-        "symbols": ["update_event_changes_calendar_fields"]
+        "symbols": [
+          "update_event_changes_calendar_fields",
+          "update_event_rejects_empty_patch"
+        ]
       },
       {
         "operationId": "mcp.event.delete",

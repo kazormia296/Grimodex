@@ -1659,6 +1659,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn update_event_rejects_empty_patch() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+
+        let error = update_event(
+            &server,
+            UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                event_id: "e1".to_string(),
+                base_version: 0,
+                title: None,
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+            },
+        )
+        .await
+        .expect_err("empty MCP event updates must be rejected");
+
+        assert_eq!(error.message, "internal error");
+        assert_eq!(scalar(&server, "SELECT version FROM events WHERE id = ?1", "e1"), 0);
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                "e1"
+            ),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn update_event_rejects_stale_base_version_non_destructively() {
         let server = make_server(false);
         seed_event(&server, "p1", "e1", "Seed", "a0");
