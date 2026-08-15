@@ -9,6 +9,13 @@
  */
 import { BrowserWindow, ipcMain } from "electron";
 import { createHash, randomUUID } from "node:crypto";
+import { getSchema } from "@tiptap/core";
+import StarterKit from "@tiptap/starter-kit";
+import {
+  defaultMarkdownParser,
+  MarkdownParser,
+  type ParseSpec,
+} from "prosemirror-markdown";
 
 import {
   bindCanonicalAuthorityContext,
@@ -86,6 +93,9 @@ interface AgentAuthorityCapabilityRecord {
   readonly policy: AgentAuthorityPolicy;
   readonly executionId: string;
   readonly chatMessageId: string;
+  readonly model: string | null;
+  readonly modelInput: Record<string, unknown>;
+  readonly expectedEntityId: string | null;
   readonly canonicalInputDigest: string;
   readonly mainOwnedProvenanceId: string;
   readonly issuedAt: number;
@@ -185,12 +195,41 @@ type AgentToolInputSpec = {
 // part of the model's intent and therefore cannot be used to retarget a grant.
 const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
   create_codex_entry: {
-    fields: ["type", "name", "summary", "content", "aliases", "parentId"],
+    fields: [
+      "type",
+      "name",
+      "summary",
+      "content",
+      "aliases",
+      "parentId",
+      "excludedAliases",
+      "readings",
+      "tagsCache",
+      "contextMode",
+      "icon",
+      "childrenBudget",
+      "notes",
+    ],
     aliases: { type: "typeSlug" },
   },
   update_codex_entry: {
-    fields: ["id", "name", "summary", "content", "aliases"],
-    aliases: { id: "entryId" },
+    fields: [
+      "id",
+      "type",
+      "name",
+      "summary",
+      "content",
+      "aliases",
+      "excludedAliases",
+      "readings",
+      "tagsCache",
+      "parentId",
+      "contextMode",
+      "icon",
+      "childrenBudget",
+      "notes",
+    ],
+    aliases: { id: "entryId", type: "typeSlug" },
   },
   create_foreshadow: {
     fields: ["title", "intent", "notes", "loadBearing", "secret"],
@@ -216,7 +255,11 @@ const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
     fields: [
       "title",
       "note",
+      "detail",
+      "ordinal",
+      "laneGroup",
       "kind",
+      "precision",
       "primaryCodexId",
       "locationCodexId",
       "startTime",
@@ -236,7 +279,11 @@ const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
       "eventId",
       "title",
       "note",
+      "detail",
+      "ordinal",
+      "laneGroup",
       "kind",
+      "precision",
       "primaryCodexId",
       "locationCodexId",
       "startTime",
@@ -253,7 +300,7 @@ const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
   stamp_scene_event: { fields: ["sceneId", "eventId"] },
   unstamp_scene_event: { fields: ["sceneId", "eventId"] },
   set_event_participants: {
-    fields: ["eventId", "codexEntryIds"],
+    fields: ["eventId", "codexEntryIds", "participantRoles"],
   },
   add_event_relation: {
     fields: ["causeEventId", "effectEventId"],
@@ -263,7 +310,7 @@ const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
   },
   apply_ai_tree_plan: { fields: ["kind", "ops"] },
   propose_scene_body: {
-    fields: ["sceneId", "text", "mode"],
+    fields: ["sceneId", "text", "mode", "replaceFrom", "replaceTo"],
     aliases: { text: "proposedContent" },
   },
 };
@@ -276,6 +323,13 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
     content: null,
     aliases: null,
     parentId: null,
+    excludedAliases: null,
+    readings: null,
+    tagsCache: null,
+    contextMode: null,
+    icon: null,
+    childrenBudget: null,
+    notes: null,
   },
   create_foreshadow: {
     intent: null,
@@ -295,7 +349,10 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
   create_snippet: { content: null, sceneId: null },
   create_event: {
     note: null,
+    detail: null,
+    laneGroup: null,
     kind: "generic",
+    precision: "exact",
     primaryCodexId: null,
     locationCodexId: null,
     startTime: null,
@@ -307,7 +364,11 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
     participantCodexIds: [],
     sceneIds: [],
   },
-  propose_scene_body: { mode: "append" },
+  propose_scene_body: {
+    mode: "append",
+    replaceFrom: null,
+    replaceTo: null,
+  },
 };
 
 function stableCanonicalJson(value: unknown): string {
@@ -326,41 +387,139 @@ function stableCanonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-function plainTextFromRichText(value: unknown): string {
-  if (typeof value !== "string") return String(value ?? "");
-  const markdown = value
-    .replace(/\r\n?/g, "\n")
-    .replace(/^\s{0,3}#{1,6}\s+/gm, "")
-    .replace(/^\s*[-*+]\s+/gm, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/(\*\*|__|\*|_)/g, "");
+let agentAuthoritySchema: ReturnType<typeof getSchema> | null = null;
+let agentAuthorityMarkdownParser: MarkdownParser | null = null;
+
+const AGENT_MARKDOWN_NODE_NAMES: Readonly<Record<string, string>> = {
+  list_item: "listItem",
+  bullet_list: "bulletList",
+  ordered_list: "orderedList",
+  code_block: "codeBlock",
+  horizontal_rule: "horizontalRule",
+  hard_break: "hardBreak",
+};
+const AGENT_MARKDOWN_MARK_NAMES: Readonly<Record<string, string>> = {
+  em: "italic",
+  strong: "bold",
+};
+
+function getAgentAuthorityMarkdownParser(): MarkdownParser {
+  if (agentAuthorityMarkdownParser !== null) {
+    return agentAuthorityMarkdownParser;
+  }
+  agentAuthoritySchema = getSchema([StarterKit.configure()]);
+  const tokens = Object.fromEntries(
+    Object.entries(defaultMarkdownParser.tokens).flatMap(([name, spec]) => {
+      const remapped = remapAgentMarkdownSpec(spec, agentAuthoritySchema!);
+      return remapped ? [[name, remapped]] : [];
+    }),
+  );
+  agentAuthorityMarkdownParser = new MarkdownParser(
+    agentAuthoritySchema,
+    defaultMarkdownParser.tokenizer,
+    tokens,
+  );
+  return agentAuthorityMarkdownParser;
+}
+
+function remapAgentMarkdownSpec(
+  spec: ParseSpec,
+  schema: ReturnType<typeof getSchema>,
+): ParseSpec | null {
+  if (spec.node) {
+    const node = AGENT_MARKDOWN_NODE_NAMES[spec.node] ?? spec.node;
+    return schema.nodes[node] ? { ...spec, node } : null;
+  }
+  if (spec.block) {
+    const block = AGENT_MARKDOWN_NODE_NAMES[spec.block] ?? spec.block;
+    return schema.nodes[block] ? { ...spec, block } : null;
+  }
+  if (spec.mark) {
+    const mark = AGENT_MARKDOWN_MARK_NAMES[spec.mark] ?? spec.mark;
+    return schema.marks[mark] ? { ...spec, mark } : null;
+  }
+  return spec;
+}
+
+function stripAuthorshipMarks(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripAuthorshipMarks);
+  if (!isRecord(value)) return value;
+  const normalized: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "marks" && Array.isArray(child)) {
+      normalized[key] = child
+        .filter((mark) => !isRecord(mark) || mark.type !== "authorship")
+        .map(stripAuthorshipMarks);
+    } else if (key === "content" && Array.isArray(child)) {
+      normalized[key] = child.map(stripAuthorshipMarks);
+    } else {
+      normalized[key] = stripAuthorshipMarks(child);
+    }
+  }
+  return normalized;
+}
+
+/**
+ * Keep the exact persisted rich-text structure in the capability digest.
+ * Renderer-authorship marks are audit metadata and are removed only for the
+ * comparison; links, attrs, marks, paragraphs, and all other PM structure
+ * remain part of the canonical value.
+ */
+function canonicalRichTextValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
   try {
     const parsed: unknown = JSON.parse(value);
-    const text: string[] = [];
-    const visit = (node: unknown): void => {
-      if (!isRecord(node)) return;
-      if (typeof node.text === "string") text.push(node.text);
-      if (Array.isArray(node.content)) node.content.forEach(visit);
-    };
-    visit(parsed);
-    if (text.length > 0) return text.join(" ").replace(/\s+/g, " ").trim();
+    if (isRecord(parsed) && parsed.type === "doc") {
+      return stripAuthorshipMarks(parsed);
+    }
   } catch {
-    // The model-facing value is Markdown, not JSON; normalize it below.
+    // Model-facing content is Markdown; parse it below.
   }
-  return markdown.replace(/\s+/g, " ").trim();
+  try {
+    return stripAuthorshipMarks(
+      getAgentAuthorityMarkdownParser().parse(value).toJSON(),
+    );
+  } catch {
+    // Native validation remains authoritative for malformed rich text. Keep
+    // the raw value bound here so a malformed renderer value cannot collide
+    // with a different valid document.
+    return value;
+  }
 }
 
 function canonicalAgentInputValue(field: string, value: unknown): unknown {
-  if (field === "content") return plainTextFromRichText(value);
-  if (field === "aliases" || field === "participantCodexIds" || field === "sceneIds") {
-    if (Array.isArray(value)) return value.map((item) => String(item).trim());
+  if (field === "content" || field === "detail") {
+    return canonicalRichTextValue(value);
+  }
+  if (
+    field === "aliases" ||
+    field === "participantCodexIds" ||
+    field === "sceneIds"
+  ) {
+    const normalizeStringArray = (items: unknown[]): string[] =>
+      items
+        .map((item) => String(item).trim())
+        .filter((item) => item.length > 0);
+    if (Array.isArray(value)) return normalizeStringArray(value);
     if (typeof value === "string") {
       try {
         const parsed: unknown = JSON.parse(value);
         if (Array.isArray(parsed)) {
-          return parsed.map((item) => String(item).trim());
+          return normalizeStringArray(parsed);
         }
+      } catch {
+        // Keep malformed/non-JSON values bound as strings; Native will reject them.
+      }
+    }
+  }
+  if (
+    field === "excludedAliases" ||
+    field === "readings" ||
+    field === "tagsCache"
+  ) {
+    if (typeof value === "string") {
+      try {
+        return JSON.parse(value) as unknown;
       } catch {
         // Keep malformed/non-JSON values bound as strings; Native will reject them.
       }
@@ -384,9 +543,17 @@ function canonicalAgentInputValue(field: string, value: unknown): unknown {
 function canonicalAgentToolInput(
   toolName: string,
   source: unknown,
+  enforceModelShape = false,
 ): string | null {
   const spec = AGENT_TOOL_INPUT_SPECS[toolName];
   if (!spec || !isRecord(source)) return null;
+  if (enforceModelShape) {
+    const acceptedKeys = new Set([
+      ...spec.fields,
+      ...Object.values(spec.aliases ?? {}),
+    ]);
+    if (Object.keys(source).some((key) => !acceptedKeys.has(key))) return null;
+  }
   const defaults = AGENT_TOOL_INPUT_DEFAULTS[toolName] ?? {};
   const normalized: Record<string, unknown> = {};
   for (const field of spec.fields) {
@@ -405,8 +572,9 @@ function canonicalAgentToolInput(
 function canonicalAgentToolInputDigest(
   toolName: string,
   source: unknown,
+  enforceModelShape = false,
 ): string | null {
-  const canonical = canonicalAgentToolInput(toolName, source);
+  const canonical = canonicalAgentToolInput(toolName, source, enforceModelShape);
   if (canonical === null) return null;
   return createHash("sha256").update(canonical).digest("hex");
 }
@@ -483,6 +651,429 @@ function responseBlocks(response: unknown): Array<Record<string, unknown>> {
   );
 }
 
+function cloneJsonRecord(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+interface AgentProjectionField {
+  present: boolean;
+  fromDefault: boolean;
+  conflict: boolean;
+  value: unknown;
+}
+
+function readAgentProjectionField(
+  spec: AgentToolInputSpec,
+  field: string,
+  source: Record<string, unknown>,
+  defaults: Readonly<Record<string, unknown>> | undefined,
+): AgentProjectionField {
+  const wireField = spec.aliases?.[field] ?? field;
+  const hasField = Object.hasOwn(source, field) && source[field] !== undefined;
+  const hasWireField =
+    wireField !== field &&
+    Object.hasOwn(source, wireField) &&
+    source[wireField] !== undefined;
+  if (hasField && hasWireField) {
+    const fieldValue = canonicalAgentInputValue(field, source[field]);
+    const wireValue = canonicalAgentInputValue(field, source[wireField]);
+    if (stableCanonicalJson(fieldValue) !== stableCanonicalJson(wireValue)) {
+      return {
+        present: true,
+        fromDefault: false,
+        conflict: true,
+        value: undefined,
+      };
+    }
+  }
+  if (hasField || hasWireField) {
+    return {
+      present: true,
+      fromDefault: false,
+      conflict: false,
+      value: canonicalAgentInputValue(
+        field,
+        hasField ? source[field] : source[wireField],
+      ),
+    };
+  }
+  if (defaults && Object.hasOwn(defaults, field) && defaults[field] !== undefined) {
+    return {
+      present: true,
+      fromDefault: true,
+      conflict: false,
+      value: canonicalAgentInputValue(field, defaults[field]),
+    };
+  }
+  return { present: false, fromDefault: false, conflict: false, value: undefined };
+}
+
+/** Compare every effectful field before provenance binding reaches Native. */
+function agentMutationProjectionMatches(
+  toolName: string,
+  modelInput: Record<string, unknown>,
+  payload: CommandArgs,
+): boolean {
+  const spec = AGENT_TOOL_INPUT_SPECS[toolName];
+  if (!spec || canonicalAgentToolInput(toolName, modelInput, true) === null) {
+    return false;
+  }
+  const defaults = AGENT_TOOL_INPUT_DEFAULTS[toolName];
+  for (const field of spec.fields) {
+    const expected = readAgentProjectionField(spec, field, modelInput, defaults);
+    const actual = readAgentProjectionField(spec, field, payload, undefined);
+    if (expected.conflict || actual.conflict) return false;
+    if (!expected.present) {
+      if (actual.present) return false;
+      continue;
+    }
+    if (!actual.present) {
+      // Main can fill a documented create/update default, but it must never
+      // silently turn an explicitly requested update field into a no-op.
+      if (!expected.fromDefault) return false;
+      continue;
+    }
+    if (stableCanonicalJson(expected.value) !== stableCanonicalJson(actual.value)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function mainOwnedEntityId(
+  toolName: string,
+  requestId: string,
+): string | null {
+  switch (toolName) {
+    case "create_codex_entry":
+      return `codex-entry:${requestId}`;
+    case "create_snippet":
+      return `snippet:${requestId}`;
+    case "create_event":
+    case "create_foreshadow":
+      return randomUUID();
+    default:
+      return null;
+  }
+}
+
+function resolvedTreeRef(
+  ref: unknown,
+  tempIds: ReadonlyMap<string, string>,
+): string | null | undefined {
+  if (ref === null) return null;
+  if (typeof ref !== "string") return undefined;
+  return ref.startsWith("tmp:") ? tempIds.get(ref) : ref;
+}
+
+/**
+ * The renderer still prepares the OCC payload for the existing Native writer,
+ * but the capability boundary checks that preparation against the model IR.
+ * Native repeats the placement proof against the database snapshot; this
+ * first check rejects obvious create/update retargets before dispatch.
+ */
+function treeMutationProjectionMatches(
+  modelInput: Record<string, unknown>,
+  payload: CommandArgs,
+): boolean {
+  const modelOps = modelInput.ops;
+  const creates = payload.creates;
+  const updates = payload.updates;
+  if (!Array.isArray(modelOps) || !Array.isArray(creates) || !Array.isArray(updates)) {
+    return false;
+  }
+  const createOps = modelOps.filter(
+    (op): op is CommandArgs => isRecord(op) && op.op === "create",
+  );
+  const moveOps = modelOps.filter(
+    (op): op is CommandArgs => isRecord(op) && op.op === "move",
+  );
+  const renameOps = modelOps.filter(
+    (op): op is CommandArgs => isRecord(op) && op.op === "rename",
+  );
+  const createRows = creates.filter(isRecord);
+  if (createRows.length !== creates.length || createRows.length !== createOps.length) {
+    return false;
+  }
+  const tempToId = new Map<string, string>();
+  for (const row of createRows) {
+    if (typeof row.tempId !== "string" || typeof row.id !== "string") return false;
+    if (tempToId.has(row.tempId)) return false;
+    tempToId.set(row.tempId, row.id);
+  }
+  for (const op of createOps) {
+    const row = createRows.find((candidate) => candidate.tempId === op.tempId);
+    if (!row) return false;
+    const expectedParent = resolvedTreeRef(op.parentRef, tempToId);
+    if (
+      expectedParent === undefined ||
+      row.parentId !== expectedParent ||
+      row.nodeType !== op.nodeType ||
+      row.title !== op.title ||
+      (row.synopsis ?? null) !== (op.synopsis ?? null)
+    ) {
+      return false;
+    }
+  }
+
+  const expectedUpdates = new Map<string, { move?: CommandArgs; rename?: CommandArgs }>();
+  for (const op of moveOps) {
+    if (typeof op.nodeId !== "string") return false;
+    const entry = expectedUpdates.get(op.nodeId) ?? {};
+    if (entry.move) return false;
+    entry.move = op;
+    expectedUpdates.set(op.nodeId, entry);
+  }
+  for (const op of renameOps) {
+    if (typeof op.nodeId !== "string") return false;
+    const entry = expectedUpdates.get(op.nodeId) ?? {};
+    if (entry.rename) return false;
+    entry.rename = op;
+    expectedUpdates.set(op.nodeId, entry);
+  }
+  const updateRows = updates.filter(isRecord);
+  if (updateRows.length !== updates.length || updateRows.length !== expectedUpdates.size) {
+    return false;
+  }
+  for (const row of updateRows) {
+    if (typeof row.id !== "string") return false;
+    const expected = expectedUpdates.get(row.id);
+    if (!expected) return false;
+    const move = expected.move;
+    const rename = expected.rename;
+    if (move) {
+      if (!isRecord(row.placement)) return false;
+      const expectedParent = resolvedTreeRef(move.newParentRef, tempToId);
+      if (
+        expectedParent === undefined ||
+        row.placement.parentId !== expectedParent
+      ) {
+        return false;
+      }
+    } else if (row.placement !== null) {
+      return false;
+    }
+    if (rename) {
+      if (row.title !== rename.title) return false;
+    } else if (row.title !== null) {
+      return false;
+    }
+  }
+  return true;
+}
+
+interface MainOwnedAuthorshipSpan {
+  fromPos: number;
+  toPos: number;
+  source: "ai";
+  model: string;
+  chatMsgId: string;
+  traceId: string;
+  lane: "summary" | "content";
+}
+
+function mainOwnedContentSpans(
+  content: unknown,
+  model: string | null,
+  chatMessageId: string,
+  traceId: string,
+): MainOwnedAuthorshipSpan[] {
+  if (typeof content !== "string" || content.length === 0) return [];
+  try {
+    const root = JSON.parse(content) as unknown;
+    const spans: MainOwnedAuthorshipSpan[] = [];
+    const visit = (node: unknown, position: number): number => {
+      if (!isRecord(node)) return position;
+      if (node.type === "text" && typeof node.text === "string") {
+        spans.push({
+          fromPos: position,
+          toPos: position + node.text.length,
+          source: "ai",
+          model: model ?? "__lane_content__",
+          chatMsgId: chatMessageId,
+          traceId,
+          lane: "content",
+        });
+        return position + node.text.length;
+      }
+      let cursor = position;
+      if (Array.isArray(node.content)) {
+        for (const child of node.content) cursor = visit(child, cursor);
+      }
+      return cursor;
+    };
+    visit(root, 0);
+    return spans;
+  } catch {
+    return [];
+  }
+}
+
+function mainOwnedCodexAuthorship(
+  payload: CommandArgs,
+  capability: AgentAuthorityCapabilityRecord,
+): MainOwnedAuthorshipSpan[] {
+  const spans: MainOwnedAuthorshipSpan[] = [];
+  if (typeof payload.summary === "string" && payload.summary.length > 0) {
+    spans.push({
+      fromPos: 0,
+      toPos: payload.summary.length,
+      source: "ai",
+      model: capability.model ?? "__lane_summary__",
+      chatMsgId: capability.chatMessageId,
+      traceId: capability.mainOwnedProvenanceId,
+      lane: "summary",
+    });
+  }
+  spans.push(
+    ...mainOwnedContentSpans(
+      payload.content,
+      capability.model,
+      capability.chatMessageId,
+      capability.mainOwnedProvenanceId,
+    ),
+  );
+  return spans;
+}
+
+function bindMainOwnedRichTextFields(
+  bound: CommandArgs,
+  capability: AgentAuthorityCapabilityRecord,
+): void {
+  const spec = AGENT_TOOL_INPUT_SPECS[capability.toolName];
+  if (!spec) return;
+  const defaults = AGENT_TOOL_INPUT_DEFAULTS[capability.toolName];
+  for (const field of ["content", "detail"]) {
+    if (!spec.fields.includes(field)) continue;
+    const expected = readAgentProjectionField(
+      spec,
+      field,
+      capability.modelInput,
+      defaults,
+    );
+    if (!expected.present || expected.conflict) continue;
+    const wireField = spec.aliases?.[field] ?? field;
+    // The model projection is the only accepted document. Remove renderer
+    // authorship marks/attrs and let the main-owned spans carry provenance.
+    bound[wireField] =
+      expected.value === null || typeof expected.value === "string"
+        ? expected.value
+        : JSON.stringify(expected.value);
+    if (wireField !== field) delete bound[field];
+  }
+}
+
+function bindMainOwnedAgentMutation(
+  payload: CommandArgs,
+  capability: AgentAuthorityCapabilityRecord,
+): CommandArgs | null {
+  if (
+    !agentMutationProjectionMatches(
+      capability.toolName,
+      capability.modelInput,
+      payload,
+    )
+  ) {
+    return null;
+  }
+  if (
+    capability.toolName === "apply_ai_tree_plan" &&
+    !treeMutationProjectionMatches(capability.modelInput, payload)
+  ) {
+    return null;
+  }
+  const bound: CommandArgs = {
+    ...payload,
+    projectId: capability.projectId,
+    executionId: capability.executionId,
+    mainOwnedProvenanceId: capability.mainOwnedProvenanceId,
+    chatMessageId: capability.chatMessageId,
+    toolCallId: capability.toolCallId,
+    traceId: capability.mainOwnedProvenanceId,
+    model: capability.model,
+  };
+  if (
+    capability.toolName === "create_codex_entry" ||
+    capability.toolName === "update_codex_entry" ||
+    capability.toolName === "create_event" ||
+    capability.toolName === "update_event" ||
+    capability.toolName === "delete_event" ||
+    capability.toolName === "stamp_scene_event" ||
+    capability.toolName === "unstamp_scene_event" ||
+    capability.toolName === "set_event_participants" ||
+    capability.toolName === "add_event_relation" ||
+    capability.toolName === "remove_event_relation" ||
+    capability.toolName === "apply_ai_tree_plan"
+  ) {
+    // Native records `surface` in Undo Journal / source provenance. It is
+    // transport metadata, never model intent, so the main owns it for every
+    // interactive mutation that carries the field.
+    bound.surface = "in-app-agent";
+  }
+  if (capability.toolName === "propose_scene_body") {
+    bound.sourceSurface = "in-app-agent";
+  }
+  bindMainOwnedRichTextFields(bound, capability);
+  if (capability.expectedEntityId !== null) {
+    const identityField = (() => {
+      switch (capability.toolName) {
+        case "create_codex_entry":
+          return "entryId";
+        case "create_snippet":
+          return "snippetId";
+        case "create_event":
+          return "eventId";
+        case "create_foreshadow":
+          return "foreshadowId";
+        default:
+          return null;
+      }
+    })();
+    if (identityField) {
+      if (
+        bound[identityField] !== undefined &&
+        bound[identityField] !== capability.expectedEntityId
+      ) {
+        return null;
+      }
+      bound[identityField] = capability.expectedEntityId;
+    }
+  }
+  if (capability.toolName === "apply_ai_tree_plan") {
+    bound.ops = cloneJsonRecord({ ops: capability.modelInput.ops }).ops;
+  }
+  if (
+    capability.toolName === "create_codex_entry" ||
+    capability.toolName === "update_codex_entry"
+  ) {
+    const spans = mainOwnedCodexAuthorship(bound, capability);
+    const hasAuthorshipPatch =
+      capability.toolName === "create_codex_entry" ||
+      bound.summary !== undefined ||
+      bound.content !== undefined;
+    bound.authorshipSpans = hasAuthorshipPatch
+      ? spans.map(({ lane: _lane, ...span }) => span)
+      : null;
+    if (capability.toolName === "update_codex_entry" && hasAuthorshipPatch) {
+      bound.authorshipSpanLanes = spans.map((span) => span.lane);
+    } else if (capability.toolName === "update_codex_entry") {
+      bound.authorshipSpanLanes = null;
+    }
+    if (capability.toolName === "create_codex_entry") {
+      bound.sourceChatMessageId = capability.chatMessageId;
+    }
+  } else if (capability.toolName === "create_snippet") {
+    bound.sourceChatMessageId = capability.chatMessageId;
+    bound.authorshipSpans = mainOwnedContentSpans(
+      bound.content,
+      capability.model,
+      capability.chatMessageId,
+      capability.mainOwnedProvenanceId,
+    ).map(({ lane: _lane, ...span }) => span);
+  }
+  return bound;
+}
+
 async function issueAgentAuthorityCapabilitiesForSender(
   senderId: number,
   args: CommandArgs,
@@ -518,21 +1109,27 @@ async function issueAgentAuthorityCapabilitiesForSender(
     const canonicalInputDigest = canonicalAgentToolInputDigest(
       toolName,
       block.input,
+      true,
     );
     if (!canonicalInputDigest) continue;
+    if (!isRecord(block.input)) continue;
     const now = Date.now();
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
+    const requestId = agentToolRequestId(toolName, projectId, toolCallId);
     agentAuthorityCapabilities.set(token, {
       senderId,
       projectId,
       toolName,
       command: definition.command,
-      requestId: agentToolRequestId(toolName, projectId, toolCallId),
+      requestId,
       toolCallId,
       policy: definition.policy,
       executionId,
       chatMessageId,
+      model: typeof args.model === "string" ? args.model : null,
+      modelInput: cloneJsonRecord(block.input),
+      expectedEntityId: mainOwnedEntityId(toolName, requestId),
       canonicalInputDigest,
       mainOwnedProvenanceId,
       issuedAt: now,
@@ -579,7 +1176,11 @@ function consumeAgentAuthorityCapability(
     executionId === record.executionId &&
     mainOwnedProvenanceId === record.mainOwnedProvenanceId &&
     inputDigest === record.canonicalInputDigest;
-  return matches ? record : null;
+  if (!matches) return null;
+  if (!agentMutationProjectionMatches(record.toolName, record.modelInput, payload)) {
+    return null;
+  }
+  return bindMainOwnedAgentMutation(payload, record) ? record : null;
 }
 
 function authorityRouteForOrigin(
@@ -810,17 +1411,18 @@ export function bindRendererAuthorityForIpc(
           ? invalidPayload
           : { ...args, [payloadKey]: invalidPayload };
       }
-      // Re-bind the provenance after the one-shot capability has been
-      // validated. Renderer values are compared above, then replaced with the
-      // exact main-issued identities before Native sees the payload.
-      payloadForBinding = {
-        ...payload,
-        executionId: capability.executionId,
-        mainOwnedProvenanceId: capability.mainOwnedProvenanceId,
-        chatMessageId: capability.chatMessageId,
-        toolCallId: capability.toolCallId,
-        traceId: capability.mainOwnedProvenanceId,
-      };
+      // Re-bind the provenance and the complete effective mutation after the
+      // one-shot capability has been validated. Renderer values are compared
+      // above, then replaced with exact main-issued identities before Native
+      // sees the payload.
+      const mainOwnedPayload = bindMainOwnedAgentMutation(payload, capability);
+      if (!mainOwnedPayload) {
+        const invalidPayload = { ...payload, authorityRoute: "" };
+        return directPayloadCommand
+          ? invalidPayload
+          : { ...args, [payloadKey]: invalidPayload };
+      }
+      payloadForBinding = mainOwnedPayload;
     }
     const authoritySession =
       rendererAuthoritySessions.get(senderId) ?? randomUUID();

@@ -490,16 +490,47 @@ pub fn tracked_foreshadow_update_at_version_with_request_in_tx_hook<F>(
 where
     F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
 {
+    tracked_foreshadow_update_at_version_with_request_in_tx_hooks(
+        conn,
+        input,
+        base_version,
+        request_id,
+        request_hash,
+        |_| Ok(()),
+        append_change_in_tx,
+    )
+}
+
+/// Request-aware OCC variant with an explicit before-mutation hook.
+///
+/// The hook runs after the project/version snapshot has been read but before
+/// the foreshadow row is updated. Database authority code uses this point to
+/// reject legacy human values and register the AI ownership decision in the
+/// same transaction as the domain mutation.
+pub fn tracked_foreshadow_update_at_version_with_request_in_tx_hooks<B, F>(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    base_version: i64,
+    request_id: &str,
+    request_hash: &str,
+    before_change_in_tx: B,
+    append_change_in_tx: F,
+) -> anyhow::Result<Option<WriteResult>>
+where
+    B: FnOnce(&Connection) -> anyhow::Result<()>,
+    F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
+{
     anyhow::ensure!(
         base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
-    tracked_foreshadow_update_impl(
+    tracked_foreshadow_update_impl_with_before(
         conn,
         input,
         Some(base_version),
         Some(request_id),
         Some(request_hash),
+        before_change_in_tx,
         append_change_in_tx,
     )
 }
@@ -513,6 +544,30 @@ fn tracked_foreshadow_update_impl<F>(
     append_change_in_tx: F,
 ) -> anyhow::Result<Option<WriteResult>>
 where
+    F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
+{
+    tracked_foreshadow_update_impl_with_before(
+        conn,
+        input,
+        caller_base_version,
+        request_id,
+        request_hash,
+        |_| Ok(()),
+        append_change_in_tx,
+    )
+}
+
+fn tracked_foreshadow_update_impl_with_before<B, F>(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    caller_base_version: Option<i64>,
+    request_id: Option<&str>,
+    request_hash: Option<&str>,
+    before_change_in_tx: B,
+    append_change_in_tx: F,
+) -> anyhow::Result<Option<WriteResult>>
+where
+    B: FnOnce(&Connection) -> anyhow::Result<()>,
     F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
 {
     let undo_id = request_id
@@ -554,6 +609,8 @@ where
         let expected_result_version = base_version
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("foreshadow version overflow during tracked update"))?;
+
+        before_change_in_tx(conn)?;
 
         let p = &input.patch;
         let mut fields: Vec<&str> = Vec::new();

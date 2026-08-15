@@ -228,6 +228,7 @@ async function applyAiTreePlanWithAuthority(
       throw new Error("AI tree plan placement disappeared after validation");
     }
     return {
+      tempId: create.tempId,
       id,
       parentId: placement.parentId,
       nodeType: create.nodeType,
@@ -302,6 +303,7 @@ async function applyAiTreePlanWithAuthority(
       traceId: ctx.traceId,
       creates,
       updates,
+      ops: plan.ops,
       redo: false,
       originalTransactionId: null,
       undoJournalId: null,

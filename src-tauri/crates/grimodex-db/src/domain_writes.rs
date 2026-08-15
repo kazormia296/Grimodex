@@ -3480,6 +3480,8 @@ pub fn tree_node_patch_with_authority(
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiTreePlanCreateInput {
+    #[serde(default)]
+    pub temp_id: Option<String>,
     pub id: String,
     pub parent_id: Option<String>,
     pub node_type: String,
@@ -3531,6 +3533,11 @@ pub struct ApplyAiTreePlanPayload {
     pub writes_authority_protected_field: bool,
     pub creates: Vec<AiTreePlanCreateInput>,
     pub updates: Vec<AiTreePlanUpdateInput>,
+    /// Original model IR. Interactive agent calls must carry this so Native
+    /// can recompute the effectful creates/updates projection against the
+    /// current tree snapshot instead of trusting renderer placements.
+    #[serde(default)]
+    pub ops: Option<Vec<Value>>,
     #[serde(default)]
     pub redo: bool,
     #[serde(default)]
@@ -3822,6 +3829,734 @@ fn validate_ai_tree_redo_plan_in_tx(
     Ok(())
 }
 
+// The renderer's placement helper uses the same fractional-indexing package
+// as the UI. Interactive Native calls repeat that small algorithm against the
+// transaction snapshot so `creates`/`updates` cannot be altered while keeping
+// the original model ops and capability alive.
+const TREE_ORDER_DIGITS: &[u8] =
+    b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+
+#[derive(Clone, Debug)]
+enum NativeTreeAfter {
+    Append,
+    Prepend,
+    After(String),
+}
+
+#[derive(Clone, Debug)]
+struct NativeTreeInserted {
+    id: String,
+    after: NativeTreeAfter,
+    order: usize,
+}
+
+#[derive(Clone, Debug)]
+struct NativeTreeNodeSnapshot {
+    id: String,
+    parent_id: Option<String>,
+    node_type: String,
+    sort_order: String,
+}
+
+fn tree_order_integer_length(head: u8) -> anyhow::Result<usize> {
+    match head {
+        b'a'..=b'z' => Ok((head - b'a' + 2) as usize),
+        b'A'..=b'Z' => Ok((b'Z' - head + 2) as usize),
+        _ => anyhow::bail!("invalid tree order key head"),
+    }
+}
+
+fn tree_order_integer_part(key: &str) -> anyhow::Result<&str> {
+    let bytes = key.as_bytes();
+    anyhow::ensure!(!bytes.is_empty(), "tree order key is empty");
+    let length = tree_order_integer_length(bytes[0])?;
+    anyhow::ensure!(length <= bytes.len(), "invalid tree order key");
+    Ok(&key[..length])
+}
+
+fn tree_validate_order_key(key: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        key != &format!("A{}", "0".repeat(26)),
+        "invalid tree order key"
+    );
+    let integer = tree_order_integer_part(key)?;
+    let fraction = &key[integer.len()..];
+    anyhow::ensure!(
+        !fraction.ends_with('0'),
+        "tree order key has a trailing zero"
+    );
+    anyhow::ensure!(
+        integer
+            .as_bytes()
+            .iter()
+            .skip(1)
+            .all(|digit| TREE_ORDER_DIGITS.contains(digit)),
+        "tree order key contains an invalid integer digit"
+    );
+    anyhow::ensure!(
+        key.as_bytes()
+            .iter()
+            .skip(integer.len())
+            .all(|digit| TREE_ORDER_DIGITS.contains(digit)),
+        "tree order key contains an invalid digit"
+    );
+    Ok(())
+}
+
+fn tree_validate_integer(integer: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        tree_order_integer_part(integer)? == integer,
+        "invalid tree order integer"
+    );
+    anyhow::ensure!(
+        integer
+            .as_bytes()
+            .iter()
+            .skip(1)
+            .all(|digit| TREE_ORDER_DIGITS.contains(digit)),
+        "invalid tree order integer digit"
+    );
+    Ok(())
+}
+
+fn tree_increment_integer(integer: &str) -> anyhow::Result<Option<String>> {
+    tree_validate_integer(integer)?;
+    let mut bytes = integer.as_bytes().to_vec();
+    let head = bytes[0];
+    let mut carry = true;
+    for index in (1..bytes.len()).rev() {
+        if !carry {
+            break;
+        }
+        let digit = TREE_ORDER_DIGITS
+            .iter()
+            .position(|candidate| *candidate == bytes[index])
+            .ok_or_else(|| anyhow::anyhow!("invalid tree order integer digit"))?;
+        if digit + 1 == TREE_ORDER_DIGITS.len() {
+            bytes[index] = TREE_ORDER_DIGITS[0];
+        } else {
+            bytes[index] = TREE_ORDER_DIGITS[digit + 1];
+            carry = false;
+        }
+    }
+    if !carry {
+        return Ok(Some(String::from_utf8(bytes)?));
+    }
+    if head == b'Z' {
+        return Ok(Some(format!("a{}", TREE_ORDER_DIGITS[0] as char)));
+    }
+    if head == b'z' {
+        return Ok(None);
+    }
+    let next_head = head + 1;
+    if next_head > b'a' {
+        bytes.push(TREE_ORDER_DIGITS[0]);
+    } else {
+        bytes.pop();
+    }
+    bytes[0] = next_head;
+    Ok(Some(String::from_utf8(bytes)?))
+}
+
+fn tree_decrement_integer(integer: &str) -> anyhow::Result<Option<String>> {
+    tree_validate_integer(integer)?;
+    let mut bytes = integer.as_bytes().to_vec();
+    let head = bytes[0];
+    let mut borrow = true;
+    for index in (1..bytes.len()).rev() {
+        if !borrow {
+            break;
+        }
+        let digit = TREE_ORDER_DIGITS
+            .iter()
+            .position(|candidate| *candidate == bytes[index])
+            .ok_or_else(|| anyhow::anyhow!("invalid tree order integer digit"))?;
+        if digit == 0 {
+            bytes[index] = *TREE_ORDER_DIGITS.last().unwrap_or(&b'z');
+        } else {
+            bytes[index] = TREE_ORDER_DIGITS[digit - 1];
+            borrow = false;
+        }
+    }
+    if !borrow {
+        return Ok(Some(String::from_utf8(bytes)?));
+    }
+    if head == b'a' {
+        return Ok(Some(format!(
+            "Z{}",
+            TREE_ORDER_DIGITS.last().copied().unwrap_or(b'z') as char
+        )));
+    }
+    if head == b'A' {
+        return Ok(None);
+    }
+    let previous_head = head - 1;
+    if previous_head < b'Z' {
+        bytes.push(*TREE_ORDER_DIGITS.last().unwrap_or(&b'z'));
+    } else {
+        bytes.pop();
+    }
+    bytes[0] = previous_head;
+    Ok(Some(String::from_utf8(bytes)?))
+}
+
+fn tree_midpoint(a: &str, b: Option<&str>) -> anyhow::Result<String> {
+    if let Some(b) = b {
+        anyhow::ensure!(a < b, "tree order midpoint bounds are invalid");
+    }
+    anyhow::ensure!(!a.ends_with('0'), "tree order midpoint has a trailing zero");
+    if let Some(b) = b {
+        anyhow::ensure!(!b.ends_with('0'), "tree order midpoint has a trailing zero");
+    }
+    if let Some(b) = b {
+        let mut common = 0;
+        while common < b.len()
+            && a.as_bytes().get(common).copied().unwrap_or(b'0') == b.as_bytes()[common]
+        {
+            common += 1;
+        }
+        if common > 0 {
+            return Ok(format!(
+                "{}{}",
+                &b[..common],
+                tree_midpoint(&a[common..], Some(&b[common..]))?
+            ));
+        }
+    }
+    let digit_a = if a.is_empty() {
+        0
+    } else {
+        TREE_ORDER_DIGITS
+            .iter()
+            .position(|digit| *digit == a.as_bytes()[0])
+            .ok_or_else(|| anyhow::anyhow!("invalid tree order midpoint digit"))?
+    };
+    let digit_b = match b {
+        Some(b) => TREE_ORDER_DIGITS
+            .iter()
+            .position(|digit| *digit == b.as_bytes()[0])
+            .ok_or_else(|| anyhow::anyhow!("invalid tree order midpoint digit"))?,
+        None => TREE_ORDER_DIGITS.len(),
+    };
+    if digit_b - digit_a > 1 {
+        return Ok((TREE_ORDER_DIGITS[(digit_a + digit_b + 1) / 2] as char).to_string());
+    }
+    if b.is_some_and(|value| value.len() > 1) {
+        return Ok(b.unwrap_or_default()[..1].to_string());
+    }
+    Ok(format!(
+        "{}{}",
+        TREE_ORDER_DIGITS[digit_a] as char,
+        tree_midpoint(a.get(1..).unwrap_or_default(), None)?
+    ))
+}
+
+fn tree_generate_key_between(a: Option<&str>, b: Option<&str>) -> anyhow::Result<String> {
+    if let Some(a) = a {
+        tree_validate_order_key(a)?;
+    }
+    if let Some(b) = b {
+        tree_validate_order_key(b)?;
+    }
+    if let (Some(a), Some(b)) = (a, b) {
+        anyhow::ensure!(a < b, "tree order bounds are invalid");
+    }
+    match (a, b) {
+        (None, None) => Ok("a0".to_string()),
+        (None, Some(b)) => {
+            let integer = tree_order_integer_part(b)?;
+            if integer < b {
+                Ok(integer.to_string())
+            } else {
+                tree_decrement_integer(integer)?.ok_or_else(|| {
+                    anyhow::anyhow!("cannot decrement tree order key any more")
+                })
+            }
+        }
+        (Some(a), None) => {
+            let integer = tree_order_integer_part(a)?;
+            let fraction = &a[integer.len()..];
+            match tree_increment_integer(integer)? {
+                Some(value) => Ok(value),
+                None => Ok(format!("{}{}", integer, tree_midpoint(fraction, None)?)),
+            }
+        }
+        (Some(a), Some(b)) => {
+            let integer_a = tree_order_integer_part(a)?;
+            let integer_b = tree_order_integer_part(b)?;
+            let fraction_a = &a[integer_a.len()..];
+            let fraction_b = &b[integer_b.len()..];
+            if integer_a == integer_b {
+                Ok(format!(
+                    "{}{}",
+                    integer_a,
+                    tree_midpoint(fraction_a, Some(fraction_b))?
+                ))
+            } else if let Some(next) = tree_increment_integer(integer_a)? {
+                if next.as_str() < b {
+                    Ok(next)
+                } else {
+                    Ok(format!("{}{}", integer_a, tree_midpoint(fraction_a, None)?))
+                }
+            } else {
+                Ok(format!("{}{}", integer_a, tree_midpoint(fraction_a, None)?))
+            }
+        }
+    }
+}
+
+fn tree_generate_n_keys_between(
+    a: Option<&str>,
+    b: Option<&str>,
+    count: usize,
+) -> anyhow::Result<Vec<String>> {
+    if count == 0 {
+        return Ok(Vec::new());
+    }
+    if count == 1 {
+        return Ok(vec![tree_generate_key_between(a, b)?]);
+    }
+    if b.is_none() {
+        let mut current = tree_generate_key_between(a, b)?;
+        let mut result = vec![current.clone()];
+        for _ in 0..count - 1 {
+            current = tree_generate_key_between(Some(&current), None)?;
+            result.push(current.clone());
+        }
+        return Ok(result);
+    }
+    if a.is_none() {
+        let mut current = tree_generate_key_between(None, b)?;
+        let mut result = vec![current.clone()];
+        for _ in 0..count - 1 {
+            current = tree_generate_key_between(None, Some(&current))?;
+            result.push(current.clone());
+        }
+        result.reverse();
+        return Ok(result);
+    }
+    let middle_count = count / 2;
+    let middle = tree_generate_key_between(a, b)?;
+    let mut result = tree_generate_n_keys_between(a, Some(&middle), middle_count)?;
+    result.push(middle.clone());
+    result.extend(tree_generate_n_keys_between(
+        Some(&middle),
+        b,
+        count - middle_count - 1,
+    )?);
+    Ok(result)
+}
+
+fn native_tree_string(value: &Value, field: &str) -> anyhow::Result<String> {
+    value
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow::anyhow!("AI tree op {field} must be a non-empty string"))
+}
+
+fn native_tree_nullable_string(value: &Value, field: &str) -> anyhow::Result<Option<String>> {
+    match value.get(field) {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() => Ok(Some(value.clone())),
+        Some(_) => anyhow::bail!("AI tree op {field} must be a string or null"),
+        None => anyhow::bail!("AI tree op {field} is missing"),
+    }
+}
+
+fn native_tree_optional_string(value: &Value, field: &str) -> anyhow::Result<Option<String>> {
+    match value.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => anyhow::bail!("AI tree op {field} must be a string or null"),
+    }
+}
+
+fn native_tree_after(value: &Value) -> anyhow::Result<NativeTreeAfter> {
+    let Some(pos) = value.get("pos") else {
+        return Ok(NativeTreeAfter::Append);
+    };
+    let position = pos
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("AI tree op pos must be an object"))?;
+    match position.get("afterRef") {
+        None => Ok(NativeTreeAfter::Append),
+        Some(Value::Null) => Ok(NativeTreeAfter::Prepend),
+        Some(Value::String(value)) if !value.is_empty() => Ok(NativeTreeAfter::After(value.clone())),
+        Some(_) => anyhow::bail!("AI tree op afterRef must be a string or null"),
+    }
+}
+
+fn native_tree_resolve_ref(
+    value: Option<&String>,
+    temp_ids: &HashMap<String, String>,
+) -> anyhow::Result<Option<String>> {
+    match value {
+        None => Ok(None),
+        Some(value) if value.starts_with("tmp:") => temp_ids
+            .get(value)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| anyhow::anyhow!("AI tree op references an unknown tempId '{value}'")),
+        Some(value) => Ok(Some(value.clone())),
+    }
+}
+
+fn native_tree_emit_inserted(
+    inserted: &NativeTreeInserted,
+    after_map: &HashMap<String, Vec<NativeTreeInserted>>,
+    visiting: &mut HashSet<String>,
+    placed: &mut HashSet<String>,
+    ordered: &mut Vec<(String, Option<String>)>,
+) -> anyhow::Result<()> {
+    if visiting.contains(&inserted.id) {
+        anyhow::bail!("AI tree plan afterRef cycle detected")
+    }
+    if placed.contains(&inserted.id) {
+        return Ok(());
+    }
+    visiting.insert(inserted.id.clone());
+    ordered.push((inserted.id.clone(), None));
+    for child in after_map.get(&inserted.id).into_iter().flatten() {
+        native_tree_emit_inserted(child, after_map, visiting, placed, ordered)?;
+    }
+    visiting.remove(&inserted.id);
+    placed.insert(inserted.id.clone());
+    Ok(())
+}
+
+fn validate_ai_tree_native_projection_in_tx(
+    conn: &rusqlite::Connection,
+    payload: &ApplyAiTreePlanPayload,
+) -> anyhow::Result<()> {
+    let ops = payload
+        .ops
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("interactive AI tree plan ops are required"))?;
+    anyhow::ensure!(!ops.is_empty(), "interactive AI tree plan ops are empty");
+
+    let mut current = Vec::new();
+    let mut statement = conn.prepare(
+        "SELECT id, parent_id, node_type, title, synopsis, sort_order
+           FROM tree_nodes WHERE project_id = ?1",
+    )?;
+    for row in statement.query_map([&payload.project_id], |row| {
+        Ok(NativeTreeNodeSnapshot {
+            id: row.get(0)?,
+            parent_id: row.get(1)?,
+            node_type: row.get(2)?,
+            sort_order: row.get(5)?,
+        })
+    })? {
+        current.push(row?);
+    }
+    let current_by_id: HashMap<String, NativeTreeNodeSnapshot> =
+        current.iter().cloned().map(|node| (node.id.clone(), node)).collect();
+    for update in &payload.updates {
+        anyhow::ensure!(
+            current_by_id.contains_key(&update.id),
+            "tree node '{}' not found in project '{}'",
+            update.id,
+            payload.project_id
+        );
+    }
+
+    let mut create_ops = Vec::new();
+    let mut move_ops = Vec::new();
+    let mut rename_ops = Vec::new();
+    for (order, op) in ops.iter().enumerate() {
+        let kind = native_tree_string(op, "op")?;
+        anyhow::ensure!(
+            payload.kind != "scaffold" || kind == "create",
+            "scaffold AI tree plan may contain create ops only"
+        );
+        match kind.as_str() {
+            "create" => create_ops.push((
+                order,
+                native_tree_string(op, "tempId")?,
+                native_tree_nullable_string(op, "parentRef")?,
+                native_tree_string(op, "nodeType")?,
+                native_tree_string(op, "title")?,
+                native_tree_optional_string(op, "synopsis")?,
+                native_tree_after(op)?,
+            )),
+            "move" => move_ops.push((
+                order,
+                native_tree_string(op, "nodeId")?,
+                native_tree_nullable_string(op, "newParentRef")?,
+                native_tree_after(op)?,
+            )),
+            "rename" => rename_ops.push((
+                native_tree_string(op, "nodeId")?,
+                native_tree_string(op, "title")?,
+            )),
+            _ => anyhow::bail!("AI tree plan contains an unsupported op '{kind}'"),
+        }
+    }
+
+    let mut temp_ids = HashMap::new();
+    let mut create_rows = HashMap::new();
+    for create in &payload.creates {
+        let temp_id = create
+            .temp_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("interactive AI tree create tempId is required"))?;
+        anyhow::ensure!(
+            temp_id.starts_with("tmp:"),
+            "interactive AI tree create tempId is invalid"
+        );
+        anyhow::ensure!(
+            temp_ids.insert(temp_id.to_string(), create.id.clone()).is_none(),
+            "interactive AI tree create tempIds must be unique"
+        );
+        anyhow::ensure!(
+            !current_by_id.contains_key(&create.id),
+            "interactive AI tree create id '{}' already exists",
+            create.id
+        );
+        anyhow::ensure!(
+            create_rows.insert(temp_id.to_string(), create).is_none(),
+            "interactive AI tree create tempIds must be unique"
+        );
+    }
+    anyhow::ensure!(
+        create_ops.len() == payload.creates.len(),
+        "interactive AI tree create ops do not match creates"
+    );
+    for (_, temp_id, parent_ref, node_type, title, synopsis, _) in &create_ops {
+        let create = create_rows
+            .get(temp_id)
+            .ok_or_else(|| anyhow::anyhow!("interactive AI tree create '{temp_id}' is missing"))?;
+        anyhow::ensure!(
+            native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)? == create.parent_id,
+            "interactive AI tree create '{temp_id}' parent does not match ops"
+        );
+        anyhow::ensure!(create.node_type == *node_type, "interactive AI tree create nodeType does not match ops");
+        anyhow::ensure!(create.title == *title, "interactive AI tree create title does not match ops");
+        anyhow::ensure!(create.synopsis == *synopsis, "interactive AI tree create synopsis does not match ops");
+    }
+
+    let mut expected_updates: HashMap<String, (Option<(Option<String>, NativeTreeAfter)>, Option<String>)> =
+        HashMap::new();
+    let mut moved_ids = HashSet::new();
+    for (_, node_id, parent_ref, after) in &move_ops {
+        anyhow::ensure!(
+            current_by_id.contains_key(node_id),
+            "tree node '{node_id}' not found in project '{}'",
+            payload.project_id
+        );
+        anyhow::ensure!(moved_ids.insert(node_id.clone()), "AI tree move is duplicated for '{node_id}'");
+        expected_updates
+            .entry(node_id.clone())
+            .or_insert((None, None))
+            .0 = Some((native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?, after.clone()));
+    }
+    for (node_id, title) in &rename_ops {
+        anyhow::ensure!(
+            current_by_id.contains_key(node_id),
+            "tree node '{node_id}' is not in project '{}'",
+            payload.project_id
+        );
+        let entry = expected_updates.entry(node_id.clone()).or_insert((None, None));
+        anyhow::ensure!(entry.1.is_none(), "AI tree rename is duplicated for '{node_id}'");
+        entry.1 = Some(title.clone());
+    }
+    anyhow::ensure!(
+        expected_updates.len() == payload.updates.len(),
+        "interactive AI tree update ops do not match updates"
+    );
+    for update in &payload.updates {
+        let expected = expected_updates
+            .get(&update.id)
+            .ok_or_else(|| anyhow::anyhow!("interactive AI tree update '{}' is not in ops", update.id))?;
+        match (&expected.0, &update.placement) {
+            (Some(_), Some(_)) => {}
+            (Some(_), None) => anyhow::bail!("interactive AI tree move placement is missing"),
+            (None, Some(_)) => anyhow::bail!("interactive AI tree update has an unauthorized placement"),
+            (None, None) => {}
+        }
+        match (&expected.1, &update.title) {
+            (Some(expected), Some(actual)) => anyhow::ensure!(expected == actual, "interactive AI tree rename does not match ops"),
+            (Some(_), None) => anyhow::bail!("interactive AI tree rename title is missing"),
+            (None, Some(_)) => anyhow::bail!("interactive AI tree update has an unauthorized title"),
+            (None, None) => {}
+        }
+    }
+
+    let mut final_parent: HashMap<String, Option<String>> = current
+        .iter()
+        .map(|node| (node.id.clone(), node.parent_id.clone()))
+        .collect();
+    let mut final_type: HashMap<String, String> = current
+        .iter()
+        .map(|node| (node.id.clone(), node.node_type.clone()))
+        .collect();
+    for (temp_id, create) in &create_rows {
+        let parent = native_tree_resolve_ref(create.parent_id.as_ref(), &temp_ids)?;
+        final_parent.insert(create.id.clone(), parent);
+        final_type.insert(create.id.clone(), create.node_type.clone());
+        final_parent.insert(temp_id.clone(), final_parent[&create.id].clone());
+        final_type.insert(temp_id.clone(), create.node_type.clone());
+    }
+    for (_, node_id, parent_ref, _) in &move_ops {
+        let parent = native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?;
+        if let Some(parent_id) = parent.as_ref() {
+            anyhow::ensure!(
+                final_type.get(parent_id).map(String::as_str) == Some("folder"),
+                "AI tree parent '{parent_id}' must be a folder"
+            );
+        }
+        final_parent.insert(node_id.clone(), parent);
+    }
+    for (temp_id, create) in &create_rows {
+        if let Some(parent_id) = final_parent.get(&create.id).and_then(Option::as_ref) {
+            anyhow::ensure!(
+                final_type.get(parent_id).map(String::as_str) == Some("folder"),
+                "AI tree parent '{parent_id}' must be a folder"
+            );
+        }
+        let _ = temp_id;
+    }
+
+    let mut children_by_parent: HashMap<Option<String>, Vec<NativeTreeNodeSnapshot>> = HashMap::new();
+    for node in &current {
+        children_by_parent
+            .entry(node.parent_id.clone())
+            .or_default()
+            .push(node.clone());
+    }
+    let mut inserted_by_parent: HashMap<Option<String>, Vec<NativeTreeInserted>> = HashMap::new();
+    for (order, temp_id, parent_ref, _, _, _, after) in &create_ops {
+        let create = create_rows.get(temp_id).expect("create row was checked above");
+        let parent = native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?;
+        let after = match after {
+            NativeTreeAfter::Append => NativeTreeAfter::Append,
+            NativeTreeAfter::Prepend => NativeTreeAfter::Prepend,
+            NativeTreeAfter::After(reference) => NativeTreeAfter::After(
+                native_tree_resolve_ref(Some(reference), &temp_ids)?
+                    .ok_or_else(|| anyhow::anyhow!("AI tree afterRef is null"))?,
+            ),
+        };
+        inserted_by_parent
+            .entry(parent)
+            .or_default()
+            .push(NativeTreeInserted { id: create.id.clone(), after, order: *order });
+    }
+    for (order, node_id, parent_ref, after) in &move_ops {
+        let parent = native_tree_resolve_ref(parent_ref.as_ref(), &temp_ids)?;
+        let after = match after {
+            NativeTreeAfter::Append => NativeTreeAfter::Append,
+            NativeTreeAfter::Prepend => NativeTreeAfter::Prepend,
+            NativeTreeAfter::After(reference) => NativeTreeAfter::After(
+                native_tree_resolve_ref(Some(reference), &temp_ids)?
+                    .ok_or_else(|| anyhow::anyhow!("AI tree afterRef is null"))?,
+            ),
+        };
+        inserted_by_parent
+            .entry(parent)
+            .or_default()
+            .push(NativeTreeInserted { id: node_id.clone(), after, order: *order });
+    }
+
+    let mut expected_placements: HashMap<String, (Option<String>, String)> = HashMap::new();
+    for (parent, mut inserted) in inserted_by_parent {
+        inserted.sort_by_key(|item| item.order);
+        let inserted_ids: HashSet<String> = inserted.iter().map(|item| item.id.clone()).collect();
+        let mut anchors = children_by_parent.remove(&parent).unwrap_or_default();
+        anchors.retain(|node| !moved_ids.contains(&node.id) && tree_validate_order_key(&node.sort_order).is_ok());
+        anchors.sort_by(|left, right| left.sort_order.cmp(&right.sort_order));
+        let anchor_ids: HashSet<String> = anchors.iter().map(|node| node.id.clone()).collect();
+        let mut after_map: HashMap<String, Vec<NativeTreeInserted>> = HashMap::new();
+        let mut prepend = Vec::new();
+        let mut append = Vec::new();
+        for item in inserted {
+            match &item.after {
+                NativeTreeAfter::Append => append.push(item),
+                NativeTreeAfter::Prepend => prepend.push(item),
+                NativeTreeAfter::After(reference) => {
+                    anyhow::ensure!(
+                        anchor_ids.contains(reference) || inserted_ids.contains(reference),
+                        "AI tree afterRef '{reference}' is not a final sibling"
+                    );
+                    anyhow::ensure!(
+                        final_parent.get(reference) == Some(&parent),
+                        "AI tree afterRef '{reference}' has a different final parent"
+                    );
+                    after_map.entry(reference.clone()).or_default().push(item);
+                }
+            }
+        }
+        let mut ordered: Vec<(String, Option<String>)> = Vec::new();
+        let mut visiting = HashSet::new();
+        let mut placed = HashSet::new();
+        for item in &prepend {
+            native_tree_emit_inserted(item, &after_map, &mut visiting, &mut placed, &mut ordered)?;
+        }
+        for anchor in &anchors {
+            ordered.push((anchor.id.clone(), Some(anchor.sort_order.clone())));
+            for item in after_map.get(&anchor.id).into_iter().flatten() {
+                native_tree_emit_inserted(item, &after_map, &mut visiting, &mut placed, &mut ordered)?;
+            }
+        }
+        for item in &append {
+            native_tree_emit_inserted(item, &after_map, &mut visiting, &mut placed, &mut ordered)?;
+        }
+        anyhow::ensure!(
+            placed.len() == inserted_ids.len(),
+            "interactive AI tree placement omitted an inserted node"
+        );
+        let mut index = 0;
+        while index < ordered.len() {
+            if ordered[index].1.is_some() {
+                index += 1;
+                continue;
+            }
+            let mut end = index;
+            while end < ordered.len() && ordered[end].1.is_none() {
+                end += 1;
+            }
+            let before = if index > 0 { ordered[index - 1].1.as_deref() } else { None };
+            let after = if end < ordered.len() { ordered[end].1.as_deref() } else { None };
+            let keys = tree_generate_n_keys_between(before, after, end - index)?;
+            for (offset, (id, _)) in ordered[index..end].iter().enumerate() {
+                expected_placements.insert(id.clone(), (parent.clone(), keys[offset].clone()));
+            }
+            index = end;
+        }
+    }
+    for create in &payload.creates {
+        let expected = expected_placements
+            .get(&create.id)
+            .ok_or_else(|| anyhow::anyhow!("interactive AI tree create placement is missing"))?;
+        anyhow::ensure!(
+            expected.0 == create.parent_id && expected.1 == create.sort_order,
+            "interactive AI tree create placement does not match ops"
+        );
+    }
+    for update in &payload.updates {
+        if expected_updates
+            .get(&update.id)
+            .and_then(|value| value.0.as_ref())
+            .is_some()
+        {
+            let expected = expected_placements
+                .get(&update.id)
+                .ok_or_else(|| anyhow::anyhow!("interactive AI tree move placement is missing"))?;
+            let placement = update
+                .placement
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("interactive AI tree move placement is missing"))?;
+            anyhow::ensure!(
+                expected.0.as_ref() == placement.parent_id.as_ref()
+                    && expected.1 == placement.sort_order,
+                "interactive AI tree update placement does not match ops"
+            );
+        }
+    }
+    Ok(())
+}
+
 fn ai_tree_version_rows(rows: &BTreeMap<String, Value>) -> Value {
     Value::Array(
         rows.iter()
@@ -3949,6 +4684,10 @@ pub fn apply_ai_tree_plan(db: &Database, payload: ApplyAiTreePlanPayload) -> any
                     &payload.updates,
                 )?;
             }
+        }
+
+        if authority_context.authority_route == "interactive-agent-command" && !payload.redo {
+            validate_ai_tree_native_projection_in_tx(&tx, &payload)?;
         }
 
         let mut affected_authority_paths = BTreeSet::new();
@@ -4951,11 +5690,12 @@ mod tests {
             }),
             writes_authority_protected_field: false,
             creates: vec![AiTreePlanCreateInput {
+                temp_id: Some("tmp:folder".to_string()),
                 id: "ai-folder".to_string(),
                 parent_id: Some("root".to_string()),
                 node_type: "folder".to_string(),
                 title: "AI Folder".to_string(),
-                sort_order: "a2".to_string(),
+                sort_order: "a0".to_string(),
                 synopsis: None,
             }],
             updates: vec![AiTreePlanUpdateInput {
@@ -4967,6 +5707,27 @@ mod tests {
                 }),
                 title: Some("Moved by AI".to_string()),
             }],
+            ops: Some(vec![
+                json!({
+                    "op": "create",
+                    "tempId": "tmp:folder",
+                    "parentRef": "root",
+                    "nodeType": "folder",
+                    "title": "AI Folder",
+                    "pos": {},
+                }),
+                json!({
+                    "op": "move",
+                    "nodeId": "moved",
+                    "newParentRef": "tmp:folder",
+                    "pos": {},
+                }),
+                json!({
+                    "op": "rename",
+                    "nodeId": "moved",
+                    "title": "Moved by AI",
+                }),
+            ]),
             redo: false,
             original_transaction_id: None,
             undo_journal_id: None,
@@ -5160,6 +5921,40 @@ mod tests {
             Ok(())
         })
         .expect("verify undo/redo lineage");
+    }
+
+    #[test]
+    fn interactive_ai_tree_plan_rejects_tampered_effect_projection() {
+        let db = fixture();
+        let mut title_tampered = ai_tree_payload("ai-tree-tampered-title");
+        title_tampered.creates[0].title = "Renderer retarget".to_string();
+        let error = apply_ai_tree_plan(&db, title_tampered)
+            .expect_err("creates changed without changing ops must be rejected");
+        assert!(error.to_string().contains("title does not match ops"));
+        assert_eq!(
+            db.with_conn(|conn| Ok(conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?))
+            .expect("count tree create"),
+            0
+        );
+
+        let mut sort_tampered = ai_tree_payload("ai-tree-tampered-sort");
+        sort_tampered.creates[0].sort_order = "a1".to_string();
+        let error = apply_ai_tree_plan(&db, sort_tampered)
+            .expect_err("renderer placements must be recomputed from ops");
+        assert!(error.to_string().contains("placement does not match ops"));
+        assert_eq!(
+            db.with_conn(|conn| Ok(conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?))
+            .expect("count tree create"),
+            0
+        );
     }
 
     #[test]

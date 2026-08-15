@@ -771,6 +771,30 @@ fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
     Ok(())
 }
 
+fn preflight_agent_field_authority(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    renderer_context: Option<&RendererCanonicalWriteContext>,
+) -> anyhow::Result<()> {
+    if renderer_context.is_some_and(|context| {
+        context.authority_route == "interactive-agent-command"
+    }) {
+        validate_and_record_agent_field_authority_for_entity(
+            conn,
+            project_id,
+            entity_kind,
+            entity_id,
+            paths,
+            updated_at,
+        )?;
+    }
+    Ok(())
+}
+
 fn validate_and_record_agent_field_authority(
     conn: &rusqlite::Connection,
     project_id: &str,
@@ -3337,6 +3361,19 @@ fn agent_codex_update_internal(
                 renderer_context.as_ref(),
             )?;
             let manual_fields = manual_update_fields(&payload);
+            let authority_paths = manual_fields
+                .iter()
+                .map(|path| (*path).to_string())
+                .collect::<Vec<_>>();
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "codex-entry",
+                &payload.entry_id,
+                &authority_paths,
+                &change_occurred_at(timestamp)?,
+                renderer_context.as_ref(),
+            )?;
             let patched = apply_codex_entry_patch_in_tx(
                 conn,
                 CodexEntryPatchTxInput {
@@ -5393,7 +5430,32 @@ fn agent_foreshadow_update_with_context_impl(
     normalized.request_id.clear();
     normalized.session_id.clear();
     let request_hash = idempotency_hash("agent_foreshadow_update", &normalized)?;
+    let authority_paths = [
+        payload.title.as_ref().map(|_| "/title"),
+        payload.intent.as_ref().map(|_| "/intent"),
+        payload.notes.as_ref().map(|_| "/notes"),
+        payload.load_bearing.as_ref().map(|_| "/loadBearing"),
+        payload.payoff_confirmed.map(|_| "/payoffConfirmed"),
+        payload.abandoned.map(|_| "/abandoned"),
+        payload.secret.map(|_| "/secret"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .collect::<Vec<_>>();
+    let authority_updated_at = chrono::Utc::now().to_rfc3339();
     db.with_conn(|conn| {
+        let before_change = |conn: &rusqlite::Connection| {
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "foreshadow",
+                &payload.foreshadow_id,
+                &authority_paths,
+                &authority_updated_at,
+                renderer_context.as_ref(),
+            )
+        };
         let append = |conn: &rusqlite::Connection,
                       event: &grimodex_core::change_events::AppendChangeEvent,
                       undo_journal_id: &str| {
@@ -5412,7 +5474,7 @@ fn agent_foreshadow_update_with_context_impl(
             .map(|_| ())
         };
         let result =
-            grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version_with_request_in_tx_hook(
+            grimodex_core::writes::foreshadow::tracked_foreshadow_update_at_version_with_request_in_tx_hooks(
                 conn,
                 grimodex_core::writes::foreshadow::TrackedForeshadowUpdateInput {
                     project_id: &payload.project_id,
@@ -5435,6 +5497,7 @@ fn agent_foreshadow_update_with_context_impl(
                 payload.base_version,
                 request_id,
                 &request_hash,
+                before_change,
                 append,
             )
             .map_err(|error| anyhow::anyhow!("agent_foreshadow_update: {error:#}"))?;
@@ -7808,6 +7871,28 @@ fn agent_event_update_with_request_and_authority_impl(
                 fields.push("revealSceneId");
             }
 
+            let authority_paths = fields
+                .iter()
+                .map(|field| {
+                    authority_path_for_field("event", field, EVENT_AUTHORITY_FIELDS)
+                        .map(str::to_string)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "event update derived an unknown authority field '{field}'"
+                            )
+                        })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
+
             let sql = format!(
                 "UPDATE events SET {} WHERE id = ?{param_idx} AND project_id = ?{} AND version = ?{}",
                 sets.join(", "),
@@ -8273,6 +8358,17 @@ fn agent_event_set_participants_with_request_and_authority_impl(
             }
             let result_version = base_version + 1;
 
+            let authority_paths = vec!["/participants".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
+
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let before = collect_participants_json(conn, &payload.event_id)?.to_string();
 
@@ -8533,6 +8629,16 @@ pub fn agent_scene_event_mutate_with_authority_impl(
                 );
             }
 
+            let authority_paths = vec!["/sceneIds".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
 
             let after_token = if link {
@@ -8782,6 +8888,16 @@ pub fn agent_scene_event_link_batch_with_authority_impl(
                 .filter(|scene_id| !current_links.contains_key(*scene_id))
                 .cloned()
                 .collect();
+            let authority_paths = vec!["/sceneIds".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
             let before_feed = collect_event_snapshot(conn, &payload.event_id)?;
             let scene_id_refs: Vec<&str> =
                 added_scene_ids.iter().map(String::as_str).collect();
@@ -8989,6 +9105,26 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 );
             }
 
+            let authority_paths = vec!["/relations".to_string()];
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.cause_event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
+            preflight_agent_field_authority(
+                conn,
+                &payload.project_id,
+                "event",
+                &payload.effect_event_id,
+                &authority_paths,
+                &now,
+                renderer_context.as_ref(),
+            )?;
+
             let mut feed_event_ids = [
                 payload.cause_event_id.clone(),
                 payload.effect_event_id.clone(),
@@ -9086,22 +9222,6 @@ pub fn agent_event_relation_mutate_with_authority_impl(
                 .to_string(),
                 timestamp,
             };
-            if renderer_context.as_ref().is_some_and(|context| {
-                context.authority_route == "interactive-agent-command"
-            }) {
-                // A relation mutates both event aggregates. The canonical
-                // event is rooted at the cause event, so validate the effect
-                // side explicitly in the same transaction as well.
-                let relation_paths = vec!["/relations".to_string()];
-                validate_and_record_agent_field_authority_for_entity(
-                    conn,
-                    &payload.project_id,
-                    "event",
-                    &payload.effect_event_id,
-                    &relation_paths,
-                    &now,
-                )?;
-            }
             append_agent_forward_change_in_tx(
                 conn,
                 &payload.project_id,
@@ -9413,6 +9533,328 @@ mod tests {
         .expect_err("legacy Foreshadow title without authority must deny AI delete");
         assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
         assert_eq!(table_count(&db, "foreshadows"), 1);
+    }
+
+    #[test]
+    fn renderer_codex_update_preflights_legacy_content_and_summary_before_patch() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "legacy-update-entry", "Legacy name", 0);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                    AND entity_id = 'legacy-update-entry'",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated Codex authority rows");
+
+        let version: i64 = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'legacy-update-entry'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read legacy Codex version");
+
+        let content_error = renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-update-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-update-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: None,
+                content: Some("tampered content".to_string()),
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-codex-content-update", "legacy-codex-content:event"),
+        )
+        .expect_err("legacy Codex content must deny AI update before patch");
+        assert!(content_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        let summary_error = renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-update-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "legacy-update-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: None,
+                summary: Some(String::new()),
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("legacy-codex-summary-clear", "legacy-codex-summary:event"),
+        )
+        .expect_err("legacy Codex summary must deny AI clear before patch");
+        assert!(summary_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, String, i64) = conn.query_row(
+                "SELECT content, summary, version FROM codex_entries
+                  WHERE id = 'legacy-update-entry'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(state.0, r#"{"name":"Legacy name"}"#);
+            assert_eq!(state.1, "Legacy name summary");
+            assert_eq!(state.2, version);
+            Ok(())
+        })
+        .expect("inspect unchanged Codex after denied updates");
+    }
+
+    #[test]
+    fn renderer_event_participant_replace_preflights_legacy_association() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let participant_a = insert_codex(&db, &project_id, "Legacy participant");
+        let participant_b = insert_codex(&db, &project_id, "Unauthorized participant");
+        let (event_id, _) = create_event(
+            &db,
+            &project_id,
+            "Legacy participant event",
+            vec![participant_a.clone()],
+            vec![],
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = ?2",
+                rusqlite::params![project_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated participant authority row");
+        let version = event_version(&db, &event_id);
+        let request_id = "legacy-event-participant-replace";
+        let error = agent_event_set_participants_with_authority_impl(
+            &db,
+            AgentEventParticipantsPayload {
+                project_id: project_id.clone(),
+                session_id: "legacy-event-participant-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                event_id: event_id.clone(),
+                base_version: version,
+                codex_entry_ids: vec![participant_b.clone()],
+                participant_roles: None,
+            },
+            renderer_agent_context(request_id, "legacy-event-participant:event"),
+        )
+        .expect_err("legacy participants must deny AI replacement before delete");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(participant_has(&db, &event_id, &participant_a));
+        assert!(!participant_has(&db, &event_id, &participant_b));
+        assert_eq!(event_version(&db, &event_id), version);
+    }
+
+    #[test]
+    fn renderer_scene_stamp_and_unstamp_preflight_legacy_association() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let scene_a = insert_scene(&db, &project_id);
+        let scene_b = insert_scene(&db, &project_id);
+        let (event_id, _) = create_event(
+            &db,
+            &project_id,
+            "Legacy stamped event",
+            vec![],
+            vec![scene_a.clone()],
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event' AND entity_id = ?2",
+                rusqlite::params![project_id, event_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated scene authority row");
+
+        let unstamp_request = "legacy-event-unstamp";
+        let mut unstamp = scene_payload(&project_id, &scene_a, &event_id);
+        unstamp.request_id = unstamp_request.to_string();
+        let unstamp_error = agent_scene_event_mutate_with_authority_impl(
+            &db,
+            unstamp,
+            false,
+            Some(renderer_agent_context(
+                unstamp_request,
+                "legacy-event-unstamp:event",
+            )),
+        )
+        .expect_err("legacy scene stamp must deny AI unstamp before delete");
+        assert!(unstamp_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(scene_link_has(&db, &event_id, &scene_a));
+
+        let stamp_request = "legacy-event-stamp";
+        let mut stamp = scene_payload(&project_id, &scene_b, &event_id);
+        stamp.request_id = stamp_request.to_string();
+        let stamp_error = agent_scene_event_mutate_with_authority_impl(
+            &db,
+            stamp,
+            true,
+            Some(renderer_agent_context(
+                stamp_request,
+                "legacy-event-stamp:event",
+            )),
+        )
+        .expect_err("legacy scene association must deny AI stamp before insert");
+        assert!(stamp_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert!(!scene_link_has(&db, &event_id, &scene_b));
+    }
+
+    #[test]
+    fn renderer_event_relation_add_and_remove_preflight_legacy_associations() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let (cause_id, _) = create_event(&db, &project_id, "Cause", vec![], vec![]);
+        let (effect_id, _) = create_event(&db, &project_id, "Effect", vec![], vec![]);
+        let (new_effect_id, _) = create_event(&db, &project_id, "New effect", vec![], vec![]);
+        let initial_relation = relation_payload(&project_id, &cause_id, &effect_id);
+        agent_event_relation_mutate_impl(&db, initial_relation, true).expect("seed relation");
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'event'
+                    AND entity_id IN (?2, ?3, ?4)",
+                rusqlite::params![project_id, cause_id, effect_id, new_effect_id],
+            )?;
+            Ok(())
+        })
+        .expect("remove generated relation authority rows");
+
+        let remove_request = "legacy-relation-remove";
+        let mut remove = relation_payload(&project_id, &cause_id, &effect_id);
+        remove.request_id = remove_request.to_string();
+        let remove_error = agent_event_relation_mutate_with_authority_impl(
+            &db,
+            remove,
+            false,
+            Some(renderer_agent_context(
+                remove_request,
+                "legacy-relation-remove:event",
+            )),
+        )
+        .expect_err("legacy relation must deny AI remove before delete");
+        assert!(remove_error
+            .to_string()
+            .contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(relation_count(&db, &cause_id, &effect_id), 1);
+
+        let add_request = "legacy-relation-add";
+        let mut add = relation_payload(&project_id, &cause_id, &new_effect_id);
+        add.request_id = add_request.to_string();
+        let add_error = agent_event_relation_mutate_with_authority_impl(
+            &db,
+            add,
+            true,
+            Some(renderer_agent_context(
+                add_request,
+                "legacy-relation-add:event",
+            )),
+        )
+        .expect_err("legacy relation must deny AI add before insert");
+        assert!(add_error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        assert_eq!(relation_count(&db, &cause_id, &new_effect_id), 0);
+    }
+
+    #[test]
+    fn renderer_foreshadow_update_preflights_legacy_intent_and_notes_before_patch() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        let foreshadow_id = insert_foreshadow_row(&db, &project_id);
+        db.with_conn(|conn| {
+            conn.execute(
+                "DELETE FROM narrative_field_authority
+                  WHERE project_id = ?1 AND entity_kind = 'foreshadow' AND entity_id = ?2",
+                rusqlite::params![project_id, foreshadow_id],
+            )?;
+            conn.execute(
+                "UPDATE foreshadows SET intent = 'Human intent', notes = 'Human notes'
+                  WHERE id = ?1 AND project_id = ?2",
+                rusqlite::params![foreshadow_id, project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy Foreshadow fields");
+
+        let request_id = "legacy-foreshadow-update";
+        let error = renderer_agent_foreshadow_update_impl(
+            &db,
+            AgentForeshadowUpdatePayload {
+                request_id: request_id.to_string(),
+                project_id: project_id.clone(),
+                session_id: "legacy-foreshadow-session".to_string(),
+                foreshadow_id: foreshadow_id.clone(),
+                base_version: 0,
+                title: None,
+                intent: Some(String::new()),
+                notes: Some(String::new()),
+                load_bearing: None,
+                payoff_confirmed: None,
+                abandoned: None,
+                secret: None,
+            },
+            renderer_agent_context(request_id, "legacy-foreshadow-update:event"),
+        )
+        .expect_err("legacy Foreshadow fields must deny AI clear before patch");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+
+        db.with_conn(|conn| {
+            let state: (String, String, i64) = conn.query_row(
+                "SELECT intent, notes, version FROM foreshadows WHERE id = ?1",
+                rusqlite::params![foreshadow_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(state, ("Human intent".to_string(), "Human notes".to_string(), 0));
+            Ok(())
+        })
+        .expect("inspect unchanged Foreshadow after denied update");
     }
 
     #[test]

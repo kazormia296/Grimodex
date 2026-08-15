@@ -62,6 +62,101 @@ function invokeHandler(): (
   return handler;
 }
 
+async function issueAgentCapability(
+  toolName: string,
+  input: Record<string, unknown>,
+  senderId: number,
+): Promise<{
+  capability: string;
+  requestId: string;
+  chatMessageId: string;
+  executionId: string;
+  mainOwnedProvenanceId: string;
+}> {
+  const sendAgentMessage = vi.fn(async () =>
+    JSON.stringify({
+      blocks: [{ type: "tool_use", id: "call-1", name: toolName, input }],
+      stopReason: "tool_use",
+    }),
+  );
+  const dbExecute = vi.fn(async () =>
+    JSON.stringify({
+      rows: [[JSON.stringify({ preset: "full" })]],
+    }),
+  );
+  registerIpcRouter(
+    {
+      dbExecute,
+      getAiSettings: vi.fn(async () =>
+        JSON.stringify({ provider: "openai", model: "gpt-test" }),
+      ),
+      sendAgentMessage,
+    } as unknown as NapiBackendLike,
+    {},
+    {
+      resolveApiKeyForRequest: vi.fn(() => "test-key"),
+      getApiKeyForRequest: vi.fn(() => null),
+    },
+  );
+  const chatMessageId = `assistant-${toolName}`;
+  const executionId = `execution-${toolName}`;
+  const envelope = await invokeHandler()(
+    { sender: { id: senderId } },
+    "send_agent_message",
+    {
+      messages: [{ role: "user", content: "write" }],
+      tools: [{ name: toolName }],
+      provider: "openai",
+      model: "gpt-test",
+      chatMessageId,
+      auditContext: {
+        expectedWorkspacePath: "/tmp/workspace",
+        projectId: "p1",
+        operationId: `turn-${toolName}`,
+        executionId,
+        parentExecutionId: null,
+        pathId: "chat_agent_main",
+      },
+    },
+  );
+  if (!envelope.ok) throw new Error(envelope.error);
+  const grant = (
+    envelope.value as {
+      agentAuthorityCapabilities: Record<
+        string,
+        {
+          capability: string;
+          executionId: string;
+          chatMessageId: string;
+          mainOwnedProvenanceId: string;
+        }
+      >;
+    }
+  ).agentAuthorityCapabilities["call-1"];
+  const requestId = `agent-tool:${createHash("sha256")
+    .update(`${toolName}\0p1\0call-1`)
+    .digest("hex")}`;
+  return { ...grant, requestId };
+}
+
+function agentCapabilityPayload(
+  grant: Awaited<ReturnType<typeof issueAgentCapability>>,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    projectId: "p1",
+    requestId: grant.requestId,
+    eventUid: `${grant.requestId}:event`,
+    origin: "ai-apply",
+    chatMessageId: grant.chatMessageId,
+    toolCallId: "call-1",
+    executionId: grant.executionId,
+    mainOwnedProvenanceId: grant.mainOwnedProvenanceId,
+    agentAuthorityCapability: grant.capability,
+    ...extra,
+  };
+}
+
 beforeEach(() => {
   mocks.handlers.clear();
   vi.clearAllMocks();
@@ -462,6 +557,198 @@ describe("registerIpcRouter fail-soft logging", () => {
       ],
       provenance: null,
     });
+  });
+
+  it("denies a capability when the renderer adds an unrequested Native field", async () => {
+    const grant = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-1", summary: "model summary" },
+      705,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(grant, {
+          entryId: "entry-1",
+          baseVersion: 1,
+          summary: "model summary",
+          contextMode: "always",
+        }),
+      },
+      705,
+    );
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
+  it("accepts the normal JSON-string projection for Codex alias fields", async () => {
+    const grant = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-1", aliases: ["Hero", "Protagonist"] },
+      705,
+    );
+    const bound = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(grant, {
+          entryId: "entry-1",
+          baseVersion: 1,
+          aliases: JSON.stringify(["Hero", "Protagonist"]),
+        }),
+      },
+      705,
+    );
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "interactive-agent-command",
+    );
+  });
+
+  it("binds rich text losslessly and denies link or mark tampering", async () => {
+    const linkDocument = (href: string) =>
+      JSON.stringify({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "参考資料",
+                marks: [
+                  {
+                    type: "link",
+                    attrs: {
+                      href,
+                      target: "_blank",
+                      rel: "noopener noreferrer nofollow",
+                      class: null,
+                      title: null,
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      });
+    const linkGrant = await issueAgentCapability(
+      "update_codex_entry",
+      {
+        id: "entry-1",
+        content: "[参考資料](https://safe.example)",
+      },
+      706,
+    );
+    const linkTampered = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(linkGrant, {
+          entryId: "entry-1",
+          baseVersion: 1,
+          content: linkDocument("https://evil.example"),
+        }),
+      },
+      706,
+    );
+    expect(
+      (linkTampered.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+
+    const markGrant = await issueAgentCapability(
+      "update_codex_entry",
+      { id: "entry-1", content: "**参考**" },
+      707,
+    );
+    const markTampered = bindRendererAuthorityForIpc(
+      "agent_codex_update",
+      {
+        payload: agentCapabilityPayload(markGrant, {
+          entryId: "entry-1",
+          baseVersion: 1,
+          content: JSON.stringify({
+            type: "doc",
+            content: [
+              {
+                type: "paragraph",
+                content: [
+                  {
+                    type: "text",
+                    text: "参考",
+                    marks: [{ type: "italic" }],
+                  },
+                ],
+              },
+            ],
+          }),
+        }),
+      },
+      707,
+    );
+    expect(
+      (markTampered.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
+  });
+
+  it("accepts the normal tree ops projection and denies changed creates", async () => {
+    const ops = [
+      {
+        op: "create",
+        tempId: "tmp:scene",
+        parentRef: null,
+        nodeType: "scene",
+        title: "Opening",
+      },
+    ];
+    const makePayload = (
+      grant: Awaited<ReturnType<typeof issueAgentCapability>>,
+      title: string,
+    ) => ({
+      payload: agentCapabilityPayload(grant, {
+        kind: "scaffold",
+        ops,
+        creates: [
+          {
+            tempId: "tmp:scene",
+            id: "scene-1",
+            parentId: null,
+            nodeType: "scene",
+            title,
+            sortOrder: "a0",
+            synopsis: null,
+          },
+        ],
+        updates: [],
+        redo: false,
+      }),
+    });
+    const validGrant = await issueAgentCapability(
+      "apply_ai_tree_plan",
+      { kind: "scaffold", ops },
+      708,
+    );
+    const valid = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      makePayload(validGrant, "Opening"),
+      708,
+    );
+    expect(
+      (valid.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("interactive-agent-command");
+
+    const tamperedGrant = await issueAgentCapability(
+      "apply_ai_tree_plan",
+      { kind: "scaffold", ops },
+      709,
+    );
+    const tampered = bindRendererAuthorityForIpc(
+      "ai_tree_plan_apply",
+      makePayload(tamperedGrant, "Renderer retarget"),
+      709,
+    );
+    expect(
+      (tampered.payload as { authorityRoute?: string }).authorityRoute,
+    ).toBe("");
   });
 
   it("selects history-replay for an AI tree redo and preserves the event identity", () => {

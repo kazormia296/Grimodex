@@ -2827,6 +2827,8 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
         redo ? "history-replay" : "interactive-agent-command",
       ])
     : rawPayload;
+  const interactiveAgentTreePlan =
+    !redo && payload.authorityRoute === "interactive-agent-command";
   for (const key of [
     "requestId",
     "projectId",
@@ -2852,6 +2854,14 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
       );
     }
     const create = value as CommandArgs;
+    if (interactiveAgentTreePlan) {
+      const tempId = requireNonEmptyString(create, "tempId", command);
+      if (!tempId.startsWith("tmp:")) {
+        throw new Error(
+          `invalid args \`creates[${index}].tempId\` for command \`${command}\``,
+        );
+      }
+    }
     for (const key of ["id", "nodeType", "title", "sortOrder"]) {
       requireNonEmptyString(create, key, command);
     }
@@ -2907,6 +2917,12 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   });
   if (creates.length === 0 && updates.length === 0) {
     throw new Error(`invalid args for command \`${command}\`: empty plan`);
+  }
+  if (interactiveAgentTreePlan) {
+    const ops = requireArray(payload, "ops", command);
+    if (ops.length === 0) {
+      throw new Error(`invalid args \`ops\` for command \`${command}\`: empty plan`);
+    }
   }
   const originalTransactionId = requireNullableStringField(
     payload,
