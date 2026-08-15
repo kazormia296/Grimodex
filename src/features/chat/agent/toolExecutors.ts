@@ -1965,6 +1965,7 @@ async function createForeshadowTool(
     }
     const input = {
       requestId,
+      foreshadowId: authorization?.expectedEntityId,
       title,
       intent: params["intent"] ? String(params["intent"]) : undefined,
       notes: params["notes"] ? String(params["notes"]) : undefined,

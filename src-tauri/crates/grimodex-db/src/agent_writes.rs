@@ -714,6 +714,57 @@ fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
     updated_at: &str,
     check_legacy_value: bool,
 ) -> anyhow::Result<()> {
+    validate_or_record_agent_field_authority_for_entity(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        AgentFieldAuthorityAction::Record { check_legacy_value },
+    )
+}
+
+fn validate_agent_field_authority_for_entity_with_legacy_check(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    check_legacy_value: bool,
+) -> anyhow::Result<()> {
+    validate_or_record_agent_field_authority_for_entity(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        paths,
+        updated_at,
+        AgentFieldAuthorityAction::Validate { check_legacy_value },
+    )
+}
+
+enum AgentFieldAuthorityAction {
+    Validate { check_legacy_value: bool },
+    Record { check_legacy_value: bool },
+}
+
+fn validate_or_record_agent_field_authority_for_entity(
+    conn: &rusqlite::Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    paths: &[String],
+    updated_at: &str,
+    action: AgentFieldAuthorityAction,
+) -> anyhow::Result<()> {
+    let (check_legacy_value, record) = match action {
+        AgentFieldAuthorityAction::Validate { check_legacy_value } => {
+            (check_legacy_value, false)
+        }
+        AgentFieldAuthorityAction::Record { check_legacy_value } => (check_legacy_value, true),
+    };
     if paths.is_empty() {
         return Ok(());
     }
@@ -753,6 +804,9 @@ fn validate_and_record_agent_field_authority_for_entity_with_legacy_check(
             entity_id
         );
     }
+    if !record {
+        return Ok(());
+    }
     for path in paths {
         conn.execute(
             "INSERT INTO narrative_field_authority
@@ -783,13 +837,14 @@ fn preflight_agent_field_authority(
     if renderer_context.is_some_and(|context| {
         context.authority_route == "interactive-agent-command"
     }) {
-        validate_and_record_agent_field_authority_for_entity(
+        validate_agent_field_authority_for_entity_with_legacy_check(
             conn,
             project_id,
             entity_kind,
             entity_id,
             paths,
             updated_at,
+            true,
         )?;
     }
     Ok(())
@@ -9642,6 +9697,124 @@ mod tests {
             Ok(())
         })
         .expect("inspect unchanged Codex after denied updates");
+    }
+
+    #[test]
+    fn renderer_codex_update_records_field_authority_once_after_preflight() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        tracked_codex_create(&db, &project_id, "authority-once-entry", "Before", 0);
+        let version = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT version FROM codex_entries WHERE id = 'authority-once-entry'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )?)
+            })
+            .expect("read Codex version");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind,
+                     explicit_lock, version, updated_at)
+                 VALUES (?1, 'codex-entry', 'authority-once-entry', '/name', 'ai', 0, 0, 'fixture')",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed AI ownership for the update");
+        db.with_conn(|conn| {
+            let owner: String = conn.query_row(
+                "SELECT owner_kind FROM narrative_field_authority
+                   WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                     AND entity_id = 'authority-once-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(owner, "ai");
+            Ok(())
+        })
+        .expect("inspect seeded AI ownership");
+
+        renderer_codex_update_impl(
+            &db,
+            AgentCodexUpdatePayload {
+                project_id: project_id.clone(),
+                session_id: "authority-once-session".to_string(),
+                surface: Some("in-app-agent".to_string()),
+                entry_id: "authority-once-entry".to_string(),
+                base_version: version,
+                type_slug: None,
+                name: Some("After".to_string()),
+                summary: None,
+                content: None,
+                aliases: None,
+                excluded_aliases: None,
+                readings: None,
+                tags_cache: None,
+                parent_id: None,
+                context_mode: None,
+                icon: None,
+                children_budget: None,
+                notes: None,
+                model: None,
+                chat_message_id: None,
+                trace_id: None,
+                authorship_spans: None,
+                authorship_span_lanes: None,
+            },
+            renderer_agent_context("authority-once-request", "authority-once:event"),
+        )
+        .expect("Codex update should succeed");
+
+        db.with_conn(|conn| {
+            let field_version: i64 = conn.query_row(
+                "SELECT version FROM narrative_field_authority
+                   WHERE project_id = ?1 AND entity_kind = 'codex-entry'
+                     AND entity_id = 'authority-once-entry' AND field_path = '/name'",
+                rusqlite::params![project_id],
+                |row| row.get(0),
+            )?;
+            assert_eq!(field_version, 1, "preflight must not increment the version");
+            Ok(())
+        })
+        .expect("inspect single field-authority revision");
+    }
+
+    #[test]
+    fn legacy_tree_node_presence_protects_title_move_and_empty_synopsis() {
+        let db = test_db();
+        let project_id = insert_project(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, synopsis, sort_order)
+                 VALUES ('legacy-tree-scene', ?1, 'scene', 'Legacy title', NULL, 'a0')",
+                rusqlite::params![project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed legacy tree node");
+
+        db.with_conn(|conn| {
+            for path in ["/title", "/parentId", "/sortOrder", "/synopsis"] {
+                let paths = vec![path.to_string()];
+                let error = validate_and_record_agent_field_authority_for_entity_with_legacy_check(
+                    conn,
+                    &project_id,
+                    "tree_node",
+                    "legacy-tree-scene",
+                    &paths,
+                    "2026-08-15T00:00:00Z",
+                    true,
+                )
+                .expect_err("legacy tree node fields must fail closed");
+                assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+            }
+            Ok(())
+        })
+        .expect("inspect legacy tree field authority");
     }
 
     #[test]

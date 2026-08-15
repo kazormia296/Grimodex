@@ -124,6 +124,7 @@ export async function createEventTool(
   try {
     const input: AgentEventCreateInput = {
       requestId,
+      eventId: authorization?.expectedEntityId,
       title,
       note: params["note"] ? str(params["note"]) : null,
       kind: coerceKind(params["kind"]) ?? "generic",

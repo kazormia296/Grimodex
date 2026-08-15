@@ -611,6 +611,43 @@ describe("durable mutation tool request identity", () => {
     );
   });
 
+  it("forwards the main-issued entity id through both create tools", async () => {
+    mockAgentCreateEvent.mockResolvedValue({ id: "event-from-main", title: "Arrival" });
+    mockAgentCreateForeshadow.mockResolvedValue({
+      id: "foreshadow-from-main",
+      title: "The seal",
+      secret: true,
+    });
+
+    const commonAuthorization = {
+      capability: "main-capability",
+      chatMessageId: "assistant-1",
+      executionId: "execution-1",
+      mainOwnedProvenanceId: "provenance-1",
+    };
+    await executeTool(
+      "create_event",
+      "event-call",
+      { title: "Arrival" },
+      { ...commonAuthorization, expectedEntityId: "event-from-main" },
+    );
+    await executeTool(
+      "create_foreshadow",
+      "foreshadow-call",
+      { title: "The seal" },
+      { ...commonAuthorization, expectedEntityId: "foreshadow-from-main" },
+    );
+
+    expect(mockAgentCreateEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventId: "event-from-main" }),
+      expect.objectContaining({ agentAuthorityCapability: "main-capability" }),
+    );
+    expect(mockAgentCreateForeshadow).toHaveBeenCalledWith(
+      expect.objectContaining({ foreshadowId: "foreshadow-from-main" }),
+      expect.objectContaining({ agentAuthorityCapability: "main-capability" }),
+    );
+  });
+
   it("propagates the stable tool-call requestId to every Chronicle mutation", async () => {
     invalidateChronicleToolCache();
     mockTreeProjectId.mockReturnValue("project-1");

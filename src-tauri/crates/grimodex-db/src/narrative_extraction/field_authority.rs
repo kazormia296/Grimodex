@@ -1028,6 +1028,15 @@ pub(crate) fn legacy_value_present(
         }
         ("foreshadow", "/abandoned") => Some(("foreshadows", "abandoned", "boolean")),
         ("foreshadow", "/secret") => Some(("foreshadows", "secret", "boolean")),
+        // Tree nodes predate Field Authority rows. An existing row is the
+        // legacy human snapshot, including NULL-valued fields such as a
+        // root's parentId or an empty synopsis, so presence of the node—not
+        // presence of one column value—is the fail-closed signal.
+        ("tree_node" | "scene", "/parentId") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/nodeType") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/title") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/sortOrder") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/synopsis") => Some(("tree_nodes", "id", "row")),
         ("scene", "/startTime") => Some(("tree_nodes", "chronicle_start_time", "text")),
         _ => None,
     };
@@ -1037,6 +1046,7 @@ pub(crate) fn legacy_value_present(
     let predicate = match value_kind {
         "boolean" => format!("CAST({column} AS INTEGER) != 0"),
         "present" => format!("{column} IS NOT NULL"),
+        "row" => format!("{column} IS NOT NULL"),
         _ => format!("NULLIF(TRIM(CAST({column} AS TEXT)), '') IS NOT NULL"),
     };
     let sql = format!(

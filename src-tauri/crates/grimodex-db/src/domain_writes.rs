@@ -3858,6 +3858,9 @@ struct NativeTreeNodeSnapshot {
     sort_order: String,
 }
 
+type NativeTreeExpectedUpdate =
+    (Option<(Option<String>, NativeTreeAfter)>, Option<String>);
+
 fn tree_order_integer_length(head: u8) -> anyhow::Result<usize> {
     match head {
         b'a'..=b'z' => Ok((head - b'a' + 2) as usize),
@@ -3876,7 +3879,7 @@ fn tree_order_integer_part(key: &str) -> anyhow::Result<&str> {
 
 fn tree_validate_order_key(key: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
-        key != &format!("A{}", "0".repeat(26)),
+        key != format!("A{}", "0".repeat(26)),
         "invalid tree order key"
     );
     let integer = tree_order_integer_part(key)?;
@@ -4039,7 +4042,7 @@ fn tree_midpoint(a: &str, b: Option<&str>) -> anyhow::Result<String> {
         None => TREE_ORDER_DIGITS.len(),
     };
     if digit_b - digit_a > 1 {
-        return Ok((TREE_ORDER_DIGITS[(digit_a + digit_b + 1) / 2] as char).to_string());
+        return Ok((TREE_ORDER_DIGITS[(digit_a + digit_b).div_ceil(2)] as char).to_string());
     }
     if b.is_some_and(|value| value.len() > 1) {
         return Ok(b.unwrap_or_default()[..1].to_string());
@@ -4337,8 +4340,7 @@ fn validate_ai_tree_native_projection_in_tx(
         anyhow::ensure!(create.synopsis == *synopsis, "interactive AI tree create synopsis does not match ops");
     }
 
-    let mut expected_updates: HashMap<String, (Option<(Option<String>, NativeTreeAfter)>, Option<String>)> =
-        HashMap::new();
+    let mut expected_updates: HashMap<String, NativeTreeExpectedUpdate> = HashMap::new();
     let mut moved_ids = HashSet::new();
     for (_, node_id, parent_ref, after) in &move_ops {
         anyhow::ensure!(
@@ -5317,6 +5319,22 @@ mod tests {
         db
     }
 
+    fn seed_ai_tree_authority(db: &Database, node_id: &str) {
+        db.with_conn(|conn| {
+            for path in ["/parentId", "/nodeType", "/title", "/sortOrder", "/synopsis"] {
+                conn.execute(
+                    "INSERT INTO narrative_field_authority
+                        (project_id, entity_kind, entity_id, field_path, owner_kind,
+                         explicit_lock, version, updated_at)
+                     VALUES ('p1', 'tree_node', ?1, ?2, 'ai', 0, 0, 'fixture')",
+                    rusqlite::params![node_id, path],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed AI tree field authority");
+    }
+
     fn project_create_payload(project_id: &str, request_id: &str) -> ProjectCreatePayload {
         ProjectCreatePayload {
             project_id: project_id.to_string(),
@@ -5737,6 +5755,7 @@ mod tests {
     #[test]
     fn ai_tree_plan_is_atomic_idempotent_ordered_and_preserves_undo_redo_lineage() {
         let db = fixture();
+        seed_ai_tree_authority(&db, "moved");
         let payload = ai_tree_payload("ai-tree-forward-request");
         let forward = apply_ai_tree_plan(&db, payload.clone()).expect("apply AI tree plan");
         let original_transaction_id = forward["maintenanceTransactionId"]
@@ -5958,8 +5977,33 @@ mod tests {
     }
 
     #[test]
+    fn interactive_ai_tree_plan_denies_legacy_nodes_without_authority_rows() {
+        let db = fixture();
+        let error = apply_ai_tree_plan(&db, ai_tree_payload("ai-tree-legacy-node"))
+            .expect_err("an existing node without authority rows must be human-owned");
+        assert!(error.to_string().contains("NEX_FIELD_AUTHORITY_DENIED"));
+        db.with_conn(|conn| {
+            let moved: (Option<String>, String, i64) = conn.query_row(
+                "SELECT parent_id, title, version FROM tree_nodes WHERE id = 'moved'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(moved, (None, "Moved".to_string(), 0));
+            let created: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM tree_nodes WHERE id = 'ai-folder'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(created, 0);
+            Ok(())
+        })
+        .expect("verify legacy tree denial is atomic");
+    }
+
+    #[test]
     fn ai_tree_plan_rejects_cross_project_and_rolls_back_when_feed_append_fails() {
         let db = fixture();
+        seed_ai_tree_authority(&db, "moved");
         let mut cross_project = ai_tree_payload("ai-tree-cross-project");
         cross_project.updates[0].id = "foreign-node".to_string();
         let error = apply_ai_tree_plan(&db, cross_project)

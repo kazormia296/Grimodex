@@ -72,6 +72,7 @@ async function issueAgentCapability(
   chatMessageId: string;
   executionId: string;
   mainOwnedProvenanceId: string;
+  expectedEntityId?: string;
 }> {
   const sendAgentMessage = vi.fn(async () =>
     JSON.stringify({
@@ -129,6 +130,7 @@ async function issueAgentCapability(
           executionId: string;
           chatMessageId: string;
           mainOwnedProvenanceId: string;
+          expectedEntityId?: string;
         }
       >;
     }
@@ -391,6 +393,7 @@ describe("registerIpcRouter fail-soft logging", () => {
           executionId: "execution-1",
           chatMessageId: "assistant-1",
           mainOwnedProvenanceId: expect.any(String),
+          expectedEntityId: expect.any(String),
         },
       },
     });
@@ -410,6 +413,7 @@ describe("registerIpcRouter fail-soft logging", () => {
           executionId: string;
           chatMessageId: string;
           mainOwnedProvenanceId: string;
+          expectedEntityId: string;
         }>;
       }
     ).agentAuthorityCapabilities["call-1"];
@@ -427,6 +431,7 @@ describe("registerIpcRouter fail-soft logging", () => {
           executionId: firstGrant.executionId,
           mainOwnedProvenanceId: firstGrant.mainOwnedProvenanceId,
           agentAuthorityCapability: firstGrant.capability,
+          foreshadowId: firstGrant.expectedEntityId,
         },
       },
       704,
@@ -470,6 +475,7 @@ describe("registerIpcRouter fail-soft logging", () => {
           executionId: string;
           chatMessageId: string;
           mainOwnedProvenanceId: string;
+          expectedEntityId: string;
         }>;
       }
     ).agentAuthorityCapabilities["call-1"];
@@ -487,6 +493,7 @@ describe("registerIpcRouter fail-soft logging", () => {
           executionId: secondGrant.executionId,
           mainOwnedProvenanceId: secondGrant.mainOwnedProvenanceId,
           agentAuthorityCapability: secondGrant.capability,
+          foreshadowId: secondGrant.expectedEntityId,
         },
       },
       704,
@@ -556,6 +563,31 @@ describe("registerIpcRouter fail-soft logging", () => {
         "change-feed",
       ],
       provenance: null,
+    });
+  });
+
+  it("binds the main-issued identity for the normal create_event path", async () => {
+    const grant = await issueAgentCapability(
+      "create_event",
+      { title: "Arrival" },
+      710,
+    );
+    expect(grant.expectedEntityId).toEqual(expect.any(String));
+
+    const bound = bindRendererAuthorityForIpc(
+      "agent_event_create",
+      {
+        payload: agentCapabilityPayload(grant, {
+          title: "Arrival",
+          eventId: grant.expectedEntityId,
+        }),
+      },
+      710,
+    );
+
+    expect(bound.payload).toMatchObject({
+      authorityRoute: "interactive-agent-command",
+      eventId: grant.expectedEntityId,
     });
   });
 

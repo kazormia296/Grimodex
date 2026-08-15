@@ -107,6 +107,8 @@ interface AgentAuthorityCapabilityGrant {
   readonly executionId: string;
   readonly chatMessageId: string;
   readonly mainOwnedProvenanceId: string;
+  /** Main-issued identity for create tools that need to reach Native unchanged. */
+  readonly expectedEntityId?: string;
 }
 
 const AGENT_AUTHORITY_CAPABILITY_TTL_MS = 5 * 60 * 1000;
@@ -189,11 +191,89 @@ type AgentToolInputSpec = {
   readonly aliases?: Readonly<Record<string, string>>;
 };
 
-// This is deliberately a small, main-owned projection of the model tool
-// contract. Derived renderer values (request/session/event ids, OCC versions
-// resolved from the store, authorship marks, and authority metadata) are not
-// part of the model's intent and therefore cannot be used to retarget a grant.
-const AGENT_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
+// This is the exact model-facing contract. It intentionally mirrors the
+// public schemas in `toolDefinitions.ts`; renderer/native-only fields must not
+// become accepted model keys merely because the renderer uses them on the
+// effectful wire payload.
+const MODEL_TOOL_INPUT_SPECS: Readonly<Record<string, AgentToolInputSpec>> = {
+  create_codex_entry: {
+    fields: ["type", "name", "summary", "content", "aliases", "parentId"],
+  },
+  update_codex_entry: {
+    fields: ["id", "name", "summary", "content", "aliases"],
+  },
+  create_foreshadow: {
+    fields: ["title", "intent", "notes", "loadBearing", "secret"],
+  },
+  update_foreshadow: {
+    fields: [
+      "id",
+      "baseVersion",
+      "title",
+      "intent",
+      "notes",
+      "loadBearing",
+      "payoffConfirmed",
+      "abandoned",
+      "secret",
+    ],
+  },
+  create_snippet: { fields: ["title", "content", "sceneId"] },
+  create_event: {
+    fields: [
+      "title",
+      "note",
+      "kind",
+      "primaryCodexId",
+      "locationCodexId",
+      "startTime",
+      "endTime",
+      "startMinute",
+      "endMinute",
+      "startGranularity",
+      "endGranularity",
+      "secret",
+      "revealSceneId",
+      "participantCodexIds",
+      "sceneIds",
+    ],
+  },
+  update_event: {
+    fields: [
+      "eventId",
+      "title",
+      "note",
+      "kind",
+      "primaryCodexId",
+      "locationCodexId",
+      "startTime",
+      "endTime",
+      "startMinute",
+      "endMinute",
+      "startGranularity",
+      "endGranularity",
+      "secret",
+      "revealSceneId",
+    ],
+  },
+  delete_event: { fields: ["eventId"] },
+  stamp_scene_event: { fields: ["sceneId", "eventId"] },
+  unstamp_scene_event: { fields: ["sceneId", "eventId"] },
+  set_event_participants: { fields: ["eventId", "codexEntryIds"] },
+  add_event_relation: { fields: ["causeEventId", "effectEventId"] },
+  remove_event_relation: { fields: ["causeEventId", "effectEventId"] },
+  apply_ai_tree_plan: { fields: ["kind", "ops"] },
+  propose_scene_body: { fields: ["sceneId", "text", "mode"] },
+};
+
+// This is the effectful native projection. It includes renderer-derived
+// fields and compatibility aliases that are intentionally absent from the
+// model contract above. The capability still compares these fields after the
+// renderer has resolved OCC/request metadata, so the distinction is only
+// about what the model is allowed to request.
+const EFFECTIVE_NATIVE_MUTATION_SPECS: Readonly<
+  Record<string, AgentToolInputSpec>
+> = {
   create_codex_entry: {
     fields: [
       "type",
@@ -371,6 +451,8 @@ const AGENT_TOOL_INPUT_DEFAULTS: Readonly<
   },
 };
 
+type AgentToolInputProjection = "model" | "effective";
+
 function stableCanonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") {
     const primitive = JSON.stringify(value);
@@ -544,20 +626,26 @@ function canonicalAgentToolInput(
   toolName: string,
   source: unknown,
   enforceModelShape = false,
+  projection: AgentToolInputProjection = enforceModelShape
+    ? "model"
+    : "effective",
 ): string | null {
-  const spec = AGENT_TOOL_INPUT_SPECS[toolName];
+  const spec = (projection === "model"
+    ? MODEL_TOOL_INPUT_SPECS
+    : EFFECTIVE_NATIVE_MUTATION_SPECS)[toolName];
   if (!spec || !isRecord(source)) return null;
   if (enforceModelShape) {
-    const acceptedKeys = new Set([
-      ...spec.fields,
-      ...Object.values(spec.aliases ?? {}),
-    ]);
+    const acceptedKeys = new Set(spec.fields);
     if (Object.keys(source).some((key) => !acceptedKeys.has(key))) return null;
   }
   const defaults = AGENT_TOOL_INPUT_DEFAULTS[toolName] ?? {};
+  const wireAliases =
+    projection === "model"
+      ? EFFECTIVE_NATIVE_MUTATION_SPECS[toolName]?.aliases
+      : spec.aliases;
   const normalized: Record<string, unknown> = {};
   for (const field of spec.fields) {
-    const wireField = spec.aliases?.[field] ?? field;
+    const wireField = wireAliases?.[field] ?? field;
     const raw = Object.hasOwn(source, field)
       ? source[field]
       : source[wireField];
@@ -573,8 +661,16 @@ function canonicalAgentToolInputDigest(
   toolName: string,
   source: unknown,
   enforceModelShape = false,
+  projection: AgentToolInputProjection = enforceModelShape
+    ? "model"
+    : "effective",
 ): string | null {
-  const canonical = canonicalAgentToolInput(toolName, source, enforceModelShape);
+  const canonical = canonicalAgentToolInput(
+    toolName,
+    source,
+    enforceModelShape,
+    projection,
+  );
   if (canonical === null) return null;
   return createHash("sha256").update(canonical).digest("hex");
 }
@@ -714,7 +810,7 @@ function agentMutationProjectionMatches(
   modelInput: Record<string, unknown>,
   payload: CommandArgs,
 ): boolean {
-  const spec = AGENT_TOOL_INPUT_SPECS[toolName];
+  const spec = EFFECTIVE_NATIVE_MUTATION_SPECS[toolName];
   if (!spec || canonicalAgentToolInput(toolName, modelInput, true) === null) {
     return false;
   }
@@ -940,7 +1036,7 @@ function bindMainOwnedRichTextFields(
   bound: CommandArgs,
   capability: AgentAuthorityCapabilityRecord,
 ): void {
-  const spec = AGENT_TOOL_INPUT_SPECS[capability.toolName];
+  const spec = EFFECTIVE_NATIVE_MUTATION_SPECS[capability.toolName];
   if (!spec) return;
   const defaults = AGENT_TOOL_INPUT_DEFAULTS[capability.toolName];
   for (const field of ["content", "detail"]) {
@@ -1117,6 +1213,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
     const token = randomUUID();
     const mainOwnedProvenanceId = randomUUID();
     const requestId = agentToolRequestId(toolName, projectId, toolCallId);
+    const expectedEntityId = mainOwnedEntityId(toolName, requestId);
     agentAuthorityCapabilities.set(token, {
       senderId,
       projectId,
@@ -1129,7 +1226,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
       chatMessageId,
       model: typeof args.model === "string" ? args.model : null,
       modelInput: cloneJsonRecord(block.input),
-      expectedEntityId: mainOwnedEntityId(toolName, requestId),
+      expectedEntityId,
       canonicalInputDigest,
       mainOwnedProvenanceId,
       issuedAt: now,
@@ -1140,6 +1237,7 @@ async function issueAgentAuthorityCapabilitiesForSender(
       executionId,
       chatMessageId,
       mainOwnedProvenanceId,
+      ...(expectedEntityId ? { expectedEntityId } : {}),
     };
   }
   if (Object.keys(issued).length === 0 || !isRecord(response)) return response;
@@ -1165,7 +1263,16 @@ function consumeAgentAuthorityCapability(
   const chatMessageId = payload.chatMessageId;
   const executionId = payload.executionId;
   const mainOwnedProvenanceId = payload.mainOwnedProvenanceId;
-  const inputDigest = canonicalAgentToolInputDigest(record.toolName, payload);
+  // The token was issued from the public model input. Re-project the native
+  // payload back onto that public shape for the identity check; hashing the
+  // effective native projection would include renderer-only defaults and
+  // reject legitimate create_event/create_foreshadow calls.
+  const inputDigest = canonicalAgentToolInputDigest(
+    record.toolName,
+    payload,
+    false,
+    "model",
+  );
   const matches =
     record.senderId === senderId &&
     record.command === cmd &&

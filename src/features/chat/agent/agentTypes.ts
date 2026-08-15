@@ -107,6 +107,8 @@ export interface AgentAuthorityCapabilityGrant {
   readonly chatMessageId: string;
   /** Main-owned provenance identity copied into the canonical write context. */
   readonly mainOwnedProvenanceId: string;
+  /** Main-issued entity identity for create_event/create_foreshadow. */
+  readonly expectedEntityId?: string;
 }
 
 export interface AgentToolAuthorization {
@@ -120,6 +122,8 @@ export interface AgentToolAuthorization {
   readonly executionId?: string;
   /** Main-owned provenance identity; renderer only forwards it. */
   readonly mainOwnedProvenanceId?: string;
+  /** Main-issued entity identity for create_event/create_foreshadow. */
+  readonly expectedEntityId?: string;
 }
 
 // アシスタントメッセージ内のtool_useブロック（多ターン会話用）
