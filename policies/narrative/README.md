@@ -209,12 +209,13 @@ their own module doc comments, as internal helpers meant to be called from
 *existing* pipelines, not new standalone commands:
 
 - `semantic_epoch.rs` (Lane A) and `restore_rebuild.rs`'s
-  `rotate_epoch_for_restore_in_tx` (Lane N): minting/rotating a Semantic
-  Epoch requires ADR 006's `restore-or-migration` route
-  (`allowedCallers`: `restore-controller`/`migration-runner`/
-  `integrity-repair` only) — these belong inside the existing
-  `project_snapshot_apply_restore` restore path and DB migration, not a
-  new command.
+  `rotate_epoch_for_restore_in_tx` (Lane N): **wired (C2-T1, see below)** —
+  minting/rotating a Semantic Epoch requires ADR 006's
+  `restore-or-migration` route (`allowedCallers`: `restore-controller`/
+  `migration-runner`/`integrity-repair` only), so it belongs inside the
+  existing restore and integrity-repair paths, not a new command; DB
+  migration itself does not yet mint an "initial" epoch and remains
+  out of scope for this piece.
 - `evaluator.rs` (Lane F): pure, I/O-free computation (its own doc
   comment says so) — a library called by `publish_runtime.rs`, never an
   IPC entrypoint itself.
@@ -326,10 +327,62 @@ under the real `narrative_proposal_applications.id` and all
 `target_state = 'unchanged'`. As with everything else on this branch, this
 has not been through `cargo check`/`cargo test`.
 
-Of Wave 1's 8 lanes, G and H now have real transport landed; F needs none
-(a pure library); A's restore-path wiring is still open (see the bullet
-list above), same as Lane N's own restore-path piece and the Lane K/N
-admin-command question below.
+**Lane A/N (`semantic_epoch.rs`/`restore_rebuild.rs`) restore-path wiring
+also landed in C2-T1.** Both existing structural-reset call sites now mint
+a Semantic Epoch, in the same transaction as their Change Feed append:
+
+- `project_snapshots.rs`'s `apply_project_snapshot_restore` calls
+  `rotate_epoch_for_restore_in_tx(&transaction, &payload.project_id,
+  "project-restored", Some(&change_event_uid))` right after
+  `append_canonical_and_narrative_change_in_tx` succeeds.
+  `build_snapshot_restore_feed_events` — the only place this function ever
+  sets a `structural_impact` — always uses the literal `"project-restored"`
+  marker, and this call site is unreachable for a net no-op restore (that
+  path already returns early), so the literal is safe to hardcode. Reason
+  `"restore"`.
+- `integrity.rs`'s `repair_integrity` calls the same function with
+  `"semantic-epoch-reset"` and `Some(&payload.event_uid)`, inside the
+  `if changed { ... }` branch that is the only place this function's
+  `events` vector carries that marker. Reason `"migration"`.
+
+Both call sites reuse `crate::narrative_extraction::rotate_epoch_for_restore_in_tx`,
+already `pub(crate)`-re-exported at the `narrative_extraction` module root
+by Lane N, so neither needed a new visibility promotion. Minting an epoch
+is unconditionally additive (`create_epoch_in_tx` auto-increments
+`epoch_number` per project, no uniqueness conflict possible), so no guard
+against double-minting was needed beyond what each call site's own
+idempotency/atomicity already provides — the idempotent-replay path in
+`apply_project_snapshot_restore` short-circuits on the stored response
+before ever reaching the epoch-rotation call, and a transaction rollback
+(e.g. a forced Change Feed append failure) undoes the epoch mint along
+with everything else in the same transaction.
+
+DB migration itself does not yet mint an `"initial"` epoch for existing
+projects — that is a separate, not-yet-decided piece (a project's first
+Epoch being `"restore"` or `"migration"` rather than `"initial"` is
+harmless, just not the tidiest possible ledger), left out of this scope.
+
+Verified via `rustfmt --edition 2021 --check`, a brace/paren balance
+check, and new assertions in `project_snapshots.rs`'s own
+`restore_emits_one_ordered_feed_transaction_and_replays_without_duplicates`
+test (exactly one `reason = 'restore'` Epoch survives a real restore
+followed by its idempotent replay) and
+`net_no_op_restore_persists_only_its_retry_receipt` test (a genuine no-op
+restore mints zero Epochs), plus new assertions in
+`integrity_change_feed.rs`'s
+`repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped`
+test (exactly one `reason = 'migration'` Epoch survives a real repair, an
+idempotent replay, and a rejected conflicting retry) and
+`repair_integrity_feed_failure_rolls_back_domain_canonical_and_retry_ledger`
+test (a forced Change Feed failure leaves zero Epochs, proving the
+rollback is atomic). As with everything else on this branch, this has not
+been through `cargo check`/`cargo test`.
+
+Of Wave 1's 8 lanes, A, G, and H now have real transport landed; F needs
+none (a pure library). Lane N's own restore-path piece (epoch rotation)
+landed alongside Lane A above; its `rebuild_verify_dependency_edges`/
+`rebuild_repair_dependency_edges_in_tx` pair and Lane K's
+`legacy_backfill.rs` remain the one open admin-command question below.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

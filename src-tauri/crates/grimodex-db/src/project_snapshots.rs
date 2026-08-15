@@ -22,6 +22,7 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 pub type RawRow = Map<String, Value>;
 
@@ -2966,6 +2967,21 @@ pub fn apply_project_snapshot_restore(
                 events: feed_events,
             },
         )?;
+        // Gate C2 Lane A/N (`semantic_epoch.rs`/`restore_rebuild.rs`, wired
+        // in C2-T1): a Restore is always the `"project-restored"` structural
+        // impact `build_snapshot_restore_feed_events` above unconditionally
+        // sets whenever `feed_events` is non-empty (the only way this line
+        // is reached; a net no-op already returned earlier). Mint a new
+        // Semantic Epoch in the same transaction as the Change Feed append,
+        // so a rebuild after Restore sees the Dependency Edge graph as
+        // reset from this exact point, not from whatever the prior Epoch
+        // was tracking.
+        rotate_epoch_for_restore_in_tx(
+            &transaction,
+            &payload.project_id,
+            "project-restored",
+            Some(&change_event_uid),
+        )?;
         let result = ApplyProjectSnapshotRestoreResult {
             canonical_sequence: append.canonical.tail_sequence,
             change_event_uid: Some(change_event_uid),
@@ -3712,6 +3728,34 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(foreign_events, 0);
+
+            // Gate C2 Lane A/N: a real Restore mints exactly one Semantic
+            // Epoch, even though `apply_project_snapshot_restore` above was
+            // called twice -- the second call is the idempotent replay,
+            // which short-circuits on the stored response before ever
+            // reaching the epoch-rotation call.
+            let epochs: Vec<(i64, String, Option<String>)> = {
+                let mut statement = conn.prepare(
+                    "SELECT epoch_number, reason, triggered_by_change_event_uid
+                       FROM narrative_semantic_epochs
+                      WHERE project_id = 'p1'
+                      ORDER BY epoch_number ASC",
+                )?;
+                statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<Result<Vec<_>, _>>()?
+            };
+            assert_eq!(
+                epochs.len(),
+                1,
+                "the idempotent replay must not mint a second Epoch: {epochs:?}"
+            );
+            assert_eq!(epochs[0].0, 0);
+            assert_eq!(epochs[0].1, "restore");
+            assert!(
+                epochs[0].2.is_some(),
+                "the Epoch must record the triggering change event uid"
+            );
             Ok(())
         })
         .expect("inspect restore Feed");
@@ -3739,6 +3783,7 @@ mod tests {
                 "change_events",
                 "narrative_change_transactions",
                 "narrative_change_events",
+                "narrative_semantic_epochs",
             ] {
                 assert_eq!(
                     conn.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {

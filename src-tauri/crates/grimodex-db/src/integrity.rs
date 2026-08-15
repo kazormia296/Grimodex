@@ -19,6 +19,7 @@ use crate::narrative_extraction::change_feed::{
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
     NarrativeChangeOrigin,
 };
+use crate::narrative_extraction::rotate_epoch_for_restore_in_tx;
 
 const REPAIR_IDEMPOTENCY_DOMAIN: &str = "repair_integrity";
 const REPAIR_SOURCE_DOMAIN: &str = "integrity.repair";
@@ -532,6 +533,20 @@ impl Database {
                             occurred_at: payload.occurred_at.clone(),
                             events,
                         },
+                    )?;
+                    // Gate C2 Lane A/N (`semantic_epoch.rs`/
+                    // `restore_rebuild.rs`, wired in C2-T1): this branch
+                    // only runs when `changed` is true, which is exactly
+                    // when the `events` vector above starts with the
+                    // `"semantic-epoch-reset"` structural impact marker.
+                    // Mint a new Semantic Epoch in the same transaction so a
+                    // rebuild after Integrity Repair sees the Dependency
+                    // Edge graph as reset from this exact point.
+                    rotate_epoch_for_restore_in_tx(
+                        conn,
+                        &payload.project_id,
+                        "semantic-epoch-reset",
+                        Some(&payload.event_uid),
                     )?;
                     (
                         Some(payload.event_uid.clone()),
