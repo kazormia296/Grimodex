@@ -198,9 +198,67 @@ sandboxed-environment "unable to resolve GitHub repo slug from origin"
 error in `certify-gate-b2-bindings.test.mjs`, confirmed via `git stash` to
 reproduce identically on an unmodified checkout).
 `electron/native/grimodex-node/index.d.ts` was not regenerated (needs a
-working `pnpm napi:build`); the remaining Wave 1/2 lanes (semantic epoch,
-dependency edges, freshness publish, restore/rebuild, etc.) still have no
-IPC/N-API entrypoint and remain C2-T1/C2-T2 work.
+working `pnpm napi:build`).
+
+**The remaining Wave 1/2 lanes are not a second batch of the same kind of
+work.** Attention and the Maintenance Inbox were genuinely standalone,
+additive typed-writer/read-model commands — new table, new writer, new IPC
+entrypoint, nothing pre-existing touched. A follow-up audit of the other 9
+Wave 1/2 modules found that most of them are explicitly documented, in
+their own module doc comments, as internal helpers meant to be called from
+*existing* pipelines, not new standalone commands:
+
+- `semantic_epoch.rs` (Lane A) and `restore_rebuild.rs`'s
+  `rotate_epoch_for_restore_in_tx` (Lane N): minting/rotating a Semantic
+  Epoch requires ADR 006's `restore-or-migration` route
+  (`allowedCallers`: `restore-controller`/`migration-runner`/
+  `integrity-repair` only) — these belong inside the existing
+  `project_snapshot_apply_restore` restore path and DB migration, not a
+  new command.
+- `evaluator.rs` (Lane F): pure, I/O-free computation (its own doc
+  comment says so) — a library called by `publish_runtime.rs`, never an
+  IPC entrypoint itself.
+- `dependency_edges.rs` (Lane G) and `application_contributions.rs`
+  (Lane H): both doc comments say, verbatim, that wiring their call sites
+  into "an existing Producer-time commit path" — `commit.rs`'s
+  `narrative_extraction_apply_commit` — "is out of scope for this Lane;
+  see Gate C2-T1." `commit.rs` is a 2200+ line, already-shipped, live
+  commit engine dispatching ~15 operation kinds (chronicle, codex, detail,
+  foreshadow, phase, plot-thread, semantic-binding, temporal ×4); it
+  already tracks Source-side read-set/source-basis data per operation via
+  `reconciliation_envelope.rs`. Wiring dependency-edge recording in
+  correctly means mapping that existing Source-basis tracking onto
+  `dependency_edges.rs`'s Consumer/Source edge model for every operation
+  kind, inside the same commit transaction, without duplicating or
+  conflicting with what `reconciliation_envelope.rs` already does.
+- `cursor_reservation.rs` (Lane I) and `publish_runtime.rs` (Lane J):
+  internal bookkeeping for the Run execution pipeline and the (not yet
+  built) Change Feed → Reverse Lookup → evaluator → publish background
+  path; `semantic-core-authorities.json` already fixes Evidence Freshness's
+  `canonicalAuthority` as this evaluator with `writePolicy:
+  canonical-only`, and no ratified Mutation Authority Route yet permits a
+  background/scheduler caller for it.
+- `semantic_index_diagnostics.rs` (Lane M): pure diagnostic, no I/O; its
+  own doc comment says it never triggers a rebuild itself.
+- `legacy_backfill.rs` (Lane K) and `restore_rebuild.rs`'s
+  `rebuild_verify_dependency_edges`/`rebuild_repair_dependency_edges_in_tx`
+  (Lane N): genuinely open — could be automatic (migration/restore-time)
+  or a human-triggered `integrity-repair` admin action
+  (`narrative_maintenance_backfill_run`/`_rebuild_verify`/`_rebuild_repair`
+  under the existing `restore-or-migration` route). Not yet decided.
+
+No frontend UI exists yet for any of this beyond a Gate C0 placeholder
+(`src/features/narrative-extraction/.../StructureHealthPanel.tsx`,
+`liveCountsAvailable: false`, no IPC calls).
+
+The `dependency_edges.rs`/`application_contributions.rs` → `commit.rs`
+wiring in particular is materially higher-risk than everything landed so
+far: it modifies a live, load-bearing commit engine used by every existing
+narrative extraction operation kind, not additive/isolated new code, and —
+like everything else in this section — cannot be `cargo check`ed in this
+environment. A mistake there risks regressing already-shipped commit
+paths, not just leaving new code unreachable. This has not been attempted
+yet pending an explicit decision on how to proceed given that risk.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
