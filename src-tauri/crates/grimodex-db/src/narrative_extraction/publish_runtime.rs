@@ -266,16 +266,23 @@ fn freshness_severity_rank(freshness: EvidenceFreshness) -> u8 {
     }
 }
 
-/// Stable Attention/Finding key for one Edge's diagnostic Finding row.
-/// `edge_id` alone is enough: `record_dependency_edge_in_tx` (Lane G)
-/// upserts on `(project_id, consumer_kind, consumer_key,
-/// source_object_identity)` and keeps the same `id` across re-declarations,
-/// so this key stays stable across repeated evaluations of the same Edge --
-/// required for a human's Attention disposition
-/// (`narrative_maintenance_attention`, keyed on this same string) to keep
-/// applying to the same recurring problem instead of resetting every Run.
-fn edge_finding_key(edge_id: &str) -> String {
-    format!("edge:{edge_id}")
+/// Stable Attention/Finding key for a Consumer's diagnostic Finding rows.
+///
+/// This MUST match `inbox_read_model::consumer_finding_key` exactly --
+/// Lane P's cross-Lane adversarial suite caught an earlier version of this
+/// function keying per-Edge (`edge:{edge_id}`) while the Inbox Read Model
+/// looked up `{consumer_kind}:{consumer_key}`, which silently made every
+/// diagnostic Finding Observation invisible to the real Inbox. The Inbox is
+/// the user-facing surface and is Consumer-grained (one row per Consumer,
+/// matching `narrative_consumer_freshness`'s own primary key), so this
+/// function conforms to that grain rather than the reverse: a human snoozes
+/// or dismisses "this Consumer's freshness problem," not an individual
+/// internal Dependency Edge they never see. Multiple Edges under one
+/// Consumer therefore share one `finding_key`; `edge_id` is still recorded
+/// per-row in `narrative_maintenance_finding_observations.edge_id` so
+/// per-Edge attribution isn't lost, only de-emphasized as the lookup key.
+fn consumer_finding_key(consumer_kind: &str, consumer_key: &str) -> String {
+    format!("{consumer_kind}:{consumer_key}")
 }
 
 /// Deterministic `sha256:`-prefixed digest standing in for
@@ -415,7 +422,7 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
         let Some(reason_code) = observation.reason_code else {
             continue;
         };
-        let finding_key = edge_finding_key(edge_id);
+        let finding_key = consumer_finding_key(consumer_kind, consumer_key);
         let material_basis_digest =
             edge_material_basis_digest(edge_id, semantic_epoch_id, observation);
         record_finding_observation_in_tx(
@@ -653,7 +660,7 @@ mod tests {
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
-            assert_eq!(finding_key, format!("edge:{edge_id}"));
+            assert_eq!(finding_key, "proposal:proposal-1");
             assert_eq!(reason_code, "source-revision-changed");
             assert_eq!(freshness_snapshot, "stale");
             assert_eq!(stored_edge_id.as_deref(), Some(edge_id.as_str()));

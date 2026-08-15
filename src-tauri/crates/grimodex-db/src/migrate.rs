@@ -3878,7 +3878,7 @@ impl Database {
                             CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')),
                         policy_version TEXT,
                         next_attempt_at TEXT,
-                        CHECK((next_attempt_at IS NULL) OR (retry_disposition = 'retryable'))
+                        CHECK((next_attempt_at IS NULL) OR (retry_disposition IS NOT NULL AND retry_disposition = 'retryable'))
                      );
                      INSERT INTO narrative_extraction_attempts_v23
                         (id, task_id, attempt_number, status, started_at, completed_at,
