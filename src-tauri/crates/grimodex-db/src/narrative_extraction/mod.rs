@@ -8,6 +8,7 @@ mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod cursor_reservation;
 mod dependency_edges;
 mod detail_operations;
 mod evaluator;
@@ -16,6 +17,7 @@ mod field_authority;
 mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
+mod legacy_backfill;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -26,6 +28,7 @@ mod reconciliation_envelope;
 mod repository;
 mod semantic_bindings;
 mod semantic_epoch;
+mod semantic_index_diagnostics;
 mod source_revision;
 mod task_leases;
 mod temporal_constraints;
@@ -36,9 +39,10 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
 
-// Gate C2 Wave 1 (core Rust modules only; no IPC/N-API entrypoint is wired
-// up yet, so every re-export below is unreachable from outside its own
-// module's tests until C2-T1 Transport Assembly adds a caller).
+// Gate C2 Wave 1 / Wave 2 (core Rust modules only; no IPC/N-API entrypoint
+// is wired up yet, so every re-export below is unreachable from outside
+// its own module's tests until Transport Assembly (C2-T1/T2) adds a
+// caller).
 #[allow(unused_imports)]
 pub(crate) use application_contributions::{
     list_contributions_for_application, list_contributions_for_target, record_contribution_in_tx,
@@ -48,6 +52,17 @@ pub(crate) use application_contributions::{
 pub(crate) use attention::{
     clear_attention_in_tx, get_attention, is_attention_applicable, set_attention_in_tx,
     AttentionDisposition, AttentionRow,
+};
+// cursor_reservation::acknowledge_cursor_in_tx is the SCHEMA_VERSION 23
+// reservation-aware acknowledge (Lane I); it is a distinct function from
+// the pre-existing change_feed::acknowledge_cursor_in_tx (accessed as
+// `change_feed::acknowledge_cursor_in_tx` since `change_feed` stays a
+// `pub mod`, not flattened here) — same table, two different consumer
+// protocols, not interchangeable.
+#[allow(unused_imports)]
+pub(crate) use cursor_reservation::{
+    acknowledge_cursor_in_tx, get_cursor, reclaim_stale_reservation_in_tx,
+    reserve_cursor_range_in_tx, CursorRow,
 };
 #[allow(unused_imports)]
 pub(crate) use dependency_edges::{
@@ -72,7 +87,14 @@ pub(crate) use finding_observation::{
 #[allow(unused_imports)]
 pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
 #[allow(unused_imports)]
+pub(crate) use legacy_backfill::{backfill_project_semantic_build_graph_in_tx, BackfillSummary};
+#[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, get_current_epoch, list_epochs, CurrentEpoch};
+#[allow(unused_imports)]
+pub(crate) use semantic_index_diagnostics::{
+    compute_dependency_set_digest, is_semantic_index_dirty,
+    semantic_index_metadata_from_dependency_edges, SemanticIndexMetadata,
+};
 
 pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
 pub(crate) use foreshadow_undo::{

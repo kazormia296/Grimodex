@@ -84,6 +84,10 @@ const WRITER_TO_MODULES = {
   "narrative.maintenance-feed": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/change_feed.rs",
+    // Gate C2 Lane I: SCHEMA_VERSION 23 reservation columns on the same
+    // narrative_change_cursors table, split into its own module for
+    // clarity — still the narrative.maintenance-feed writer authority.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/cursor_reservation.rs",
   ],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
