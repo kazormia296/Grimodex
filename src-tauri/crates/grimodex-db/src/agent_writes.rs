@@ -504,6 +504,34 @@ pub(crate) fn validate_agent_chronicle_renderer_context(
     Ok(())
 }
 
+/// Validate the shared Chronicle writer for either explicit renderer aliases
+/// or capability-bound Agent commands. The Electron command contract keeps
+/// `agent_*` commands on `interactive-agent-command`; this Native helper only
+/// accepts the canonical context selected by that entry boundary.
+pub(crate) fn validate_renderer_chronicle_context(
+    request_id: &str,
+    context: &RendererCanonicalWriteContext,
+) -> anyhow::Result<()> {
+    if context.authority_route == "interactive-agent-command" {
+        return validate_agent_chronicle_renderer_context(request_id, context);
+    }
+    validate_renderer_authority_context_for_routes(
+        context,
+        &[
+            "human-direct",
+            "interactive-agent-command",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
+    )?;
+    anyhow::ensure!(
+        context.request_id == request_id,
+        "Chronicle requestId does not match canonical authority context"
+    );
+    Ok(())
+}
+
 pub(crate) fn canonical_payload_with_authority_context(
     payload: &str,
     context: &RendererCanonicalWriteContext,
@@ -7498,7 +7526,7 @@ pub fn agent_event_create_with_authority_impl(
         "requestId must not be empty"
     );
     if let Some(context) = renderer_context.as_ref() {
-        validate_agent_chronicle_renderer_context(&payload.request_id, context)?;
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     let request_hash = event_create_request_hash(&payload)?;
     let feed_request_id = payload.request_id.clone();
@@ -7673,7 +7701,7 @@ fn agent_event_update_with_request_and_authority_impl(
 ) -> anyhow::Result<Value> {
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
-        validate_agent_chronicle_renderer_context(request_id, context)?;
+        validate_renderer_chronicle_context(request_id, context)?;
     }
     struct CurrentChronicleRange {
         version: i64,
@@ -8135,7 +8163,7 @@ fn agent_event_delete_with_request_and_authority_impl(
 ) -> anyhow::Result<Value> {
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
-        validate_agent_chronicle_renderer_context(request_id, context)?;
+        validate_renderer_chronicle_context(request_id, context)?;
     }
     let request_hash = request_id
         .map(|_| event_delete_request_hash(&payload))
@@ -8396,7 +8424,7 @@ fn agent_event_set_participants_with_request_and_authority_impl(
 ) -> anyhow::Result<Value> {
     if let Some(context) = renderer_context.as_ref() {
         let request_id = request_id.ok_or_else(|| anyhow::anyhow!("requestId is required"))?;
-        validate_agent_chronicle_renderer_context(request_id, context)?;
+        validate_renderer_chronicle_context(request_id, context)?;
     }
     let request_hash = request_id
         .map(|_| event_participants_request_hash(&payload))
@@ -8638,7 +8666,7 @@ pub fn agent_scene_event_mutate_with_authority_impl(
         "requestId must not be empty"
     );
     if let Some(context) = renderer_context.as_ref() {
-        validate_agent_chronicle_renderer_context(&payload.request_id, context)?;
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     let request_hash = scene_event_request_hash(&payload, link)?;
     let undo_id = payload.request_id.clone();
@@ -8888,7 +8916,7 @@ pub fn agent_scene_event_link_batch_with_authority_impl(
         }
     }
     if let Some(context) = renderer_context.as_ref() {
-        validate_agent_chronicle_renderer_context(&payload.request_id, context)?;
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     if payload.scene_ids.is_empty() {
         anyhow::bail!("agent scene event link batch sceneIds must not be empty");
@@ -9123,7 +9151,7 @@ pub fn agent_event_relation_mutate_with_authority_impl(
         "requestId must not be empty"
     );
     if let Some(context) = renderer_context.as_ref() {
-        validate_agent_chronicle_renderer_context(&payload.request_id, context)?;
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     let request_hash = event_relation_request_hash(&payload, add)?;
     let undo_id = payload.request_id.clone();

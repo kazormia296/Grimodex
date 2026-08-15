@@ -75,7 +75,7 @@ describe("detailApi OCC", () => {
       name: "年齢",
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "detail.definition.create",
         projectId: "p1",
@@ -107,7 +107,7 @@ describe("detailApi OCC", () => {
       },
     });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "detail.definition.create",
         definitionId: "d1",
@@ -156,7 +156,7 @@ describe("detailApi OCC", () => {
       { writeContext },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining(writeContext),
     });
   });
@@ -173,7 +173,7 @@ describe("detailApi OCC", () => {
       { baseVersion: 2 },
     );
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "detail.definition.update",
         projectId: "p1",
@@ -207,7 +207,7 @@ describe("detailApi OCC", () => {
     const saved = await upsertValue("e1", "d1", "主人公");
 
     expect(limitMock).toHaveBeenCalledWith(1);
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "detail.value.upsert",
         projectId: "p1",
@@ -232,7 +232,7 @@ describe("detailApi OCC", () => {
     });
 
     expect(limitMock).toHaveBeenCalledWith(1);
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "detail.value.upsert",
         projectId: "p1",
@@ -275,7 +275,7 @@ describe("detailApi OCC", () => {
 
     await upsertValue("e1", "d1", "主人公", { writeContext });
 
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining(writeContext),
     });
   });

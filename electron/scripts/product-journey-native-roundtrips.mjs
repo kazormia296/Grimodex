@@ -133,7 +133,7 @@ function chronicleJourney(configureWorkspace, log) {
         write: async ({ harness: current, page, projectId }) => {
           const eventId = `native-event-${randomUUID()}`;
           const requestId = `native-chronicle-${randomUUID()}`;
-          const created = await current.invokeOk(page, "agent_event_create", {
+          const created = await current.invokeOk(page, "event_create", {
             payload: {
               requestId: `native-create-request-${randomUUID()}`,
               eventId,
@@ -157,7 +157,7 @@ function chronicleJourney(configureWorkspace, log) {
           }
           const result = await current.invokeOk(
             page,
-            "agent_chronicle_bulk_mutate",
+            "chronicle_bulk_mutate",
             {
               payload: {
                 requestId,

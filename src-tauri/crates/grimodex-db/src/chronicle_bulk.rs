@@ -18,7 +18,7 @@ use grimodex_core::chronicle_time::{
 
 use crate::agent_writes::{
     apply_event_snapshot, chronicle_event_transition_input, collect_event_snapshot,
-    delete_event_cascade, validate_agent_chronicle_renderer_context,
+    delete_event_cascade, validate_renderer_chronicle_context,
     RendererCanonicalWriteContext,
 };
 use crate::agent_writes::canonical_payload_with_authority_context;
@@ -1316,7 +1316,7 @@ pub fn agent_chronicle_bulk_mutate_with_authority_impl(
         anyhow::bail!("chronicle bulk requestId must not be empty");
     }
     if let Some(context) = renderer_context.as_ref() {
-        validate_agent_chronicle_renderer_context(&payload.request_id, context)?;
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     if payload.operations.is_empty() {
         anyhow::bail!("chronicle bulk operations must not be empty");

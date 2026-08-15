@@ -83,7 +83,7 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     await uiLinkSceneEvent("s1", "e1");
     // skipPolicyGate:true の短絡で knowledgeWrite ゲートは参照されない。
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_link", {
+    expect(h.invoke).toHaveBeenCalledWith("scene_event_link", {
       payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
@@ -107,10 +107,10 @@ describe("uiLinkSceneEvent / uiUnlinkSceneEvent (手動リンクの tracked-writ
     });
   });
 
-  it("unlink も surface='manual' で agent_scene_event_unlink を invoke する", async () => {
+  it("unlink も surface='manual' で scene_event_unlink を invoke する", async () => {
     await uiUnlinkSceneEvent("s1", "e1");
     expect(h.blockIfPolicyOff).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenCalledWith("agent_scene_event_unlink", {
+    expect(h.invoke).toHaveBeenCalledWith("scene_event_unlink", {
       payload: expect.objectContaining({
         requestId: expect.any(String),
         projectId: "p1",
@@ -217,7 +217,11 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     const call = [...h.invoke.mock.calls]
       .reverse()
       .find(
-        (c) => c[0] === "agent_event_create" || c[0] === "agent_event_update",
+        (c) =>
+          c[0] === "event_create" ||
+          c[0] === "event_update" ||
+          c[0] === "agent_event_create" ||
+          c[0] === "agent_event_update",
       );
     const payload = (call?.[1] as { payload: { detail: string } }).payload;
     return JSON.parse(payload.detail) as PmNode;
@@ -449,7 +453,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
     expect(h.invoke).toHaveBeenNthCalledWith(
       3,
-      "agent_event_set_participants",
+      "event_participants_set",
       {
         payload: expect.objectContaining({
           requestId: "event-participants-retry-1",
@@ -491,7 +495,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
 
   it("手動 delete も選択行の version を伝播する", async () => {
     await uiDeleteEvent("e1", { baseVersion: 4 });
-    expect(h.invoke).toHaveBeenCalledWith("agent_event_delete", {
+    expect(h.invoke).toHaveBeenCalledWith("event_delete", {
       payload: expect.objectContaining({
         eventId: "e1",
         baseVersion: 4,
@@ -511,7 +515,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
 
     expect(h.notifySameRendererDocumentWrite).not.toHaveBeenCalled();
-    expect(h.invoke).toHaveBeenNthCalledWith(1, "agent_event_delete", {
+    expect(h.invoke).toHaveBeenNthCalledWith(1, "event_delete", {
       payload: expect.objectContaining({
         eventId: "e1",
         baseVersion: 4,
@@ -519,7 +523,7 @@ describe("event detail の AI 帰属焼込 (#2)", () => {
     });
     expect(h.invoke).toHaveBeenNthCalledWith(
       2,
-      "agent_event_set_participants",
+      "event_participants_set",
       {
         payload: expect.objectContaining({
           eventId: "e1",

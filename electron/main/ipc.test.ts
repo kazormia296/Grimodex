@@ -416,6 +416,70 @@ describe("registerIpcRouter fail-soft logging", () => {
     });
   });
 
+  it.each([
+    "codex_mutate",
+    "event_create",
+    "event_update",
+    "event_delete",
+    "chronicle_bulk_mutate",
+    "event_participants_set",
+    "scene_event_link",
+    "scene_event_link_batch",
+    "scene_event_unlink",
+    "event_relation_add",
+    "event_relation_remove",
+  ])("binds renderer command %s to the human route", (command) => {
+    const bound = bindRendererAuthorityForIpc(
+      command,
+      {
+        payload: {
+          projectId: "p1",
+          requestId: `renderer-${command}-request`,
+          sessionId: "renderer-session",
+          eventUid: `renderer-${command}-event`,
+          origin: "human",
+        },
+      },
+      705,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "human-direct",
+    );
+    expect((bound.payload as { caller?: string }).caller).toBe("human-ui");
+  });
+
+  it.each([
+    "agent_event_create",
+    "agent_event_update",
+    "agent_event_delete",
+    "agent_chronicle_bulk_mutate",
+    "agent_event_set_participants",
+    "agent_scene_event_link",
+    "agent_scene_event_link_batch",
+    "agent_scene_event_unlink",
+    "agent_event_relation_add",
+    "agent_event_relation_remove",
+  ])("rejects human-origin attempts on Agent command %s", (command) => {
+    const bound = bindRendererAuthorityForIpc(
+      command,
+      {
+        payload: {
+          projectId: "p1",
+          requestId: `agent-${command}-request`,
+          sessionId: "renderer-session",
+          eventUid: `agent-${command}-event`,
+          origin: "human",
+        },
+      },
+      706,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
   it("issues a tool-scoped capability only for the main chat-agent turn", async () => {
     const sendAgentMessage = vi.fn(async () =>
       JSON.stringify({

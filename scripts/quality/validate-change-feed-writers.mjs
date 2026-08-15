@@ -140,6 +140,7 @@ const ELECTRON_MUTATING_ROUTES = [
   "codex_create",
   "codex_update",
   "codex_delete",
+  "codex_mutate",
   "agent_snippet_create",
   "snippet_create",
   "snippet_update",
@@ -161,6 +162,16 @@ const ELECTRON_MUTATING_ROUTES = [
   "agent_scene_event_unlink",
   "agent_event_relation_add",
   "agent_event_relation_remove",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
   "narrative_extraction_create_run",
   "narrative_extraction_cancel_run",
   "narrative_extraction_claim_task",
@@ -178,6 +189,23 @@ const ELECTRON_MUTATING_ROUTES = [
   "narrative_extraction_undo_commit",
   "narrative_extraction_redo_commit",
 ];
+
+const REQUIRED_RENDERER_AUTHORITY_COMMANDS = new Set([
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "codex_mutate",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
+]);
 
 const MCP_MUTATING_ROUTES = [
   "create_foreshadow",
@@ -393,6 +421,95 @@ function validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache) {
     }
   }
   return routes;
+}
+
+function validateRendererAuthorityParity(
+  manifest,
+  operation,
+  repoRoot,
+  errors,
+  sourceCache,
+) {
+  if (
+    !operation.id.endsWith(".renderer") ||
+    operation.canonical?.origin !== "renderer"
+  ) {
+    return;
+  }
+  const label = `operation ${operation.id}`;
+  const mainPath = path.join(repoRoot, "electron/main/ipc.ts");
+  if (!existsSync(mainPath)) return;
+  let mainSource = sourceCache.get(mainPath);
+  if (mainSource === undefined) {
+    mainSource = readFileSync(mainPath, "utf8");
+    sourceCache.set(mainPath, mainSource);
+  }
+  const ipcCommands = (operation.routes ?? [])
+    .filter((route) => route?.surface === "electron-ipc")
+    .map((route) => route.name)
+    .filter(nonEmptyString);
+  if (!ipcCommands.some((command) => REQUIRED_RENDERER_AUTHORITY_COMMANDS.has(command))) {
+    return;
+  }
+  if (ipcCommands.length === 0) {
+    errors.push(`${label} must declare an Electron IPC renderer command`);
+    return;
+  }
+
+  const commandSets = ["CODEX_RENDERER_COMMANDS", "RENDERER_CHRONICLE_COMMANDS"];
+  for (const command of ipcCommands) {
+    const declaredInMain = commandSets.some((setName) => {
+      const setBlock = mainSource.match(
+        new RegExp(
+          `const\\s+${setName}\\s*=\\s*new\\s+Set\\(\\[([\\s\\S]*?)\\]\\);`,
+        ),
+      );
+      return Boolean(
+        setBlock?.[1] &&
+          new RegExp(`\\"${escapeRegExp(command)}\\"`).test(setBlock[1]) &&
+          mainSource.includes(`${setName}.has(cmd)`),
+      );
+    });
+    if (!declaredInMain) {
+      errors.push(
+        `${label} renderer command ${command} is missing from Main authority route sets`,
+      );
+    }
+  }
+
+  const rendererBranch = mainSource.match(
+    /if \(\s*CODEX_RENDERER_COMMANDS\.has\(cmd\)[\s\S]*?return authorityRouteForOrigin\(payload\.origin,\s*\[([\s\S]*?)\]\)/,
+  )?.[1];
+  const mainRoutes = new Set(
+    rendererBranch?.match(/"([a-z-]+)"/g)?.map((value) => value.slice(1, -1)) ?? [],
+  );
+  for (const variant of operation.authorityVariants ?? []) {
+    if (!mainRoutes.has(variant?.authorityRoute)) {
+      errors.push(
+        `${label} authority variant ${variant?.authorityRoute} is not present in Main renderer route binding`,
+      );
+    }
+  }
+
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  const evidenceCommands = new Set(
+    Array.isArray(evidence?.commands) ? evidence.commands : [],
+  );
+  const evidenceTests = new Set(
+    Array.isArray(evidence?.testFiles) ? evidence.testFiles : [],
+  );
+  if (!evidenceCommands.has("pnpm electron:product-journeys")) {
+    errors.push(
+      `${label} runtime evidence must include the positive Electron product journey command`,
+    );
+  }
+  if (!evidenceTests.has("scripts/electron-product-journeys.test.mjs")) {
+    errors.push(
+      `${label} runtime evidence must include the product journey positive test`,
+    );
+  }
 }
 
 function validateWriterMatrix(manifest, errors) {
@@ -677,6 +794,13 @@ export function validateChangeFeedWriters({
     validateRuntimeEvidence(manifest, operation, repoRoot, errors);
     validateImplementation(operation, repoRoot, errors, sourceCache);
     validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache);
+    validateRendererAuthorityParity(
+      manifest,
+      operation,
+      repoRoot,
+      errors,
+      sourceCache,
+    );
   }
 
   for (const writerId of [...activeWriterIds].sort()) {

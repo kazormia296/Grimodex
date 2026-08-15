@@ -1928,7 +1928,7 @@ async function runCrossFeatureAuthoringJourney(harness) {
 /**
  * The isolated native module owns these typed production boundaries and their
  * restart evidence:
- * - agent_chronicle_bulk_mutate -> chronicle-native-roundtrip-restored
+ * - chronicle_bulk_mutate -> chronicle-native-roundtrip-restored
  * - lint_term_dictionary_insert / lint_term_dictionary_list
  *   -> lint-native-roundtrip-restored
  * - map_write_bundle -> map-native-roundtrip-restored

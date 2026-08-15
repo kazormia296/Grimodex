@@ -26914,28 +26914,38 @@ export async function createBrowserMock(
       case "codex_delete":
         return handleAgentCodexDelete(args) as T;
       case "agent_codex_mutate":
+      case "codex_mutate":
         return handleAgentCodexMutate(args) as T;
       case "agent_foreshadow_create":
         return (await handleAgentForeshadowCreate(args)) as T;
       case "agent_foreshadow_update":
         return (await handleAgentForeshadowUpdate(args)) as T;
       case "agent_event_create":
+      case "event_create":
         return (await handleAgentEventCreate(args)) as T;
       case "agent_event_update":
+      case "event_update":
         return (await handleAgentEventUpdate(args)) as T;
       case "agent_event_delete":
+      case "event_delete":
         return (await handleAgentEventDelete(args)) as T;
       case "agent_event_set_participants":
+      case "event_participants_set":
         return (await handleAgentEventSetParticipants(args)) as T;
       case "agent_scene_event_link":
+      case "scene_event_link":
         return (await handleAgentSceneEventMutation(args, true)) as T;
       case "agent_scene_event_link_batch":
+      case "scene_event_link_batch":
         return (await handleAgentSceneEventLinkBatch(args)) as T;
       case "agent_scene_event_unlink":
+      case "scene_event_unlink":
         return (await handleAgentSceneEventMutation(args, false)) as T;
       case "agent_event_relation_add":
+      case "event_relation_add":
         return (await handleAgentEventRelationMutation(args, true)) as T;
       case "agent_event_relation_remove":
+      case "event_relation_remove":
         return (await handleAgentEventRelationMutation(args, false)) as T;
       case "agent_apply_undo_journal":
         return handleBrowserApplyUndoJournal(args) as T;

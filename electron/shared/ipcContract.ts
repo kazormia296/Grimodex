@@ -719,6 +719,7 @@ export interface NapiBackendLike {
   codexCreate?(payload: unknown): Promise<string>;
   codexUpdate?(payload: unknown): Promise<string>;
   codexDelete?(payload: unknown): Promise<string>;
+  codexMutate?(payload: unknown): Promise<string>;
   agentCodexMutate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
   agentSnippetCreate(payload: unknown): Promise<string>;
@@ -741,6 +742,16 @@ export interface NapiBackendLike {
   agentSceneEventUnlink(payload: unknown): Promise<string>;
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
+  eventCreate?(payload: unknown): Promise<string>;
+  eventUpdate?(payload: unknown): Promise<string>;
+  eventDelete?(payload: unknown): Promise<string>;
+  chronicleBulkMutate?(payload: unknown): Promise<string>;
+  eventParticipantsSet?(payload: unknown): Promise<string>;
+  sceneEventLink?(payload: unknown): Promise<string>;
+  sceneEventLinkBatch?(payload: unknown): Promise<string>;
+  sceneEventUnlink?(payload: unknown): Promise<string>;
+  eventRelationAdd?(payload: unknown): Promise<string>;
+  eventRelationRemove?(payload: unknown): Promise<string>;
   treeNodeCreate(payload: unknown): Promise<string>;
   treeNodeDelete(payload: unknown): Promise<string>;
   treeNodePatch(payload: unknown): Promise<string>;
@@ -4384,18 +4395,22 @@ function requireRuntimePerformanceSeedArgs(args: CommandArgs): {
   return { ownerToken, payload };
 }
 
-/** Agent Chronicle writers must carry project, session, and durable retry identity. */
+const RENDERER_CHRONICLE_AUTHORITY_ROUTES = [
+  "human-direct",
+  "import-apply",
+  "history-replay",
+  "restore-or-migration",
+] as const;
+
+/** Agent and renderer Chronicle writers carry project, session, and retry identity. */
 function requireAgentChroniclePayload(
   args: CommandArgs,
   cmd: string,
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
 ): CommandArgs {
   const rawPayload = requireRecord(args, "payload", cmd);
   const payload = Object.hasOwn(rawPayload, "authorityRoute")
-    ? requireCanonicalWriterIdentity(
-        args,
-        cmd,
-        ["interactive-agent-command"],
-      )
+    ? requireCanonicalWriterIdentity(args, cmd, allowedRoutes)
     : rawPayload;
   requireNonEmptyString(payload, "requestId", cmd);
   requireNonEmptyString(payload, "projectId", cmd);
@@ -4407,8 +4422,9 @@ function requireAgentChroniclePayload(
 function requireEventMutationPayload(
   args: CommandArgs,
   cmd: string,
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
 ): CommandArgs {
-  const payload = requireAgentChroniclePayload(args, cmd);
+  const payload = requireAgentChroniclePayload(args, cmd, allowedRoutes);
   const baseVersion = requireNumber(payload, "baseVersion", cmd);
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
     throw new Error(
@@ -4432,15 +4448,14 @@ function requireNarrativeCommitReplayPayload(
 
 const MAX_SCENE_EVENT_LINK_BATCH_SIZE = 10_000;
 
-function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
-  const command = "agent_scene_event_link_batch";
+function requireSceneEventLinkBatchPayload(
+  args: CommandArgs,
+  command = "agent_scene_event_link_batch",
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
+): CommandArgs {
   const rawPayload = requireRecord(args, "payload", command);
   const payload = Object.hasOwn(rawPayload, "authorityRoute")
-    ? requireCanonicalWriterIdentity(args, command, [
-        "human-direct",
-        "interactive-agent-command",
-        "import-apply",
-      ])
+    ? requireCanonicalWriterIdentity(args, command, allowedRoutes)
     : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
@@ -4470,13 +4485,14 @@ function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
 
 const MAX_CHRONICLE_BULK_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
-function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
-  const command = "agent_chronicle_bulk_mutate";
+function requireChronicleBulkPayload(
+  args: CommandArgs,
+  command = "agent_chronicle_bulk_mutate",
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
+): CommandArgs {
   const rawPayload = requireRecord(args, "payload", command);
   const payload = Object.hasOwn(rawPayload, "authorityRoute")
-    ? requireCanonicalWriterIdentity(args, command, [
-        "interactive-agent-command",
-      ])
+    ? requireCanonicalWriterIdentity(args, command, allowedRoutes)
     : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
@@ -6958,6 +6974,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  codex_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.codexMutate, "codexMutate")(
+          requireCanonicalWriterIdentity(
+            a,
+            "codex_mutate",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_write_bundle: {
     run: async (b, a) =>
       parseWire(
@@ -7040,6 +7068,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventCreate, "eventCreate")(
+          requireAgentChroniclePayload(
+            a,
+            "event_create",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_update: {
     run: async (b, a) =>
       parseWire(
@@ -7048,11 +7088,35 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventUpdate, "eventUpdate")(
+          requireEventMutationPayload(
+            a,
+            "event_update",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_delete: {
     run: async (b, a) =>
       parseWire(
         await b.agentEventDelete(
           requireEventMutationPayload(a, "agent_event_delete"),
+        ),
+      ),
+  },
+  event_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventDelete, "eventDelete")(
+          requireEventMutationPayload(
+            a,
+            "event_delete",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -7066,6 +7130,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireChronicleBulkPayload(a)),
       ),
   },
+  chronicle_bulk_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chronicleBulkMutate,
+          "chronicleBulkMutate",
+        )(
+          requireChronicleBulkPayload(
+            a,
+            "chronicle_bulk_mutate",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_set_participants: {
     run: async (b, a) =>
       parseWire(
@@ -7074,11 +7154,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_participants_set: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventParticipantsSet,
+          "eventParticipantsSet",
+        )(
+          requireEventMutationPayload(
+            a,
+            "event_participants_set",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_scene_event_link: {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventLink(
           requireAgentChroniclePayload(a, "agent_scene_event_link"),
+        ),
+      ),
+  },
+  scene_event_link: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.sceneEventLink, "sceneEventLink")(
+          requireAgentChroniclePayload(
+            a,
+            "scene_event_link",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -7092,11 +7200,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireSceneEventLinkBatchPayload(a)),
       ),
   },
+  scene_event_link_batch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.sceneEventLinkBatch,
+          "sceneEventLinkBatch",
+        )(
+          requireSceneEventLinkBatchPayload(
+            a,
+            "scene_event_link_batch",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_scene_event_unlink: {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventUnlink(
           requireAgentChroniclePayload(a, "agent_scene_event_unlink"),
+        ),
+      ),
+  },
+  scene_event_unlink: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.sceneEventUnlink, "sceneEventUnlink")(
+          requireAgentChroniclePayload(
+            a,
+            "scene_event_unlink",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -7108,11 +7244,43 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_relation_add: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventRelationAdd,
+          "eventRelationAdd",
+        )(
+          requireAgentChroniclePayload(
+            a,
+            "event_relation_add",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_relation_remove: {
     run: async (b, a) =>
       parseWire(
         await b.agentEventRelationRemove(
           requireAgentChroniclePayload(a, "agent_event_relation_remove"),
+        ),
+      ),
+  },
+  event_relation_remove: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventRelationRemove,
+          "eventRelationRemove",
+        )(
+          requireAgentChroniclePayload(
+            a,
+            "event_relation_remove",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },

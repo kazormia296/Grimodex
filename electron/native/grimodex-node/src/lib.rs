@@ -4357,6 +4357,20 @@ impl Backend {
         .await
     }
 
+    /// Human/import/history/restore Codex aggregate writer. This is a distinct
+    /// N-API method from the capability-bound Agent command and shares only
+    /// the typed Native mutation core.
+    #[napi]
+    pub async fn codex_mutate(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            grimodex_db::codex_writes::renderer_codex_mutate_impl,
+        )
+        .await
+    }
+
     #[napi]
     pub async fn agent_write_bundle(&self, payload: serde_json::Value) -> Result<String> {
         agent_write_cmd(
@@ -4633,6 +4647,165 @@ impl Backend {
                 agent_writes::agent_event_relation_mutate_with_authority_impl(
                     db,
                     p,
+                    false,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    // Human/import/history/restore Chronicle aliases. Each method enters the
+    // same shared writer core as its Agent counterpart, but Main binds these
+    // command names to non-Agent authority routes.
+    #[napi]
+    pub async fn event_create(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_event_create_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn event_update(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_update_with_authority_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn event_delete(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_delete_with_authority_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn chronicle_bulk_mutate(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                grimodex_db::chronicle_bulk::agent_chronicle_bulk_mutate_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn event_participants_set(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            agent_writes::agent_event_set_participants_with_authority_impl,
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn scene_event_link(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_scene_event_mutate_with_authority_impl(
+                    db,
+                    payload,
+                    true,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn scene_event_link_batch(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_scene_event_link_batch_with_authority_impl(
+                    db,
+                    payload,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn scene_event_unlink(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_scene_event_mutate_with_authority_impl(
+                    db,
+                    payload,
+                    false,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn event_relation_add(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_event_relation_mutate_with_authority_impl(
+                    db,
+                    payload,
+                    true,
+                    Some(context),
+                )
+            },
+        )
+        .await
+    }
+
+    #[napi]
+    pub async fn event_relation_remove(&self, payload: serde_json::Value) -> Result<String> {
+        canonical_agent_write_cmd(
+            Arc::clone(&self.state),
+            "payload",
+            payload,
+            |db, payload, context| {
+                agent_writes::agent_event_relation_mutate_with_authority_impl(
+                    db,
+                    payload,
                     false,
                     Some(context),
                 )

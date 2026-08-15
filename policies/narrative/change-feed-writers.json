@@ -40,6 +40,13 @@
         "foreshadow_",
         "snippet_",
         "codex_rename_",
+        "event_create",
+        "event_update",
+        "event_delete",
+        "event_participants_set",
+        "event_relation_",
+        "scene_event_",
+        "chronicle_bulk_mutate",
         "temporal_scene_patch",
         "map_write_bundle",
         "save_scene_body_bundle",
@@ -87,6 +94,7 @@
     "evidenceId": "gate-c1.5-contract-regressions",
     "commands": [
       "pnpm test:electron --run electron/main/ipc.test.ts",
+      "pnpm electron:product-journeys",
       "pnpm test --run src/features/concurrency/externalWriteFeed.test.ts src/lib/browser-mock.undo-change-feed.test.ts",
       "pnpm --dir electron/native/grimodex-node test",
       "cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding",
@@ -101,7 +109,8 @@
       "src/features/narrative-semantic-core/contracts/disclosure.test.ts",
       "src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts",
       "scripts/quality/validate-semantic-core-boundary.test.mjs",
-      "scripts/quality/validate-change-feed-writers.test.mjs"
+      "scripts/quality/validate-change-feed-writers.test.mjs",
+      "scripts/electron-product-journeys.test.mjs"
     ],
     "controls": [
       "runtime-policy",
@@ -2712,11 +2721,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
         }
       ],
       "feedPolicy": "required",
@@ -2757,11 +2761,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
         }
       ],
       "feedPolicy": "required",
@@ -2802,11 +2801,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
         }
       ],
       "feedPolicy": "required",
@@ -3002,11 +2996,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
         }
       ],
       "feedPolicy": "required",
@@ -3043,6 +3032,157 @@
         "transactionId"
       ],
       "canonical": { "origin": "agent", "opType": "codex.mutate" }
+    },
+    {
+      "id": "codex.mutate.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy": "required",
+      "coverageStatus": "verified",
+      "reason": "Human/import/history/restore Codex aggregate mutations use an explicit renderer command while sharing the typed writer core with Agent mutations.",
+      "implementation": {"module":"src-tauri/crates/grimodex-db/src/codex_writes.rs","symbol":"renderer_codex_mutate_impl"},
+      "routes": [
+        {"surface":"electron-ipc","name":"codex_mutate","module":"electron/shared/ipcContract.ts"},
+        {"surface":"napi","name":"codex_mutate","module":"electron/native/grimodex-node/src/lib.rs"}
+      ],
+      "writerIds": ["codex.catalog","codex.entry","codex.relation","codex.phase","codex.detail"],
+      "scope": "project",
+      "requiredIdentities": ["projectId","requestId","sessionId","transactionId"],
+      "canonical": {"origin":"renderer","opType":"codex.mutate"}
+    },
+    {
+      "id": "chronicle.event.create.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event creation uses an explicit renderer command and the shared tracked writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_create_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_create","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_create","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.create"}
+    },
+    {
+      "id": "chronicle.event.update.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event updates use an explicit renderer command and the shared tracked writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_update_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_update","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_update","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.update"}
+    },
+    {
+      "id": "chronicle.event.delete.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle event deletion uses an explicit renderer command and the shared cascade writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_delete_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_delete","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_delete","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.delete"}
+    },
+    {
+      "id": "chronicle.bulk.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore Chronicle bulk mutations use an explicit renderer command and one shared transaction writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/chronicle_bulk.rs","symbol":"agent_chronicle_bulk_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"chronicle_bulk_mutate","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"chronicle_bulk_mutate","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event","tree.node"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"chronicle.bulk"}
+    },
+    {
+      "id": "chronicle.event.participants.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore participant replacement uses an explicit renderer command and the shared Chronicle writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_set_participants_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_participants_set","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_participants_set","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.participants"}
+    },
+    {
+      "id": "chronicle.event.scene-link.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore scene-event links use explicit renderer commands and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_scene_event_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"scene_event_link","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_link","module":"electron/native/grimodex-node/src/lib.rs"},{"surface":"electron-ipc","name":"scene_event_unlink","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_unlink","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.scene-link"}
+    },
+    {
+      "id": "chronicle.event.scene-link-batch.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore batch scene-event links use an explicit renderer command and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_scene_event_link_batch_impl"},
+      "routes":[{"surface":"electron-ipc","name":"scene_event_link_batch","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"scene_event_link_batch","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.scene-link.batch"}
+    },
+    {
+      "id": "chronicle.event.relation.renderer",
+      "authorityRoute": "human-direct",
+      "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
+      "authorityVariants": [
+        {"authorityRoute":"human-direct","controls":["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],"allowedCallers":["human-ui","manual-wrapper","typed-domain-api"]},
+        {"authorityRoute":"import-apply","controls":["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],"allowedCallers":["import-session","import-review"]},
+        {"authorityRoute":"history-replay","controls":["original-transaction","journal-lineage","typed-writer","occ","change-event","change-feed"],"allowedCallers":["history-controller","undo-redo-command"]},
+        {"authorityRoute":"restore-or-migration","controls":["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],"allowedCallers":["restore-controller","migration-runner","integrity-repair"]}
+      ],
+      "feedPolicy":"required","coverageStatus":"verified",
+      "reason":"Human/import/history/restore causal relation mutations use explicit renderer commands and the shared association writer.",
+      "implementation":{"module":"src-tauri/crates/grimodex-db/src/agent_writes.rs","symbol":"agent_event_relation_mutate_impl"},
+      "routes":[{"surface":"electron-ipc","name":"event_relation_add","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_relation_add","module":"electron/native/grimodex-node/src/lib.rs"},{"surface":"electron-ipc","name":"event_relation_remove","module":"electron/shared/ipcContract.ts"},{"surface":"napi","name":"event_relation_remove","module":"electron/native/grimodex-node/src/lib.rs"}],
+      "writerIds":["chronicle.event"],"scope":"project","requiredIdentities":["projectId","requestId","sessionId","transactionId"],"canonical":{"origin":"renderer","opType":"event.relation"}
     },
     {
       "id": "agent.snippet.create",
@@ -3429,16 +3569,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3479,16 +3609,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3529,16 +3649,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3579,11 +3689,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
         }
       ],
       "feedPolicy": "required",
@@ -3624,16 +3729,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3674,16 +3769,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3734,16 +3819,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",
@@ -3784,16 +3859,6 @@
           "authorityRoute": "interactive-agent-command",
           "controls": ["knowledge-write-policy","stable-request-id","agent-provenance","field-authority","typed-writer","occ","undo-journal","change-event","change-feed"],
           "allowedCallers": ["chat-tool-executor","manual-wrapper","registered-agent-surface"]
-        },
-        {
-          "authorityRoute": "human-direct",
-          "controls": ["runtime-policy","actor-context","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["human-ui","manual-wrapper","typed-domain-api"]
-        },
-        {
-          "authorityRoute": "import-apply",
-          "controls": ["import-policy","source-package-evidence","typed-writer","occ","change-event","change-feed"],
-          "allowedCallers": ["import-session","import-review"]
         }
       ],
       "feedPolicy": "required",

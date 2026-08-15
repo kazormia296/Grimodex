@@ -56,6 +56,23 @@ const CODEX_RENDERER_COMMANDS = new Set([
   "codex_create",
   "codex_update",
   "codex_delete",
+  "codex_mutate",
+]);
+
+// Chronicle has the same split as Codex: manual/import/history/restore
+// mutations use explicit renderer commands, while every `agent_*` command
+// remains capability-bound below.
+const RENDERER_CHRONICLE_COMMANDS = new Set([
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
 ]);
 
 const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
@@ -1569,7 +1586,10 @@ function authorityRouteForRendererCommand(
     return "interactive-agent-command";
   }
 
-  if (CODEX_RENDERER_COMMANDS.has(cmd)) {
+  if (
+    CODEX_RENDERER_COMMANDS.has(cmd) ||
+    RENDERER_CHRONICLE_COMMANDS.has(cmd)
+  ) {
     return authorityRouteForOrigin(payload.origin, [
       "human-direct",
       "import-apply",
@@ -1671,6 +1691,7 @@ export function bindRendererAuthorityForIpc(
     const requiresAuthority =
       GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       CODEX_RENDERER_COMMANDS.has(cmd) ||
+      RENDERER_CHRONICLE_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       AGENT_AUTHORITY_COMMANDS.has(cmd) ||
       cmd === "foreshadow_create" ||

@@ -59,6 +59,8 @@ export interface TrackedWriteOpts {
   executionId?: string;
   /** Main-issued provenance identity for this tool call. */
   mainOwnedProvenanceId?: string;
+  /** Explicit writer family. Manual renderer APIs must not reuse agent commands. */
+  commandFamily?: "agent" | "renderer";
 }
 
 function isAiAuthorshipSurface(surface: string | undefined): boolean {
@@ -92,18 +94,61 @@ type EventDocumentOp =
   | "event.delete"
   | "event.participants";
 
+type EventWriterCommand =
+  | "agent_event_create"
+  | "agent_event_update"
+  | "agent_event_delete"
+  | "agent_event_set_participants"
+  | "agent_scene_event_link"
+  | "agent_scene_event_link_batch"
+  | "agent_scene_event_unlink"
+  | "agent_event_relation_add"
+  | "agent_event_relation_remove";
+
+const RENDERER_EVENT_COMMANDS: Record<EventWriterCommand, string> = {
+  agent_event_create: "event_create",
+  agent_event_update: "event_update",
+  agent_event_delete: "event_delete",
+  agent_event_set_participants: "event_participants_set",
+  agent_scene_event_link: "scene_event_link",
+  agent_scene_event_link_batch: "scene_event_link_batch",
+  agent_scene_event_unlink: "scene_event_unlink",
+  agent_event_relation_add: "event_relation_add",
+  agent_event_relation_remove: "event_relation_remove",
+};
+
+function canonicalEventCommand(command: string): EventWriterCommand | null {
+  if (command in RENDERER_EVENT_COMMANDS) return command as EventWriterCommand;
+  const agentCommand = (Object.entries(RENDERER_EVENT_COMMANDS) as Array<
+    [EventWriterCommand, string]
+  >).find(([, rendererCommand]) => rendererCommand === command)?.[0];
+  return agentCommand ?? null;
+}
+
+function commandForWriterFamily(
+  command: EventWriterCommand,
+  opts?: TrackedWriteOpts,
+): string {
+  return opts?.commandFamily === "renderer"
+    ? RENDERER_EVENT_COMMANDS[command]
+    : command;
+}
+
 function eventDocumentOp(
   command: string,
   replayDirection?: "undo" | "redo",
 ): EventDocumentOp | null {
-  if (command === "agent_event_create") {
+  const canonicalCommand = canonicalEventCommand(command);
+  if (canonicalCommand === "agent_event_create") {
     return replayDirection === "undo" ? "event.delete" : "event.create";
   }
-  if (command === "agent_event_delete") {
+  if (canonicalCommand === "agent_event_delete") {
     return replayDirection === "undo" ? "event.create" : "event.delete";
   }
-  if (command === "agent_event_update") return "event.update";
-  if (command === "agent_event_set_participants") return "event.participants";
+  if (canonicalCommand === "agent_event_update") return "event.update";
+  if (canonicalCommand === "agent_event_set_participants") {
+    return "event.participants";
+  }
   return null;
 }
 
@@ -125,6 +170,10 @@ async function trackedEventWrite(
   opts?: TrackedWriteOpts,
   capturedAuthority?: MutationAuthority,
 ): Promise<AgentWriteResult> {
+  const commandKind = canonicalEventCommand(command);
+  const invokeCommand = commandKind
+    ? commandForWriterFamily(commandKind, opts)
+    : command;
   // 手動 UI 編集はユーザーの直接操作なので AI 書き込みポリシーで弾かない。
   if (!opts?.skipPolicyGate && blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -132,15 +181,7 @@ async function trackedEventWrite(
   const authority = capturedAuthority ?? captureEventWriteAuthority(opts);
   const { projectId } = authority;
   const requiresRequestId =
-    command === "agent_event_create" ||
-    command === "agent_event_update" ||
-    command === "agent_event_delete" ||
-    command === "agent_event_set_participants" ||
-    command === "agent_scene_event_link" ||
-    command === "agent_scene_event_link_batch" ||
-    command === "agent_scene_event_unlink" ||
-    command === "agent_event_relation_add" ||
-    command === "agent_event_relation_remove";
+    commandKind !== null;
   const suppliedRequestId =
     opts?.requestId ??
     (typeof payload.requestId === "string" &&
@@ -149,7 +190,7 @@ async function trackedEventWrite(
       : undefined);
   const requestId = requiresRequestId
     ? (suppliedRequestId ??
-      (command === "agent_event_create" ? undefined : crypto.randomUUID()))
+      (commandKind === "agent_event_create" ? undefined : crypto.randomUUID()))
     : undefined;
   if (requiresRequestId && !requestId) {
     throw new Error(`${command}: requestId is required`);
@@ -191,7 +232,7 @@ async function trackedEventWrite(
   const outcome = await runAuthoritativeMutation(
     authority,
     async () => {
-      const result = await invoke<AgentWriteResult>(command, {
+      const result = await invoke<AgentWriteResult>(invokeCommand, {
         payload: {
           projectId,
           sessionId: getRecorderSessionId(),
@@ -205,7 +246,7 @@ async function trackedEventWrite(
       // even after the row was deleted. Verify the canonical entity before any
       // renderer notification, revision bump, index scheduling, or history push.
       if (
-        command === "agent_event_create" &&
+        commandKind === "agent_event_create" &&
         isCurrentMutationAuthority(authority)
       ) {
         const version = await getEventVersion(projectId, result.entityId);
@@ -232,9 +273,9 @@ async function trackedEventWrite(
   // index に投入する。delete / scene 橋 / relation は埋め込み対象フィールドを
   // 変えないので index しない (relation/scene は別エンティティ)。
   if (
-    command === "agent_event_create" ||
-    command === "agent_event_update" ||
-    command === "agent_event_set_participants"
+    commandKind === "agent_event_create" ||
+    commandKind === "agent_event_update" ||
+    commandKind === "agent_event_set_participants"
   ) {
     scheduleEventIndex(result.entityId);
   }
@@ -532,6 +573,7 @@ export async function agentRemoveEventRelation(
 const UI_WRITE_OPTS: TrackedWriteOpts = {
   surface: "manual",
   skipPolicyGate: true,
+  commandFamily: "renderer",
 };
 
 export function uiCreateEvent(

@@ -1544,6 +1544,48 @@ pub fn renderer_agent_codex_mutate_impl(
     agent_codex_mutate_internal(db, payload, Some(context))
 }
 
+/// Human/import/history/restore renderer entry point for the same typed
+/// aggregate writer. Keeping this symbol separate from the Agent entry point
+/// makes the command-family split explicit while preserving one Native core.
+pub fn renderer_codex_mutate_impl(
+    db: &Database,
+    payload: AgentCodexMutationPayload,
+    context: RendererCanonicalWriteContext,
+) -> anyhow::Result<Value> {
+    anyhow::ensure!(!payload.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!payload.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(
+        payload.request_id == context.request_id,
+        "Codex mutation requestId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.event_uid == context.event_uid,
+        "Codex mutation eventUid does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.origin == context.origin,
+        "Codex mutation origin does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.original_transaction_id == context.original_transaction_id,
+        "Codex mutation originalTransactionId does not match canonical authority context"
+    );
+    anyhow::ensure!(
+        payload.undo_journal_id == context.undo_journal_id,
+        "Codex mutation undoJournalId does not match canonical authority context"
+    );
+    validate_renderer_authority_context_for_routes(
+        &context,
+        &[
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+        ],
+    )?;
+    agent_codex_mutate_internal(db, payload, Some(context))
+}
+
 fn agent_codex_mutate_internal(
     db: &Database,
     payload: AgentCodexMutationPayload,

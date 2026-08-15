@@ -11,6 +11,7 @@ const CANONICAL_COMMANDS = new Set([
   "codex_update",
   "codex_delete",
   "agent_codex_mutate",
+  "codex_mutate",
   "foreshadow_create",
   "foreshadow_update",
   "foreshadow_delete",

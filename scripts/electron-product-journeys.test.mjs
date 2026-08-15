@@ -325,7 +325,7 @@ test("product runner keeps the real boundary assertions", async () => {
   assert.match(source, /project-pending-editor-restored/);
   assert.match(source, /mcp-clean-external-write-reloaded/);
   assert.match(source, /mcp-dirty-external-write-conflict/);
-  assert.match(source, /agent_chronicle_bulk_mutate/);
+  assert.match(source, /chronicle_bulk_mutate/);
   assert.match(source, /chronicle-native-roundtrip-restored/);
   assert.match(source, /lint_term_dictionary_insert/);
   assert.match(source, /lint_term_dictionary_list/);
@@ -355,7 +355,7 @@ test("native round-trip fixtures route protected narrative seeds through typed w
     ),
   ].map((match) => match[1].toLowerCase());
 
-  assert.match(source, /"agent_event_create"/);
+  assert.match(source, /"event_create"/);
   assert.match(source, /"tree_node_create"/);
   assert.deepEqual(
     mutationTargets.filter((table) => protectedTables.has(table)),
