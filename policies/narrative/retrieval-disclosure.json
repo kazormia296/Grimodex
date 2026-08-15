@@ -17,6 +17,10 @@
   ],
   "rejectionRules": [
     {
+      "id": "disclosure-context-unresolved",
+      "reason": "A missing phase, temporal anchor, or disclosure axis rejects the context before candidate admission."
+    },
+    {
       "id": "future-phase",
       "reason": "A candidate in a future phase is not admitted."
     },
@@ -62,6 +66,7 @@
     }
   ],
   "fixtures": [
+    "missing-disclosure-context-rejected",
     "reading-future-phase-rejected",
     "story-future-time-rejected",
     "auto-matches-adr-002",

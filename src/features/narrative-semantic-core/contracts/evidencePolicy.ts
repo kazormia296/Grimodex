@@ -35,6 +35,7 @@ export interface EvidencePolicyInput {
 }
 
 export type EvidencePolicyFailureReason =
+  | "unsupported-producer-kind"
   | "unsupported-support-class"
   | "source-basis-required"
   | "evidence-required"
@@ -47,10 +48,14 @@ export type EvidencePolicyResult =
 
 const SUPPORT_CLASS_SET = new Set<string>(ASSERTION_SUPPORT_CLASSES);
 const ABSENCE_REASON_SET = new Set<string>(EVIDENCE_ABSENCE_REASONS);
+const PRODUCER_KIND_SET = new Set<string>(NARRATIVE_PRODUCER_KINDS);
 
 export function validateEvidencePolicy(
   input: EvidencePolicyInput,
 ): EvidencePolicyResult {
+  if (!PRODUCER_KIND_SET.has(input.producerKind)) {
+    return { valid: false, reason: "unsupported-producer-kind" };
+  }
   if (!SUPPORT_CLASS_SET.has(input.supportClass)) {
     return { valid: false, reason: "unsupported-support-class" };
   }

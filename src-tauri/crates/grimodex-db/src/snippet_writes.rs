@@ -169,6 +169,7 @@ macro_rules! impl_snippet_identity {
                 RendererCanonicalWriteContext {
                     request_id: self.request_id.clone(),
                     event_uid: self.event_uid.clone(),
+                    authority_session_id: None,
                     origin: self.origin,
                     authority_route: self.authority_route.clone(),
                     caller: self.caller.clone(),

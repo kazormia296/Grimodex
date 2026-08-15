@@ -52,4 +52,16 @@ describe("narrative evidence policy", () => {
       }),
     ).toEqual({ valid: true });
   });
+
+  it("rejects unknown producer kinds before applying a legacy fallback", () => {
+    expect(
+      validateEvidencePolicy({
+        producerKind: "future-producer" as never,
+        supportClass: "unresolved",
+        evidenceSet: [],
+        sourceBasis: ["future:1"],
+        evidenceAbsenceReason: "legacy-unbound",
+      }),
+    ).toEqual({ valid: false, reason: "unsupported-producer-kind" });
+  });
 });

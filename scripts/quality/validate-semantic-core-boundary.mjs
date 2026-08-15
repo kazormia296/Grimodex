@@ -34,6 +34,7 @@ const REQUIRED_ROUTE_CONTROLS = Object.freeze({
     "knowledge-write-policy",
     "stable-request-id",
     "agent-provenance",
+    "field-authority",
     "typed-writer",
     "occ",
     "undo-journal",
@@ -82,6 +83,7 @@ const REQUIRED_STATE_FIELDS = Object.freeze([
 ]);
 
 const REQUIRED_DISCLOSURE_RULES = Object.freeze([
+  "disclosure-context-unresolved",
   "future-phase",
   "future-story-time",
   "secret-before-reveal",
@@ -96,6 +98,7 @@ const REQUIRED_DISCLOSURE_RULES = Object.freeze([
 ]);
 
 const REQUIRED_DISCLOSURE_FIXTURES = Object.freeze([
+  "missing-disclosure-context-rejected",
   "reading-future-phase-rejected",
   "story-future-time-rejected",
   "auto-matches-adr-002",
@@ -107,22 +110,6 @@ const REQUIRED_DISCLOSURE_FIXTURES = Object.freeze([
   "audience-mismatch-rejected",
   "unresolved-scope-rejected",
   "worldline-mismatch-rejected",
-]);
-
-const SEMANTIC_BOUNDARY_ROOTS = Object.freeze([
-  "src/features/narrative-semantic-core",
-  "src/features/narrative-extraction/reconciler",
-  "src/features/narrative-extraction/maintenance",
-  "src/features/narrative-extraction/eval",
-  "src/features/narrative-extraction/ir",
-  "src/features/semantic-search",
-  "src/application/narrative-extraction",
-  "src/application/scheduler",
-  "src/application/background-maintenance",
-  "src/features/scheduler",
-  "src/features/background-maintenance",
-  "src-tauri/crates/grimodex-db/src/narrative_extraction",
-  "src-tauri/crates/grimodex-semantic/src",
 ]);
 
 const EXPECTED_ALLOWED_CALLERS = Object.freeze({
@@ -496,8 +483,30 @@ function validateDisclosurePolicy(policy, errors) {
   }
 }
 
-function validateArchitectureImports(repoRoot, errors) {
-  for (const relativeRoot of SEMANTIC_BOUNDARY_ROOTS) {
+function validateArchitectureImports(repoRoot, manifest, errors) {
+  const boundary = manifest?.semanticBoundary;
+  if (!isObject(boundary) || boundary.schemaVersion !== 1) {
+    errors.push(
+      "change-feed writer manifest semanticBoundary schemaVersion must be 1",
+    );
+    return;
+  }
+  if (!Array.isArray(boundary.scanRoots) || boundary.scanRoots.length === 0) {
+    errors.push("semanticBoundary.scanRoots must be a non-empty array");
+    return;
+  }
+  const roots = new Set();
+  for (const relativeRoot of boundary.scanRoots) {
+    if (!isNonEmptyString(relativeRoot) || path.isAbsolute(relativeRoot)) {
+      errors.push(`semanticBoundary scan root is not repository-relative: ${String(relativeRoot)}`);
+      continue;
+    }
+    if (relativeRoot.split(/[\\/]/).includes("..")) {
+      errors.push(`semanticBoundary scan root escapes the repository: ${relativeRoot}`);
+      continue;
+    }
+    if (roots.has(relativeRoot)) continue;
+    roots.add(relativeRoot);
     for (const file of listSourceFiles(repoRoot, relativeRoot)) {
       const source = readFileSync(file, "utf8");
       const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
@@ -512,6 +521,91 @@ function validateArchitectureImports(repoRoot, errors) {
       ) {
         errors.push(
           `Interpreter/maintenance boundary cannot call Agent Writer or Domain API directly: ${relativeFile}`,
+        );
+      }
+    }
+  }
+}
+
+function validateMutationCommandInventory(repoRoot, manifest, errors) {
+  const inventory = manifest?.semanticBoundary?.commandInventory;
+  if (!isObject(inventory) || inventory.schemaVersion !== 1) {
+    errors.push(
+      "semanticBoundary.commandInventory schemaVersion must be 1",
+    );
+    return;
+  }
+  if (!Array.isArray(inventory.sources) || inventory.sources.length === 0) {
+    errors.push("semanticBoundary.commandInventory.sources must be non-empty");
+    return;
+  }
+  if (
+    !Array.isArray(inventory.mutationPrefixes) ||
+    inventory.mutationPrefixes.some((prefix) => !isNonEmptyString(prefix))
+  ) {
+    errors.push(
+      "semanticBoundary.commandInventory.mutationPrefixes must contain non-empty strings",
+    );
+    return;
+  }
+  const ignoredCommands = new Set(
+    Array.isArray(inventory.ignoredCommands)
+      ? inventory.ignoredCommands.filter(isNonEmptyString)
+      : [],
+  );
+  const manifestRoutes = new Set(
+    (manifest.operations ?? []).flatMap((operation) =>
+      (operation?.routes ?? [])
+        .filter((route) => route?.surface === "electron-ipc")
+        .map((route) => route?.name),
+    ),
+  );
+  const extractors = {
+    "handler-keys": /^\s{2}([a-z][a-z0-9_]+):\s*\{/gm,
+    "switch-cases": /\bcase\s+["']([a-z][a-z0-9_]+)["']\s*:/g,
+  };
+  for (const [index, sourceSpec] of inventory.sources.entries()) {
+    const label = `semanticBoundary command source ${index}`;
+    if (
+      !isObject(sourceSpec) ||
+      !isNonEmptyString(sourceSpec.path) ||
+      !isNonEmptyString(sourceSpec.surface) ||
+      !isNonEmptyString(sourceSpec.extractor)
+    ) {
+      errors.push(`${label} must declare path, surface, and extractor`);
+      continue;
+    }
+    const sourcePath = path.join(repoRoot, sourceSpec.path);
+    if (!existsSync(sourcePath)) {
+      errors.push(`${label} source is missing: ${sourceSpec.path}`);
+      continue;
+    }
+    const extractor = extractors[sourceSpec.extractor];
+    if (!extractor && sourceSpec.extractor !== "browser-command-cases") {
+      errors.push(`${label} has unknown extractor: ${sourceSpec.extractor}`);
+      continue;
+    }
+    const source = readFileSync(sourcePath, "utf8");
+    const commandMatches =
+      sourceSpec.extractor === "browser-command-cases"
+        ? (() => {
+            const switchBody = /switch\s*\(cmd\)\s*\{([\s\S]*?)\n\s*default\s*:/m.exec(
+              source,
+            )?.[1];
+            return switchBody?.matchAll(extractors["switch-cases"]) ?? [];
+          })()
+        : source.matchAll(extractor);
+    for (const match of commandMatches) {
+      const command = match[1];
+      if (
+        !inventory.mutationPrefixes.some((prefix) => command.startsWith(prefix)) ||
+        ignoredCommands.has(command)
+      ) {
+        continue;
+      }
+      if (sourceSpec.surface === "electron-ipc" && !manifestRoutes.has(command)) {
+        errors.push(
+          `unregistered mutation command ${sourceSpec.surface}:${command}; add it to the Change Feed writer manifest`,
         );
       }
     }
@@ -695,7 +789,8 @@ export function validateSemanticCoreBoundary({
   validateDisclosurePolicy(disclosurePolicy, errors);
   validateContractFixtures(repoRoot, errors);
   validatePolicySchemas(repoRoot, errors);
-  validateArchitectureImports(repoRoot, errors);
+  validateArchitectureImports(repoRoot, writerManifest, errors);
+  validateMutationCommandInventory(repoRoot, writerManifest, errors);
   const schemaVersion = validateSchemaVersion(repoRoot, errors);
 
   return {

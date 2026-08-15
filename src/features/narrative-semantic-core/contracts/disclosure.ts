@@ -57,6 +57,7 @@ export interface NarrativeDisclosureCandidate {
 }
 
 export type NarrativeDisclosureRejection =
+  | "disclosure-context-unresolved"
   | "project-mismatch"
   | "unresolved-scope"
   | "invalid-resolution"
@@ -124,10 +125,81 @@ function isValidPhaseResolution(
   );
 }
 
+function isDisclosureContextComplete(
+  value: unknown,
+): value is NarrativeDisclosureContext {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const context = value as Record<string, unknown>;
+  const requiredKeys = [
+    "projectId",
+    "currentSceneId",
+    "phaseResolutionMode",
+    "phaseResolution",
+    "temporalAnchor",
+    "viewpointRef",
+    "knowledgeHolderRef",
+    "audienceRef",
+    "allowSecrets",
+    "currentPhase",
+    "currentStoryTime",
+    "currentSceneOrder",
+  ];
+  if (requiredKeys.some((key) => !Object.hasOwn(context, key))) return false;
+  if (
+    typeof context.projectId !== "string" ||
+    context.projectId.trim().length === 0 ||
+    !["reading", "story", "auto"].includes(
+      String(context.phaseResolutionMode),
+    ) ||
+    typeof context.allowSecrets !== "boolean"
+  ) {
+    return false;
+  }
+  const resolution = context.phaseResolution;
+  if (
+    resolution === null ||
+    typeof resolution !== "object" ||
+    Array.isArray(resolution) ||
+    !Object.hasOwn(resolution, "axisUsed") ||
+    !Object.hasOwn(resolution, "fallbackReason") ||
+    !Object.hasOwn(resolution, "resolver")
+  ) {
+    return false;
+  }
+  const nullableString = (candidate: unknown): boolean =>
+    candidate === null ||
+    (typeof candidate === "string" && candidate.trim().length > 0);
+  if (
+    !nullableString(context.currentSceneId) ||
+    !nullableString(context.temporalAnchor) ||
+    !nullableString(context.viewpointRef) ||
+    !nullableString(context.knowledgeHolderRef) ||
+    !nullableString(context.audienceRef)
+  ) {
+    return false;
+  }
+  const nullableOrder = (candidate: unknown): boolean =>
+    candidate === null ||
+    (typeof candidate === "number" && Number.isSafeInteger(candidate));
+  return (
+    nullableOrder(context.currentPhase) &&
+    nullableOrder(context.currentStoryTime) &&
+    nullableOrder(context.currentSceneOrder)
+  );
+}
+
 export function evaluateNarrativeDisclosure(
   context: NarrativeDisclosureContext,
   candidate: NarrativeDisclosureCandidate,
 ): NarrativeDisclosureDecision {
+  if (!isDisclosureContextComplete(context)) {
+    return {
+      admitted: false,
+      reasons: ["disclosure-context-unresolved"],
+    };
+  }
   const reasons: NarrativeDisclosureRejection[] = [];
   if (candidate.projectId !== context.projectId) {
     addReason(reasons, "project-mismatch");

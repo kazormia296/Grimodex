@@ -230,4 +230,20 @@ describe("narrative retrieval disclosure", () => {
     expect(decision.admitted).toBe(false);
     expect(decision.reasons).toContain("scene-scope-mismatch");
   });
+
+  it("rejects a missing disclosure context instead of throwing or admitting", () => {
+    const missingContext = Object.fromEntries(
+      Object.entries(context).filter(([key]) => key !== "phaseResolution"),
+    ) as Partial<NarrativeDisclosureContext>;
+
+    expect(
+      evaluateNarrativeDisclosure(
+        missingContext as NarrativeDisclosureContext,
+        { projectId: "project-1", scope },
+      ),
+    ).toEqual({
+      admitted: false,
+      reasons: ["disclosure-context-unresolved"],
+    });
+  });
 });

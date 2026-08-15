@@ -6,10 +6,10 @@
  * from operation coverage. During the C1 restack, required routes may remain
  * `declared`; `--require-runtime-coverage` is the later cutover switch that
  * requires every required/delegated operation to be `verified`.
- * `verified` is an inventory certification (route/module/symbol mapping), not
- * a claim that this static validator executed the writer or proved runtime
- * atomicity. Runtime evidence belongs to the Native/browser contract and
- * Journey/quality test suites.
+ * `verified` requires a runtimeEvidence bundle that names the commands and
+ * regression files used to exercise the Native/browser contract. The bundle
+ * is evidence of the declared contract, not a claim that this static
+ * validator proved runtime atomicity by itself.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -446,6 +446,67 @@ function validateWriterMatrix(manifest, errors) {
   }
 }
 
+function validateRuntimeEvidence(manifest, operation, repoRoot, errors) {
+  if (operation.coverageStatus !== "verified") return;
+  if (
+    operation.feedPolicy === "excluded" &&
+    operation.runtimeEvidence?.status === "excluded"
+  ) {
+    return;
+  }
+
+  const label = `operation ${operation.id}`;
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  if (
+    !isObject(evidence) ||
+    evidence.schemaVersion !== 1 ||
+    evidence.status !== "verified" ||
+    !nonEmptyString(evidence.evidenceId)
+  ) {
+    errors.push(
+      `${label} verified coverage requires a schemaVersion 1 runtimeEvidence bundle`,
+    );
+    return;
+  }
+  for (const field of ["commands", "testFiles", "controls"]) {
+    if (
+      !Array.isArray(evidence[field]) ||
+      evidence[field].length === 0 ||
+      evidence[field].some((value) => !nonEmptyString(value))
+    ) {
+      errors.push(`${label} runtimeEvidence.${field} must be a non-empty string array`);
+    }
+  }
+  const evidenceControls = new Set(
+    Array.isArray(evidence.controls) ? evidence.controls : [],
+  );
+  const variants = Array.isArray(operation.authorityVariants)
+    ? operation.authorityVariants
+    : [{ controls: operation.controls }];
+  for (const [variantIndex, variant] of variants.entries()) {
+    for (const control of Array.isArray(variant?.controls) ? variant.controls : []) {
+      if (!evidenceControls.has(control)) {
+        errors.push(
+          `${label} runtimeEvidence.controls must include '${control}' for authority variant ${variantIndex}`,
+        );
+      }
+    }
+  }
+  for (const [index, relativePath] of (evidence.testFiles ?? []).entries()) {
+    const absolute = safeRepoPath(
+      repoRoot,
+      relativePath,
+      `${label} runtimeEvidence.testFiles[${index}]`,
+      errors,
+    );
+    if (absolute && !existsSync(absolute)) {
+      errors.push(`${label} runtime evidence test file does not exist: ${relativePath}`);
+    }
+  }
+}
+
 export function validateChangeFeedWriters({
   repoRoot = REPO_ROOT,
   manifestPath = MANIFEST_PATH,
@@ -610,6 +671,7 @@ export function validateChangeFeedWriters({
       }
     }
 
+    validateRuntimeEvidence(manifest, operation, repoRoot, errors);
     validateImplementation(operation, repoRoot, errors, sourceCache);
     validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache);
   }

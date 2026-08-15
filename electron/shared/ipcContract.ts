@@ -4389,13 +4389,7 @@ function requireAgentChroniclePayload(
     ? requireCanonicalWriterIdentity(
         args,
         cmd,
-        cmd === "agent_chronicle_bulk_mutate"
-          ? ["human-direct", "interactive-agent-command"]
-          : [
-              "human-direct",
-              "interactive-agent-command",
-              "import-apply",
-            ],
+        ["interactive-agent-command"],
       )
     : rawPayload;
   requireNonEmptyString(payload, "requestId", cmd);
@@ -4476,7 +4470,6 @@ function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
   const rawPayload = requireRecord(args, "payload", command);
   const payload = Object.hasOwn(rawPayload, "authorityRoute")
     ? requireCanonicalWriterIdentity(args, command, [
-        "human-direct",
         "interactive-agent-command",
       ])
     : rawPayload;
@@ -6874,7 +6867,6 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentCodexCreate(
           requireCanonicalWriterIdentity(a, "agent_codex_create", [
-            "human-direct",
             "interactive-agent-command",
           ]),
         ),
@@ -6885,7 +6877,6 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentCodexUpdate(
           requireCanonicalWriterIdentity(a, "agent_codex_update", [
-            "human-direct",
             "interactive-agent-command",
           ]),
         ),
@@ -6896,7 +6887,6 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentCodexDelete(
           requireCanonicalWriterIdentity(a, "agent_codex_delete", [
-            "human-direct",
             "interactive-agent-command",
           ]),
         ),
@@ -6907,7 +6897,6 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       parseWire(
         await b.agentCodexMutate(
           requireCanonicalWriterIdentity(a, "agent_codex_mutate", [
-            "human-direct",
             "interactive-agent-command",
           ]),
         ),

@@ -632,7 +632,7 @@ test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => 
   // type は DEFAULT 'character'（migrate トリガが default-project に seed 済み）。
   const codex = JSON.parse(
     await backend.agentCodexCreate({
-      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "human"),
+      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "ai-apply"),
       undoJournalId: null,
       entryId: "cx1",
       projectId: PROJECT,

@@ -165,6 +165,11 @@ pub struct RendererMutationProvenance {
 pub struct RendererCanonicalWriteContext {
     pub request_id: String,
     pub event_uid: String,
+    /// Main-owned authority identity. This is deliberately separate from the
+    /// domain payload's session_id, which remains the renderer writer/feed
+    /// correlation identity.
+    #[serde(default)]
+    pub authority_session_id: Option<String>,
     pub origin: NarrativeChangeOrigin,
     pub authority_route: String,
     pub caller: String,
@@ -490,7 +495,7 @@ pub(crate) fn validate_agent_chronicle_renderer_context(
 ) -> anyhow::Result<()> {
     validate_renderer_authority_context_for_routes(
         context,
-        &["human-direct", "interactive-agent-command", "import-apply"],
+        &["interactive-agent-command"],
     )?;
     anyhow::ensure!(
         context.request_id == request_id,
@@ -533,6 +538,9 @@ pub(crate) fn canonical_payload_with_derived_authority_context(
         "replayLineageValidated": context.authority_route == "history-replay",
         "controls": context.controls,
     });
+    if let Some(authority_session_id) = context.authority_session_id.as_deref() {
+        evidence["authoritySessionId"] = json!(authority_session_id);
+    }
     if let Some(provenance) = &context.provenance {
         evidence["provenance"] = serde_json::to_value(provenance).unwrap_or(Value::Null);
     }
@@ -918,7 +926,10 @@ fn validate_renderer_codex_identity(
         !context.event_uid.trim().is_empty(),
         "eventUid must not be empty"
     );
-    validate_renderer_authority_context(context)?;
+    validate_renderer_authority_context_for_routes(
+        context,
+        &["interactive-agent-command", "history-replay"],
+    )?;
     let replay = matches!(
         context.origin,
         NarrativeChangeOrigin::Undo | NarrativeChangeOrigin::Redo
@@ -9398,6 +9409,7 @@ mod tests {
         RendererCanonicalWriteContext {
             request_id: request_id.to_string(),
             event_uid: event_uid.to_string(),
+            authority_session_id: None,
             origin: NarrativeChangeOrigin::AiApply,
             authority_route: "interactive-agent-command".to_string(),
             caller: "chat-tool-executor".to_string(),
@@ -9427,6 +9439,7 @@ mod tests {
         let context = RendererCanonicalWriteContext {
             request_id: "request-1".to_string(),
             event_uid: "event-1".to_string(),
+            authority_session_id: None,
             origin: NarrativeChangeOrigin::AiApply,
             authority_route: "interactive-agent-command".to_string(),
             caller: "background-maintenance-v2".to_string(),
@@ -9459,6 +9472,7 @@ mod tests {
         let context = RendererCanonicalWriteContext {
             request_id: "request-1".to_string(),
             event_uid: "event-1".to_string(),
+            authority_session_id: None,
             origin: NarrativeChangeOrigin::Human,
             authority_route: "human-direct".to_string(),
             caller: "human-ui".to_string(),
@@ -10800,23 +10814,14 @@ mod tests {
             trace_id: None,
             authorship_spans: vec![],
         };
-        let context = RendererCanonicalWriteContext {
-            request_id: "renderer-create-request".to_string(),
-            event_uid: "renderer-create-event".to_string(),
-            origin: NarrativeChangeOrigin::Human,
-            authority_route: "human-direct".to_string(),
-            caller: "human-ui".to_string(),
-            controls: renderer_authority_fields("human-direct", "human-ui").2,
-            provenance: None,
-            writes_authority_protected_field: false,
-            original_transaction_id: None,
-            undo_journal_id: None,
-            context_mode: Some("always".to_string()),
-            icon: Some("star".to_string()),
-            children_budget: Some("standard".to_string()),
-            notes: Some("private".to_string()),
-            canonical_payload: None,
-        };
+        let mut context = renderer_agent_context(
+            "renderer-create-request",
+            "renderer-create-event",
+        );
+        context.context_mode = Some("always".to_string());
+        context.icon = Some("star".to_string());
+        context.children_budget = Some("standard".to_string());
+        context.notes = Some("private".to_string());
         let first = renderer_codex_create_impl(&db, payload.clone(), context.clone())
             .expect("first renderer create");
 
@@ -10859,6 +10864,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "cascade-root", "Root", 4);
+        grant_agent_codex_authority(&db, &project_id, "cascade-root");
         let mut child = tracked_codex_create_payload(&project_id, "cascade-child", "Child", 5);
         child.parent_id = Some("cascade-root".to_string());
         agent_codex_create_impl(&db, child).expect("create cascade child");
@@ -10893,22 +10899,13 @@ mod tests {
                 entry_id: "cascade-root".to_string(),
                 base_version: 1,
             },
-            RendererCanonicalWriteContext {
-                request_id: "cascade-delete-request".to_string(),
-                event_uid: "cascade-delete-event".to_string(),
-                origin: NarrativeChangeOrigin::Human,
-                authority_route: "human-direct".to_string(),
-                caller: "human-ui".to_string(),
-                controls: renderer_authority_fields("human-direct", "human-ui").2,
-                provenance: None,
-                writes_authority_protected_field: false,
-                original_transaction_id: None,
-                undo_journal_id: None,
-                context_mode: None,
-                icon: None,
-                children_budget: None,
-                notes: None,
-                canonical_payload: Some(json!({ "name": "Root", "type": "character" })),
+            {
+                let mut context = renderer_agent_context(
+                    "cascade-delete-request",
+                    "cascade-delete-event",
+                );
+                context.canonical_payload = Some(json!({ "name": "Root", "type": "character" }));
+                context
             },
         )
         .expect("delete Codex cascade");
@@ -10959,8 +10956,11 @@ mod tests {
                 |row| row.get(0),
             )?;
             let canonical_payload: Value = serde_json::from_str(&canonical_payload)?;
-            assert_eq!(canonical_payload["authorityRoute"], "human-direct");
-            assert_eq!(canonical_payload["authorityCaller"], "human-ui");
+            assert_eq!(
+                canonical_payload["authorityRoute"],
+                "interactive-agent-command"
+            );
+            assert_eq!(canonical_payload["authorityCaller"], "chat-tool-executor");
             assert_eq!(canonical_payload["authorityEvidence"]["validated"], true);
             assert_eq!(
                 canonical_payload["cascade"]["relationIds"],
@@ -11000,6 +11000,7 @@ mod tests {
         let restore_context = RendererCanonicalWriteContext {
             request_id: "cascade-restore-request".to_string(),
             event_uid: "cascade-restore-event".to_string(),
+            authority_session_id: None,
             origin: NarrativeChangeOrigin::Undo,
             authority_route: "history-replay".to_string(),
             caller: "history-controller".to_string(),
@@ -11092,6 +11093,7 @@ mod tests {
             RendererCanonicalWriteContext {
                 request_id: "cascade-redo-delete-request".to_string(),
                 event_uid: "cascade-redo-delete-event".to_string(),
+                authority_session_id: None,
                 origin: NarrativeChangeOrigin::Redo,
                 authority_route: "history-replay".to_string(),
                 caller: "history-controller".to_string(),
@@ -11133,6 +11135,7 @@ mod tests {
             RendererCanonicalWriteContext {
                 request_id: "cascade-restore-fail-request".to_string(),
                 event_uid: "cascade-restore-fail-event".to_string(),
+                authority_session_id: None,
                 origin: NarrativeChangeOrigin::Undo,
                 authority_route: "history-replay".to_string(),
                 caller: "history-controller".to_string(),
@@ -11221,27 +11224,13 @@ mod tests {
     }
 
     fn renderer_update_context(request_id: &str, event_uid: &str) -> RendererCanonicalWriteContext {
-        RendererCanonicalWriteContext {
-            request_id: request_id.to_string(),
-            event_uid: event_uid.to_string(),
-            origin: NarrativeChangeOrigin::Human,
-            authority_route: "human-direct".to_string(),
-            caller: "human-ui".to_string(),
-            controls: renderer_authority_fields("human-direct", "human-ui").2,
-            provenance: None,
-            writes_authority_protected_field: false,
-            original_transaction_id: None,
-            undo_journal_id: None,
-            context_mode: None,
-            icon: None,
-            children_budget: None,
-            notes: None,
-            canonical_payload: Some(json!({
-                "fields": ["name"],
-                "before": { "name": "Before" },
-                "after": { "name": "After" },
-            })),
-        }
+        let mut context = renderer_agent_context(request_id, event_uid);
+        context.canonical_payload = Some(json!({
+            "fields": ["name"],
+            "before": { "name": "Before" },
+            "after": { "name": "After" },
+        }));
+        context
     }
 
     #[test]
@@ -11249,6 +11238,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "linked-codex", "Before", 6);
+        grant_agent_codex_authority(&db, &project_id, "linked-codex");
         link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-z");
         link_foreshadow_fixture(&db, &project_id, "linked-codex", "foreshadow-a");
         let payload = AgentCodexUpdatePayload {
@@ -11359,6 +11349,7 @@ mod tests {
         let db = test_db();
         let project_id = insert_project(&db);
         tracked_codex_create(&db, &project_id, "rollback-codex", "Before", 6);
+        grant_agent_codex_authority(&db, &project_id, "rollback-codex");
         link_foreshadow_fixture(&db, &project_id, "rollback-codex", "rollback-foreshadow");
         let baseline_journals = table_count(&db, "undo_journal");
         let baseline_change_events = table_count(&db, "change_events");
@@ -11541,6 +11532,25 @@ mod tests {
             tracked_codex_create_payload(project_id, entry_id, name, span_to),
         )
         .expect("tracked codex create")
+    }
+
+    fn grant_agent_codex_authority(db: &Database, project_id: &str, entry_id: &str) {
+        let paths = all_authority_paths("codex_entry")
+            .iter()
+            .map(|path| (*path).to_string())
+            .collect::<Vec<_>>();
+        let updated_at = chrono::Utc::now().to_rfc3339();
+        db.with_conn(|conn| {
+            record_agent_field_authority_for_entity(
+                conn,
+                project_id,
+                "codex-entry",
+                entry_id,
+                &paths,
+                &updated_at,
+            )
+        })
+        .expect("grant Agent Codex field authority");
     }
 
     #[test]

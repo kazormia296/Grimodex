@@ -10,7 +10,7 @@ use serde_json::{json, Map, Value};
 
 use crate::change_events::AppendChangeEvent;
 use crate::agent_writes::{
-    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    canonical_payload_with_authority_context, validate_renderer_authority_context_for_routes,
     RendererCanonicalWriteContext,
 };
 use crate::codex_relation_keys::{build_codex_relation_semantic_key, normalize_relation_label};
@@ -1540,7 +1540,7 @@ pub fn renderer_agent_codex_mutate_impl(
         payload.undo_journal_id == context.undo_journal_id,
         "agent Codex mutation undoJournalId does not match canonical authority context"
     );
-    validate_renderer_authority_context(&context)?;
+    validate_renderer_authority_context_for_routes(&context, &["interactive-agent-command"])?;
     agent_codex_mutate_internal(db, payload, Some(context))
 }
 

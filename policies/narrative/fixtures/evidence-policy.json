@@ -34,6 +34,15 @@
       "evidenceSet": [],
       "sourceBasis": ["legacy:1@revision:1"],
       "expected": "reject"
+    },
+    {
+      "name": "unknown-producer-kind-rejected",
+      "producerKind": "future-producer",
+      "supportClass": "unresolved",
+      "evidenceSet": [],
+      "sourceBasis": ["future:1@revision:1"],
+      "evidenceAbsenceReason": "legacy-unbound",
+      "expected": "reject"
     }
   ]
 }

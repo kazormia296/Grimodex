@@ -19,6 +19,10 @@ export interface CanonicalWriteLineage {
 export interface CanonicalWriteContext {
   requestId: string;
   sessionId: string;
+  /** Renderer recorder identity used to correlate self-writes in Change Feed. */
+  writerSessionId?: string;
+  /** Main-owned authority identity; never substitute it for sessionId. */
+  authoritySessionId?: string;
   eventUid: string;
   origin: CanonicalWriteOrigin;
   authorityRoute: MutationAuthorityRoute;
@@ -86,6 +90,7 @@ export function createCanonicalWriteContext(
   const baseProvenance =
     authorityOptions?.provenance ??
     (origin === "ai-apply" ? { requestId, traceId: requestId } : null);
+  const writerSessionId = getRecorderSessionId();
   const provenance = baseProvenance
     ? {
         ...baseProvenance,
@@ -99,7 +104,8 @@ export function createCanonicalWriteContext(
     : null;
   const context = {
     requestId,
-    sessionId: getRecorderSessionId(),
+    sessionId: writerSessionId,
+    writerSessionId,
     // Agent operations already expose a stable logical request ID. Reusing it
     // as the canonical event identity makes a native retry an exact replay;
     // ad-hoc human writes retain independent request/event UUIDs.

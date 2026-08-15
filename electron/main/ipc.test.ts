@@ -216,7 +216,7 @@ describe("registerIpcRouter fail-soft logging", () => {
     });
   });
 
-  it("replaces renderer session claims with a sender-bound main session", () => {
+  it("keeps writer session correlation separate from sender-bound authority", () => {
     const first = bindRendererAuthorityForIpc(
       "tree_node_create",
       {
@@ -269,13 +269,32 @@ describe("registerIpcRouter fail-soft logging", () => {
       702,
     );
 
-    const firstSession = (first.payload as { sessionId: string }).sessionId;
-    const secondSession = (second.payload as { sessionId: string }).sessionId;
-    const otherSenderSession = (otherSender.payload as { sessionId: string })
-      .sessionId;
-    expect(firstSession).not.toBe("renderer-claimed-a");
-    expect(secondSession).toBe(firstSession);
-    expect(otherSenderSession).not.toBe(firstSession);
+    const firstPayload = first.payload as {
+      sessionId: string;
+      writerSessionId: string;
+      authoritySessionId: string;
+    };
+    const secondPayload = second.payload as {
+      sessionId: string;
+      writerSessionId: string;
+      authoritySessionId: string;
+    };
+    const otherSenderPayload = otherSender.payload as {
+      sessionId: string;
+      writerSessionId: string;
+      authoritySessionId: string;
+    };
+    expect(firstPayload.sessionId).toBe("renderer-claimed-a");
+    expect(firstPayload.writerSessionId).toBe(firstPayload.sessionId);
+    expect(secondPayload.sessionId).toBe("renderer-claimed-b");
+    expect(secondPayload.writerSessionId).toBe(secondPayload.sessionId);
+    expect(firstPayload.authoritySessionId).not.toBe(firstPayload.sessionId);
+    expect(secondPayload.authoritySessionId).toBe(
+      firstPayload.authoritySessionId,
+    );
+    expect(otherSenderPayload.authoritySessionId).not.toBe(
+      firstPayload.authoritySessionId,
+    );
   });
 
   it("derives a nested tree change event from the sender-bound identity", () => {
@@ -333,6 +352,28 @@ describe("registerIpcRouter fail-soft logging", () => {
         },
       },
       703,
+    );
+
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
+  });
+
+  it("rejects an Agent command that forges human origin without a capability", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "agent_codex_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "agent-tool:human-bypass",
+          sessionId: "renderer-claimed",
+          eventUid: "agent-event-human-bypass",
+          origin: "human",
+          typeSlug: "character",
+          name: "forged",
+        },
+      },
+      704,
     );
 
     expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
@@ -546,40 +587,33 @@ describe("registerIpcRouter fail-soft logging", () => {
     }
   });
 
-  it("binds Chronicle imports to import-apply instead of the legacy writer", () => {
-    const bound = bindRendererAuthorityForIpc("agent_event_create", {
-      payload: {
-        projectId: "p1",
-        requestId: "import-request-1",
-        sessionId: "import-session-1",
-        eventUid: "import-event-1",
-        origin: "import",
-        authorityRoute: "human-direct",
-        caller: "human-ui",
-        controls: ["runtime-policy"],
-        provenance: null,
-        writesAuthorityProtectedField: false,
-        originalTransactionId: null,
-        undoJournalId: null,
-        eventId: "event-1",
-        title: "Imported event",
+  it("rejects Chronicle imports without an Agent capability", () => {
+    const bound = bindRendererAuthorityForIpc(
+      "agent_event_create",
+      {
+        payload: {
+          projectId: "p1",
+          requestId: "import-request-1",
+          sessionId: "import-session-1",
+          eventUid: "import-event-1",
+          origin: "import",
+          authorityRoute: "human-direct",
+          caller: "human-ui",
+          controls: ["runtime-policy"],
+          provenance: null,
+          writesAuthorityProtectedField: false,
+          originalTransactionId: null,
+          undoJournalId: null,
+          eventId: "event-1",
+          title: "Imported event",
+        },
       },
-    });
+      706,
+    );
 
-    expect(bound.payload).toMatchObject({
-      origin: "import",
-      authorityRoute: "import-apply",
-      caller: "import-session",
-      controls: [
-        "import-policy",
-        "source-package-evidence",
-        "typed-writer",
-        "occ",
-        "change-event",
-        "change-feed",
-      ],
-      provenance: null,
-    });
+    expect((bound.payload as { authorityRoute?: string }).authorityRoute).toBe(
+      "",
+    );
   });
 
   it("binds the main-issued identity for the normal create_event path", async () => {
@@ -1169,9 +1203,13 @@ describe("registerIpcRouter fail-soft logging", () => {
     ] as const;
 
     for (const testCase of cases) {
-      const envelope = await invokeHandler()({ sender: {} }, testCase.cmd, {
-        payload: testCase.payload,
-      });
+      const envelope = await invokeHandler()(
+        { sender: { id: 705 } },
+        testCase.cmd,
+        {
+          payload: testCase.payload,
+        },
+      );
       expect(envelope.ok).toBe(false);
       expect(String(envelope.ok ? "" : envelope.error)).toMatch(
         /authorityRoute|authority route/,
@@ -1264,8 +1302,9 @@ describe("registerIpcRouter fail-soft logging", () => {
     expect(agentChronicleBulkMutate).toHaveBeenCalledWith(
       expect.objectContaining({
         eventUid: "bulk-request-1",
-        origin: "human",
-        authorityRoute: "human-direct",
+        origin: "ai-apply",
+        authorityRoute: "interactive-agent-command",
+        caller: "chat-tool-executor",
         originalTransactionId: null,
         undoJournalId: null,
       }),

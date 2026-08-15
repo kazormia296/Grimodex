@@ -3544,6 +3544,7 @@ fn ai_tree_authority_context(
     let context = RendererCanonicalWriteContext {
         request_id: payload.request_id.clone(),
         event_uid: payload.request_id.clone(),
+        authority_session_id: None,
         origin: if payload.redo {
             NarrativeChangeOrigin::Redo
         } else {
@@ -3591,6 +3592,7 @@ fn ai_tree_undo_authority_context(
     let context = RendererCanonicalWriteContext {
         request_id: payload.request_id.clone(),
         event_uid: payload.request_id.clone(),
+        authority_session_id: None,
         origin: NarrativeChangeOrigin::Undo,
         authority_route: payload.authority_route.clone(),
         caller: payload.caller.clone(),

@@ -35,7 +35,7 @@ function minimalFixtureRoot() {
       },
       {
         id: "interactive-agent-command",
-        requiredControls: ["typed-writer"],
+        requiredControls: ["typed-writer", "field-authority"],
         forbiddenCallers: ["background-maintenance"],
       },
       {
@@ -74,6 +74,25 @@ function minimalFixtureRoot() {
   writeJson(root, "policies/narrative/change-feed-writers.json", {
     schemaVersion: 1,
     writerMatrix: [{ writer: "fixture.writer" }],
+    semanticBoundary: {
+      schemaVersion: 1,
+      scanRoots: [
+        "src/features/narrative-extraction/reconciler",
+        "src-tauri/crates/grimodex-semantic/src",
+      ],
+      commandInventory: {
+        schemaVersion: 1,
+        sources: [
+          {
+            path: "electron/shared/fixture.ts",
+            surface: "electron-ipc",
+            extractor: "handler-keys",
+          },
+        ],
+        mutationPrefixes: ["fixture_"],
+        ignoredCommands: [],
+      },
+    },
     operations: [{
       id: "fixture.write",
       feedPolicy: "required",
@@ -85,6 +104,11 @@ function minimalFixtureRoot() {
   writeFileSync(
     path.join(root, "src-tauri/crates/grimodex-core/src/lib.rs"),
     "pub const SCHEMA_VERSION: i32 = 22;\n",
+  );
+  mkdirSync(path.join(root, "electron/shared"), { recursive: true });
+  writeFileSync(
+    path.join(root, "electron/shared/fixture.ts"),
+    "const handlers = {\n  fixture_write: {},\n};\n",
   );
   return root;
 }
@@ -133,5 +157,36 @@ describe("validate-semantic-core-boundary", () => {
 
     const result = validateSemanticCoreBoundary({ repoRoot: root });
     assert.ok(result.errors.some((error) => /unknown authority route/i.test(error)));
+  });
+
+  it("fails closed when an interactive Agent operation omits field authority", () => {
+    const root = minimalFixtureRoot();
+    const manifest = path.join(root, "policies/narrative/change-feed-writers.json");
+    const parsed = JSON.parse(readFileSync(manifest, "utf8"));
+    parsed.operations[0].authorityRoute = "interactive-agent-command";
+    parsed.operations[0].controls = ["typed-writer"];
+    writeFileSync(manifest, JSON.stringify(parsed));
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("missing required control 'field-authority'"),
+      ),
+    );
+  });
+
+  it("fails closed when a mutation command is not registered", () => {
+    const root = minimalFixtureRoot();
+    writeFileSync(
+      path.join(root, "electron/shared/fixture.ts"),
+      "const handlers = {\n  fixture_unknown: {},\n};\n",
+    );
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("unregistered mutation command electron-ipc:fixture_unknown"),
+      ),
+    );
   });
 });

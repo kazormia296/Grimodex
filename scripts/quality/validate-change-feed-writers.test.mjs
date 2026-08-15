@@ -226,6 +226,18 @@ describe("validate-change-feed-writers", () => {
     );
   });
 
+  it("rejects verified coverage without a runtime evidence bundle", () => {
+    const root = writeFixture([
+      fixtureOperation({ coverageStatus: "verified" }),
+    ]);
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("verified coverage requires a schemaVersion 1 runtimeEvidence bundle"),
+      ),
+    );
+  });
+
   it("rejects required operations without the complete transaction identity contract", () => {
     const root = writeFixture([
       fixtureOperation({ requiredIdentities: ["projectId", "requestId"] }),

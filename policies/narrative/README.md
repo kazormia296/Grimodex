@@ -43,10 +43,11 @@ asks C2 for a full rebuild instead of replaying every restored row.
 
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public
 routes, implementation modules and symbols, active writer IDs, identity
-contract, and fixed exclusion reasons. `coverageStatus` is an inventory
-certification: `verified` means the manifest's route/module mapping has been
-reviewed, not that the validator executed the writer or proved runtime
-atomicity. Gate C1 additionally requires
+contract, fixed exclusion reasons, and runtime evidence. `coverageStatus:
+"verified"` requires a versioned `runtimeEvidence` bundle naming the commands,
+regression files, and controls that exercise the declared Native/browser
+contract. The bundle is evidence for review; this static validator does not
+itself prove every transaction's runtime atomicity. Gate C1 additionally requires
 `pnpm test:narrative:change-feed-writers:strict`: every `required` or
 `delegated` operation must have `coverageStatus: "verified"`; runtime proof
 comes from the Native writer, browser contract, and Journey/quality tests.

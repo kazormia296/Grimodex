@@ -91,6 +91,7 @@ fn integrity_authority_context(
     let context = RendererCanonicalWriteContext {
         request_id: payload.request_id.clone(),
         event_uid: payload.event_uid.clone(),
+        authority_session_id: None,
         origin: NarrativeChangeOrigin::Restore,
         authority_route: payload.authority_route.clone(),
         caller: payload.caller.clone(),

@@ -29,6 +29,18 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+struct RendererAuthorityContextGuard {
+    previous: Option<Value>,
+}
+
+impl Drop for RendererAuthorityContextGuard {
+    fn drop(&mut self) {
+        RENDERER_AUTHORITY_CONTEXT.with(|slot| {
+            slot.replace(self.previous.take());
+        });
+    }
+}
+
 /// Run a Native renderer writer with its validated authority context attached
 /// to the current DB worker thread. The low-level Change Event append point
 /// uses this context as a final defense so domain writers that build a compact
@@ -39,9 +51,8 @@ pub fn with_renderer_authority_context<T>(
 ) -> T {
     RENDERER_AUTHORITY_CONTEXT.with(|slot| {
         let previous = slot.replace(Some(context));
-        let result = operation();
-        slot.replace(previous);
-        result
+        let _guard = RendererAuthorityContextGuard { previous };
+        operation()
     })
 }
 
@@ -84,6 +95,9 @@ fn authority_evidence(context: &Value) -> Value {
         if !provenance.is_null() {
             evidence["provenance"] = provenance.clone();
         }
+    }
+    if let Some(authority_session_id) = context.get("authoritySessionId") {
+        evidence["authoritySessionId"] = authority_session_id.clone();
     }
     evidence
 }

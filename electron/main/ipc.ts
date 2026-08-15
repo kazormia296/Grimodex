@@ -62,11 +62,12 @@ const HUMAN_ONLY_CANONICAL_WRITER_COMMANDS = new Set([
   "foreshadow_save_anchors_for_scene",
 ]);
 
-// The renderer-provided recorder session is input, not authority. Keep a
-// main-owned session capability per WebContents and replace the session on
-// every canonical writer payload before it reaches the shared contract. This
-// prevents a payload copied from another renderer window from reusing that
-// window's identity while preserving one stable session for retries.
+// `sessionId` remains the renderer recorder/writer correlation identity. The
+// External Write Feed compares change_events.session_id with that value, so
+// replacing it here would make a successful self-write look external and
+// invalidate its just-created Undo command. Keep the authority identity in a
+// separate main-owned field instead; it is used only for the authority/audit
+// boundary and is never used as the Change Feed writer session.
 const rendererAuthoritySessions = new Map<number, string>();
 
 const AGENT_CHRONICLE_COMMANDS = new Set([
@@ -1550,36 +1551,13 @@ function authorityRouteForRendererCommand(
   cmd: string,
   payload: CommandArgs,
 ): CanonicalAuthorityRoute | undefined {
-  if (
-    cmd === "agent_codex_create" ||
-    cmd === "agent_codex_update" ||
-    cmd === "agent_codex_delete" ||
-    cmd === "agent_codex_mutate"
-  ) {
-    return authorityRouteForOrigin(payload.origin, [
-      "human-direct",
-      "interactive-agent-command",
-    ]);
+  // Every Agent mutation is a capability-bound interactive command. Never
+  // derive an Agent route from renderer-controlled origin/surface metadata.
+  if (cmd === "ai_tree_plan_apply" && payload.redo === true) {
+    return "history-replay";
   }
-
-  if (
-    cmd === "agent_foreshadow_create" ||
-    cmd === "agent_foreshadow_update" ||
-    cmd === "agent_snippet_create" ||
-    cmd === "agent_propose_scene_body"
-  ) {
+  if (AGENT_AUTHORITY_COMMANDS.has(cmd)) {
     return "interactive-agent-command";
-  }
-
-  if (AGENT_CHRONICLE_COMMANDS.has(cmd)) {
-    const origin =
-      payload.origin ?? (payload.surface === "manual" ? "human" : "ai-apply");
-    return authorityRouteForOrigin(
-      origin,
-      cmd === "agent_chronicle_bulk_mutate"
-        ? ["human-direct", "interactive-agent-command"]
-        : ["human-direct", "interactive-agent-command", "import-apply"],
-    );
   }
 
   if (
@@ -1622,10 +1600,8 @@ function authorityRouteForRendererCommand(
     return payload.origin === "human" ? "human-direct" : undefined;
   }
 
-  if (cmd === "ai_tree_plan_apply" || cmd === "ai_tree_plan_undo") {
-    return cmd === "ai_tree_plan_undo" || payload.redo === true
-      ? "history-replay"
-      : "interactive-agent-command";
+  if (cmd === "ai_tree_plan_undo") {
+    return "history-replay";
   }
 
   if (
@@ -1677,15 +1653,7 @@ export function bindRendererAuthorityForIpc(
     const requiresAuthority =
       GENERIC_CANONICAL_WRITER_COMMANDS.has(cmd) ||
       HUMAN_ONLY_CANONICAL_WRITER_COMMANDS.has(cmd) ||
-      AGENT_CHRONICLE_COMMANDS.has(cmd) ||
-      cmd === "agent_codex_create" ||
-      cmd === "agent_codex_update" ||
-      cmd === "agent_codex_delete" ||
-      cmd === "agent_codex_mutate" ||
-      cmd === "agent_foreshadow_create" ||
-      cmd === "agent_foreshadow_update" ||
-      cmd === "agent_snippet_create" ||
-      cmd === "agent_propose_scene_body" ||
+      AGENT_AUTHORITY_COMMANDS.has(cmd) ||
       cmd === "foreshadow_create" ||
       cmd === "foreshadow_update" ||
       cmd === "foreshadow_delete" ||
@@ -1744,8 +1712,11 @@ export function bindRendererAuthorityForIpc(
           ? invalidPayload
           : { ...args, [payloadKey]: invalidPayload };
       }
-      boundPayload.sessionId = authoritySession;
+      boundPayload.authoritySessionId = authoritySession;
     }
+  }
+  if (typeof boundPayload.sessionId === "string") {
+    boundPayload.writerSessionId = boundPayload.sessionId;
   }
   if (cmd === "tree_node_patch" && isRecord(boundPayload.changeEvent)) {
     // `changeEvent` is part of the typed tree patch, but its identity is not a

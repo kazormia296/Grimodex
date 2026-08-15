@@ -190,7 +190,7 @@ test("agentCodexCreate: tracked write が AgentWriteResult を返し entity+span
 
 test("agentCodexCreate: N-API authority rejection leaves write tables unchanged", async () => {
   const invalidCaller = {
-    ...canonical("napi-invalid-authority-caller", "human"),
+    ...canonical("napi-invalid-authority-caller", "ai-apply"),
     caller: "background-maintenance-v2",
     entryId: "napi-invalid-authority-caller-entry",
     typeSlug: "character",
@@ -206,7 +206,7 @@ test("agentCodexCreate: N-API authority rejection leaves write tables unchanged"
   assert.deepEqual(await writeCounts(), beforeInvalidCaller);
 
   const missingControl = {
-    ...canonical("napi-missing-authority-control", "human"),
+    ...canonical("napi-missing-authority-control", "ai-apply"),
     controls: [],
     entryId: "napi-missing-authority-control-entry",
     typeSlug: "character",
@@ -224,7 +224,7 @@ test("agentCodexCreate: N-API authority rejection leaves write tables unchanged"
 
 test("agentCodexMutate: N-API authority is enforced and recorded in the canonical event", async () => {
   const invalidCaller = {
-    ...canonical("napi-codex-mutate-invalid", "human"),
+    ...canonical("napi-codex-mutate-invalid", "ai-apply"),
     caller: "background-maintenance-v2",
     operation: "detail.definition.create",
     definitionId: "napi-codex-mutate-invalid-definition",
@@ -242,7 +242,7 @@ test("agentCodexMutate: N-API authority is enforced and recorded in the canonica
   assert.deepEqual(await writeCounts(), beforeInvalidCaller);
 
   const payload = {
-    ...canonical("napi-codex-mutate-authority", "human"),
+    ...canonical("napi-codex-mutate-authority", "ai-apply"),
     operation: "detail.definition.create",
     definitionId: "napi-codex-mutate-authority-definition",
     typeSlug: "character",
@@ -258,15 +258,15 @@ test("agentCodexMutate: N-API authority is enforced and recorded in the canonica
     [payload.eventUid],
   );
   const eventPayload = JSON.parse(event[0].payload);
-  assert.equal(eventPayload.authorityRoute, "human-direct");
-  assert.equal(eventPayload.authorityCaller, "manual-wrapper");
+  assert.equal(eventPayload.authorityRoute, "interactive-agent-command");
+  assert.equal(eventPayload.authorityCaller, "chat-tool-executor");
   assert.equal(eventPayload.authorityEvidence.validated, true);
 });
 
 test("agentCodexMutate creates a Detail Definition and semantic binding atomically", async () => {
   const created = JSON.parse(
     await backend.agentCodexMutate({
-      ...canonical("preset-semantic-create", "human"),
+      ...canonical("preset-semantic-create", "ai-apply"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -311,7 +311,7 @@ test("agentCodexMutate creates a Detail Definition and semantic binding atomical
 
   await assert.rejects(
     backend.agentCodexMutate({
-      ...canonical("preset-semantic-conflict", "human"),
+      ...canonical("preset-semantic-conflict", "ai-apply"),
       operation: "detail.definition.create",
       projectId: PROJECT,
       sessionId: "preset-semantic-session",
@@ -483,7 +483,7 @@ test("snippet / agent foreshadow / event request IDs are idempotent through napi
   );
 
   const event = {
-    ...canonical("agent-tool:event-napi-request-1", "human"),
+    ...canonical("agent-tool:event-napi-request-1", "ai-apply"),
     eventId: "event-napi-entity-attempt-1",
     title: "到着",
   };
@@ -644,7 +644,7 @@ test("agentEventSetParticipants preserves canonical authority evidence through n
 test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越しに保持する", async () => {
   const created = JSON.parse(
     await backend.agentEventCreate({
-      ...canonical("agent-tool:event-napi-chronicle-boundaries-1", "human"),
+      ...canonical("agent-tool:event-napi-chronicle-boundaries-1", "ai-apply"),
       title: "境界日時",
       startTime: 10,
       startMinute: 0,
@@ -670,7 +670,7 @@ test("agentEventCreate/Update: Chronicle minute境界と同一端点をN-API越�
 
   const updated = JSON.parse(
     await backend.agentEventUpdate({
-      ...canonical("agent-tool:event-napi-chronicle-update-1", "human"),
+      ...canonical("agent-tool:event-napi-chronicle-update-1", "ai-apply"),
       eventId: created.entityId,
       baseVersion: created.version,
       endTime: 10,
@@ -716,7 +716,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
   const sceneId = "chronicle-bulk-napi-scene-1";
   const datedSceneId = "chronicle-bulk-napi-scene-2";
   await backend.agentEventCreate({
-    ...canonical(`fixture:${eventId}`, "human"),
+    ...canonical(`fixture:${eventId}`, "ai-apply"),
     eventId,
     surface: "manual",
     title: "Bulk event",
@@ -729,7 +729,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
     kind: "generic",
   });
   await backend.agentEventCreate({
-    ...canonical(`fixture:${datedEventId}`, "human"),
+    ...canonical(`fixture:${datedEventId}`, "ai-apply"),
     eventId: datedEventId,
     surface: "manual",
     title: "Dated bulk event",
@@ -795,7 +795,7 @@ test("agentChronicleBulkMutate: mixed selection は1 journalで原子的に往�
 
   const result = JSON.parse(
     await backend.agentChronicleBulkMutate({
-      ...canonical("chronicle-bulk-napi-forward-1", "human"),
+      ...canonical("chronicle-bulk-napi-forward-1", "ai-apply"),
       surface: "manual",
       operations: [
         { kind: "eventDelete", eventId, baseVersion: 1 },
