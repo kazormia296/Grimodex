@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/mutation-authority-routes-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "callerAuthorizationPolicy",
+    "forbiddenCallersSemantics",
+    "routes",
+    "auditOrigins",
+    "unknownRoutePolicy"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "narrative-mutation-authority-routes" },
+    "callerAuthorizationPolicy": { "const": "positive-allowlist-fail-closed" },
+    "forbiddenCallersSemantics": { "const": "diagnostic-only" },
+    "routes": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "requiredControls",
+          "allowedCallers",
+          "forbiddenCallers",
+          "conditionalControls"
+        ],
+        "properties": {
+          "id": {
+            "enum": [
+              "human-direct",
+              "interactive-agent-command",
+              "interpreter-projection",
+              "import-apply",
+              "history-replay",
+              "restore-or-migration"
+            ]
+          },
+          "description": { "type": "string", "minLength": 1 },
+          "requiredControls": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "allowedCallers": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "forbiddenCallers": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "type": "string", "minLength": 1 }
+          },
+          "conditionalControls": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["control", "when"],
+              "properties": {
+                "control": { "type": "string", "minLength": 1 },
+                "when": { "type": "string", "minLength": 1 }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "auditOrigins": {
+      "type": "array",
+      "minItems": 7,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "unknownRoutePolicy": { "const": "fail-closed" }
+  },
+  "additionalProperties": false
+}

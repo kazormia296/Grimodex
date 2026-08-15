@@ -1056,6 +1056,36 @@ mod tests {
             params![id, project, title, ordinal],
         )
         .unwrap();
+        for field_path in [
+            "/title",
+            "/note",
+            "/detail",
+            "/ordinal",
+            "/primaryCodexId",
+            "/laneGroup",
+            "/locationCodexId",
+            "/startTime",
+            "/endTime",
+            "/startMinute",
+            "/endMinute",
+            "/startGranularity",
+            "/endGranularity",
+            "/precision",
+            "/kind",
+            "/secret",
+            "/revealSceneId",
+            "/participants",
+            "/sceneIds",
+            "/relations",
+        ] {
+            conn.execute(
+                "INSERT INTO narrative_field_authority
+                    (project_id, entity_kind, entity_id, field_path, owner_kind, updated_at)
+                 VALUES (?1, 'event', ?2, ?3, 'ai', datetime('now'))",
+                params![project, id, field_path],
+            )
+            .unwrap();
+        }
     }
 
     fn seed_scene(server: &GrimodexServer, project: &str, id: &str) {
@@ -1626,6 +1656,47 @@ mod tests {
             assert_eq!(snapshot["eventData"]["detail"], "rich-detail");
             assert_eq!(snapshot["eventData"]["laneGroup"], "lane-a");
         }
+    }
+
+    #[tokio::test]
+    async fn update_event_rejects_empty_patch() {
+        let server = make_server(false);
+        seed_event(&server, "p1", "e1", "E1", "a0");
+
+        let error = update_event(
+            &server,
+            UpdateEventParams {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                event_id: "e1".to_string(),
+                base_version: 0,
+                title: None,
+                note: None,
+                kind: None,
+                primary_codex_id: None,
+                location_codex_id: None,
+                start_time: None,
+                end_time: None,
+                start_minute: None,
+                end_minute: None,
+                start_granularity: None,
+                end_granularity: None,
+                secret: None,
+                reveal_scene_id: None,
+            },
+        )
+        .await
+        .expect_err("empty MCP event updates must be rejected");
+
+        assert_eq!(error.message, "internal error");
+        assert_eq!(scalar(&server, "SELECT version FROM events WHERE id = ?1", "e1"), 0);
+        assert_eq!(
+            scalar(
+                &server,
+                "SELECT COUNT(*) FROM undo_journal WHERE entity_id = ?1",
+                "e1"
+            ),
+            0
+        );
     }
 
     #[tokio::test]

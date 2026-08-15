@@ -261,3 +261,30 @@ maintainer-local Live Model Qualificationで別に評価し、Gate B2 PASSやmer
 - Claim Ledger 正規テーブルの導入（`claimUid` 昇格は別 ADR）
 - AI 抽出精度の本評価
 - Human UI 直接編集の全面 Proposal 化（必要なら別途明記）
+
+## Amendment — Gate C1.5 terminology and route boundary
+
+Gate C1.5 ratifies the following compatibility mapping without changing the
+existing ADR 004 Decision:
+
+- ADR 005 `Narrative Assertion` extends the ADR 004 conceptual Claim and
+  Proposal vocabulary; it is not a new TMS table.
+- `Prepared Plan` is the planning-stage name used by ADR 004. `Prepared
+  Commit` is the commit-stage name used by ADR 005 for the same authority
+  boundary.
+- `needs-reconciliation` is the only Reconciliation propagation signal.
+  Freshness, Build Action, and Component Compatibility are separate axes.
+- Human Direct Authoring does not require a Proposal. It follows Runtime
+  Policy, Actor Context, OCC, Field Authority, and Typed Writer.
+- Interactive Agent Command is an authoring route governed by ADR 006. An
+  explicit user command or standing `knowledgeWrite` authority may use it,
+  but it still requires stable request identity, provenance, OCC, Undo Journal,
+  Change Event, and Change Feed.
+- Semantic Interpretation remains Proposal-bound and must use Decision and
+  Prepared Commit before a Typed Writer.
+
+The distinction is intentionally about mutation authority, not semantic truth:
+`accepted` and `applied` remain authorization/projection states, while
+`freshness` remains deterministic source-basis state. Semantic retraction is
+still a forward compensating Application, never an Undo or an automatic
+Dependency propagation.

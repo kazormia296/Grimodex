@@ -153,6 +153,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       ],
     ],
   },
+  "narrative-semantic-contract": {
+    failureClasses: ["policy", "quality", "artifact"],
+    commands: [["pnpm", "test:narrative:semantic-contract"]],
+  },
   "narrative-extraction": {
     failureClasses: ["quality", "artifact"],
     commands: [["pnpm", "eval:narrative"]],

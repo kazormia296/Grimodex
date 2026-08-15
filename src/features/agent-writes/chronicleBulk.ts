@@ -190,7 +190,7 @@ export async function uiMutateChronicleBulk(
     let nativeMutationCommitted = false;
     try {
       const outcome = await runAuthoritativeMutation(authority, () =>
-        invoke<ChronicleBulkMutationResult>("agent_chronicle_bulk_mutate", {
+        invoke<ChronicleBulkMutationResult>("chronicle_bulk_mutate", {
           payload: pending.payload,
         }),
       );

@@ -43,10 +43,11 @@ asks C2 for a full rebuild instead of replaying every restored row.
 
 `pnpm test:narrative:change-feed-writers` validates the manifest, known public
 routes, implementation modules and symbols, active writer IDs, identity
-contract, and fixed exclusion reasons. `coverageStatus` is an inventory
-certification: `verified` means the manifest's route/module mapping has been
-reviewed, not that the validator executed the writer or proved runtime
-atomicity. Gate C1 additionally requires
+contract, fixed exclusion reasons, and runtime evidence. `coverageStatus:
+"verified"` requires a versioned `runtimeEvidence` bundle naming the commands,
+regression files, and controls that exercise the declared Native/browser
+contract. The bundle is evidence for review; this static validator does not
+itself prove every transaction's runtime atomicity. Gate C1 additionally requires
 `pnpm test:narrative:change-feed-writers:strict`: every `required` or
 `delegated` operation must have `coverageStatus: "verified"`; runtime proof
 comes from the Native writer, browser contract, and Journey/quality tests.
@@ -83,3 +84,38 @@ state, Undo Journal where supported, canonical Change Event, idempotency receipt
 and Narrative Change Feed commit or roll back together. Dependency Index,
 scheduler, automatic maintenance, and Background AI remain Gate C2+ work and do
 not start here.
+
+## Gate C1.5 semantic contract
+
+The C1.5 machine-readable contracts are:
+
+- `mutation-authority-routes.json` — the six Mutation Authority Routes,
+  positive fail-closed caller allowlists, diagnostic-only forbidden caller
+  lists, route-specific required controls, and Human Direct's conditional
+  Field Authority requirement;
+- `semantic-state-vocabulary.json` — Review, Evidence Freshness,
+  Reconciliation Signal, Build Action, Component Compatibility, and Projection
+  Application State as separate axes;
+- `semantic-core-authorities.json` — the canonical authority matrix and the
+  Semantic Index field allowlist;
+- `retrieval-disclosure.json` — pre-admission spoiler, phase, scope, and
+  knowledge-holder rules;
+- `schemas/*.schema.json` — JSON Schema draft 2020-12 definitions for the four
+  policy documents;
+- `fixtures/` — route, evidence, and many-to-many Projection contract cases.
+
+`authorityRoute` is required on every C1 operation; operations that share one
+typed writer across surfaces may additionally declare `authorityVariants` so
+each runtime route has its own controls and caller allowlist. The route is
+also carried by the renderer Native write context. Native validation binds the route to an exact
+caller allowlist, origin, provenance, and replay lineage, then records the
+validated route and runtime evidence in the canonical audit payload. It
+complements, and does not replace, the existing low-level `canonical.origin`
+audit attribute. The read-only validator
+`scripts/quality/validate-semantic-core-boundary.mjs` rejects unknown routes,
+missing route controls, false runtime-control claims for untrusted generic SQL,
+direct Interpreter/Maintenance imports of Agent Writers, mixed state
+vocabulary, and a second Freshness authority. C1.5 keeps workspace SCHEMA 22
+and does not create C2 tables. `ai-apply` must carry an explicit authority
+route because it is valid for both Interactive Agent Command and Interpreter
+Projection; no origin-only fallback is permitted.

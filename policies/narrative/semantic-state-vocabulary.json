@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-semantic-state-vocabulary",
+  "reviewStates": [
+    "unreviewed",
+    "accepted",
+    "rejected",
+    "held",
+    "superseded"
+  ],
+  "evidenceFreshness": [
+    "fresh",
+    "stale",
+    "source-missing",
+    "anchor-mismatch",
+    "read-set-drift",
+    "unknown"
+  ],
+  "reconciliationSignals": ["needs-reconciliation"],
+  "buildActions": [
+    "none",
+    "revalidate-exact",
+    "reanchor-candidate",
+    "resolve-only",
+    "recompile-only",
+    "rebuild-required",
+    "refresh-available",
+    "manual"
+  ],
+  "componentCompatibility": [
+    "compatible",
+    "quality-refresh-available",
+    "compatibility-refresh-required"
+  ],
+  "projectionApplicationStates": [
+    "unapplied",
+    "applied",
+    "compensated",
+    "undone",
+    "stale",
+    "not-applicable"
+  ],
+  "separationRules": [
+    ["accepted", "review"],
+    ["stale", "evidenceFreshness"],
+    ["needs-reconciliation", "reconciliationSignals"],
+    ["rebuild-required", "buildActions"],
+    ["applied", "projectionApplicationStates"]
+  ]
+}

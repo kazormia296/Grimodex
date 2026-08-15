@@ -41,7 +41,20 @@ function mutationIdentity(requestId: string, projectId = "p1") {
     sessionId: "ipc-contract-session",
     eventUid: `event-${requestId}`,
     origin: "human",
+    authorityRoute: "human-direct",
+    caller: "manual-wrapper",
+    controls: [
+      "runtime-policy",
+      "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
+    undoJournalId: null,
   } as const;
 }
 
@@ -440,6 +453,10 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     agentCodexCreate: record("agentCodexCreate", AGENT_WRITE_RESULT) as never,
     agentCodexUpdate: record("agentCodexUpdate", AGENT_WRITE_RESULT) as never,
     agentCodexDelete: record("agentCodexDelete", AGENT_WRITE_RESULT) as never,
+    codexCreate: record("codexCreate", AGENT_WRITE_RESULT) as never,
+    codexUpdate: record("codexUpdate", AGENT_WRITE_RESULT) as never,
+    codexDelete: record("codexDelete", AGENT_WRITE_RESULT) as never,
+    codexMutate: record("codexMutate", AGENT_WRITE_RESULT) as never,
     agentCodexMutate: record("agentCodexMutate", AGENT_WRITE_RESULT) as never,
     agentWriteBundle: record("agentWriteBundle", AGENT_WRITE_RESULT) as never,
     agentSnippetCreate: record(
@@ -476,32 +493,54 @@ function fakeBackend(overrides: Partial<NapiBackendLike> = {}): {
     agentEventCreate: record("agentEventCreate", AGENT_WRITE_RESULT) as never,
     agentEventUpdate: record("agentEventUpdate", AGENT_WRITE_RESULT) as never,
     agentEventDelete: record("agentEventDelete", AGENT_WRITE_RESULT) as never,
+    eventCreate: record("eventCreate", AGENT_WRITE_RESULT) as never,
+    eventUpdate: record("eventUpdate", AGENT_WRITE_RESULT) as never,
+    eventDelete: record("eventDelete", AGENT_WRITE_RESULT) as never,
     agentChronicleBulkMutate: record(
       "agentChronicleBulkMutate",
+      CHRONICLE_BULK_RESULT,
+    ) as never,
+    chronicleBulkMutate: record(
+      "chronicleBulkMutate",
       CHRONICLE_BULK_RESULT,
     ) as never,
     agentEventSetParticipants: record(
       "agentEventSetParticipants",
       AGENT_WRITE_RESULT,
     ) as never,
+    eventParticipantsSet: record(
+      "eventParticipantsSet",
+      AGENT_WRITE_RESULT,
+    ) as never,
     agentSceneEventLink: record(
       "agentSceneEventLink",
       AGENT_WRITE_RESULT,
     ) as never,
+    sceneEventLink: record("sceneEventLink", AGENT_WRITE_RESULT) as never,
     agentSceneEventLinkBatch: record(
       "agentSceneEventLinkBatch",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    sceneEventLinkBatch: record(
+      "sceneEventLinkBatch",
       AGENT_WRITE_RESULT,
     ) as never,
     agentSceneEventUnlink: record(
       "agentSceneEventUnlink",
       AGENT_WRITE_RESULT,
     ) as never,
+    sceneEventUnlink: record("sceneEventUnlink", AGENT_WRITE_RESULT) as never,
     agentEventRelationAdd: record(
       "agentEventRelationAdd",
       AGENT_WRITE_RESULT,
     ) as never,
+    eventRelationAdd: record("eventRelationAdd", AGENT_WRITE_RESULT) as never,
     agentEventRelationRemove: record(
       "agentEventRelationRemove",
+      AGENT_WRITE_RESULT,
+    ) as never,
+    eventRelationRemove: record(
+      "eventRelationRemove",
       AGENT_WRITE_RESULT,
     ) as never,
     aiTreePlanApply: record(
@@ -2090,6 +2129,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             sessionId: "tag-session-1",
             eventUid: "tag-event-1",
             origin: "human",
+            authorityRoute: "human-direct",
+            caller: "manual-wrapper",
+            controls: [
+              "runtime-policy",
+              "actor-context",
+              "typed-writer",
+              "occ",
+              "change-event",
+              "change-feed",
+            ],
+            provenance: null,
+            writesAuthorityProtectedField: false,
             originalTransactionId: null,
             undoJournalId: null,
           },
@@ -2136,7 +2187,11 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ],
       [
         "project_delete",
-        { payload: { projectId: "project-1" } },
+        {
+          payload: {
+            ...mutationIdentity("project-delete-request-1", "project-1"),
+          },
+        },
         projectDelete,
       ],
       [
@@ -2195,6 +2250,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sessionId: "project-session-1",
       eventUid: "project-event-1",
       origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
       originalTransactionId: null,
       undoJournalId: null,
       title: "Novel",
@@ -2374,7 +2441,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
                     },
                   }
                 : command === "project_delete"
-                  ? { payload: { projectId: "project-1" } }
+                  ? {
+                      payload: mutationIdentity(
+                        "project-delete-request-2",
+                        "project-1",
+                      ),
+                    }
                   : {
                       payload: {
                         kind: "erase-ai-branch",
@@ -3468,6 +3540,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sessionId: "external-product-journey",
       eventUid: "external-event-1",
       origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
       originalTransactionId: null,
       undoJournalId: null,
       nodeId: "scene-1",
@@ -4144,14 +4228,19 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "chat_index_status",
       "chat_message_search",
       "chat_reindex_all",
+      "chronicle_bulk_mutate",
+      "codex_create",
+      "codex_delete",
       "codex_index_entry",
       "codex_index_status",
       "codex_match_text",
+      "codex_mutate",
       "codex_rebuild_matcher",
       "codex_reindex_all",
       "codex_rename_apply",
       "codex_rename_undo",
       "codex_semantic_search",
+      "codex_update",
       "db_execute",
       "db_execute_batch",
       "deactivate_license",
@@ -4160,8 +4249,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "editor_sticky_list",
       "editor_sticky_update",
       "entity_tags_set",
+      "event_create",
+      "event_delete",
       "event_get_version",
+      "event_participants_set",
+      "event_relation_add",
+      "event_relation_remove",
       "event_set_participants",
+      "event_update",
       "events_index_entry",
       "events_index_status",
       "events_reindex_all",
@@ -4281,6 +4376,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "save_post_effect_annotations",
       "save_scene_body_bundle",
       "scan_staging_project_create",
+      "scene_event_link",
+      "scene_event_link_batch",
+      "scene_event_unlink",
       "seed_sample_workspace",
       "segment_bunsetsu",
       "semantic_cancel_background",
@@ -6044,7 +6142,25 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const payload = {
       requestId: "codex-request-1",
       eventUid: "codex-event-1",
-      origin: "human",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "field-authority",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "codex-request-1",
+        traceId: "codex-trace-1",
+      },
+      writesAuthorityProtectedField: false,
       originalTransactionId: null,
       undoJournalId: null,
       entryId: "codex-request-1",
@@ -6096,6 +6212,167 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       },
     });
     expect(linked.ok).toBe(true);
+  });
+
+  it("renderer Codex alias: human-direct writer is mapped separately from Agent command", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      ...mutationIdentity("renderer-codex-create"),
+      entryId: "renderer-entry-1",
+      typeSlug: "character",
+      name: "太郎",
+    };
+    const created = await dispatchInvoke(
+      "codex_create",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(calls).toEqual([
+      { method: "codexCreate", args: [payload] },
+    ]);
+    expect(created).toEqual({
+      ok: true,
+      value: {
+        entityId: "e1",
+        version: 1,
+        changeEventUid: "ce1",
+        undoJournalId: "uj1",
+      },
+    });
+  });
+
+  it("renderer Chronicle aliases dispatch to their non-Agent N-API methods", async () => {
+    const { backend, calls } = fakeBackend();
+    const identity = mutationIdentity("renderer-chronicle-1");
+    const cases = [
+      {
+        command: "codex_mutate",
+        method: "codexMutate",
+        payload: { ...identity, operation: "relation.create" },
+      },
+      {
+        command: "event_create",
+        method: "eventCreate",
+        payload: {
+          requestId: "renderer-event-create-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+        },
+      },
+      {
+        command: "event_update",
+        method: "eventUpdate",
+        payload: {
+          requestId: "renderer-event-update-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          baseVersion: 0,
+        },
+      },
+      {
+        command: "event_delete",
+        method: "eventDelete",
+        payload: {
+          requestId: "renderer-event-delete-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          baseVersion: 0,
+        },
+      },
+      {
+        command: "chronicle_bulk_mutate",
+        method: "chronicleBulkMutate",
+        payload: {
+          requestId: "renderer-bulk-1",
+          projectId: "p1",
+          sessionId: "s1",
+          operations: [{ kind: "eventDelete", eventId: "e1", baseVersion: 0 }],
+        },
+      },
+      {
+        command: "event_participants_set",
+        method: "eventParticipantsSet",
+        payload: {
+          requestId: "renderer-participants-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          baseVersion: 0,
+          codexEntryIds: [],
+        },
+      },
+      {
+        command: "scene_event_link",
+        method: "sceneEventLink",
+        payload: {
+          requestId: "renderer-link-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneId: "s1",
+        },
+      },
+      {
+        command: "scene_event_link_batch",
+        method: "sceneEventLinkBatch",
+        payload: {
+          requestId: "renderer-link-batch-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneIds: ["s1"],
+        },
+      },
+      {
+        command: "scene_event_unlink",
+        method: "sceneEventUnlink",
+        payload: {
+          requestId: "renderer-unlink-1",
+          projectId: "p1",
+          sessionId: "s1",
+          eventId: "e1",
+          sceneId: "s1",
+        },
+      },
+      {
+        command: "event_relation_add",
+        method: "eventRelationAdd",
+        payload: {
+          requestId: "renderer-relation-add-1",
+          projectId: "p1",
+          sessionId: "s1",
+          causeEventId: "e1",
+          effectEventId: "e2",
+        },
+      },
+      {
+        command: "event_relation_remove",
+        method: "eventRelationRemove",
+        payload: {
+          requestId: "renderer-relation-remove-1",
+          projectId: "p1",
+          sessionId: "s1",
+          causeEventId: "e1",
+          effectEventId: "e2",
+        },
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const result = await dispatchInvoke(
+        testCase.command,
+        { payload: testCase.payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(true);
+      expect(calls).toContainEqual({
+        method: testCase.method,
+        args: [testCase.payload],
+      });
+    }
   });
 
   it("agent_event_create: required identity を検証して N-API へ渡す", async () => {
@@ -6174,6 +6451,28 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const payload = {
       requestId: "foreshadow-update-request-1",
+      eventUid: "foreshadow-update-event-1",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "field-authority",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "foreshadow-update-request-1",
+        traceId: "foreshadow-update-trace-1",
+      },
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       projectId: "p1",
       sessionId: "s1",
       foreshadowId: "f1",
@@ -6208,6 +6507,28 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       requestId: "foreshadow-create-request-1",
       projectId: "p1",
       sessionId: "s1",
+      eventUid: "foreshadow-create-event-1",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "field-authority",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "foreshadow-create-request-1",
+        traceId: "foreshadow-create-trace-1",
+      },
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       foreshadowId: "f1",
       title: "created",
       secret: true,
@@ -6238,6 +6559,28 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     const { backend, calls } = fakeBackend();
     const payload = {
       requestId: "snippet-create-request-1",
+      eventUid: "snippet-create-request-1:event",
+      origin: "ai-apply",
+      authorityRoute: "interactive-agent-command",
+      caller: "chat-tool-executor",
+      controls: [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "field-authority",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: {
+        requestId: "snippet-create-request-1",
+        traceId: "snippet-create-request-1:trace",
+      },
+      writesAuthorityProtectedField: false,
+      originalTransactionId: null,
+      undoJournalId: null,
       projectId: "p1",
       sessionId: "s1",
       snippetId: "snippet-1",
@@ -6283,6 +6626,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         sessionId: "s1",
         eventUid: `${command}-event-1`,
         origin: "human",
+        authorityRoute: "human-direct",
+        caller: "manual-wrapper",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
         originalTransactionId: null,
         undoJournalId: null,
         snippetId: "snippet-1",
@@ -6321,6 +6676,18 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sessionId: "s1",
       eventUid: "snippet-update-event-1",
       origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
       originalTransactionId: null,
       undoJournalId: null,
       snippetId: "snippet-1",
@@ -6778,6 +7145,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       sessionId: "s1",
       journalId: "journal-1",
       direction: "undo",
+      authorityRoute: "history-replay",
+      origin: "undo",
+      caller: "undo-redo-command",
+      controls: [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
     };
 
     const env = await dispatchInvoke(
@@ -6812,6 +7190,117 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
             },
             invalid,
           ),
+        },
+        { backend, shell: noShell },
+      );
+
+      expect(env.ok).toBe(false);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    ["authority route", { authorityRoute: "interactive-agent-command" }],
+    ["origin", { origin: "redo" }],
+    ["caller", { caller: "history-controller" }],
+    [
+      "original-transaction control",
+      {
+        controls: [
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "journal-lineage control",
+      {
+        controls: [
+          "original-transaction",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "typed-writer control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "occ control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "change-event",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "change-event control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-feed",
+        ],
+      },
+    ],
+    [
+      "change-feed control",
+      {
+        controls: [
+          "original-transaction",
+          "journal-lineage",
+          "typed-writer",
+          "occ",
+          "change-event",
+        ],
+      },
+    ],
+  ])(
+    "agent_apply_undo_journal: %s は単独の権限要素欠落を拒否する",
+    async (_label, invalid) => {
+      const { backend, calls } = fakeBackend();
+      const env = await dispatchInvoke(
+        "agent_apply_undo_journal",
+        {
+          payload: {
+            requestId: "undo-authority-request",
+            projectId: "p1",
+            sessionId: "s1",
+            journalId: "journal-1",
+            direction: "undo",
+            authorityRoute: "history-replay",
+            origin: "undo",
+            caller: "undo-redo-command",
+            controls: [
+              "original-transaction",
+              "journal-lineage",
+              "typed-writer",
+              "occ",
+              "change-event",
+              "change-feed",
+            ],
+            ...invalid,
+          },
         },
         { backend, shell: noShell },
       );

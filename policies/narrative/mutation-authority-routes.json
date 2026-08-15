@@ -1,0 +1,143 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-mutation-authority-routes",
+  "callerAuthorizationPolicy": "positive-allowlist-fail-closed",
+  "forbiddenCallersSemantics": "diagnostic-only",
+  "routes": [
+    {
+      "id": "human-direct",
+      "description": "Human UI or an explicit manual wrapper writes through policy, OCC, and a typed writer.",
+      "requiredControls": [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed"
+      ],
+      "conditionalControls": [
+        {
+          "control": "field-authority",
+          "when": "writes-authority-protected-field"
+        }
+      ],
+      "allowedCallers": ["human-ui", "manual-wrapper", "typed-domain-api"],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
+    },
+    {
+      "id": "interactive-agent-command",
+      "description": "An explicit user-turn or standing knowledgeWrite authorization invokes a typed Agent tool.",
+      "requiredControls": [
+        "knowledge-write-policy",
+        "stable-request-id",
+        "agent-provenance",
+        "field-authority",
+        "typed-writer",
+        "occ",
+        "undo-journal",
+        "change-event",
+        "change-feed"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": [
+        "chat-tool-executor",
+        "manual-wrapper",
+        "registered-agent-surface"
+      ],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
+    },
+    {
+      "id": "interpreter-projection",
+      "description": "Interpretation and reconciliation must pass Proposal, Decision, and Prepared Commit before projection.",
+      "requiredControls": [
+        "proposal-revision",
+        "decision",
+        "prepared-commit",
+        "application-id",
+        "source-basis-occ",
+        "field-authority",
+        "typed-writer"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": [
+        "interpreter",
+        "reconciler",
+        "proposal-review",
+        "prepared-commit-runner"
+      ],
+      "forbiddenCallers": ["background-maintenance", "idle-scheduler"]
+    },
+    {
+      "id": "import-apply",
+      "description": "An explicitly accepted import applies source-package metadata through the import writer.",
+      "requiredControls": [
+        "import-policy",
+        "source-package-evidence",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": ["import-session", "import-review"],
+      "forbiddenCallers": ["background-maintenance", "idle-scheduler"]
+    },
+    {
+      "id": "history-replay",
+      "description": "Undo and redo replay an original transaction with journal lineage through the typed writer.",
+      "requiredControls": [
+        "original-transaction",
+        "journal-lineage",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": ["history-controller", "undo-redo-command"],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
+    },
+    {
+      "id": "restore-or-migration",
+      "description": "Restore, migration, and integrity repair are exclusive system operations that reset semantic epoch.",
+      "requiredControls": [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": [
+        "restore-controller",
+        "migration-runner",
+        "integrity-repair"
+      ],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
+    }
+  ],
+  "auditOrigins": [
+    "human",
+    "ai-apply",
+    "import",
+    "undo",
+    "redo",
+    "restore",
+    "migration"
+  ],
+  "unknownRoutePolicy": "fail-closed"
+}

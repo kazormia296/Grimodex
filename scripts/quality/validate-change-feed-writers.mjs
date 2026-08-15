@@ -6,10 +6,10 @@
  * from operation coverage. During the C1 restack, required routes may remain
  * `declared`; `--require-runtime-coverage` is the later cutover switch that
  * requires every required/delegated operation to be `verified`.
- * `verified` is an inventory certification (route/module/symbol mapping), not
- * a claim that this static validator executed the writer or proved runtime
- * atomicity. Runtime evidence belongs to the Native/browser contract and
- * Journey/quality test suites.
+ * `verified` requires a runtimeEvidence bundle that names the commands and
+ * regression files used to exercise the Native/browser contract. The bundle
+ * is evidence of the declared contract, not a claim that this static
+ * validator proved runtime atomicity by itself.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -137,6 +137,10 @@ const ELECTRON_MUTATING_ROUTES = [
   "agent_codex_update",
   "agent_codex_delete",
   "agent_codex_mutate",
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "codex_mutate",
   "agent_snippet_create",
   "snippet_create",
   "snippet_update",
@@ -158,6 +162,16 @@ const ELECTRON_MUTATING_ROUTES = [
   "agent_scene_event_unlink",
   "agent_event_relation_add",
   "agent_event_relation_remove",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
   "narrative_extraction_create_run",
   "narrative_extraction_cancel_run",
   "narrative_extraction_claim_task",
@@ -175,6 +189,23 @@ const ELECTRON_MUTATING_ROUTES = [
   "narrative_extraction_undo_commit",
   "narrative_extraction_redo_commit",
 ];
+
+const REQUIRED_RENDERER_AUTHORITY_COMMANDS = new Set([
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "codex_mutate",
+  "event_create",
+  "event_update",
+  "event_delete",
+  "chronicle_bulk_mutate",
+  "event_participants_set",
+  "scene_event_link",
+  "scene_event_link_batch",
+  "scene_event_unlink",
+  "event_relation_add",
+  "event_relation_remove",
+]);
 
 const MCP_MUTATING_ROUTES = [
   "create_foreshadow",
@@ -392,6 +423,95 @@ function validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache) {
   return routes;
 }
 
+function validateRendererAuthorityParity(
+  manifest,
+  operation,
+  repoRoot,
+  errors,
+  sourceCache,
+) {
+  if (
+    !operation.id.endsWith(".renderer") ||
+    operation.canonical?.origin !== "renderer"
+  ) {
+    return;
+  }
+  const label = `operation ${operation.id}`;
+  const mainPath = path.join(repoRoot, "electron/main/ipc.ts");
+  if (!existsSync(mainPath)) return;
+  let mainSource = sourceCache.get(mainPath);
+  if (mainSource === undefined) {
+    mainSource = readFileSync(mainPath, "utf8");
+    sourceCache.set(mainPath, mainSource);
+  }
+  const ipcCommands = (operation.routes ?? [])
+    .filter((route) => route?.surface === "electron-ipc")
+    .map((route) => route.name)
+    .filter(nonEmptyString);
+  if (!ipcCommands.some((command) => REQUIRED_RENDERER_AUTHORITY_COMMANDS.has(command))) {
+    return;
+  }
+  if (ipcCommands.length === 0) {
+    errors.push(`${label} must declare an Electron IPC renderer command`);
+    return;
+  }
+
+  const commandSets = ["CODEX_RENDERER_COMMANDS", "RENDERER_CHRONICLE_COMMANDS"];
+  for (const command of ipcCommands) {
+    const declaredInMain = commandSets.some((setName) => {
+      const setBlock = mainSource.match(
+        new RegExp(
+          `const\\s+${setName}\\s*=\\s*new\\s+Set\\(\\[([\\s\\S]*?)\\]\\);`,
+        ),
+      );
+      return Boolean(
+        setBlock?.[1] &&
+          new RegExp(`\\"${escapeRegExp(command)}\\"`).test(setBlock[1]) &&
+          mainSource.includes(`${setName}.has(cmd)`),
+      );
+    });
+    if (!declaredInMain) {
+      errors.push(
+        `${label} renderer command ${command} is missing from Main authority route sets`,
+      );
+    }
+  }
+
+  const rendererBranch = mainSource.match(
+    /if \(\s*CODEX_RENDERER_COMMANDS\.has\(cmd\)[\s\S]*?return authorityRouteFor(?:Unambiguous)?Origin\(payload\.origin,\s*\[([\s\S]*?)\]\)/,
+  )?.[1];
+  const mainRoutes = new Set(
+    rendererBranch?.match(/"([a-z-]+)"/g)?.map((value) => value.slice(1, -1)) ?? [],
+  );
+  for (const variant of operation.authorityVariants ?? []) {
+    if (!mainRoutes.has(variant?.authorityRoute)) {
+      errors.push(
+        `${label} authority variant ${variant?.authorityRoute} is not present in Main renderer route binding`,
+      );
+    }
+  }
+
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  const evidenceCommands = new Set(
+    Array.isArray(evidence?.commands) ? evidence.commands : [],
+  );
+  const evidenceTests = new Set(
+    Array.isArray(evidence?.testFiles) ? evidence.testFiles : [],
+  );
+  if (!evidenceCommands.has("pnpm electron:product-journeys")) {
+    errors.push(
+      `${label} runtime evidence must include the positive Electron product journey command`,
+    );
+  }
+  if (!evidenceTests.has("scripts/electron-product-journeys.test.mjs")) {
+    errors.push(
+      `${label} runtime evidence must include the product journey positive test`,
+    );
+  }
+}
+
 function validateWriterMatrix(manifest, errors) {
   if (!Array.isArray(manifest.writerMatrix) || manifest.writerMatrix.length === 0) {
     errors.push("change feed writer manifest writerMatrix must be a non-empty array");
@@ -442,6 +562,200 @@ function validateWriterMatrix(manifest, errors) {
       if (typeof row[field] !== "boolean") {
         errors.push(`${label}.${field} must be boolean`);
       }
+    }
+  }
+}
+
+function validateRuntimeEvidence(manifest, operation, repoRoot, errors) {
+  if (operation.coverageStatus !== "verified") return;
+  if (
+    operation.feedPolicy === "excluded" &&
+    operation.runtimeEvidence?.status === "excluded"
+  ) {
+    return;
+  }
+
+  const label = `operation ${operation.id}`;
+  const evidence = isObject(operation.runtimeEvidence)
+    ? operation.runtimeEvidence
+    : manifest.runtimeEvidence;
+  if (
+    !isObject(evidence) ||
+    evidence.schemaVersion !== 1 ||
+    evidence.status !== "verified" ||
+    !nonEmptyString(evidence.evidenceId)
+  ) {
+    errors.push(
+      `${label} verified coverage requires a schemaVersion 1 runtimeEvidence bundle`,
+    );
+    return;
+  }
+  for (const field of ["commands", "testFiles", "controls"]) {
+    if (
+      !Array.isArray(evidence[field]) ||
+      evidence[field].length === 0 ||
+      evidence[field].some((value) => !nonEmptyString(value))
+    ) {
+      errors.push(`${label} runtimeEvidence.${field} must be a non-empty string array`);
+    }
+  }
+  const evidenceControls = new Set(
+    Array.isArray(evidence.controls) ? evidence.controls : [],
+  );
+  const variants = Array.isArray(operation.authorityVariants)
+    ? operation.authorityVariants
+    : [{ controls: operation.controls }];
+  for (const [variantIndex, variant] of variants.entries()) {
+    for (const control of Array.isArray(variant?.controls) ? variant.controls : []) {
+      if (!evidenceControls.has(control)) {
+        errors.push(
+          `${label} runtimeEvidence.controls must include '${control}' for authority variant ${variantIndex}`,
+        );
+      }
+    }
+  }
+  for (const [index, relativePath] of (evidence.testFiles ?? []).entries()) {
+    const absolute = safeRepoPath(
+      repoRoot,
+      relativePath,
+      `${label} runtimeEvidence.testFiles[${index}]`,
+      errors,
+    );
+    if (absolute && !existsSync(absolute)) {
+      errors.push(`${label} runtime evidence test file does not exist: ${relativePath}`);
+    }
+  }
+}
+
+function validateMcpAuthorityContract(manifest, repoRoot, errors) {
+  const mcpOperations = (manifest.operations ?? []).filter((operation) =>
+    (operation.routes ?? []).some((route) => route?.surface === "mcp-tool"),
+  );
+  if (mcpOperations.length === 0) return;
+
+  const contract = manifest.mcpAuthorityContract;
+  if (
+    !isObject(contract) ||
+    contract.schemaVersion !== 1 ||
+    contract.fieldAuthority !== "native-transactional-preflight" ||
+    contract.coverageStatus !== "verified" ||
+    contract.executionSurface !== "mcp-tool-native"
+  ) {
+    errors.push(
+      "MCP mutation operations require a verified native-transactional field-authority preflight contract with mcp-tool-native execution",
+    );
+    return;
+  }
+
+  if (
+    !nonEmptyString(contract.runtimeTestCommand) ||
+    !contract.runtimeTestCommand.includes("-p grimodex-db") ||
+    !contract.runtimeTestCommand.includes("-p grimodex-mcp")
+  ) {
+    errors.push(
+      "mcpAuthorityContract.runtimeTestCommand must execute both grimodex-db and grimodex-mcp tests",
+    );
+  }
+
+  const evidenceTests = Array.isArray(contract.evidenceTests)
+    ? contract.evidenceTests
+    : [];
+  if (evidenceTests.length === 0) {
+    errors.push(
+      "mcpAuthorityContract.evidenceTests must list executable native authority test files",
+    );
+  }
+  const evidenceSymbols = new Set();
+  for (const [index, evidence] of evidenceTests.entries()) {
+    const label = `mcpAuthorityContract.evidenceTests[${index}]`;
+    if (!isObject(evidence) || !nonEmptyString(evidence.file)) {
+      errors.push(`${label} must declare a test file`);
+      continue;
+    }
+    const evidencePath = safeRepoPath(
+      repoRoot,
+      evidence.file,
+      `${label}.file`,
+      errors,
+    );
+    if (!evidencePath || !existsSync(evidencePath)) {
+      errors.push(`${label} test file does not exist: ${evidence.file}`);
+      continue;
+    }
+    const evidenceSource = readFileSync(evidencePath, "utf8");
+    if (
+      !/\#\[(?:tokio::)?test\]/.test(evidenceSource) &&
+      !/\b(?:describe|it|test)\s*\(/.test(evidenceSource)
+    ) {
+      errors.push(
+        `${label} must contain executable test declarations: ${evidence.file}`,
+      );
+    }
+    if (
+      !Array.isArray(evidence.symbols) ||
+      evidence.symbols.length === 0 ||
+      evidence.symbols.some((symbol) => !nonEmptyString(symbol))
+    ) {
+      errors.push(`${label}.symbols must list executable test symbols`);
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const executableRustTest = new RegExp(
+        `#\\[(?:tokio::)?test\\]\\s*(?:#\\[[^\\]\\n]+\\]\\s*)*(?:pub(?:\\([^\\)]*\\))?\\s+)?(?:async\\s+)?fn\\s+${escaped}\\b`,
+      ).test(evidenceSource);
+      const executableJsTest = new RegExp(
+        `\\b(?:describe|it|test)\\s*\\([\\s\\S]{0,240}\\b${escaped}\\b`,
+      ).test(evidenceSource);
+      if (!executableRustTest && !executableJsTest) {
+        errors.push(
+          `mcpAuthorityContract evidence test symbol is not an executable test in ${evidence.file}: ${symbol}`,
+        );
+      }
+      evidenceSymbols.add(symbol);
+    }
+  }
+
+  const operationEvidence = Array.isArray(contract.operationEvidence)
+    ? contract.operationEvidence
+    : [];
+  const evidenceByOperation = new Map();
+  for (const entry of operationEvidence) {
+    if (isObject(entry) && nonEmptyString(entry.operationId)) {
+      evidenceByOperation.set(entry.operationId, entry);
+    }
+  }
+  for (const operation of mcpOperations) {
+    if (
+      operation.feedPolicy !== "excluded" &&
+      (!Array.isArray(operation.controls) ||
+        !operation.controls.includes("field-authority"))
+    ) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must declare field-authority alongside the native preflight contract`,
+      );
+    }
+    const evidence = evidenceByOperation.get(operation.id);
+    if (!evidence || !Array.isArray(evidence.symbols) || evidence.symbols.length === 0) {
+      errors.push(
+        `operation ${operation.id} MCP coverage must link operation-specific executable evidence`,
+      );
+      continue;
+    }
+    for (const symbol of evidence.symbols) {
+      if (!evidenceSymbols.has(symbol)) {
+        errors.push(
+          `operation ${operation.id} MCP evidence symbol is not linked to an executable evidence test: ${symbol}`,
+        );
+      }
+    }
+  }
+  const mcpOperationIds = new Set(mcpOperations.map((operation) => operation.id));
+  for (const operationId of evidenceByOperation.keys()) {
+    if (!mcpOperationIds.has(operationId)) {
+      errors.push(
+        `mcpAuthorityContract.operationEvidence references a non-MCP operation: ${operationId}`,
+      );
     }
   }
 }
@@ -610,9 +924,19 @@ export function validateChangeFeedWriters({
       }
     }
 
+    validateRuntimeEvidence(manifest, operation, repoRoot, errors);
     validateImplementation(operation, repoRoot, errors, sourceCache);
     validateRoutes(operation, repoRoot, errors, routeOwners, sourceCache);
+    validateRendererAuthorityParity(
+      manifest,
+      operation,
+      repoRoot,
+      errors,
+      sourceCache,
+    );
   }
+
+  validateMcpAuthorityContract(manifest, repoRoot, errors);
 
   for (const writerId of [...activeWriterIds].sort()) {
     if (!coveredWriterIds.has(writerId)) {

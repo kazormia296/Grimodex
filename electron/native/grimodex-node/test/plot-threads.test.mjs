@@ -33,13 +33,33 @@ const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project";
 
 function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  const isRestore = origin === "restore" || origin === "migration";
   return {
     requestId,
     projectId,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isRestore ? "restore-or-migration" : "human-direct",
+    caller: isRestore ? "restore-controller" : "manual-wrapper",
+    controls: isRestore
+      ? [
+          "exclusive-system-operation",
+          "semantic-epoch-event",
+          "full-rebuild-marker",
+        ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
+    undoJournalId: null,
   };
 }
 
@@ -59,6 +79,18 @@ async function createProject(projectId) {
       sessionId: "plot-thread-napi-test",
       eventUid: `plot-project-create-event:${projectId}`,
       origin: "human",
+      authorityRoute: "human-direct",
+      caller: "manual-wrapper",
+      controls: [
+        "runtime-policy",
+        "actor-context",
+        "typed-writer",
+        "occ",
+        "change-event",
+        "change-feed",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
       originalTransactionId: null,
       undoJournalId: null,
       title: projectId,

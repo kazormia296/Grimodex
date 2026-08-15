@@ -108,7 +108,7 @@ describe("Chat anchor deletion admission", () => {
     await vi.waitFor(() => expect(invokeTypedWriter).toHaveBeenCalledOnce());
     expect(selectFromDb).toHaveBeenCalledOnce();
     expect(selectWhere).toHaveBeenCalledOnce();
-    expect(invokeTypedWriter).toHaveBeenCalledWith("agent_codex_delete", {
+    expect(invokeTypedWriter).toHaveBeenCalledWith("codex_delete", {
       payload: expect.objectContaining({
         projectId: "project-1",
         entryId: "codex-1",

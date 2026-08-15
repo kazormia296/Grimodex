@@ -45,6 +45,15 @@ fn payload() -> RepairIntegrityPayload {
         session_id: "repair-session-1".to_string(),
         event_uid: "repair-event-1".to_string(),
         occurred_at: "2026-08-13T10:00:00.000Z".to_string(),
+        authority_route: "restore-or-migration".to_string(),
+        caller: "integrity-repair".to_string(),
+        controls: vec![
+            "exclusive-system-operation".to_string(),
+            "semantic-epoch-event".to_string(),
+            "full-rebuild-marker".to_string(),
+        ],
+        provenance: None,
+        writes_authority_protected_field: false,
     }
 }
 
@@ -161,11 +170,20 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
         assert_eq!(
             transaction,
             (
-                "human".to_string(),
+                "restore".to_string(),
                 "forward".to_string(),
                 "repair-event-1".to_string(),
             )
         );
+        let canonical_payload: String = conn.query_row(
+            "SELECT payload FROM change_events WHERE project_id = 'repair-p1' AND event_uid = 'repair-event-1'",
+            [],
+            |row| row.get(0),
+        )?;
+        let canonical_payload: serde_json::Value = serde_json::from_str(&canonical_payload)?;
+        assert_eq!(canonical_payload["authorityRoute"], "restore-or-migration");
+        assert_eq!(canonical_payload["authorityCaller"], "integrity-repair");
+        assert_eq!(canonical_payload["authorityEvidence"]["status"], "validated");
         let event_keys = conn
             .prepare(
                 "SELECT object_key_json, changed_paths_json,
@@ -186,17 +204,18 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        assert_eq!(event_keys.len(), 4);
-        assert!(event_keys[0].0.contains("codex-a"));
-        assert!(event_keys[1].0.contains("codex-b"));
-        assert!(event_keys[2].0.contains("snippet-a"));
-        assert!(event_keys[3].0.contains("snippet-b"));
+        assert_eq!(event_keys.len(), 5);
+        assert!(event_keys[0].0.contains("\"kind\":\"project\""));
+        assert!(event_keys[1].0.contains("codex-a"));
+        assert!(event_keys[2].0.contains("codex-b"));
+        assert!(event_keys[3].0.contains("snippet-a"));
+        assert!(event_keys[4].0.contains("snippet-b"));
         assert_eq!(
-            serde_json::from_str::<Vec<String>>(&event_keys[3].1)?,
+            serde_json::from_str::<Vec<String>>(&event_keys[4].1)?,
             vec!["/sceneId", "/sourceChatMessageId"]
         );
         assert_eq!(
-            event_keys[1].2,
+            event_keys[2].2,
             narrative_snapshot_digest(&json!({
                 "id": "codex-b",
                 "sourceChatMessageId": "cross-project-message",
@@ -205,7 +224,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[1].3,
+            event_keys[2].3,
             narrative_snapshot_digest(&json!({
                 "id": "codex-b",
                 "sourceChatMessageId": null,
@@ -214,7 +233,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[3].2,
+            event_keys[4].2,
             narrative_snapshot_digest(&json!({
                 "id": "snippet-b",
                 "sceneId": "cross-project-scene",
@@ -224,7 +243,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             }))?
         );
         assert_eq!(
-            event_keys[3].3,
+            event_keys[4].3,
             narrative_snapshot_digest(&json!({
                 "id": "snippet-b",
                 "sceneId": null,
@@ -243,7 +262,7 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
-        assert_eq!(counts, (1, 1, 4, 1));
+        assert_eq!(counts, (1, 1, 5, 1));
         let foreign_authorities: (i64, i64) = conn.query_row(
             "SELECT
                (SELECT COUNT(*) FROM chat_messages message

@@ -1,6 +1,7 @@
 import { invoke } from "@/lib/tauri";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
+import { requiredControlsForRoute } from "@/features/narrative-semantic-core/contracts/mutationAuthority";
 
 const pendingReplayRequestIds = new Map<string, string>();
 
@@ -33,6 +34,10 @@ export async function applyUndoJournal(
       sessionId: getRecorderSessionId(),
       journalId,
       direction,
+      authorityRoute: "history-replay",
+      origin: direction,
+      caller: "undo-redo-command",
+      controls: [...requiredControlsForRoute("history-replay")],
     },
   });
   if (pendingReplayRequestIds.get(key) === requestId) {

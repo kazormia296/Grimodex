@@ -584,7 +584,22 @@ export declare class Backend {
   agentCodexCreate(payload: any): Promise<string>
   agentCodexUpdate(payload: any): Promise<string>
   agentCodexDelete(payload: any): Promise<string>
+  /**
+   * Human/import/history renderer Codex writer. Agent tool calls use the
+   * capability-bound `agent_codex_*` surface above; this alias keeps the
+   * non-Agent renderer writer contract separate at the IPC boundary while
+   * sharing the same tracked native implementation.
+   */
+  codexCreate(payload: any): Promise<string>
+  codexUpdate(payload: any): Promise<string>
+  codexDelete(payload: any): Promise<string>
   agentCodexMutate(payload: any): Promise<string>
+  /**
+   * Human/import/history/restore Codex aggregate writer. This is a distinct
+   * N-API method from the capability-bound Agent command and shares only
+   * the typed Native mutation core.
+   */
+  codexMutate(payload: any): Promise<string>
   agentWriteBundle(payload: any): Promise<string>
   agentSnippetCreate(payload: any): Promise<string>
   /**
@@ -613,6 +628,16 @@ export declare class Backend {
   agentSceneEventUnlink(payload: any): Promise<string>
   agentEventRelationAdd(payload: any): Promise<string>
   agentEventRelationRemove(payload: any): Promise<string>
+  eventCreate(payload: any): Promise<string>
+  eventUpdate(payload: any): Promise<string>
+  eventDelete(payload: any): Promise<string>
+  chronicleBulkMutate(payload: any): Promise<string>
+  eventParticipantsSet(payload: any): Promise<string>
+  sceneEventLink(payload: any): Promise<string>
+  sceneEventLinkBatch(payload: any): Promise<string>
+  sceneEventUnlink(payload: any): Promise<string>
+  eventRelationAdd(payload: any): Promise<string>
+  eventRelationRemove(payload: any): Promise<string>
   narrativeExtractionCreateRun(payload: any): Promise<string>
   narrativeExtractionGetRun(payload: any): Promise<string>
   narrativeExtractionListResumableRuns(payload: any): Promise<string>

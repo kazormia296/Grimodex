@@ -710,10 +710,16 @@ export interface NapiBackendLike {
   foreshadowResolveOrphan(payload: unknown): Promise<string>;
   foreshadowSaveAnchorsForScene(payload: unknown): Promise<string>;
   foreshadowLoadAnchorsForScene(sceneId: string): Promise<string>;
-  // agent_writes 20 コマンド（すべて単一 payload → tracked write result）
+  // agent_writes commands（すべて単一 payload → tracked write result）
   agentCodexCreate(payload: unknown): Promise<string>;
   agentCodexUpdate(payload: unknown): Promise<string>;
   agentCodexDelete(payload: unknown): Promise<string>;
+  // Human/import/history renderer Codex writers. Optional は旧 .node との
+  // version skew を requireNapiMethod で明示エラー化するため。
+  codexCreate?(payload: unknown): Promise<string>;
+  codexUpdate?(payload: unknown): Promise<string>;
+  codexDelete?(payload: unknown): Promise<string>;
+  codexMutate?(payload: unknown): Promise<string>;
   agentCodexMutate(payload: unknown): Promise<string>;
   agentWriteBundle(payload: unknown): Promise<string>;
   agentSnippetCreate(payload: unknown): Promise<string>;
@@ -736,6 +742,16 @@ export interface NapiBackendLike {
   agentSceneEventUnlink(payload: unknown): Promise<string>;
   agentEventRelationAdd(payload: unknown): Promise<string>;
   agentEventRelationRemove(payload: unknown): Promise<string>;
+  eventCreate?(payload: unknown): Promise<string>;
+  eventUpdate?(payload: unknown): Promise<string>;
+  eventDelete?(payload: unknown): Promise<string>;
+  chronicleBulkMutate?(payload: unknown): Promise<string>;
+  eventParticipantsSet?(payload: unknown): Promise<string>;
+  sceneEventLink?(payload: unknown): Promise<string>;
+  sceneEventLinkBatch?(payload: unknown): Promise<string>;
+  sceneEventUnlink?(payload: unknown): Promise<string>;
+  eventRelationAdd?(payload: unknown): Promise<string>;
+  eventRelationRemove?(payload: unknown): Promise<string>;
   treeNodeCreate(payload: unknown): Promise<string>;
   treeNodeDelete(payload: unknown): Promise<string>;
   treeNodePatch(payload: unknown): Promise<string>;
@@ -1117,14 +1133,25 @@ function requirePlotMutationIdentity(
     "originalTransactionId",
     command,
   );
+  const undoJournalId = optionalString(payload, "undoJournalId", command);
   if ((origin === "undo" || origin === "redo") && !originalTransactionId) {
     throw new Error(
       `invalid args \`originalTransactionId\` for command \`${command}\`: undo/redo requires lineage`,
     );
   }
+  if ((origin === "undo" || origin === "redo") && !undoJournalId) {
+    throw new Error(
+      `invalid args \`undoJournalId\` for command \`${command}\`: undo/redo requires journal lineage`,
+    );
+  }
   if (origin !== "undo" && origin !== "redo" && originalTransactionId) {
     throw new Error(
       `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
+    );
+  }
+  if (origin !== "undo" && origin !== "redo" && undoJournalId) {
+    throw new Error(
+      `invalid args \`undoJournalId\` for command \`${command}\`: forward mutation cannot name lineage`,
     );
   }
 }
@@ -1175,6 +1202,16 @@ function requireForeshadowVersionedPatch(
 ): CommandArgs {
   const patch = requireRecord(args, "patch", command);
   requireForeshadowMutationIdentity(patch, command);
+  if (
+    command === "foreshadow_update" ||
+    command === "foreshadow_update_setup"
+  ) {
+    requireForeshadowRendererAuthority(patch, command, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
+  }
   const baseVersion = requireSafeInteger(patch, "baseVersion", command);
   if (baseVersion < 0) {
     throw new Error(
@@ -1217,6 +1254,27 @@ function requireForeshadowMutationIdentity(
       `invalid args \`originalTransactionId\` for command \`${command}\`: forward mutation cannot name lineage`,
     );
   }
+  if (Object.hasOwn(payload, "authorityRoute")) {
+    requireCanonicalAuthorityContext(payload, command);
+  }
+}
+
+function requireForeshadowRendererAuthority(
+  payload: CommandArgs,
+  command: string,
+  allowedRoutes: readonly string[],
+): void {
+  if (!Object.hasOwn(payload, "authorityRoute")) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: every Foreshadow mutation requires canonical authority context`,
+    );
+  }
+  requireCanonicalAuthorityContext(payload, command);
+  if (!allowedRoutes.includes(String(payload.authorityRoute))) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: ${String(payload.authorityRoute)} is not allowed`,
+    );
+  }
 }
 
 function requireForeshadowPayload(
@@ -1225,6 +1283,21 @@ function requireForeshadowPayload(
 ): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   requireForeshadowMutationIdentity(payload, command);
+  if (
+    command === "foreshadow_create" ||
+    command === "foreshadow_save_anchors_for_scene" ||
+    command === "foreshadow_link_codex" ||
+    command === "foreshadow_unlink_codex" ||
+    command === "foreshadow_set_setup_strength"
+  ) {
+    requireForeshadowRendererAuthority(
+      payload,
+      command,
+      command === "foreshadow_create"
+        ? ["human-direct", "history-replay", "restore-or-migration"]
+        : ["human-direct"],
+    );
+  }
   return payload;
 }
 
@@ -1233,6 +1306,13 @@ function requireForeshadowDeletePayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  if (command === "foreshadow_delete") {
+    requireForeshadowRendererAuthority(payload, command, [
+      "human-direct",
+      "history-replay",
+      "restore-or-migration",
+    ]);
+  }
   requireNonEmptyString(payload, "id", command);
   requireForeshadowBaseVersion(payload, command);
   return payload;
@@ -1243,6 +1323,7 @@ function requireForeshadowAssociationPayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireNonEmptyString(payload, "codexId", command);
   requireForeshadowBaseVersion(payload, command);
@@ -1254,6 +1335,7 @@ function requireForeshadowSetupStrengthPayload(
   command: string,
 ): CommandArgs {
   const payload = requireForeshadowPayload(args, command);
+  requireForeshadowRendererAuthority(payload, command, ["human-direct"]);
   requireNonEmptyString(payload, "setupId", command);
   requirePresent(payload, "strength", command);
   if (payload.strength !== null && typeof payload.strength !== "string") {
@@ -1280,7 +1362,9 @@ function requireForeshadowBaseVersion(
 
 function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_update";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -1291,10 +1375,9 @@ function requireAgentForeshadowUpdatePayload(args: CommandArgs): CommandArgs {
 
 function requireAgentForeshadowCreatePayload(args: CommandArgs): CommandArgs {
   const command = "agent_foreshadow_create";
-  const payload = requireRecord(args, "payload", command);
-  requireNonEmptyString(payload, "requestId", command);
-  requireNonEmptyString(payload, "projectId", command);
-  requireNonEmptyString(payload, "sessionId", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   requireNonEmptyString(payload, "foreshadowId", command);
   requireNonEmptyString(payload, "title", command);
   return payload;
@@ -1304,7 +1387,9 @@ function requireCanonicalAgentCreatePayload(
   args: CommandArgs,
   command: string,
 ): CommandArgs {
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "interactive-agent-command",
+  ]);
   for (const key of ["projectId", "requestId", "sessionId"]) {
     requireNonEmptyString(payload, key, command);
   }
@@ -2041,6 +2126,7 @@ function requireNullableStringField(
 function requireCanonicalWriterIdentity(
   args: CommandArgs,
   command: string,
+  allowedRoutes?: readonly string[],
 ): CommandArgs {
   const payload = requireRecord(args, "payload", command);
   for (const key of ["projectId", "requestId", "sessionId", "eventUid"]) {
@@ -2083,20 +2169,318 @@ function requireCanonicalWriterIdentity(
       `invalid canonical lineage for command \`${command}\`: undo/redo requires originalTransactionId and undoJournalId`,
     );
   }
+  requireCanonicalAuthorityContext(payload, command);
+  if (
+    allowedRoutes &&
+    !allowedRoutes.includes(String(payload.authorityRoute))
+  ) {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: ${String(payload.authorityRoute)} is not allowed`,
+    );
+  }
   return payload;
+}
+
+const CANONICAL_AUTHORITY_POLICIES = {
+  "human-direct": {
+    allowedOrigins: ["human"],
+    allowedCallers: ["human-ui", "manual-wrapper", "typed-domain-api"],
+    requiredControls: [
+      "runtime-policy",
+      "actor-context",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "interactive-agent-command": {
+    allowedOrigins: ["ai-apply"],
+    allowedCallers: [
+      "chat-tool-executor",
+      "manual-wrapper",
+      "registered-agent-surface",
+    ],
+    requiredControls: [
+      "knowledge-write-policy",
+      "stable-request-id",
+      "agent-provenance",
+      "field-authority",
+      "typed-writer",
+      "occ",
+      "undo-journal",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "interpreter-projection": {
+    allowedOrigins: ["ai-apply"],
+    allowedCallers: [
+      "interpreter",
+      "reconciler",
+      "proposal-review",
+      "prepared-commit-runner",
+    ],
+    requiredControls: [
+      "proposal-revision",
+      "decision",
+      "prepared-commit",
+      "application-id",
+      "source-basis-occ",
+      "field-authority",
+      "typed-writer",
+    ],
+  },
+  "import-apply": {
+    allowedOrigins: ["import"],
+    allowedCallers: ["import-session", "import-review"],
+    requiredControls: [
+      "import-policy",
+      "source-package-evidence",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "history-replay": {
+    allowedOrigins: ["undo", "redo"],
+    allowedCallers: ["history-controller", "undo-redo-command"],
+    requiredControls: [
+      "original-transaction",
+      "journal-lineage",
+      "typed-writer",
+      "occ",
+      "change-event",
+      "change-feed",
+    ],
+  },
+  "restore-or-migration": {
+    allowedOrigins: ["restore", "migration"],
+    allowedCallers: [
+      "restore-controller",
+      "migration-runner",
+      "integrity-repair",
+    ],
+    requiredControls: [
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+    ],
+  },
+} as const;
+
+export type CanonicalAuthorityRoute = keyof typeof CANONICAL_AUTHORITY_POLICIES;
+
+const KNOWN_CANONICAL_AUTHORITY_CONTROLS = new Set([
+  "runtime-policy",
+  "actor-context",
+  "knowledge-write-policy",
+  "stable-request-id",
+  "agent-provenance",
+  "typed-writer",
+  "occ",
+  "source-basis-occ",
+  "field-authority",
+  "proposal-revision",
+  "decision",
+  "prepared-commit",
+  "application-id",
+  "undo-journal",
+  "journal-lineage",
+  "original-transaction",
+  "change-event",
+  "change-feed",
+  "import-policy",
+  "source-package-evidence",
+  "exclusive-system-operation",
+  "semantic-epoch-event",
+  "full-rebuild-marker",
+]);
+
+function requireCanonicalAuthorityContext(
+  payload: CommandArgs,
+  command: string,
+): void {
+  const route = requireNonEmptyString(payload, "authorityRoute", command);
+  const policy =
+    CANONICAL_AUTHORITY_POLICIES[
+      route as keyof typeof CANONICAL_AUTHORITY_POLICIES
+    ];
+  if (!policy) {
+    throw new Error(
+      `invalid args \`authorityRoute\` for command \`${command}\`: unknown mutation authority route`,
+    );
+  }
+  const origin = requireString(payload, "origin", command);
+  if (!policy.allowedOrigins.includes(origin as never)) {
+    throw new Error(
+      `invalid authority origin for command \`${command}\`: ${origin} is not valid for ${route}`,
+    );
+  }
+  const caller = requireNonEmptyString(payload, "caller", command);
+  if (!policy.allowedCallers.includes(caller as never)) {
+    throw new Error(
+      `invalid authority caller for command \`${command}\`: ${caller} is not allowed for ${route}`,
+    );
+  }
+  const controls = requireArray(payload, "controls", command);
+  controls.forEach((control, index) => {
+    if (typeof control !== "string" || control.length === 0) {
+      throw new Error(
+        `invalid args \`controls[${index}]\` for command \`${command}\`: expected a non-empty string`,
+      );
+    }
+    if (!KNOWN_CANONICAL_AUTHORITY_CONTROLS.has(control)) {
+      throw new Error(
+        `invalid authority control for command \`${command}\`: unknown control ${control}`,
+      );
+    }
+  });
+  for (const control of policy.requiredControls) {
+    if (!controls.includes(control)) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: missing ${control}`,
+      );
+    }
+  }
+  if (Object.hasOwn(payload, "writesAuthorityProtectedField")) {
+    const protectedField = requireBoolean(
+      payload,
+      "writesAuthorityProtectedField",
+      command,
+    );
+    if (protectedField && !controls.includes("field-authority")) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: protected-field writes require field-authority`,
+      );
+    }
+  }
+  if (route === "interactive-agent-command") {
+    const provenance = requireRecord(payload, "provenance", command);
+    requireNonEmptyString(provenance, "requestId", command);
+    requireNonEmptyString(provenance, "traceId", command);
+    if (Object.hasOwn(provenance, "executionId")) {
+      requireNonEmptyString(provenance, "executionId", command);
+    }
+    if (Object.hasOwn(provenance, "mainOwnedProvenanceId")) {
+      requireNonEmptyString(provenance, "mainOwnedProvenanceId", command);
+      if (!Object.hasOwn(provenance, "executionId")) {
+        throw new Error(
+          `invalid authority provenance for command \`${command}\`: mainOwnedProvenanceId requires executionId`,
+        );
+      }
+    }
+    if (provenance.requestId !== payload.requestId) {
+      throw new Error(
+        `invalid authority provenance for command \`${command}\`: requestId must match canonical requestId`,
+      );
+    }
+  }
+}
+
+/**
+ * Bind the authority fields at the Electron main boundary. Renderer payloads
+ * may carry request/session/event identity, but route, caller, controls, and
+ * agent provenance are selected by the main-owned command policy rather than
+ * copied from renderer metadata.
+ */
+export function bindCanonicalAuthorityContext(
+  payload: CommandArgs,
+  route: CanonicalAuthorityRoute,
+): CommandArgs {
+  const policy = CANONICAL_AUTHORITY_POLICIES[route];
+  const requestedOrigin = payload.origin;
+  const origin = policy.allowedOrigins.includes(requestedOrigin as never)
+    ? requestedOrigin
+    : policy.allowedOrigins[0];
+  const requestId =
+    typeof payload.requestId === "string" ? payload.requestId : "";
+  const eventUid =
+    typeof payload.eventUid === "string" && payload.eventUid.trim().length > 0
+      ? payload.eventUid
+      : requestId;
+  const originalTransactionId =
+    typeof payload.originalTransactionId === "string" &&
+    payload.originalTransactionId.trim().length > 0
+      ? payload.originalTransactionId
+      : null;
+  const undoJournalId =
+    typeof payload.undoJournalId === "string" &&
+    payload.undoJournalId.trim().length > 0
+      ? payload.undoJournalId
+      : null;
+  const caller =
+    route === "restore-or-migration" && origin === "migration"
+      ? "migration-runner"
+      : policy.allowedCallers[0];
+  const traceId =
+    typeof payload.traceId === "string" && payload.traceId.trim().length > 0
+      ? payload.traceId
+      : requestId;
+  const chatMessageId =
+    typeof payload.chatMessageId === "string" &&
+    payload.chatMessageId.trim().length > 0
+      ? payload.chatMessageId
+      : undefined;
+  const toolCallId =
+    typeof payload.toolCallId === "string" &&
+    payload.toolCallId.trim().length > 0
+      ? payload.toolCallId
+      : undefined;
+  const executionId =
+    typeof payload.executionId === "string" &&
+    payload.executionId.trim().length > 0
+      ? payload.executionId
+      : undefined;
+  const mainOwnedProvenanceId =
+    typeof payload.mainOwnedProvenanceId === "string" &&
+    payload.mainOwnedProvenanceId.trim().length > 0
+      ? payload.mainOwnedProvenanceId
+      : undefined;
+  return {
+    ...payload,
+    eventUid,
+    originalTransactionId,
+    undoJournalId,
+    origin,
+    authorityRoute: route,
+    caller,
+    controls: [...policy.requiredControls],
+    provenance:
+      route === "interactive-agent-command"
+        ? {
+            requestId,
+            traceId,
+            ...(chatMessageId ? { chatMessageId } : {}),
+            ...(toolCallId ? { toolCallId } : {}),
+            ...(executionId ? { executionId } : {}),
+            ...(mainOwnedProvenanceId ? { mainOwnedProvenanceId } : {}),
+          }
+        : null,
+    writesAuthorityProtectedField: false,
+  };
 }
 
 function requireSnippetWriterPayload(
   args: CommandArgs,
   command: "snippet_create" | "snippet_update" | "snippet_delete",
 ): CommandArgs {
-  const payload = requireCanonicalWriterIdentity(args, command);
-  requireNonEmptyString(payload, "snippetId", command);
-  if (payload.origin === "undo" || payload.origin === "redo") {
+  const rawPayload = requireRecord(args, "payload", command);
+  if (rawPayload.origin === "undo" || rawPayload.origin === "redo") {
     throw new Error(
       `invalid args \`origin\` for command \`${command}\`: Snippet history must replay its Native Undo Journal`,
     );
   }
+
+  const payload = requireCanonicalWriterIdentity(
+    args,
+    command,
+    command === "snippet_create"
+      ? ["human-direct", "import-apply", "restore-or-migration"]
+      : ["human-direct"],
+  );
+  requireNonEmptyString(payload, "snippetId", command);
 
   if (command === "snippet_create") {
     requireString(payload, "title", command);
@@ -2202,7 +2586,9 @@ function requireAuthorshipReplaceLanePayload(args: CommandArgs): CommandArgs {
 
 function requireEntityTagsSetPayload(args: CommandArgs): CommandArgs {
   const command = "entity_tags_set";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   const kind = requireString(payload, "entityKind", command);
   if (kind !== "codex" && kind !== "snippet") {
     throw new Error(
@@ -2375,7 +2761,9 @@ function requireScanStagingProjectCreatePayload(
 
 function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
   const command = "project_create";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   if (payload.origin === "undo" || payload.origin === "redo") {
     throw new Error(
       `invalid args \`origin\` for command \`${command}\`: project creation is forward-only`,
@@ -2401,7 +2789,9 @@ function requireProjectCreatePayload(args: CommandArgs): CommandArgs {
 
 function requireProjectPatchPayload(args: CommandArgs): CommandArgs {
   const command = "project_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "baseUpdatedAt", command);
   requireNonEmptyString(payload, "updatedAt", command);
   const patch = requireRecord(payload, "patch", command);
@@ -2437,14 +2827,24 @@ function requireProjectPatchPayload(args: CommandArgs): CommandArgs {
 
 function requireProjectDeletePayload(args: CommandArgs): CommandArgs {
   const command = "project_delete";
-  const payload = requireRecord(args, "payload", command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   return payload;
 }
 
 function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   const command = "ai_tree_plan_apply";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const redo = requireBoolean(rawPayload, "redo", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, [
+        redo ? "history-replay" : "interactive-agent-command",
+      ])
+    : rawPayload;
+  const interactiveAgentTreePlan =
+    !redo && payload.authorityRoute === "interactive-agent-command";
   for (const key of [
     "requestId",
     "projectId",
@@ -2470,6 +2870,14 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
       );
     }
     const create = value as CommandArgs;
+    if (interactiveAgentTreePlan) {
+      const tempId = requireNonEmptyString(create, "tempId", command);
+      if (!tempId.startsWith("tmp:")) {
+        throw new Error(
+          `invalid args \`creates[${index}].tempId\` for command \`${command}\``,
+        );
+      }
+    }
     for (const key of ["id", "nodeType", "title", "sortOrder"]) {
       requireNonEmptyString(create, key, command);
     }
@@ -2526,11 +2934,11 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   if (creates.length === 0 && updates.length === 0) {
     throw new Error(`invalid args for command \`${command}\`: empty plan`);
   }
-  const redo = requirePresent(payload, "redo", command);
-  if (typeof redo !== "boolean") {
-    throw new Error(
-      `invalid args \`redo\` for command \`${command}\`: expected a boolean`,
-    );
+  if (interactiveAgentTreePlan) {
+    const ops = requireArray(payload, "ops", command);
+    if (ops.length === 0) {
+      throw new Error(`invalid args \`ops\` for command \`${command}\`: empty plan`);
+    }
   }
   const originalTransactionId = requireNullableStringField(
     payload,
@@ -2553,7 +2961,10 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
 
 function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
   const command = "ai_tree_plan_undo";
-  const payload = requireRecord(args, "payload", command);
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, ["history-replay"])
+    : rawPayload;
   for (const key of [
     "requestId",
     "projectId",
@@ -2588,7 +2999,12 @@ function requireAiTreePlanUndoPayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_create";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "import-apply",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   for (const key of ["id", "projectId", "nodeType", "title", "sortOrder"]) {
     requireNonEmptyString(payload, key, command);
   }
@@ -2614,7 +3030,11 @@ function requireTreeNodeCreatePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_delete";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   return payload;
@@ -2622,7 +3042,12 @@ function requireTreeNodeDeletePayload(args: CommandArgs): CommandArgs {
 
 function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
   const command = "tree_node_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+    "import-apply",
+    "history-replay",
+    "restore-or-migration",
+  ]);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "nodeId", command);
   requireNonEmptyString(payload, "updatedAt", command);
@@ -2698,7 +3123,9 @@ function requireTreeNodePatchPayload(args: CommandArgs): CommandArgs {
 
 function requireTemporalScenePatchPayload(args: CommandArgs): CommandArgs {
   const command = "temporal_scene_patch";
-  const payload = requireCanonicalWriterIdentity(args, command);
+  const payload = requireCanonicalWriterIdentity(args, command, [
+    "human-direct",
+  ]);
   requireNonEmptyString(payload, "targetId", command);
   const baseVersion = requireSafeInteger(payload, "baseVersion", command);
   if (baseVersion < 0) {
@@ -3968,12 +4395,23 @@ function requireRuntimePerformanceSeedArgs(args: CommandArgs): {
   return { ownerToken, payload };
 }
 
-/** Agent Chronicle writers must carry project, session, and durable retry identity. */
+const RENDERER_CHRONICLE_AUTHORITY_ROUTES = [
+  "human-direct",
+  "import-apply",
+  "history-replay",
+  "restore-or-migration",
+] as const;
+
+/** Agent and renderer Chronicle writers carry project, session, and retry identity. */
 function requireAgentChroniclePayload(
   args: CommandArgs,
   cmd: string,
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
 ): CommandArgs {
-  const payload = requireRecord(args, "payload", cmd);
+  const rawPayload = requireRecord(args, "payload", cmd);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, cmd, allowedRoutes)
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", cmd);
   requireNonEmptyString(payload, "projectId", cmd);
   requireNonEmptyString(payload, "sessionId", cmd);
@@ -3984,8 +4422,9 @@ function requireAgentChroniclePayload(
 function requireEventMutationPayload(
   args: CommandArgs,
   cmd: string,
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
 ): CommandArgs {
-  const payload = requireAgentChroniclePayload(args, cmd);
+  const payload = requireAgentChroniclePayload(args, cmd, allowedRoutes);
   const baseVersion = requireNumber(payload, "baseVersion", cmd);
   if (!Number.isSafeInteger(baseVersion) || baseVersion < 0) {
     throw new Error(
@@ -4009,9 +4448,15 @@ function requireNarrativeCommitReplayPayload(
 
 const MAX_SCENE_EVENT_LINK_BATCH_SIZE = 10_000;
 
-function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
-  const command = "agent_scene_event_link_batch";
-  const payload = requireRecord(args, "payload", command);
+function requireSceneEventLinkBatchPayload(
+  args: CommandArgs,
+  command = "agent_scene_event_link_batch",
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
+): CommandArgs {
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, allowedRoutes)
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -4040,9 +4485,15 @@ function requireSceneEventLinkBatchPayload(args: CommandArgs): CommandArgs {
 
 const MAX_CHRONICLE_BULK_PAYLOAD_BYTES = 8 * 1024 * 1024;
 
-function requireChronicleBulkPayload(args: CommandArgs): CommandArgs {
-  const command = "agent_chronicle_bulk_mutate";
-  const payload = requireRecord(args, "payload", command);
+function requireChronicleBulkPayload(
+  args: CommandArgs,
+  command = "agent_chronicle_bulk_mutate",
+  allowedRoutes: readonly string[] = ["interactive-agent-command"],
+): CommandArgs {
+  const rawPayload = requireRecord(args, "payload", command);
+  const payload = Object.hasOwn(rawPayload, "authorityRoute")
+    ? requireCanonicalWriterIdentity(args, command, allowedRoutes)
+    : rawPayload;
   requireNonEmptyString(payload, "requestId", command);
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "sessionId", command);
@@ -4220,6 +4671,36 @@ function requireUndoJournalPayload(args: CommandArgs): CommandArgs {
     throw new Error(
       `invalid args \`direction\` for command \`${command}\`: expected "undo" or "redo"`,
     );
+  }
+  if (requireString(payload, "authorityRoute", command) !== "history-replay") {
+    throw new Error(
+      `invalid authority route for command \`${command}\`: undo/redo requires history-replay`,
+    );
+  }
+  if (requireString(payload, "origin", command) !== direction) {
+    throw new Error(
+      `invalid authority origin for command \`${command}\`: must match direction`,
+    );
+  }
+  if (requireString(payload, "caller", command) !== "undo-redo-command") {
+    throw new Error(
+      `invalid authority caller for command \`${command}\`: expected undo-redo-command`,
+    );
+  }
+  const controls = requireArray(payload, "controls", command);
+  for (const control of [
+    "original-transaction",
+    "journal-lineage",
+    "typed-writer",
+    "occ",
+    "change-event",
+    "change-feed",
+  ]) {
+    if (!controls.includes(control)) {
+      throw new Error(
+        `invalid authority controls for command \`${command}\`: missing ${control}`,
+      );
+    }
   }
   return payload;
 }
@@ -6382,6 +6863,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       requireForeshadowBaseVersion(a, "foreshadow_setup_create_ai");
       requireForeshadowMutationIdentity(a, "foreshadow_setup_create_ai");
+      requireForeshadowRendererAuthority(a, "foreshadow_setup_create_ai", [
+        "human-direct",
+        "interactive-agent-command",
+      ]);
       return parseWire(await b.foreshadowSetupCreateAi(a));
     },
   },
@@ -6391,6 +6876,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       const payload = requireRecord(a, "payload", "foreshadow_resolve_orphan");
       requireForeshadowBaseVersion(payload, "foreshadow_resolve_orphan");
       requireForeshadowMutationIdentity(payload, "foreshadow_resolve_orphan");
+      requireForeshadowRendererAuthority(payload, "foreshadow_resolve_orphan", [
+        "human-direct",
+      ]);
       return parseWire(await b.foreshadowResolveOrphan(payload));
     },
   },
@@ -6429,7 +6917,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexCreate(
-          requireCanonicalWriterIdentity(a, "agent_codex_create"),
+          requireCanonicalWriterIdentity(a, "agent_codex_create", [
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },
@@ -6437,7 +6927,9 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexUpdate(
-          requireCanonicalWriterIdentity(a, "agent_codex_update"),
+          requireCanonicalWriterIdentity(a, "agent_codex_update", [
+            "interactive-agent-command",
+          ]),
         ),
       ),
   },
@@ -6445,7 +6937,60 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexDelete(
-          requireCanonicalWriterIdentity(a, "agent_codex_delete"),
+          requireCanonicalWriterIdentity(a, "agent_codex_delete", [
+            "interactive-agent-command",
+          ]),
+        ),
+      ),
+  },
+  codex_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexCreate,
+          "codexCreate",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_create", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+          ]),
+        ),
+      ),
+  },
+  codex_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexUpdate,
+          "codexUpdate",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_update", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+          ]),
+        ),
+      ),
+  },
+  codex_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.codexDelete,
+          "codexDelete",
+        )(
+          requireCanonicalWriterIdentity(a, "codex_delete", [
+            "human-direct",
+            "import-apply",
+            "history-replay",
+            "restore-or-migration",
+          ]),
         ),
       ),
   },
@@ -6453,7 +6998,21 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) =>
       parseWire(
         await b.agentCodexMutate(
-          requireCanonicalWriterIdentity(a, "agent_codex_mutate"),
+          requireCanonicalWriterIdentity(a, "agent_codex_mutate", [
+            "interactive-agent-command",
+          ]),
+        ),
+      ),
+  },
+  codex_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.codexMutate, "codexMutate")(
+          requireCanonicalWriterIdentity(
+            a,
+            "codex_mutate",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -6539,6 +7098,18 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventCreate, "eventCreate")(
+          requireAgentChroniclePayload(
+            a,
+            "event_create",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_update: {
     run: async (b, a) =>
       parseWire(
@@ -6547,11 +7118,35 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_update: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventUpdate, "eventUpdate")(
+          requireEventMutationPayload(
+            a,
+            "event_update",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_delete: {
     run: async (b, a) =>
       parseWire(
         await b.agentEventDelete(
           requireEventMutationPayload(a, "agent_event_delete"),
+        ),
+      ),
+  },
+  event_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.eventDelete, "eventDelete")(
+          requireEventMutationPayload(
+            a,
+            "event_delete",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -6565,6 +7160,22 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireChronicleBulkPayload(a)),
       ),
   },
+  chronicle_bulk_mutate: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.chronicleBulkMutate,
+          "chronicleBulkMutate",
+        )(
+          requireChronicleBulkPayload(
+            a,
+            "chronicle_bulk_mutate",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_set_participants: {
     run: async (b, a) =>
       parseWire(
@@ -6573,11 +7184,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_participants_set: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventParticipantsSet,
+          "eventParticipantsSet",
+        )(
+          requireEventMutationPayload(
+            a,
+            "event_participants_set",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_scene_event_link: {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventLink(
           requireAgentChroniclePayload(a, "agent_scene_event_link"),
+        ),
+      ),
+  },
+  scene_event_link: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.sceneEventLink, "sceneEventLink")(
+          requireAgentChroniclePayload(
+            a,
+            "scene_event_link",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -6591,11 +7230,39 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         )(requireSceneEventLinkBatchPayload(a)),
       ),
   },
+  scene_event_link_batch: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.sceneEventLinkBatch,
+          "sceneEventLinkBatch",
+        )(
+          requireSceneEventLinkBatchPayload(
+            a,
+            "scene_event_link_batch",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_scene_event_unlink: {
     run: async (b, a) =>
       parseWire(
         await b.agentSceneEventUnlink(
           requireAgentChroniclePayload(a, "agent_scene_event_unlink"),
+        ),
+      ),
+  },
+  scene_event_unlink: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(b, b.sceneEventUnlink, "sceneEventUnlink")(
+          requireAgentChroniclePayload(
+            a,
+            "scene_event_unlink",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -6607,11 +7274,43 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         ),
       ),
   },
+  event_relation_add: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventRelationAdd,
+          "eventRelationAdd",
+        )(
+          requireAgentChroniclePayload(
+            a,
+            "event_relation_add",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
+        ),
+      ),
+  },
   agent_event_relation_remove: {
     run: async (b, a) =>
       parseWire(
         await b.agentEventRelationRemove(
           requireAgentChroniclePayload(a, "agent_event_relation_remove"),
+        ),
+      ),
+  },
+  event_relation_remove: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.eventRelationRemove,
+          "eventRelationRemove",
+        )(
+          requireAgentChroniclePayload(
+            a,
+            "event_relation_remove",
+            RENDERER_CHRONICLE_AUTHORITY_ROUTES,
+          ),
         ),
       ),
   },
@@ -7137,7 +7836,10 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         d,
         "send_agent_message",
       );
-      return parseWire(await sendAgentMessage(a, settings, apiKey));
+      const response = parseWire(await sendAgentMessage(a, settings, apiKey));
+      return d.issueAgentAuthorityCapabilities
+        ? d.issueAgentAuthorityCapabilities(a, response)
+        : response;
     },
   },
   list_ai_models: {
@@ -7417,6 +8119,11 @@ export interface DispatchDeps {
    * 呼出元以外のZustand storeにも即時反映するために使う。
    */
   broadcast?: (channel: string, payload: unknown) => void;
+  /** Main-owned, turn-scoped capabilities are issued only by Electron main. */
+  issueAgentAuthorityCapabilities?: (
+    args: CommandArgs,
+    response: unknown,
+  ) => Promise<unknown> | unknown;
 }
 
 /**

@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-retrieval-disclosure",
+  "admissionStage": "before-ranking-candidate-admission",
+  "phaseResolutionModes": ["reading", "story", "auto"],
+  "contextFields": [
+    "projectId",
+    "currentSceneId",
+    "phaseResolutionMode",
+    "phaseResolution",
+    "candidateScope",
+    "temporalAnchor",
+    "viewpointRef",
+    "knowledgeHolderRef",
+    "audienceRef",
+    "allowSecrets"
+  ],
+  "rejectionRules": [
+    {
+      "id": "disclosure-context-unresolved",
+      "reason": "A missing phase, temporal anchor, or disclosure axis rejects the context before candidate admission."
+    },
+    {
+      "id": "invalid-candidate",
+      "reason": "Malformed temporal or foreshadow candidate values are rejected before disclosure comparison."
+    },
+    {
+      "id": "future-phase",
+      "reason": "A candidate in a future phase is not admitted."
+    },
+    {
+      "id": "future-story-time",
+      "reason": "A candidate beyond the resolved story-time anchor is not admitted."
+    },
+    {
+      "id": "secret-before-reveal",
+      "reason": "Secret foreshadowing remains hidden before its reveal scene or without explicit secret access."
+    },
+    {
+      "id": "knowledge-holder-mismatch",
+      "reason": "Character-relative knowledge is scoped to its knowledge holder."
+    },
+    {
+      "id": "reader-knowledge-not-character",
+      "reason": "Reader knowledge cannot be silently injected into a character context."
+    },
+    {
+      "id": "audience-mismatch",
+      "reason": "An assertion for another audience is not admitted into the current context."
+    },
+    {
+      "id": "scene-scope-mismatch",
+      "reason": "An assertion explicitly scoped to another scene is not admitted."
+    },
+    {
+      "id": "worldline-mismatch",
+      "reason": "Assertions from another worldline are not admitted."
+    },
+    {
+      "id": "timeline-mismatch",
+      "reason": "Assertions from another timeline are not admitted."
+    },
+    {
+      "id": "narrative-layer-mismatch",
+      "reason": "Assertions from another narrative layer are not admitted."
+    },
+    {
+      "id": "unresolved-scope",
+      "reason": "Candidates without a validated explicit scope remain in the review-only lane."
+    }
+  ],
+  "fixtures": [
+    "missing-disclosure-context-rejected",
+    "malformed-candidate-rejected",
+    "reading-future-phase-rejected",
+    "story-future-time-rejected",
+    "auto-matches-adr-002",
+    "auto-incomplete-reading",
+    "auto-complete-story",
+    "secret-before-reveal-rejected",
+    "knowledge-holder-mismatch-rejected",
+    "reader-knowledge-is-not-character-knowledge",
+    "audience-mismatch-rejected",
+    "unresolved-scope-rejected",
+    "worldline-mismatch-rejected"
+  ]
+}

@@ -32,13 +32,61 @@ const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project"; // migrate seed
 
 function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
+  const isRestore = origin === "restore";
   return {
     requestId,
     projectId,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : isRestore
+        ? "restore-or-migration"
+        : "human-direct",
+    caller: isInteractiveAgent
+      ? "chat-tool-executor"
+      : isRestore
+        ? "restore-controller"
+        : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : isRestore
+        ? [
+            "exclusive-system-operation",
+            "semantic-epoch-event",
+            "full-rebuild-marker",
+          ]
+        : [
+            "runtime-policy",
+            "actor-context",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+          ],
+    provenance: isInteractiveAgent
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
+      : null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
+    undoJournalId: null,
   };
 }
 
@@ -98,6 +146,109 @@ test("foreshadowCreate は load_bearing を検証する（ワイヤエラー文�
   );
 });
 
+test("renderer canonical create は未知の caller を mutation 前に拒否する", async () => {
+  const invalidTree = {
+    ...mutationIdentity("renderer-authority-invalid-tree"),
+    undoJournalId: null,
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-tree",
+    parentId: null,
+    nodeType: "scene",
+    title: "拒否されるシーン",
+    sortOrder: "authority-invalid-tree",
+    synopsis: null,
+    status: null,
+    sourceUri: null,
+    sourceMtime: null,
+    content: "{}",
+  };
+  await assert.rejects(backend.treeNodeCreate(invalidTree), /Forbidden caller/);
+  assert.equal(
+    await row("SELECT id FROM tree_nodes WHERE id = ?", [invalidTree.id]),
+    undefined,
+  );
+
+  const invalidForeshadow = {
+    ...mutationIdentity("renderer-authority-invalid-foreshadow"),
+    caller: "background-maintenance-v2",
+    id: "renderer-authority-invalid-foreshadow",
+    title: "拒否される伏線",
+    intent: null,
+    notes: null,
+    loadBearing: null,
+  };
+  await assert.rejects(
+    backend.foreshadowCreate(invalidForeshadow),
+    /Forbidden caller/,
+  );
+  assert.equal(
+    await row("SELECT id FROM foreshadows WHERE id = ?", [
+      invalidForeshadow.id,
+    ]),
+    undefined,
+  );
+});
+
+test("tree renderer writes persist canonical authority evidence for every mutation", async () => {
+  const sceneId = "tree-authority-evidence-scene";
+  const created = JSON.parse(
+    await backend.treeNodeCreate({
+      ...mutationIdentity("tree-authority-evidence-create"),
+      id: sceneId,
+      projectId: PROJECT,
+      parentId: null,
+      nodeType: "scene",
+      title: "Authority scene",
+      sortOrder: "authority-scene",
+      synopsis: null,
+      status: null,
+      sourceUri: null,
+      sourceMtime: null,
+      content: "{}",
+    }),
+  );
+  const createdEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-create:event"],
+  );
+  const createdPayload = JSON.parse(createdEvent.payload);
+  assert.equal(createdPayload.authorityRoute, "human-direct");
+  assert.equal(createdPayload.authorityEvidence.validated, true);
+
+  const patched = JSON.parse(
+    await backend.treeNodePatch({
+      ...mutationIdentity("tree-authority-evidence-patch"),
+      projectId: PROJECT,
+      nodeId: sceneId,
+      patch: { title: "Authority scene (patched)" },
+      baseVersion: created.version,
+      bumpVersion: true,
+      updatedAt: new Date().toISOString(),
+    }),
+  );
+  const patchedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-patch:event"],
+  );
+  const patchedPayload = JSON.parse(patchedEvent.payload);
+  assert.equal(patchedPayload.authorityRoute, "human-direct");
+  assert.equal(patchedPayload.authorityEvidence.validated, true);
+
+  await backend.treeNodeDelete({
+    ...mutationIdentity("tree-authority-evidence-delete"),
+    projectId: PROJECT,
+    nodeId: sceneId,
+  });
+  const deletedEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["tree-authority-evidence-delete:event"],
+  );
+  const deletedPayload = JSON.parse(deletedEvent.payload);
+  assert.equal(deletedPayload.authorityRoute, "human-direct");
+  assert.equal(deletedPayload.authorityEvidence.validated, true);
+  assert.equal(patched.id, sceneId);
+});
+
 test("foreshadowCreate → update は nullable field の null と欠落を区別する", async () => {
   await createScene("foreshadow-payoff-scene");
   const createPayload = {
@@ -134,6 +285,14 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
     replayed: false,
     entityPresent: true,
   });
+  const createEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    [createPayload.eventUid],
+  );
+  const createEventPayload = JSON.parse(createEvent.payload);
+  assert.equal(createEventPayload.authorityRoute, "human-direct");
+  assert.equal(createEventPayload.authorityCaller, "manual-wrapper");
+  assert.equal(createEventPayload.authorityEvidence.validated, true);
   const replay = JSON.parse(await backend.foreshadowCreate(createPayload));
   assert.equal(replay.id, created.id);
   assert.deepEqual(replay.__idempotency, {
@@ -155,6 +314,13 @@ test("foreshadowCreate → update は nullable field の null と欠落を区別
   );
   assert.equal(setted.intent, "改訂した意図");
   assert.equal(setted.title, "刹那の伏線", "title は不変");
+  const updateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-update-intent:event"],
+  );
+  const updateEventPayload = JSON.parse(updateEvent.payload);
+  assert.equal(updateEventPayload.authorityRoute, "human-direct");
+  assert.equal(updateEventPayload.authorityEvidence.validated, true);
 
   // Nullable fields omitted from a patch stay unchanged at the N-API boundary.
   const omitted = JSON.parse(
@@ -234,6 +400,13 @@ test("foreshadowCreate は delete 後も request tombstone を replay し delibe
     }),
   );
   assert.equal(typeof deleted.undoJournalId, "string");
+  const deleteEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-delete:event"],
+  );
+  const deleteEventPayload = JSON.parse(deleteEvent.payload);
+  assert.equal(deleteEventPayload.authorityRoute, "human-direct");
+  assert.equal(deleteEventPayload.authorityEvidence.validated, true);
 
   const replay = JSON.parse(await backend.foreshadowCreate(payload));
   assert.equal(replay.id, payload.id);
@@ -290,6 +463,18 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
     }),
   );
 
+  const setupCreateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-create-ai:event"],
+  );
+  const setupCreateEventPayload = JSON.parse(setupCreateEvent.payload);
+  assert.equal(
+    setupCreateEventPayload.authorityRoute,
+    "interactive-agent-command",
+  );
+  assert.equal(setupCreateEventPayload.authorityCaller, "chat-tool-executor");
+  assert.equal(setupCreateEventPayload.authorityEvidence.validated, true);
+
   // DB に i64 がそのまま入っている（REAL 混入していない）。
   const r = await row(
     "SELECT from_pos, to_pos, last_evaluated_at FROM foreshadow_setups WHERE id = 'setup-ai-1'",
@@ -341,6 +526,14 @@ test("setup_create_ai → load_anchors: i64 座標が JSON 往復で保存され
   assert.equal(setupRow.ai_strength, null);
   assert.equal(setupRow.ai_reasoning, null);
   assert.equal(setupRow.last_evaluated_at, null);
+
+  const setupUpdateEvent = await row(
+    "SELECT payload FROM change_events WHERE event_uid = ?",
+    ["foreshadow-napi-setup-update-clear:event"],
+  );
+  const setupUpdateEventPayload = JSON.parse(setupUpdateEvent.payload);
+  assert.equal(setupUpdateEventPayload.authorityRoute, "human-direct");
+  assert.equal(setupUpdateEventPayload.authorityEvidence.validated, true);
 });
 
 test("save_anchors_for_scene の doc_content_size i64 ガード（境界 2 / 50）", async () => {
@@ -439,7 +632,7 @@ test("link_codex / list_linked_codex / unlink_codex の roundtrip", async () => 
   // type は DEFAULT 'character'（migrate トリガが default-project に seed 済み）。
   const codex = JSON.parse(
     await backend.agentCodexCreate({
-      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "human"),
+      ...mutationIdentity("foreshadow-napi-codex-create", PROJECT, "ai-apply"),
       undoJournalId: null,
       entryId: "cx1",
       projectId: PROJECT,

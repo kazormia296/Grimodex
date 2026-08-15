@@ -110,12 +110,14 @@ import {
   type DocumentKey,
 } from "@/features/editor/document/documentKey";
 import { PhaseVersionConflictError } from "@/features/codex/phaseOcc";
+import { getRecorderSessionId } from "@/features/timelapse/recorder";
 
 const editorStateKey = (key: DocumentKey): string => encodeDocumentKey(key);
 
 const ev = (
   partial: Partial<{
     sequence: number;
+    sessionId: string;
     domain: string;
     sceneId: string | null;
     entityType: string | null;
@@ -127,7 +129,7 @@ const ev = (
   id: 1,
   eventUid: "uid",
   projectId: "p1",
-  sessionId: "other",
+  sessionId: partial.sessionId ?? "other",
   sequence: partial.sequence ?? 1,
   domain: partial.domain ?? "codex",
   opType: partial.opType ?? "entry.create",
@@ -791,6 +793,7 @@ describe("externalWriteFeed pollTick resilience", () => {
     stopExternalWriteFeed();
     h.dbReject = false;
     h.dbResponses = [];
+    useGlobalHistoryStore.getState().clear();
   });
 
   it("does not reject when the poll's DB read fails (IPC timeout)", async () => {
@@ -802,6 +805,33 @@ describe("externalWriteFeed pollTick resilience", () => {
     await expect(pollExternalWritesForTest()).resolves.toBeUndefined();
     // Cursor is never advanced on the failing path, so the next tick retries.
     expect(getExternalWriteCursorForTest()).toBe(0);
+  });
+
+  it("retains local history when a self-write reaches the poll boundary", async () => {
+    await processExternalEventsForTest([], "p1");
+    const writerSessionId = getRecorderSessionId();
+    useGlobalHistoryStore.getState().push({
+      kind: "codex",
+      label: "local codex edit",
+      entityId: "self-write",
+      undo: async () => {},
+      redo: async () => {},
+    });
+    h.dbResponses.push([
+      ev({
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "self-write",
+        sessionId: writerSessionId,
+      }),
+    ]);
+
+    await pollExternalWritesForTest();
+
+    expect(h.loadCodex).not.toHaveBeenCalled();
+    expect(
+      useGlobalHistoryStore.getState().past.map((command) => command.entityId),
+    ).toEqual(["self-write"]);
   });
 
   it("drops an old Project poll after stop/start without fan-out or cursor corruption", async () => {

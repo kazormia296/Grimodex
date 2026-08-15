@@ -73,7 +73,7 @@ function recordMapEvent(
 export { DEFAULT_SHOW } from "./types";
 
 export function createMapWriteContext(
-  origin: CanonicalWriteOrigin = "human",
+  origin: Exclude<CanonicalWriteOrigin, "ai-apply"> = "human",
   receipt?: CanonicalWriteReceipt,
 ): CanonicalWriteContext {
   const undoJournalId = receipt?.undoJournalId;

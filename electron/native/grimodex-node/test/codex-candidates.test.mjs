@@ -34,12 +34,46 @@ function mutationIdentity(
   projectId = "default-project",
   origin = "human",
 ) {
+  const isInteractiveAgent = origin === "ai-apply";
   return {
     requestId,
     projectId,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
     origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : "human-direct",
+    caller: isInteractiveAgent ? "chat-tool-executor" : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: isInteractiveAgent
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
+      : null,
+    writesAuthorityProtectedField: false,
     originalTransactionId: null,
     undoJournalId: null,
   };

@@ -2277,6 +2277,15 @@ fn test_integrity_check_detects_and_repairs_orphans() {
             session_id: "integrity-test-session".to_string(),
             event_uid: "integrity-test-event".to_string(),
             occurred_at: "2026-08-13T10:00:00.000Z".to_string(),
+            authority_route: "restore-or-migration".to_string(),
+            caller: "integrity-repair".to_string(),
+            controls: vec![
+                "exclusive-system-operation".to_string(),
+                "semantic-epoch-event".to_string(),
+                "full-rebuild-marker".to_string(),
+            ],
+            provenance: None,
+            writes_authority_protected_field: false,
         })
         .expect("repair");
     assert_eq!(repair.codex_sources_fixed, 1);

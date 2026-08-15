@@ -936,37 +936,124 @@ fn is_exact_field_path(path: &str) -> bool {
         && !path.ends_with('/')
 }
 
-fn legacy_value_present(
+pub(crate) fn legacy_value_present(
     conn: &Connection,
     project_id: &str,
     entity_kind: &str,
     entity_id: &str,
     field_path: &str,
 ) -> anyhow::Result<bool> {
-    let column = match (entity_kind, field_path) {
-        ("codex-entry", "/name") => Some("name"),
-        ("codex-entry", "/summary") => Some("summary"),
-        ("codex-entry", "/aliases") => Some("aliases"),
-        ("codex-entry", "/type") => Some("type"),
-        ("codex-entry", "/parentId") => Some("parent_id"),
-        ("event", "/precision") => Some("precision"),
-        ("scene", "/startTime") => Some("chronicle_start_time"),
+    let association_sql = match (entity_kind, field_path) {
+        ("event", "/participants") => Some(
+            "SELECT EXISTS(
+                 SELECT 1
+                   FROM event_participants participant
+                   JOIN events event ON event.id = participant.event_id
+                  WHERE participant.event_id = ?1 AND event.project_id = ?2
+             )",
+        ),
+        ("event", "/sceneIds") => Some(
+            "SELECT EXISTS(
+                 SELECT 1
+                   FROM scene_events scene_event
+                   JOIN events event ON event.id = scene_event.event_id
+                  WHERE scene_event.event_id = ?1 AND event.project_id = ?2
+             )",
+        ),
+        ("event", "/relations") => Some(
+            "SELECT EXISTS(
+                 SELECT 1 FROM event_relations relation
+                  WHERE relation.project_id = ?2
+                    AND (relation.cause_event_id = ?1 OR relation.effect_event_id = ?1)
+             )",
+        ),
         _ => None,
     };
-    let Some(column) = column else {
+    if let Some(sql) = association_sql {
+        return Ok(conn.query_row(sql, params![entity_id, project_id], |row| row.get(0))?);
+    }
+
+    let legacy_field = match (entity_kind, field_path) {
+        ("codex-entry", "/name") => Some(("codex_entries", "name", "text")),
+        ("codex-entry", "/summary") => Some(("codex_entries", "summary", "text")),
+        ("codex-entry", "/content") => Some(("codex_entries", "content", "text")),
+        ("codex-entry", "/aliases") => Some(("codex_entries", "aliases", "text")),
+        ("codex-entry", "/excludedAliases") => {
+            Some(("codex_entries", "excluded_aliases", "text"))
+        }
+        ("codex-entry", "/readings") => Some(("codex_entries", "readings", "text")),
+        ("codex-entry", "/tagsCache") => Some(("codex_entries", "tags_cache", "text")),
+        ("codex-entry", "/type") => Some(("codex_entries", "type", "text")),
+        ("codex-entry", "/parentId") => Some(("codex_entries", "parent_id", "text")),
+        ("codex-entry", "/contextMode") => Some(("codex_entries", "context_mode", "text")),
+        ("codex-entry", "/icon") => Some(("codex_entries", "icon", "text")),
+        ("codex-entry", "/childrenBudget") => {
+            Some(("codex_entries", "children_budget", "text"))
+        }
+        ("codex-entry", "/notes") => Some(("codex_entries", "notes", "text")),
+        ("event", "/title") => Some(("events", "title", "text")),
+        ("event", "/note") => Some(("events", "note", "text")),
+        ("event", "/detail") => Some(("events", "detail", "text")),
+        ("event", "/ordinal") => Some(("events", "ordinal", "text")),
+        ("event", "/laneGroup") => Some(("events", "lane_group", "text")),
+        ("event", "/precision") => Some(("events", "precision", "text")),
+        ("event", "/kind") => Some(("events", "kind", "text")),
+        ("event", "/primaryCodexId") => Some(("events", "primary_codex_id", "text")),
+        ("event", "/locationCodexId") => Some(("events", "location_codex_id", "text")),
+        ("event", "/revealSceneId") => Some(("events", "reveal_scene_id", "text")),
+        ("event", "/startTime") => Some(("events", "start_time", "present")),
+        ("event", "/endTime") => Some(("events", "end_time", "present")),
+        ("event", "/startMinute") => Some(("events", "start_minute", "present")),
+        ("event", "/endMinute") => Some(("events", "end_minute", "present")),
+        ("event", "/startGranularity") => {
+            Some(("events", "start_granularity", "text"))
+        }
+        ("event", "/endGranularity") => Some(("events", "end_granularity", "text")),
+        ("event", "/secret") => Some(("events", "secret", "boolean")),
+        ("foreshadow", "/title") => Some(("foreshadows", "title", "text")),
+        ("foreshadow", "/intent") => Some(("foreshadows", "intent", "text")),
+        ("foreshadow", "/notes") => Some(("foreshadows", "notes", "text")),
+        ("foreshadow", "/loadBearing") => Some(("foreshadows", "load_bearing", "text")),
+        ("foreshadow", "/payoffSceneId") => {
+            Some(("foreshadows", "payoff_scene_id", "text"))
+        }
+        ("foreshadow", "/payoffFromPos") => {
+            Some(("foreshadows", "payoff_from_pos", "present"))
+        }
+        ("foreshadow", "/payoffToPos") => {
+            Some(("foreshadows", "payoff_to_pos", "present"))
+        }
+        ("foreshadow", "/payoffConfirmed") => {
+            Some(("foreshadows", "payoff_confirmed", "boolean"))
+        }
+        ("foreshadow", "/abandoned") => Some(("foreshadows", "abandoned", "boolean")),
+        ("foreshadow", "/secret") => Some(("foreshadows", "secret", "boolean")),
+        // Tree nodes predate Field Authority rows. An existing row is the
+        // legacy human snapshot, including NULL-valued fields such as a
+        // root's parentId or an empty synopsis, so presence of the node—not
+        // presence of one column value—is the fail-closed signal.
+        ("tree_node" | "scene", "/parentId") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/nodeType") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/title") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/sortOrder") => Some(("tree_nodes", "id", "row")),
+        ("tree_node" | "scene", "/synopsis") => Some(("tree_nodes", "id", "row")),
+        ("scene", "/startTime") => Some(("tree_nodes", "chronicle_start_time", "text")),
+        _ => None,
+    };
+    let Some((table, column, value_kind)) = legacy_field else {
         return Ok(false);
+    };
+    let predicate = match value_kind {
+        "boolean" => format!("CAST({column} AS INTEGER) != 0"),
+        "present" => format!("{column} IS NOT NULL"),
+        "row" => format!("{column} IS NOT NULL"),
+        _ => format!("NULLIF(TRIM(CAST({column} AS TEXT)), '') IS NOT NULL"),
     };
     let sql = format!(
         "SELECT EXISTS(
-             SELECT 1 FROM {} WHERE id = ?1 AND project_id = ?2
-               AND NULLIF(TRIM(CAST({column} AS TEXT)), '') IS NOT NULL
+             SELECT 1 FROM {table} WHERE id = ?1 AND project_id = ?2
+               AND {predicate}
          )",
-        match entity_kind {
-            "codex-entry" => "codex_entries",
-            "event" => "events",
-            "scene" => "tree_nodes",
-            _ => return Ok(false),
-        }
     );
     Ok(conn.query_row(&sql, params![entity_id, project_id], |row| row.get(0))?)
 }

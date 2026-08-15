@@ -536,11 +536,23 @@ async function prepareCodexContextEntry(harness) {
         `project '${projectId}' is missing its canonical character type`,
       );
     }
-    await harness.invokeOk(prepared.page, "agent_codex_create", {
+    await harness.invokeOk(prepared.page, "codex_create", {
       payload: {
         requestId: `product-codex-create-${entryId}`,
         eventUid: `product-codex-create-event:${entryId}`,
         origin: "human",
+        authorityRoute: "human-direct",
+        caller: "manual-wrapper",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
         originalTransactionId: null,
         undoJournalId: null,
         entryId,
@@ -1916,7 +1928,7 @@ async function runCrossFeatureAuthoringJourney(harness) {
 /**
  * The isolated native module owns these typed production boundaries and their
  * restart evidence:
- * - agent_chronicle_bulk_mutate -> chronicle-native-roundtrip-restored
+ * - chronicle_bulk_mutate -> chronicle-native-roundtrip-restored
  * - lint_term_dictionary_insert / lint_term_dictionary_list
  *   -> lint-native-roundtrip-restored
  * - map_write_bundle -> map-native-roundtrip-restored

@@ -155,7 +155,7 @@ export async function createDefinition(
   },
   opts?: { writeContext?: CanonicalWriteContext },
 ): Promise<CodexDetailDefinition> {
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "detail.definition.create",
       projectId: data.projectId,
@@ -194,7 +194,7 @@ export async function updateDefinition(
   const current = await getDefinition(id);
   if (!current) return undefined;
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "detail.definition.update",
         projectId: current.projectId,
@@ -217,7 +217,7 @@ export async function updateDefinition(
 export async function deleteDefinition(id: string): Promise<void> {
   const definition = await getDefinition(id);
   if (!definition) return;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "detail.definition.delete",
       projectId: definition.projectId,
@@ -309,7 +309,7 @@ export async function upsertValue(
       .where(eq(codexEntries.id, entryId))
       .limit(1);
     if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "detail.value.upsert",
         projectId: entry[0].projectId,
@@ -344,7 +344,7 @@ export async function upsertValue(
     .limit(1);
   if (!entry[0]) throw new Error(`Codex entry '${entryId}' not found`);
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "detail.value.upsert",
         projectId: entry[0].projectId,

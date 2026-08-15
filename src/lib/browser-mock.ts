@@ -20435,10 +20435,16 @@ export async function createBrowserMock(
       "originalTransactionId",
       command,
     );
+    const undoJournalId = Object.hasOwn(payload, "undoJournalId")
+      ? browserCanonicalNullableIdentity(payload, "undoJournalId", command)
+      : null;
     const replaysHistory = origin === "undo" || origin === "redo";
-    if (replaysHistory !== (originalTransactionId !== null)) {
+    if (
+      replaysHistory !== (originalTransactionId !== null) ||
+      (!replaysHistory && undoJournalId !== null)
+    ) {
       throw new Error(
-        `${command}: undo/redo requires originalTransactionId and forward writes forbid it`,
+        `${command}: undo/redo requires originalTransactionId and forward writes forbid undoJournalId`,
       );
     }
     return {
@@ -20448,7 +20454,7 @@ export async function createBrowserMock(
       eventUid,
       origin: origin as BrowserCanonicalWriteOrigin,
       originalTransactionId,
-      undoJournalId: null,
+      undoJournalId,
     };
   }
 
@@ -20976,11 +20982,33 @@ export async function createBrowserMock(
         if (!afterState) {
           throw new Error(`foreshadow aggregate not found after update: ${id}`);
         }
+        const undoJournalId = identity.undoJournalId ?? identity.requestId;
+        if (identity.origin !== "undo" && identity.origin !== "redo") {
+          db.run(
+            `INSERT INTO undo_journal
+              (id, project_id, surface, entity_kind, entity_id, op_kind,
+               before_json, after_json, base_version, result_version,
+               change_event_uid, created_at)
+             VALUES (?, ?, ?, 'foreshadow', ?, 'update', ?, ?, ?, ?, ?, ?)`,
+            [
+              undoJournalId,
+              identity.projectId,
+              identity.origin === "ai-apply" ? "in-app-agent" : "manual",
+              id,
+              JSON.stringify(beforeState),
+              JSON.stringify(afterState),
+              baseVersion,
+              baseVersion + 1,
+              identity.eventUid,
+              now,
+            ],
+          );
+        }
         const maintenanceTransactionId = insertBrowserNarrativeChange({
           preparedEvent,
           identity,
           requestHash,
-          undoJournalId: null,
+          undoJournalId,
           typedInverseEntity: { domain: "foreshadow", entityId: id },
           occurredAt: now,
           events: [
@@ -21002,6 +21030,7 @@ export async function createBrowserMock(
           ...after,
           changeEventUid: identity.eventUid,
           maintenanceTransactionId,
+          undoJournalId,
         };
         insertBrowserCanonicalWriteReceipt({
           domain: command,
@@ -26567,7 +26596,7 @@ export async function createBrowserMock(
     const identity = browserCanonicalWriteIdentity(
       {
         ...payload,
-        origin: "human",
+        origin: "restore",
         originalTransactionId: null,
         undoJournalId: null,
       },
@@ -26673,6 +26702,15 @@ export async function createBrowserMock(
               projectId: identity.projectId,
               snippetScenesFixed,
               snippetSourcesFixed,
+              authorityRoute: "restore-or-migration",
+              authorityCaller: "integrity-repair",
+              authorityEvidence: {
+                validated: true,
+                status: "validated",
+                authorityRoute: "restore-or-migration",
+                caller: "integrity-repair",
+                origin: "restore",
+              },
             }),
             sessionId: identity.sessionId,
             timestamp,
@@ -26867,34 +26905,47 @@ export async function createBrowserMock(
         return undefined as T;
       }
       case "agent_codex_create":
+      case "codex_create":
         return handleAgentCodexCreate(args) as T;
       case "agent_codex_update":
+      case "codex_update":
         return handleAgentCodexUpdate(args) as T;
       case "agent_codex_delete":
+      case "codex_delete":
         return handleAgentCodexDelete(args) as T;
       case "agent_codex_mutate":
+      case "codex_mutate":
         return handleAgentCodexMutate(args) as T;
       case "agent_foreshadow_create":
         return (await handleAgentForeshadowCreate(args)) as T;
       case "agent_foreshadow_update":
         return (await handleAgentForeshadowUpdate(args)) as T;
       case "agent_event_create":
+      case "event_create":
         return (await handleAgentEventCreate(args)) as T;
       case "agent_event_update":
+      case "event_update":
         return (await handleAgentEventUpdate(args)) as T;
       case "agent_event_delete":
+      case "event_delete":
         return (await handleAgentEventDelete(args)) as T;
       case "agent_event_set_participants":
+      case "event_participants_set":
         return (await handleAgentEventSetParticipants(args)) as T;
       case "agent_scene_event_link":
+      case "scene_event_link":
         return (await handleAgentSceneEventMutation(args, true)) as T;
       case "agent_scene_event_link_batch":
+      case "scene_event_link_batch":
         return (await handleAgentSceneEventLinkBatch(args)) as T;
       case "agent_scene_event_unlink":
+      case "scene_event_unlink":
         return (await handleAgentSceneEventMutation(args, false)) as T;
       case "agent_event_relation_add":
+      case "event_relation_add":
         return (await handleAgentEventRelationMutation(args, true)) as T;
       case "agent_event_relation_remove":
+      case "event_relation_remove":
         return (await handleAgentEventRelationMutation(args, false)) as T;
       case "agent_apply_undo_journal":
         return handleBrowserApplyUndoJournal(args) as T;

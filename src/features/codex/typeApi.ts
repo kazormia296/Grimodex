@@ -102,7 +102,9 @@ export function builtinLabelRelabel(
 export async function ensureBuiltinTypes(
   projectId: string,
   lang?: string | null,
-  options: { origin?: CanonicalWriteOrigin } = {},
+  options: {
+    origin?: Exclude<CanonicalWriteOrigin, "ai-apply">;
+  } = {},
 ): Promise<void> {
   const builtinTypes = builtinTypesForLang(lang);
   const existing = await db
@@ -115,7 +117,7 @@ export async function ensureBuiltinTypes(
 
   for (const bt of builtinTypes) {
     if (!existingSlugs.has(bt.slug)) {
-      await invoke("agent_codex_mutate", {
+      await invoke("codex_mutate", {
         payload: {
           operation: "type.create",
           projectId,
@@ -146,7 +148,7 @@ export async function ensureBuiltinTypes(
           if (relabel !== null) updates.label = relabel;
         }
         if (Object.keys(updates).length > 0) {
-          await invoke("agent_codex_mutate", {
+          await invoke("codex_mutate", {
             payload: {
               operation: "type.update",
               projectId,
@@ -208,7 +210,7 @@ export async function createCodexType(
       ? data.paletteIndex
       : await getNextPaletteIndex(data.projectId);
   const typeId = data.id ?? crypto.randomUUID();
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "type.create",
       projectId: data.projectId,
@@ -245,7 +247,7 @@ export async function updateCodexType(
     .from(codexTypes)
     .where(eq(codexTypes.id, id));
   if (!current[0]) return undefined;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "type.update",
       projectId: current[0].projectId,
@@ -278,7 +280,7 @@ export async function deleteCodexType(
     .from(codexTypes)
     .where(eq(codexTypes.id, id));
   if (!current[0]) return;
-  await invoke("agent_codex_mutate", {
+  await invoke("codex_mutate", {
     payload: {
       operation: "type.delete",
       projectId: current[0].projectId,

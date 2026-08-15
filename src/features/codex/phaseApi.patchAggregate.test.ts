@@ -78,7 +78,7 @@ describe("patchPhaseAggregate", () => {
 
     expect(limitMock).toHaveBeenCalledWith(1);
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("agent_codex_mutate", {
+    expect(invokeMock).toHaveBeenCalledWith("codex_mutate", {
       payload: expect.objectContaining({
         operation: "phase.aggregate",
         projectId: "project-1",

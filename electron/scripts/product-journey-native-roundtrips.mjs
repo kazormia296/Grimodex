@@ -132,10 +132,27 @@ function chronicleJourney(configureWorkspace, log) {
         log,
         write: async ({ harness: current, page, projectId }) => {
           const eventId = `native-event-${randomUUID()}`;
+          const eventUid = `native-chronicle-event-${randomUUID()}`;
           const requestId = `native-chronicle-${randomUUID()}`;
-          const created = await current.invokeOk(page, "agent_event_create", {
+          const created = await current.invokeOk(page, "event_create", {
             payload: {
               requestId: `native-create-request-${randomUUID()}`,
+              eventUid,
+              origin: "human",
+              authorityRoute: "human-direct",
+              caller: "manual-wrapper",
+              controls: [
+                "runtime-policy",
+                "actor-context",
+                "typed-writer",
+                "occ",
+                "change-event",
+                "change-feed",
+              ],
+              provenance: null,
+              writesAuthorityProtectedField: false,
+              originalTransactionId: null,
+              undoJournalId: null,
               eventId,
               projectId,
               sessionId: `native-create-session-${randomUUID()}`,
@@ -157,10 +174,26 @@ function chronicleJourney(configureWorkspace, log) {
           }
           const result = await current.invokeOk(
             page,
-            "agent_chronicle_bulk_mutate",
+            "chronicle_bulk_mutate",
             {
               payload: {
                 requestId,
+                eventUid: `native-chronicle-bulk-event-${randomUUID()}`,
+                origin: "human",
+                authorityRoute: "human-direct",
+                caller: "manual-wrapper",
+                controls: [
+                  "runtime-policy",
+                  "actor-context",
+                  "typed-writer",
+                  "occ",
+                  "change-event",
+                  "change-feed",
+                ],
+                provenance: null,
+                writesAuthorityProtectedField: false,
+                originalTransactionId: null,
+                undoJournalId: null,
                 projectId,
                 sessionId: `native-session-${randomUUID()}`,
                 surface: "manual",

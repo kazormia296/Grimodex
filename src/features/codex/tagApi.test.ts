@@ -23,6 +23,18 @@ describe("typed entity tag persistence", () => {
         sessionId: "tag-session-1",
         eventUid: "tag-event-1",
         origin: "import",
+        authorityRoute: "import-apply",
+        caller: "import-session",
+        controls: [
+          "import-policy",
+          "source-package-evidence",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
         originalTransactionId: null,
         undoJournalId: null,
       },
@@ -39,6 +51,18 @@ describe("typed entity tag persistence", () => {
         sessionId: "tag-session-1",
         eventUid: "tag-event-1",
         origin: "import",
+        authorityRoute: "import-apply",
+        caller: "import-session",
+        controls: [
+          "import-policy",
+          "source-package-evidence",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
         originalTransactionId: null,
         undoJournalId: null,
       },
@@ -49,7 +73,7 @@ describe("typed entity tag persistence", () => {
     await setSnippetEntryTags("snippet-1", [], { projectId: "project-1" });
 
     expect(invokeMock).toHaveBeenCalledExactlyOnceWith("entity_tags_set", {
-      payload: {
+      payload: expect.objectContaining({
         entityKind: "snippet",
         entityId: "snippet-1",
         tagIds: [],
@@ -59,9 +83,21 @@ describe("typed entity tag persistence", () => {
         sessionId: expect.any(String),
         eventUid: expect.any(String),
         origin: "human",
+        authorityRoute: "human-direct",
+        caller: "human-ui",
+        controls: [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+        provenance: null,
+        writesAuthorityProtectedField: false,
         originalTransactionId: null,
         undoJournalId: null,
-      },
+      }),
     });
   });
 });

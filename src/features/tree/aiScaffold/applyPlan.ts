@@ -19,6 +19,7 @@ import { validateAiTreePlan, type ValidationError } from "./validate";
 import { assignNodePlacements } from "./placement";
 import type { AiTreePlan, ApplyContext, ApplyResult } from "./types";
 import { runTreeTopologyMutation } from "@/application/tree/treeTopologyMutationRegistry";
+import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 
 export class AiTreePlanError extends Error {
   constructor(public readonly errors: ValidationError[]) {
@@ -52,6 +53,7 @@ function initialTreePlanSignature(plan: AiTreePlan, ctx: ApplyContext): string {
     plan,
     model: ctx.model,
     traceId: ctx.traceId,
+    requestId: ctx.requestId,
     scope: {
       allowedOps: [...ctx.scope.allowedOps].sort(),
       rootRef: ctx.scope.rootRef,
@@ -194,7 +196,7 @@ async function applyAiTreePlanWithAuthority(
     initialSignature,
     initialSignature,
     (requestId) => ({
-      requestId,
+      requestId: ctx.requestId ?? requestId,
       updatedAt: new Date().toISOString(),
       createdIds: [...v.tempIds].map((tempId) => [tempId, crypto.randomUUID()]),
     }),
@@ -226,6 +228,7 @@ async function applyAiTreePlanWithAuthority(
       throw new Error("AI tree plan placement disappeared after validation");
     }
     return {
+      tempId: create.tempId,
       id,
       parentId: placement.parentId,
       nodeType: create.nodeType,
@@ -300,10 +303,66 @@ async function applyAiTreePlanWithAuthority(
       traceId: ctx.traceId,
       creates,
       updates,
+      ops: plan.ops,
       redo: false,
       originalTransactionId: null,
       undoJournalId: null,
     };
+    const requestId =
+      typeof payload.requestId === "string"
+        ? payload.requestId
+        : initialRequest.payload.requestId;
+    const authorityContext = redo
+      ? createCanonicalWriteContext(
+          "redo",
+          {
+            originalTransactionId: originalMaintenanceTransactionId!,
+            undoJournalId: originalUndoJournalId!,
+          },
+          requestId,
+        )
+      : createCanonicalWriteContext("ai-apply", undefined, requestId, {
+          authorityRoute: "interactive-agent-command",
+          provenance: {
+            requestId,
+            traceId: ctx.traceId ?? requestId,
+          },
+          ...(ctx.agentAuthorityCapability
+            ? { agentAuthorityCapability: ctx.agentAuthorityCapability }
+            : {}),
+          ...(ctx.chatMessageId ? { chatMessageId: ctx.chatMessageId } : {}),
+          ...(ctx.toolCallId ? { toolCallId: ctx.toolCallId } : {}),
+          ...(ctx.executionId ? { executionId: ctx.executionId } : {}),
+          ...(ctx.mainOwnedProvenanceId
+            ? { mainOwnedProvenanceId: ctx.mainOwnedProvenanceId }
+            : {}),
+        });
+    Object.assign(payload, {
+      eventUid: authorityContext.eventUid,
+      authorityRoute: authorityContext.authorityRoute,
+      caller: authorityContext.caller,
+      controls: authorityContext.controls,
+      provenance: authorityContext.provenance,
+      ...(authorityContext.agentAuthorityCapability
+        ? {
+            agentAuthorityCapability: authorityContext.agentAuthorityCapability,
+          }
+        : {}),
+      ...(authorityContext.chatMessageId
+        ? { chatMessageId: authorityContext.chatMessageId }
+        : {}),
+      ...(authorityContext.toolCallId
+        ? { toolCallId: authorityContext.toolCallId }
+        : {}),
+      ...(authorityContext.executionId
+        ? { executionId: authorityContext.executionId }
+        : {}),
+      ...(authorityContext.mainOwnedProvenanceId
+        ? { mainOwnedProvenanceId: authorityContext.mainOwnedProvenanceId }
+        : {}),
+      writesAuthorityProtectedField:
+        authorityContext.writesAuthorityProtectedField,
+    });
     let nativeResponseReceived = false;
     try {
       const rawReceipt = await invoke("ai_tree_plan_apply", { payload });
@@ -343,15 +402,32 @@ async function applyAiTreePlanWithAuthority(
       }
       return { id, version };
     });
-    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => ({
-      requestId,
-      projectId: ctx.projectId,
-      sessionId: getRecorderSessionId(),
-      updatedAt: new Date().toISOString(),
-      originalTransactionId: originalMaintenanceTransactionId,
-      undoJournalId: originalUndoJournalId,
-      expectedVersions,
-    }));
+    const undoRequest = undoRequests.acquire("undo", "undo", (requestId) => {
+      const authorityContext = createCanonicalWriteContext(
+        "undo",
+        {
+          originalTransactionId: originalMaintenanceTransactionId!,
+          undoJournalId: originalUndoJournalId!,
+        },
+        requestId,
+      );
+      return {
+        requestId,
+        eventUid: authorityContext.eventUid,
+        projectId: ctx.projectId,
+        sessionId: getRecorderSessionId(),
+        updatedAt: new Date().toISOString(),
+        originalTransactionId: originalMaintenanceTransactionId,
+        undoJournalId: originalUndoJournalId,
+        authorityRoute: authorityContext.authorityRoute,
+        caller: authorityContext.caller,
+        controls: authorityContext.controls,
+        provenance: authorityContext.provenance,
+        writesAuthorityProtectedField:
+          authorityContext.writesAuthorityProtectedField,
+        expectedVersions,
+      };
+    });
     let nativeResponseReceived = false;
     try {
       const rawReceipt = await invoke("ai_tree_plan_undo", {

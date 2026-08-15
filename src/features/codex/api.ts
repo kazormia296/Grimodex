@@ -244,7 +244,7 @@ export async function createCodexEntry(
   },
 ): Promise<CodexEntryWriteResult> {
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-  const result = await invoke<NativeCodexWriteResult>("agent_codex_create", {
+  const result = await invoke<NativeCodexWriteResult>("codex_create", {
     payload: {
       ...writeContext,
       canonicalPayload: {
@@ -371,7 +371,7 @@ export async function updateCodexEntry(
   const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
   let result: NativeCodexWriteResult;
   try {
-    result = await invoke<NativeCodexWriteResult>("agent_codex_update", {
+    result = await invoke<NativeCodexWriteResult>("codex_update", {
       payload: {
         ...writeContext,
         canonicalPayload: codexUpdateCanonicalPayload(current, data),
@@ -476,7 +476,7 @@ export async function deleteCodexEntry(
     const baseVersion = opts?.baseVersion ?? existing?.version;
     if (baseVersion === undefined) return undefined;
     const writeContext = opts?.writeContext ?? createCanonicalWriteContext();
-    const result = await invoke<NativeCodexWriteResult>("agent_codex_delete", {
+    const result = await invoke<NativeCodexWriteResult>("codex_delete", {
       payload: {
         ...writeContext,
         canonicalPayload: {

@@ -45,6 +45,13 @@ export interface TrackedWriteOpts {
   skipPolicyGate?: boolean;
   /** 明示 project スコープ。 */
   projectId?: string;
+  /** Main-issued capability for the exact interactive agent tool call. */
+  agentAuthorityCapability?: string;
+  /** Persisted assistant message and model tool-call identities. */
+  chatMessageId?: string;
+  toolCallId?: string;
+  executionId?: string;
+  mainOwnedProvenanceId?: string;
 }
 
 export interface AgentCodexUpdateInput {
@@ -79,12 +86,46 @@ interface AgentWriteResult {
 function agentCodexWriteContext(
   surface: string | undefined,
   requestId?: string,
+  provenance?: {
+    traceId?: string | null;
+    chatMessageId?: string | null;
+    toolCallId?: string | null;
+  },
+  authority?: Pick<
+    TrackedWriteOpts,
+    | "agentAuthorityCapability"
+    | "chatMessageId"
+    | "toolCallId"
+    | "executionId"
+    | "mainOwnedProvenanceId"
+  >,
 ) {
-  return createCanonicalWriteContext(
-    surface === "manual" ? "human" : "ai-apply",
-    undefined,
-    requestId,
-  );
+  const stableRequestId = requestId ?? crypto.randomUUID();
+  if (surface === "manual") {
+    return createCanonicalWriteContext("human", undefined, stableRequestId);
+  }
+  return createCanonicalWriteContext("ai-apply", undefined, stableRequestId, {
+    authorityRoute: "interactive-agent-command",
+    provenance: {
+      requestId: stableRequestId,
+      traceId: provenance?.traceId ?? stableRequestId,
+      ...(provenance?.chatMessageId
+        ? { chatMessageId: provenance.chatMessageId }
+        : {}),
+      ...(provenance?.toolCallId ? { toolCallId: provenance.toolCallId } : {}),
+    },
+    ...(authority?.agentAuthorityCapability
+      ? { agentAuthorityCapability: authority.agentAuthorityCapability }
+      : {}),
+    ...(authority?.chatMessageId
+      ? { chatMessageId: authority.chatMessageId }
+      : {}),
+    ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+    ...(authority?.executionId ? { executionId: authority.executionId } : {}),
+    ...(authority?.mainOwnedProvenanceId
+      ? { mainOwnedProvenanceId: authority.mainOwnedProvenanceId }
+      : {}),
+  });
 }
 
 function buildCodexAuthorshipSpans(
@@ -179,6 +220,12 @@ export async function agentCreateCodexEntry(
   const writeContext = agentCodexWriteContext(
     writeOpts?.surface,
     input.requestId,
+    {
+      traceId: input.traceId ?? chatMessageId,
+      chatMessageId,
+      toolCallId: writeOpts?.toolCallId,
+    },
+    writeOpts,
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_create", {
@@ -291,8 +338,14 @@ export async function agentUpdateCodexEntry(
         )
       : undefined;
   const writeContext = agentCodexWriteContext(
-    options?.writeOpts?.surface,
+    options?.restoreHuman ? "manual" : options?.writeOpts?.surface,
     input.requestId,
+    {
+      traceId: input.traceId ?? chatMessageId,
+      chatMessageId,
+      toolCallId: options?.writeOpts?.toolCallId,
+    },
+    options?.writeOpts,
   );
 
   const result = await invoke<AgentWriteResult>("agent_codex_update", {

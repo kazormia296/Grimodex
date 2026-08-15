@@ -38,6 +38,9 @@ pub struct TrackedForeshadowCreateInput<'a> {
     /// Hash of the normalized client create request. When present, the
     /// persisted create journal becomes a durable idempotency record.
     pub request_hash: Option<&'a str>,
+    /// Renderer canonical event identity. Legacy/MCP callers leave this
+    /// unset and retain UUID allocation inside the core writer.
+    pub event_uid: Option<&'a str>,
 }
 
 /// Only `Some` fields are written (same contract as the raw dynamic-SET
@@ -59,6 +62,9 @@ pub struct TrackedForeshadowUpdateInput<'a> {
     pub surface: &'a str,
     pub foreshadow_id: &'a str,
     pub patch: ForeshadowPatch<'a>,
+    /// Renderer canonical event identity. Legacy/MCP callers leave this
+    /// unset and retain UUID allocation inside the core writer.
+    pub event_uid: Option<&'a str>,
 }
 
 /// Full-row snapshot for undo_journal (camelCase keys, like codex/snippet).
@@ -299,7 +305,10 @@ where
         .request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = input
+        .event_uid
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().timestamp_millis();
 
     let mut change_payload = json!({
@@ -481,16 +490,47 @@ pub fn tracked_foreshadow_update_at_version_with_request_in_tx_hook<F>(
 where
     F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
 {
+    tracked_foreshadow_update_at_version_with_request_in_tx_hooks(
+        conn,
+        input,
+        base_version,
+        request_id,
+        request_hash,
+        |_| Ok(()),
+        append_change_in_tx,
+    )
+}
+
+/// Request-aware OCC variant with an explicit before-mutation hook.
+///
+/// The hook runs after the project/version snapshot has been read but before
+/// the foreshadow row is updated. Database authority code uses this point to
+/// reject legacy human values and register the AI ownership decision in the
+/// same transaction as the domain mutation.
+pub fn tracked_foreshadow_update_at_version_with_request_in_tx_hooks<B, F>(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    base_version: i64,
+    request_id: &str,
+    request_hash: &str,
+    before_change_in_tx: B,
+    append_change_in_tx: F,
+) -> anyhow::Result<Option<WriteResult>>
+where
+    B: FnOnce(&Connection) -> anyhow::Result<()>,
+    F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
+{
     anyhow::ensure!(
         base_version >= 0,
         "foreshadow baseVersion must be non-negative"
     );
-    tracked_foreshadow_update_impl(
+    tracked_foreshadow_update_impl_with_before(
         conn,
         input,
         Some(base_version),
         Some(request_id),
         Some(request_hash),
+        before_change_in_tx,
         append_change_in_tx,
     )
 }
@@ -506,10 +546,37 @@ fn tracked_foreshadow_update_impl<F>(
 where
     F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
 {
+    tracked_foreshadow_update_impl_with_before(
+        conn,
+        input,
+        caller_base_version,
+        request_id,
+        request_hash,
+        |_| Ok(()),
+        append_change_in_tx,
+    )
+}
+
+fn tracked_foreshadow_update_impl_with_before<B, F>(
+    conn: &Connection,
+    input: TrackedForeshadowUpdateInput<'_>,
+    caller_base_version: Option<i64>,
+    request_id: Option<&str>,
+    request_hash: Option<&str>,
+    before_change_in_tx: B,
+    append_change_in_tx: F,
+) -> anyhow::Result<Option<WriteResult>>
+where
+    B: FnOnce(&Connection) -> anyhow::Result<()>,
+    F: FnOnce(&Connection, &AppendChangeEvent, &str) -> anyhow::Result<()>,
+{
     let undo_id = request_id
         .map(str::to_string)
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = input
+        .event_uid
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let now = chrono::Utc::now().timestamp_millis();
 
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -542,6 +609,8 @@ where
         let expected_result_version = base_version
             .checked_add(1)
             .ok_or_else(|| anyhow::anyhow!("foreshadow version overflow during tracked update"))?;
+
+        before_change_in_tx(conn)?;
 
         let p = &input.patch;
         let mut fields: Vec<&str> = Vec::new();
@@ -755,6 +824,7 @@ mod tests {
             secret: false,
             request_id: None,
             request_hash: None,
+            event_uid: None,
         }
     }
 
@@ -942,6 +1012,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     load_bearing: Some("supporting"),
@@ -1022,6 +1093,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "ghost",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("X"),
                     ..Default::default()
@@ -1046,6 +1118,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("hijacked"),
                     ..Default::default()
@@ -1077,6 +1150,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch::default(),
             },
         );
@@ -1152,6 +1226,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     abandoned: Some(true),
@@ -1215,6 +1290,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Renamed"),
                     ..Default::default()
@@ -1252,6 +1328,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("First"),
                     ..Default::default()
@@ -1267,6 +1344,7 @@ mod tests {
                 session_id: "sess",
                 surface: "test",
                 foreshadow_id: "f1",
+                event_uid: None,
                 patch: ForeshadowPatch {
                     title: Some("Second"),
                     ..Default::default()

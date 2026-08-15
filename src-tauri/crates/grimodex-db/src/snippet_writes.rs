@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::change_events::AppendChangeEvent;
+use crate::agent_writes::{
+    canonical_payload_with_authority_context, validate_renderer_authority_context,
+    RendererCanonicalWriteContext, RendererMutationProvenance,
+};
 use crate::idempotency::{
     canonical_write_payload_fingerprint, insert_idempotent_response, load_idempotent_response,
     IdempotencyRequest,
@@ -29,6 +33,13 @@ pub struct SnippetCreatePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -56,6 +67,13 @@ pub struct SnippetUpdatePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -84,6 +102,13 @@ pub struct SnippetDeletePayload {
     pub session_id: String,
     pub event_uid: String,
     pub origin: NarrativeChangeOrigin,
+    pub authority_route: String,
+    pub caller: String,
+    pub controls: Vec<String>,
+    #[serde(default)]
+    pub provenance: Option<RendererMutationProvenance>,
+    #[serde(default)]
+    pub writes_authority_protected_field: bool,
     #[serde(default)]
     pub original_transaction_id: Option<String>,
     #[serde(default)]
@@ -113,6 +138,7 @@ trait SnippetCanonicalIdentity {
     fn original_transaction_id(&self) -> Option<&str>;
     fn undo_journal_id(&self) -> Option<&str>;
     fn project_id(&self) -> &str;
+    fn authority_context(&self) -> RendererCanonicalWriteContext;
 }
 
 macro_rules! impl_snippet_identity {
@@ -139,6 +165,26 @@ macro_rules! impl_snippet_identity {
             fn project_id(&self) -> &str {
                 &self.project_id
             }
+            fn authority_context(&self) -> RendererCanonicalWriteContext {
+                RendererCanonicalWriteContext {
+                    request_id: self.request_id.clone(),
+                    event_uid: self.event_uid.clone(),
+                    authority_session_id: None,
+                    origin: self.origin,
+                    authority_route: self.authority_route.clone(),
+                    caller: self.caller.clone(),
+                    controls: self.controls.clone(),
+                    provenance: self.provenance.clone(),
+                    writes_authority_protected_field: self.writes_authority_protected_field,
+                    original_transaction_id: self.original_transaction_id.clone(),
+                    undo_journal_id: self.undo_journal_id.clone(),
+                    context_mode: None,
+                    icon: None,
+                    children_budget: None,
+                    notes: None,
+                    canonical_payload: None,
+                }
+            }
         }
     };
 }
@@ -156,6 +202,7 @@ fn validate_identity(payload: &impl SnippetCanonicalIdentity) -> anyhow::Result<
     ] {
         anyhow::ensure!(!value.trim().is_empty(), "{name} must not be empty");
     }
+    validate_renderer_authority_context(&payload.authority_context())?;
     anyhow::ensure!(
         !matches!(
             payload.origin(),
@@ -297,6 +344,7 @@ fn append_change(
     conn: &rusqlite::Connection,
     input: AppendSnippetChange<'_>,
 ) -> anyhow::Result<String> {
+    let authority_context = input.identity.authority_context();
     let canonical = AppendChangeEvent {
         event_uid: input.identity.event_uid().to_string(),
         scene_id: input.scene_id,
@@ -304,7 +352,10 @@ fn append_change(
         op_type: input.op_type.to_string(),
         entity_type: Some("snippet".to_string()),
         entity_id: Some(input.snippet_id.to_string()),
-        payload: input.canonical_payload.to_string(),
+        payload: canonical_payload_with_authority_context(
+            &input.canonical_payload.to_string(),
+            &authority_context,
+        ),
         timestamp: input.timestamp,
     };
     let has_text_impact = input.paths.iter().any(|path| path == "/content");

@@ -66,6 +66,10 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
   AI behavior asset を作成・変更する場合は `/grimodex-author` を使用し、実在する正本と評価証跡を一緒に更新する
 - AI behavior asset の変更後、および commit／PR 前の差分評価では `/grimodex-impact-gate` を使用し、
   canonical quality workflow が選択した Light suite を読み取り専用で実行する
+- sandbox 内の tsx IPC pipe／listen EPERM で validation が起動不能になった場合は
+  `/rerun-sandbox-eperm` を使用し、同一 command を sandbox 外で一度だけ再実行して判定する
+- 通常の単一 pass レビューは `/review-code`、独立 reviewer による多次元敵対的レビューは
+  `/adversarial-review` を使用し、reviewer の model／effort／Fast の requested と effective を記録する
 - 新機能は `/implement-feature`、新規 Electron IPC command は `/add-electron-command` を優先する
 - バグ修正は `/debug-issue` を主フローとし、上記の横断条件を満たす場合は影響マトリクスも併用する
 - Electron release CI／release workflow／tag build／署名・公証／installer migration／artifact publish
@@ -91,7 +95,9 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 | 「AI指示」「システムプロンプト」「Codexスキル」「AI評価fixture」                                            | /grimodex-author           | 正本→評価証跡→差分品質ゲート           |
 | 「差分評価」「品質ゲート」「impact gate」「コミット前／PR前評価」                                           | /grimodex-impact-gate      | 差分→関連Light suite選択・実行         |
 | 「実装して」「作って」                                                                                      | /implement-feature         | 実装フロー                             |
+| 「多次元敵対的レビュー」「敵対的レビュー」「複眼レビュー」「red-team review」                               | /adversarial-review        | 独立reviewer→反証→finding統合          |
 | 「レビュー」                                                                                                | /review-code               | コードレビュー                         |
+| 「tsx IPC EPERM」「listen EPERM」「sandbox外で同じテストを再実行」                                          | /rerun-sandbox-eperm       | 証拠固定→同一commandを1回だけ再実行    |
 | 「テスト」                                                                                                  | /test-feature              | テスト作成・実行                       |
 | 「release CI失敗」「release workflow失敗」「tag build失敗」「packaging失敗」「署名」「公証」「publish失敗」 | /debug-release-ci          | run／SHA固定→対象stageだけ検証         |
 | 「デバッグ」「修正」「一般CI失敗」                                                                          | /debug-issue               | 一般デバッグフロー                     |

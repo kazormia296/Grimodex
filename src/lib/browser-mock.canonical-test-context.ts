@@ -7,7 +7,11 @@ const CANONICAL_COMMANDS = new Set([
   "agent_codex_create",
   "agent_codex_update",
   "agent_codex_delete",
+  "codex_create",
+  "codex_update",
+  "codex_delete",
   "agent_codex_mutate",
+  "codex_mutate",
   "foreshadow_create",
   "foreshadow_update",
   "foreshadow_delete",
@@ -100,6 +104,7 @@ export function withCanonicalWriterTestContext(
       typeof payload.requestId === "string" && payload.requestId.length > 0
         ? payload.requestId
         : (command === "agent_codex_create" ||
+              command === "codex_create" ||
               command === "foreshadow_create" ||
               command === "plot_thread_create" ||
               command === "plot_thread_link_create" ||

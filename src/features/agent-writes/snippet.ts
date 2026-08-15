@@ -12,6 +12,10 @@ import {
 import { markCodexContentAsAi } from "./codex";
 import { applyUndoJournal } from "./undoJournal";
 import type { Snippet } from "@/features/snippets/api";
+import {
+  createCanonicalWriteContext,
+  type CanonicalWriteAuthorityOptions,
+} from "@/features/native-writes/writeContext";
 
 export interface AgentSnippetCreateInput {
   /** Stable identity of the logical request; distinct from the created entity. */
@@ -36,6 +40,14 @@ interface AgentWriteResult {
 export async function agentCreateSnippet(
   input: AgentSnippetCreateInput,
   chatMessageId?: string | null,
+  authority?: Pick<
+    CanonicalWriteAuthorityOptions,
+    | "agentAuthorityCapability"
+    | "chatMessageId"
+    | "toolCallId"
+    | "executionId"
+    | "mainOwnedProvenanceId"
+  >,
 ): Promise<Snippet> {
   if (blockIfPolicyOff("knowledgeWrite")) {
     throw new Error("knowledgeWrite policy is off");
@@ -61,9 +73,25 @@ export async function agentCreateSnippet(
         traceId: input.traceId,
       })
     : [];
+  const authorityContext = createCanonicalWriteContext(
+    "ai-apply",
+    undefined,
+    input.requestId,
+    {
+      authorityRoute: "interactive-agent-command",
+      provenance: {
+        requestId: input.requestId,
+        traceId: input.traceId ?? chatMessageId ?? input.requestId,
+        ...(chatMessageId ? { chatMessageId } : {}),
+        ...(authority?.toolCallId ? { toolCallId: authority.toolCallId } : {}),
+      },
+      ...authority,
+    },
+  );
 
   const result = await invoke<AgentWriteResult>("agent_snippet_create", {
     payload: {
+      ...authorityContext,
       requestId: input.requestId,
       snippetId,
       projectId,

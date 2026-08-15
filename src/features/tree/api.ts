@@ -438,7 +438,14 @@ async function patchTreeNodeNative(
       : undefined;
   let canonicalContext: CanonicalWriteContext;
   if (legacyRestoreContext) {
+    const authorityContext = createCanonicalWriteContext(
+      "restore",
+      undefined,
+      legacyRestoreContext.requestId,
+      { caller: "restore-controller" },
+    );
     canonicalContext = {
+      ...authorityContext,
       requestId: legacyRestoreContext.requestId,
       sessionId: legacyRestoreContext.sessionId,
       eventUid: legacyRestoreContext.eventUid,

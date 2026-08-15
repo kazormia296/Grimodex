@@ -226,6 +226,111 @@ describe("validate-change-feed-writers", () => {
     );
   });
 
+  it("rejects verified coverage without a runtime evidence bundle", () => {
+    const root = writeFixture([
+      fixtureOperation({ coverageStatus: "verified" }),
+    ]);
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("verified coverage requires a schemaVersion 1 runtimeEvidence bundle"),
+      ),
+    );
+  });
+
+  it("rejects an MCP authority contract that points at a non-test source file", () => {
+    const root = writeFixture([
+      fixtureOperation({
+        routes: [
+          {
+            surface: "mcp-tool",
+            name: "fixture_write",
+            module: "src-tauri/crates/fixture/src/writer.rs",
+          },
+        ],
+        controls: ["field-authority"],
+      }),
+    ]);
+    const manifestPath = path.join(
+      root,
+      "policies/narrative/change-feed-writers.json",
+    );
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.mcpAuthorityContract = {
+      schemaVersion: 1,
+      fieldAuthority: "native-transactional-preflight",
+      coverageStatus: "verified",
+      executionSurface: "mcp-tool-native",
+      runtimeTestCommand: "cargo test --manifest-path fixture/Cargo.toml",
+      evidenceTests: [
+        {
+          file: "src-tauri/crates/fixture/src/writer.rs",
+          symbols: ["fixture_writer"],
+        },
+      ],
+      operationEvidence: [
+        { operationId: "fixture.write", symbols: ["fixture_writer"] },
+      ],
+    };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("must contain executable test declarations"),
+      ),
+    );
+  });
+
+  it("does not treat a helper after a Rust test as the test symbol", () => {
+    const root = writeFixture([
+      fixtureOperation({
+        routes: [
+          {
+            surface: "mcp-tool",
+            name: "fixture_write",
+            module: "src-tauri/crates/fixture/src/writer.rs",
+          },
+        ],
+        controls: ["field-authority"],
+      }),
+    ]);
+    writeFileSync(
+      path.join(root, "src-tauri/crates/fixture/src/writer.rs"),
+      "#[test]\nfn real_test() {}\nfn claimed_helper() {}\n",
+    );
+    const manifestPath = path.join(
+      root,
+      "policies/narrative/change-feed-writers.json",
+    );
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    manifest.mcpAuthorityContract = {
+      schemaVersion: 1,
+      fieldAuthority: "native-transactional-preflight",
+      coverageStatus: "verified",
+      executionSurface: "mcp-tool-native",
+      runtimeTestCommand:
+        "cargo test --manifest-path fixture/Cargo.toml -p grimodex-db -p grimodex-mcp",
+      evidenceTests: [
+        {
+          file: "src-tauri/crates/fixture/src/writer.rs",
+          symbols: ["claimed_helper"],
+        },
+      ],
+      operationEvidence: [
+        { operationId: "fixture.write", symbols: ["claimed_helper"] },
+      ],
+    };
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    const result = validateFixture(root);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("is not an executable test"),
+      ),
+    );
+  });
+
   it("rejects required operations without the complete transaction identity contract", () => {
     const root = writeFixture([
       fixtureOperation({ requiredIdentities: ["projectId", "requestId"] }),

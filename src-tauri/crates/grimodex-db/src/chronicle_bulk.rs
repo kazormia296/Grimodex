@@ -18,8 +18,10 @@ use grimodex_core::chronicle_time::{
 
 use crate::agent_writes::{
     apply_event_snapshot, chronicle_event_transition_input, collect_event_snapshot,
-    delete_event_cascade,
+    delete_event_cascade, validate_renderer_chronicle_context,
+    RendererCanonicalWriteContext,
 };
+use crate::agent_writes::canonical_payload_with_authority_context;
 use crate::canonical_feed_snapshots::canonical_scene_snapshot;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::idempotency::{
@@ -1302,8 +1304,19 @@ pub fn agent_chronicle_bulk_mutate_impl(
     db: &Database,
     payload: AgentChronicleBulkPayload,
 ) -> anyhow::Result<Value> {
+    agent_chronicle_bulk_mutate_with_authority_impl(db, payload, None)
+}
+
+pub fn agent_chronicle_bulk_mutate_with_authority_impl(
+    db: &Database,
+    payload: AgentChronicleBulkPayload,
+    renderer_context: Option<RendererCanonicalWriteContext>,
+) -> anyhow::Result<Value> {
     if payload.request_id.is_empty() {
         anyhow::bail!("chronicle bulk requestId must not be empty");
+    }
+    if let Some(context) = renderer_context.as_ref() {
+        validate_renderer_chronicle_context(&payload.request_id, context)?;
     }
     if payload.operations.is_empty() {
         anyhow::bail!("chronicle bulk operations must not be empty");
@@ -1323,7 +1336,10 @@ pub fn agent_chronicle_bulk_mutate_impl(
         conflict_marker: "CHRONICLE_BULK_IDEMPOTENCY_CONFLICT",
     };
     let undo_id = uuid::Uuid::new_v4().to_string();
-    let event_uid = uuid::Uuid::new_v4().to_string();
+    let event_uid = renderer_context
+        .as_ref()
+        .map(|context| context.event_uid.clone())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let timestamp = chrono::Utc::now().timestamp_millis();
 
     db.with_conn(|conn| {
@@ -1776,6 +1792,11 @@ pub fn agent_chronicle_bulk_mutate_impl(
 
             let mut change_payload = bulk_change_target_metadata(&before);
             change_payload["operations"] = serde_json::to_value(&payload.operations)?;
+            let change_payload = if let Some(context) = renderer_context.as_ref() {
+                canonical_payload_with_authority_context(&change_payload.to_string(), context)
+            } else {
+                change_payload.to_string()
+            };
             append_change_events_in_tx(
                 conn,
                 &payload.project_id,
@@ -1787,7 +1808,7 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     op_type: "chronicle.bulk".to_string(),
                     entity_type: Some(BULK_ENTITY_KIND.to_string()),
                     entity_id: Some(undo_id.clone()),
-                    payload: serde_json::to_string(&change_payload)?,
+                    payload: change_payload,
                     timestamp,
                 }],
             )?;
@@ -1799,7 +1820,10 @@ pub fn agent_chronicle_bulk_mutate_impl(
                     source_domain: "chronicle.bulk".to_string(),
                     source_change_event_uid: event_uid.clone(),
                     cause_kind: NarrativeChangeCauseKind::Forward,
-                    origin: narrative_origin_for_surface(payload.surface.as_deref()),
+                    origin: renderer_context.as_ref().map_or_else(
+                        || narrative_origin_for_surface(payload.surface.as_deref()),
+                        |context| context.origin,
+                    ),
                     original_transaction_id: None,
                     commit_id: None,
                     journal_id: None,
@@ -1916,6 +1940,20 @@ mod tests {
             event_clear_id,
             scene_id,
         )
+    }
+
+    fn history_replay_controls() -> Vec<String> {
+        [
+            "original-transaction",
+            "journal-lineage",
+            "typed-writer",
+            "occ",
+            "change-event",
+            "change-feed",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect()
     }
 
     fn latest_change_payload(db: &Database) -> Value {
@@ -2322,6 +2360,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo bulk");
@@ -2368,6 +2410,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: journal_id.to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo bulk");
@@ -2603,6 +2649,10 @@ mod tests {
                     .expect("journal id")
                     .to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo legacy journal");
@@ -2629,6 +2679,10 @@ mod tests {
                     .expect("journal id")
                     .to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo legacy journal");
@@ -2868,6 +2922,10 @@ mod tests {
             session_id: "session".to_string(),
             journal_id: forward["undoJournalId"].as_str().unwrap().to_string(),
             direction: "undo".to_string(),
+            authority_route: "history-replay".to_string(),
+            origin: "undo".to_string(),
+            caller: "undo-redo-command".to_string(),
+            controls: history_replay_controls(),
         };
 
         let first =
@@ -2897,6 +2955,7 @@ mod tests {
 
         let mut changed_direction = undo.clone();
         changed_direction.direction = "redo".to_string();
+        changed_direction.origin = "redo".to_string();
         let error = crate::agent_writes::agent_undo_journal_impl(&db, changed_direction)
             .expect_err("request id must be bound to replay direction");
         assert!(
@@ -2909,6 +2968,7 @@ mod tests {
         let redo = crate::agent_writes::AgentUndoJournalPayload {
             request_id: "same-redo-retry".to_string(),
             direction: "redo".to_string(),
+            origin: "redo".to_string(),
             ..undo
         };
         let first_redo =
@@ -2979,6 +3039,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo lane");
@@ -3176,6 +3240,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "undo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "undo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("undo dates");
@@ -3206,6 +3274,10 @@ mod tests {
                 session_id: "session".to_string(),
                 journal_id: result["undoJournalId"].as_str().unwrap().to_string(),
                 direction: "redo".to_string(),
+                authority_route: "history-replay".to_string(),
+                origin: "redo".to_string(),
+                caller: "undo-redo-command".to_string(),
+                controls: history_replay_controls(),
             },
         )
         .expect("redo dates");

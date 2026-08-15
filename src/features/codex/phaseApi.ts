@@ -103,7 +103,7 @@ export async function createPhase(
   const createdAt = data.createdAt ?? new Date().toISOString();
   let rows: CodexEntryPhase[];
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "phase.create",
         projectId: (
@@ -179,7 +179,7 @@ export async function updatePhase(
     await markImpactBaselinePhasesRestricted(current.entryId);
   }
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "phase.update",
         projectId: (
@@ -250,7 +250,7 @@ export async function deletePhase(
     await markImpactBaselinePhasesRestricted(phase.entryId);
   }
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "phase.delete",
         projectId: (
@@ -349,7 +349,7 @@ export async function patchPhaseAggregate(
   }
 
   try {
-    await invoke("agent_codex_mutate", {
+    await invoke("codex_mutate", {
       payload: {
         operation: "phase.aggregate",
         projectId: (
