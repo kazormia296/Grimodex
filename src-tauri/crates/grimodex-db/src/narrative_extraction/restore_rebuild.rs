@@ -10,6 +10,7 @@
 use rusqlite::{params_from_iter, Connection};
 
 use super::dependency_edges::{find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND};
+use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
 use super::semantic_epoch::create_epoch_in_tx;
 use super::source_revision::resolve_current_source_state;
 
@@ -114,6 +115,111 @@ fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Builds a `evaluator::EdgeComparisonInput` for one Dependency Edge from
+/// real DB state -- the piece nothing in this crate wired up before Gate C2
+/// Run Kind Policy work: `evaluator::evaluate_edge` is a pure function of
+/// this struct, but until now nothing ever constructed one from a live
+/// Edge.
+///
+/// The stored comparison basis is the Edge's own Producer-time observation
+/// (`read_set_json`'s single recorded token -- ADR 005's Producer-time
+/// Dependency Declaration; see `dependency_edges.rs`/`repository.rs`'s
+/// `record_run_dependency_edges_in_tx`). That token is immutable until a
+/// new Producer run re-declares the Edge (`record_dependency_edge_in_tx`'s
+/// upsert), which is exactly the right invariant: a Consumer correctly
+/// keeps reading Stale/whatever this evaluator reports until it is
+/// actually reproduced, not until someone merely re-runs this evaluator
+/// again. The current signal is a fresh read of the Source right now
+/// (`source_revision::resolve_current_source_state`, the same resolver
+/// `edge_source_is_missing` above already uses).
+///
+/// `stored_digest`/`current_digest` mirror `resolve_current_source_state`'s
+/// own convention: a revision token that happens to look like a digest
+/// (`sha256:...`) doubles as its own digest; most Source kinds have no
+/// separate digest concept, so this is not a loss of a distinct signal
+/// this crate tracks elsewhere.
+///
+/// `read_set_overlaps` / `normalizer_version_matches` /
+/// `component_version_matches` are not backed by any stored per-Edge state
+/// anywhere in this crate yet -- no Wave has added the columns those
+/// checks would need -- so this always reports them healthy
+/// (`EdgeComparisonInput::default()`'s baseline). That means
+/// `evaluate_edge`'s `ReadSetDrift`/`Unknown` (normalizer/component)
+/// branches are not yet reachable through this builder; only
+/// `SourceMissing`/`Fresh`/`ExactContentRelocated`/`Stale` are. Documented
+/// here rather than silently pretended otherwise; widening this is future
+/// scope, not a correctness bug in what it does cover.
+pub(crate) fn build_edge_comparison_input(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+) -> anyhow::Result<EdgeComparisonInput> {
+    let stored_revision_token = first_read_set_token(&edge.read_set_json)?;
+    let stored_digest = stored_revision_token
+        .as_deref()
+        .filter(|token| token.starts_with("sha256:"))
+        .map(str::to_string);
+
+    let mut input = EdgeComparisonInput {
+        stored_revision_token,
+        stored_digest,
+        ..EdgeComparisonInput::default()
+    };
+
+    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
+        input.current_source_exists = false;
+        return Ok(input);
+    };
+    match resolve_current_source_state(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        &edge.source_object_identity,
+    ) {
+        Ok(state) => {
+            input.current_source_exists = state.exists;
+            input.current_revision_token = state.revision_token;
+            input.current_digest = state.content_digest;
+        }
+        Err(_) => {
+            input.current_source_exists = false;
+        }
+    }
+    Ok(input)
+}
+
+/// The one revision token `record_run_dependency_edges_in_tx` records per
+/// Edge (`serde_json::to_string(&[row.revision_token.as_str()])`) -- see
+/// that function's own doc comment on why `read_set_json` is a
+/// one-element array rather than a real multi-entry read set.
+fn first_read_set_token(read_set_json: &str) -> anyhow::Result<Option<String>> {
+    let values: Vec<String> = serde_json::from_str(read_set_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_DEPENDENCY_READ_SET_INVALID: read_set_json must be a JSON array of strings: {error}"
+        )
+    })?;
+    Ok(values.into_iter().next())
+}
+
+/// Combines [`build_edge_comparison_input`] and `evaluator::evaluate_edge`:
+/// the full "evaluate one real Edge's Freshness right now" step. Read-only
+/// -- like [`build_edge_comparison_input`], issues only `SELECT`s and is
+/// safe to call outside a transaction. Persisting the result
+/// (`publish_runtime.rs`'s `write_edge_state_in_tx`/
+/// `write_consumer_freshness_in_tx`/`record_finding_observation_in_tx`) is
+/// the caller's decision.
+pub(crate) fn evaluate_edge_from_db(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+) -> anyhow::Result<EdgeObservation> {
+    let input = build_edge_comparison_input(conn, project_id, run_id, edge)?;
+    Ok(evaluate_edge(&input))
 }
 
 /// `true` when `edge`'s Source is broken: either its `source_object_identity`
@@ -233,10 +339,14 @@ pub(crate) fn rebuild_repair_dependency_edges_in_tx(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::evaluator::{
+        BuildAction, EvidenceFreshness, FindingReasonCode,
+    };
     use crate::narrative_extraction::{
         get_current_epoch, list_epochs, record_dependency_edge_in_tx,
     };
     use crate::Database;
+    use rusqlite::params;
     use std::path::Path;
 
     fn test_db() -> Database {
@@ -521,5 +631,152 @@ mod tests {
             .with_conn(|conn| find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1"))
             .expect("list edges");
         assert_eq!(remaining.len(), 1);
+    }
+
+    // -- evaluate_edge_from_db / build_edge_comparison_input ---------------
+
+    fn current_scene_revision_token(db: &Database, scene_id: &str) -> String {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT version, updated_at FROM tree_nodes WHERE id = ?1",
+                params![scene_id],
+                |row| {
+                    let version: i64 = row.get(0)?;
+                    let updated_at: String = row.get(1)?;
+                    Ok(format!("v{version}@{updated_at}"))
+                },
+            )
+            .map_err(Into::into)
+        })
+        .expect("read current scene revision token")
+    }
+
+    #[test]
+    fn evaluate_edge_from_db_reports_fresh_when_stored_token_matches_current() {
+        let db = test_db();
+        let current_token = current_scene_revision_token(&db, "scene-live");
+        let edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-live",
+                    &format!(r#"["{current_token}"]"#),
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record edge with current token");
+
+        let edges = db
+            .with_conn(|conn| find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1"))
+            .expect("load edge");
+        let edge = edges.into_iter().find(|e| e.id == edge_id).expect("edge");
+
+        let observation = db
+            .with_conn(|conn| evaluate_edge_from_db(conn, "project-1", "run-1", &edge))
+            .expect("evaluate edge");
+        assert_eq!(observation.freshness, EvidenceFreshness::Fresh);
+        assert_eq!(observation.reason_code, None);
+        assert_eq!(observation.build_action, BuildAction::None);
+    }
+
+    #[test]
+    fn evaluate_edge_from_db_reports_stale_when_stored_token_is_outdated() {
+        let db = test_db();
+        let edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-live",
+                    r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record edge with a stale token");
+
+        let edges = db
+            .with_conn(|conn| find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1"))
+            .expect("load edge");
+        let edge = edges.into_iter().find(|e| e.id == edge_id).expect("edge");
+
+        let observation = db
+            .with_conn(|conn| evaluate_edge_from_db(conn, "project-1", "run-1", &edge))
+            .expect("evaluate edge");
+        assert_eq!(observation.freshness, EvidenceFreshness::Stale);
+        assert_eq!(
+            observation.reason_code,
+            Some(FindingReasonCode::SourceRevisionChanged)
+        );
+        assert_eq!(observation.build_action, BuildAction::RebuildRequired);
+    }
+
+    #[test]
+    fn evaluate_edge_from_db_reports_source_missing_for_a_deleted_scene() {
+        let db = test_db();
+        let edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-does-not-exist",
+                    r#"["v0@2026-01-01T00:00:00.000Z"]"#,
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record edge pointing at a nonexistent scene");
+
+        let edges = db
+            .with_conn(|conn| find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1"))
+            .expect("load edge");
+        let edge = edges.into_iter().find(|e| e.id == edge_id).expect("edge");
+
+        let observation = db
+            .with_conn(|conn| evaluate_edge_from_db(conn, "project-1", "run-1", &edge))
+            .expect("evaluate edge");
+        assert_eq!(observation.freshness, EvidenceFreshness::SourceMissing);
+        assert_eq!(
+            observation.reason_code,
+            Some(FindingReasonCode::SourceMissing)
+        );
+        assert_eq!(observation.build_action, BuildAction::Manual);
+    }
+
+    #[test]
+    fn evaluate_edge_from_db_treats_an_unrecognized_source_identity_as_missing() {
+        let db = test_db();
+        let edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "totally:unknown:identity",
+                    r#"["v0@2026-01-01T00:00:00.000Z"]"#,
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record edge with an unrecognized source identity");
+
+        let edges = db
+            .with_conn(|conn| find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1"))
+            .expect("load edge");
+        let edge = edges.into_iter().find(|e| e.id == edge_id).expect("edge");
+
+        let observation = db
+            .with_conn(|conn| evaluate_edge_from_db(conn, "project-1", "run-1", &edge))
+            .expect("evaluate edge");
+        assert_eq!(observation.freshness, EvidenceFreshness::SourceMissing);
     }
 }

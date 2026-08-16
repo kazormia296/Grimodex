@@ -629,12 +629,42 @@ end-to-end against real SQLite via Python, plus three new Rust
 `#[cfg(test)]` unit tests (creates-and-completes, automatic-once reuse
 across two calls, per-project independence).
 
-Still not implemented: the evaluate→publish wiring gap (nothing yet
-constructs an `EdgeComparisonInput` from real DB state to connect Lane
-F's `evaluator.rs` to Lane J's `publish_runtime.rs`), the ~10
-still-missing Verify checks in `restore_rebuild.rs`, the
-`dependency-rebuild-derived` orchestrator, the Repair
-lease/backup/sealed-plan/execution flow, and the five new IPC/N-API
+**The evaluate→publish wiring gap is closed** (`restore_rebuild.rs`'s new
+`build_edge_comparison_input`/`evaluate_edge_from_db`): the piece nothing
+in the crate had before -- `evaluator::evaluate_edge` is a pure function
+of `EdgeComparisonInput`, but until now nothing ever constructed one from
+a live Edge. The stored comparison basis is the Edge's own Producer-time
+observation (`read_set_json`'s single recorded token, ADR 005's
+Producer-time Dependency Declaration -- immutable until a new Producer
+run re-declares the Edge, which is exactly the right invariant: a
+Consumer correctly keeps reading Stale until it is actually reproduced,
+not until someone merely re-evaluates it again). The current signal is a
+fresh read of the Source right now, reusing the same
+`source_revision::resolve_current_source_state` resolver
+`edge_source_is_missing` already calls, and the same `infer_source_kind`
+reverse-mapping already defined in this module. `read_set_overlaps`/
+`normalizer_version_matches`/`component_version_matches` are not backed
+by any stored per-Edge state anywhere in this crate yet, so this always
+reports them healthy (`EdgeComparisonInput::default()`'s baseline) --
+`evaluate_edge`'s `ReadSetDrift`/`Unknown` (normalizer/component)
+branches are not yet reachable through this builder, only
+`SourceMissing`/`Fresh`/`ExactContentRelocated`/`Stale` are. Documented,
+not silently pretended otherwise; widening this is future scope, not a
+correctness bug in what it does cover. `evaluate_edge_from_db` is
+read-only (only `SELECT`s, safe outside a transaction); persisting a
+result through `publish_runtime.rs` is left to its caller --
+`dependency-rebuild-derived` (next).
+
+Verified: four new Rust `#[cfg(test)]` unit tests (matching stored/current
+token → Fresh, outdated stored token → Stale/RebuildRequired, a deleted
+Source → SourceMissing/Manual, an unrecognized source-identity shape →
+also SourceMissing), covering every branch of `evaluate_edge` this
+builder can currently reach, run through a real `db.migrate()`-shaped
+database with a real `tree_nodes` scene row.
+
+Still not implemented: the ~10 still-missing Verify checks in
+`restore_rebuild.rs`, the `dependency-rebuild-derived` orchestrator, the
+Repair lease/backup/sealed-plan/execution flow, and the five new IPC/N-API
 operations.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
