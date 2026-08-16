@@ -57,7 +57,8 @@ pub(crate) use attention::{get_attention, is_attention_applicable};
 // C2-T1: exposed through narrative_maintenance_attention_set/_clear
 // (electron/native/grimodex-node/src/lib.rs).
 pub use attention::{
-    clear_attention_in_tx, set_attention_in_tx, AttentionDisposition, AttentionRow,
+    clear_attention, clear_attention_in_tx, set_attention, set_attention_in_tx,
+    AttentionDisposition, AttentionRow, AttentionWriteOutcome, SetAttentionRequest,
 };
 // cursor_reservation::acknowledge_cursor_in_tx is the SCHEMA_VERSION 23
 // reservation-aware acknowledge (Lane I); it is a distinct function from

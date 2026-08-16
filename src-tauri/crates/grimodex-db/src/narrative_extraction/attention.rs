@@ -20,6 +20,46 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::json;
+
+use super::commit::digest_plan;
+use super::task_leases::with_immediate_transaction;
+use crate::Database;
+
+/// Transaction-owning wrapper over [`set_attention_in_tx`], for callers
+/// outside this crate (the N-API boundary). The OCC read and the write it
+/// guards must not be separable, so this owns the `BEGIN IMMEDIATE` rather
+/// than leaving each caller to remember one.
+pub fn set_attention(
+    db: &Database,
+    request: SetAttentionRequest<'_>,
+) -> anyhow::Result<AttentionWriteOutcome> {
+    db.with_conn(|conn| with_immediate_transaction(conn, |conn| set_attention_in_tx(conn, request)))
+}
+
+/// Transaction-owning wrapper over [`clear_attention_in_tx`]; see
+/// [`set_attention`] for why the transaction lives here.
+pub fn clear_attention(
+    db: &Database,
+    project_id: &str,
+    finding_key: &str,
+    actor_id: &str,
+    request_id: &str,
+    expected_version: i64,
+) -> anyhow::Result<AttentionWriteOutcome> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            clear_attention_in_tx(
+                conn,
+                project_id,
+                finding_key,
+                actor_id,
+                request_id,
+                expected_version,
+            )
+        })
+    })
+}
 
 /// Disposition a human or agent has recorded against a Maintenance finding.
 ///
@@ -71,7 +111,66 @@ pub struct AttentionRow {
     pub material_basis_digest: String,
     pub snoozed_until: Option<String>,
     pub set_at: String,
-    pub set_by: Option<String>,
+    /// Who decided this. Mandatory: an Attention row is durable user state,
+    /// so an unattributed one is not a meaningful record. Replaces the
+    /// nullable `set_by` this table carried before SCHEMA 25.
+    pub actor_id: String,
+    /// Caller-supplied identity of the request that last wrote this row,
+    /// used with `payload_digest` for idempotent replay.
+    pub request_id: String,
+    pub payload_digest: String,
+    pub reason: Option<String>,
+    /// OCC token. Starts at 1 and increments on every accepted write.
+    pub version: i64,
+}
+
+/// What one accepted Attention write did.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttentionWriteOutcome {
+    /// The row's version after this call. `0` after a clear.
+    pub version: i64,
+    /// True when this call matched an already-applied `requestId` and
+    /// therefore changed nothing — a retry, not a second decision.
+    pub replayed: bool,
+}
+
+/// Everything one `set` needs. A struct rather than a long argument list so
+/// the OCC token and the request identity cannot be transposed at a call
+/// site.
+#[derive(Debug, Clone, Copy)]
+pub struct SetAttentionRequest<'a> {
+    pub project_id: &'a str,
+    pub finding_key: &'a str,
+    pub disposition: AttentionDisposition,
+    pub material_basis_digest: &'a str,
+    pub snoozed_until: Option<&'a str>,
+    pub set_at: &'a str,
+    pub actor_id: &'a str,
+    pub request_id: &'a str,
+    pub reason: Option<&'a str>,
+    /// Expected current `version`; `0` means "no row must exist yet".
+    /// Required, not optional — an OCC token a caller may omit is not one.
+    pub expected_version: i64,
+}
+
+/// Digest of the *decision* this request carries, so a retry of the same
+/// `requestId` can be told apart from a different decision reusing it.
+///
+/// Covers the fields that make the decision what it is, including
+/// `actor_id`: a different actor reusing another's `requestId` is a
+/// conflict, not a replay. Deliberately excludes `set_at` (a retry is
+/// naturally later) and `expected_version` (a retry may legitimately carry
+/// a stale one, which is exactly why replay is checked before OCC).
+fn attention_payload_digest(request: &SetAttentionRequest<'_>) -> String {
+    let canonical = json!({
+        "disposition": request.disposition.as_str(),
+        "materialBasisDigest": request.material_basis_digest,
+        "snoozedUntil": request.snoozed_until,
+        "reason": request.reason,
+        "actorId": request.actor_id,
+    });
+    format!("sha256:{}", digest_plan(&canonical))
 }
 
 fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRow> {
@@ -94,9 +193,16 @@ fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRo
         material_basis_digest: row.get("material_basis_digest")?,
         snoozed_until: row.get("snoozed_until")?,
         set_at: row.get("set_at")?,
-        set_by: row.get("set_by")?,
+        actor_id: row.get("actor_id")?,
+        request_id: row.get("request_id")?,
+        payload_digest: row.get("payload_digest")?,
+        reason: row.get("reason")?,
+        version: row.get("version")?,
     })
 }
+
+const ATTENTION_COLUMNS: &str = "project_id, finding_key, disposition, material_basis_digest,
+     snoozed_until, set_at, actor_id, request_id, payload_digest, reason, version";
 
 /// Upsert a Maintenance Attention row. `snoozed_until` is required exactly
 /// when `disposition` is [`AttentionDisposition::Snoozed`] and is stored as
@@ -108,28 +214,38 @@ fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRo
 ///
 /// `pub`: called directly from `grimodex-node`'s
 /// `narrative_maintenance_attention_set` N-API binding (C2-T1).
-#[allow(clippy::too_many_arguments)]
 pub fn set_attention_in_tx(
     conn: &Connection,
-    project_id: &str,
-    finding_key: &str,
-    disposition: AttentionDisposition,
-    material_basis_digest: &str,
-    snoozed_until: Option<&str>,
-    set_at: &str,
-    set_by: Option<&str>,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
-    anyhow::ensure!(!finding_key.trim().is_empty(), "findingKey is required");
+    request: SetAttentionRequest<'_>,
+) -> anyhow::Result<AttentionWriteOutcome> {
     anyhow::ensure!(
-        !material_basis_digest.trim().is_empty(),
+        !request.project_id.trim().is_empty(),
+        "projectId is required"
+    );
+    anyhow::ensure!(
+        !request.finding_key.trim().is_empty(),
+        "findingKey is required"
+    );
+    anyhow::ensure!(
+        !request.material_basis_digest.trim().is_empty(),
         "materialBasisDigest is required"
     );
-    anyhow::ensure!(!set_at.trim().is_empty(), "setAt is required");
+    anyhow::ensure!(!request.set_at.trim().is_empty(), "setAt is required");
+    anyhow::ensure!(!request.actor_id.trim().is_empty(), "actorId is required");
+    anyhow::ensure!(
+        !request.request_id.trim().is_empty(),
+        "requestId is required"
+    );
+    anyhow::ensure!(
+        request.expected_version >= 0,
+        "NEX_ATTENTION_VERSION_INVALID: expectedVersion must not be negative"
+    );
 
-    let stored_snoozed_until = match disposition {
+    let stored_snoozed_until = match request.disposition {
         AttentionDisposition::Snoozed => {
-            let value = snoozed_until.filter(|value| !value.trim().is_empty());
+            let value = request
+                .snoozed_until
+                .filter(|value| !value.trim().is_empty());
             anyhow::ensure!(
                 value.is_some(),
                 "snoozedUntil is required when disposition is 'snoozed'"
@@ -139,32 +255,96 @@ pub fn set_attention_in_tx(
         AttentionDisposition::Dismissed | AttentionDisposition::Flagged => None,
     };
 
-    conn.execute(
+    let payload_digest = attention_payload_digest(&request);
+    let existing = get_attention(conn, request.project_id, request.finding_key)?;
+
+    // Replay is checked before OCC on purpose: a retry of a request that
+    // already landed may carry the expectedVersion it was first built with,
+    // which is now stale. Treating that as a conflict would make retries
+    // impossible, which is the opposite of what request identity is for.
+    if let Some(row) = &existing {
+        if row.request_id == request.request_id {
+            anyhow::ensure!(
+                row.payload_digest == payload_digest,
+                "NEX_ATTENTION_REQUEST_CONFLICT: requestId '{}' was already applied to finding \
+                 '{}' in project '{}' with a different decision; reusing a requestId for a new \
+                 decision is not a replay",
+                request.request_id,
+                request.finding_key,
+                request.project_id
+            );
+            return Ok(AttentionWriteOutcome {
+                version: row.version,
+                replayed: true,
+            });
+        }
+    }
+
+    let current_version = existing.as_ref().map_or(0, |row| row.version);
+    anyhow::ensure!(
+        current_version == request.expected_version,
+        "NEX_ATTENTION_VERSION_CONFLICT: finding '{}' in project '{}' is at version {} but the \
+         caller expected {}; re-read the row and retry",
+        request.finding_key,
+        request.project_id,
+        current_version,
+        request.expected_version
+    );
+
+    let next_version = current_version + 1;
+    let updated = conn.execute(
         "INSERT INTO narrative_maintenance_attention
             (project_id, finding_key, disposition, material_basis_digest,
-             snoozed_until, set_at, set_by)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             snoozed_until, set_at, actor_id, request_id, payload_digest, reason, version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(project_id, finding_key) DO UPDATE SET
             disposition = excluded.disposition,
             material_basis_digest = excluded.material_basis_digest,
             snoozed_until = excluded.snoozed_until,
             set_at = excluded.set_at,
-            set_by = excluded.set_by",
+            actor_id = excluded.actor_id,
+            request_id = excluded.request_id,
+            payload_digest = excluded.payload_digest,
+            reason = excluded.reason,
+            version = excluded.version
+          WHERE narrative_maintenance_attention.version = ?12",
         params![
-            project_id,
-            finding_key,
-            disposition.as_str(),
-            material_basis_digest,
+            request.project_id,
+            request.finding_key,
+            request.disposition.as_str(),
+            request.material_basis_digest,
             stored_snoozed_until,
-            set_at,
-            set_by,
+            request.set_at,
+            request.actor_id,
+            request.request_id,
+            payload_digest,
+            request.reason,
+            next_version,
+            current_version,
         ],
     )?;
-    Ok(())
+    // Defence in depth: the WHERE on the DO UPDATE re-checks the same
+    // version inside the write, so a racing writer that slipped between the
+    // read above and this statement loses here instead of silently winning.
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_ATTENTION_VERSION_CONFLICT: finding '{}' in project '{}' changed while this write \
+         was in flight; re-read the row and retry",
+        request.finding_key,
+        request.project_id
+    );
+
+    Ok(AttentionWriteOutcome {
+        version: next_version,
+        replayed: false,
+    })
 }
 
-/// Clear (delete) a Maintenance Attention row. A no-op, not an error, when
-/// no row exists for `(project_id, finding_key)`.
+/// Clear (delete) a Maintenance Attention row under the same OCC token the
+/// setter uses. Clearing an absent row is a no-op success only when the
+/// caller expected it to be absent (`expected_version == 0`); clearing a row
+/// that has moved on since the caller read it is a conflict, not a silent
+/// delete.
 ///
 /// `pub`: called directly from `grimodex-node`'s
 /// `narrative_maintenance_attention_clear` N-API binding (C2-T1).
@@ -172,15 +352,50 @@ pub fn clear_attention_in_tx(
     conn: &Connection,
     project_id: &str,
     finding_key: &str,
-) -> anyhow::Result<()> {
+    actor_id: &str,
+    request_id: &str,
+    expected_version: i64,
+) -> anyhow::Result<AttentionWriteOutcome> {
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     anyhow::ensure!(!finding_key.trim().is_empty(), "findingKey is required");
-    conn.execute(
+    anyhow::ensure!(!actor_id.trim().is_empty(), "actorId is required");
+    anyhow::ensure!(!request_id.trim().is_empty(), "requestId is required");
+    anyhow::ensure!(
+        expected_version >= 0,
+        "NEX_ATTENTION_VERSION_INVALID: expectedVersion must not be negative"
+    );
+
+    let current_version =
+        get_attention(conn, project_id, finding_key)?.map_or(0, |row| row.version);
+    anyhow::ensure!(
+        current_version == expected_version,
+        "NEX_ATTENTION_VERSION_CONFLICT: finding '{finding_key}' in project '{project_id}' is at \
+         version {current_version} but the caller expected {expected_version}; re-read the row \
+         and retry"
+    );
+
+    if current_version == 0 {
+        // Nothing to delete and the caller knew it: a replayed clear.
+        return Ok(AttentionWriteOutcome {
+            version: 0,
+            replayed: true,
+        });
+    }
+
+    let deleted = conn.execute(
         "DELETE FROM narrative_maintenance_attention
-          WHERE project_id = ?1 AND finding_key = ?2",
-        params![project_id, finding_key],
+          WHERE project_id = ?1 AND finding_key = ?2 AND version = ?3",
+        params![project_id, finding_key, expected_version],
     )?;
-    Ok(())
+    anyhow::ensure!(
+        deleted == 1,
+        "NEX_ATTENTION_VERSION_CONFLICT: finding '{finding_key}' in project '{project_id}' \
+         changed while this clear was in flight; re-read the row and retry"
+    );
+    Ok(AttentionWriteOutcome {
+        version: 0,
+        replayed: false,
+    })
 }
 
 /// Read a Maintenance Attention row exactly as stored. Never mutates,
@@ -193,10 +408,11 @@ pub(crate) fn get_attention(
 ) -> anyhow::Result<Option<AttentionRow>> {
     let row = conn
         .query_row(
-            "SELECT project_id, finding_key, disposition, material_basis_digest,
-                    snoozed_until, set_at, set_by
-               FROM narrative_maintenance_attention
-              WHERE project_id = ?1 AND finding_key = ?2",
+            &format!(
+                "SELECT {ATTENTION_COLUMNS}
+                   FROM narrative_maintenance_attention
+                  WHERE project_id = ?1 AND finding_key = ?2"
+            ),
             params![project_id, finding_key],
             row_to_attention_row,
         )
@@ -252,22 +468,47 @@ mod tests {
         db
     }
 
+    /// Minimal valid request; tests override just the field under test.
+    fn request<'a>(
+        disposition: AttentionDisposition,
+        material_basis_digest: &'a str,
+        snoozed_until: Option<&'a str>,
+        request_id: &'a str,
+        expected_version: i64,
+    ) -> SetAttentionRequest<'a> {
+        SetAttentionRequest {
+            project_id: "proj-1",
+            finding_key: "finding-a",
+            disposition,
+            material_basis_digest,
+            snoozed_until,
+            set_at: "2026-08-15T00:00:00.000Z",
+            actor_id: "user-1",
+            request_id,
+            reason: None,
+            expected_version,
+        }
+    }
+
     #[test]
     fn set_get_clear_round_trip() {
         let db = fixture();
-        db.with_conn(|conn| {
-            set_attention_in_tx(
-                conn,
-                "proj-1",
-                "finding-a",
-                AttentionDisposition::Snoozed,
-                "digest-1",
-                Some("2026-09-01T00:00:00.000Z"),
-                "2026-08-15T00:00:00.000Z",
-                Some("user-1"),
-            )
-        })
-        .expect("set attention");
+        let outcome = db
+            .with_conn(|conn| {
+                set_attention_in_tx(
+                    conn,
+                    request(
+                        AttentionDisposition::Snoozed,
+                        "digest-1",
+                        Some("2026-09-01T00:00:00.000Z"),
+                        "req-1",
+                        0,
+                    ),
+                )
+            })
+            .expect("set attention");
+        assert_eq!(outcome.version, 1);
+        assert!(!outcome.replayed);
 
         let row = db
             .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
@@ -279,10 +520,14 @@ mod tests {
             row.snoozed_until.as_deref(),
             Some("2026-09-01T00:00:00.000Z")
         );
-        assert_eq!(row.set_by.as_deref(), Some("user-1"));
+        assert_eq!(row.actor_id, "user-1");
+        assert_eq!(row.request_id, "req-1");
+        assert_eq!(row.version, 1);
 
-        db.with_conn(|conn| clear_attention_in_tx(conn, "proj-1", "finding-a"))
-            .expect("clear attention");
+        db.with_conn(|conn| {
+            clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-2", 1)
+        })
+        .expect("clear attention");
         let cleared = db
             .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
             .expect("get attention after clear");
@@ -295,30 +540,31 @@ mod tests {
         db.with_conn(|conn| {
             set_attention_in_tx(
                 conn,
-                "proj-1",
-                "finding-a",
-                AttentionDisposition::Snoozed,
-                "digest-1",
-                Some("2026-09-01T00:00:00.000Z"),
-                "2026-08-15T00:00:00.000Z",
-                None,
+                request(
+                    AttentionDisposition::Snoozed,
+                    "digest-1",
+                    Some("2026-09-01T00:00:00.000Z"),
+                    "req-1",
+                    0,
+                ),
             )
         })
         .expect("set snoozed");
 
-        db.with_conn(|conn| {
-            set_attention_in_tx(
-                conn,
-                "proj-1",
-                "finding-a",
-                AttentionDisposition::Dismissed,
-                "digest-2",
-                None,
-                "2026-08-16T00:00:00.000Z",
-                Some("user-2"),
-            )
-        })
-        .expect("set dismissed");
+        let outcome = db
+            .with_conn(|conn| {
+                let mut next = request(
+                    AttentionDisposition::Dismissed,
+                    "digest-2",
+                    None,
+                    "req-2",
+                    1,
+                );
+                next.actor_id = "user-2";
+                set_attention_in_tx(conn, next)
+            })
+            .expect("set dismissed");
+        assert_eq!(outcome.version, 2);
 
         let row = db
             .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
@@ -327,7 +573,8 @@ mod tests {
         assert_eq!(row.disposition, AttentionDisposition::Dismissed);
         assert_eq!(row.material_basis_digest, "digest-2");
         assert_eq!(row.snoozed_until, None);
-        assert_eq!(row.set_by.as_deref(), Some("user-2"));
+        assert_eq!(row.actor_id, "user-2");
+        assert_eq!(row.version, 2);
     }
 
     #[test]
@@ -336,13 +583,7 @@ mod tests {
         let result = db.with_conn(|conn| {
             set_attention_in_tx(
                 conn,
-                "proj-1",
-                "finding-a",
-                AttentionDisposition::Snoozed,
-                "digest-1",
-                None,
-                "2026-08-15T00:00:00.000Z",
-                None,
+                request(AttentionDisposition::Snoozed, "digest-1", None, "req-1", 0),
             )
         });
         assert!(result.is_err());
@@ -354,16 +595,251 @@ mod tests {
         let result = db.with_conn(|conn| {
             set_attention_in_tx(
                 conn,
-                "proj-1",
-                "finding-a",
-                AttentionDisposition::Snoozed,
-                "digest-1",
-                Some("   "),
-                "2026-08-15T00:00:00.000Z",
-                None,
+                request(
+                    AttentionDisposition::Snoozed,
+                    "digest-1",
+                    Some("   "),
+                    "req-1",
+                    0,
+                ),
             )
         });
         assert!(result.is_err());
+    }
+
+    // -- OCC / request idempotency / mandatory actor ------------------------
+
+    #[test]
+    fn set_rejects_a_stale_expected_version() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                ),
+            )
+        })
+        .expect("first set");
+
+        // A second window still believes the row does not exist.
+        let error = db
+            .with_conn(|conn| {
+                set_attention_in_tx(
+                    conn,
+                    request(AttentionDisposition::Flagged, "digest-1", None, "req-2", 0),
+                )
+            })
+            .expect_err("stale expectedVersion must be rejected");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_VERSION_CONFLICT"),
+            "unexpected error: {error}"
+        );
+
+        // The first decision is untouched -- no silent last-write-wins.
+        let row = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("get attention")
+            .expect("row exists");
+        assert_eq!(row.disposition, AttentionDisposition::Dismissed);
+        assert_eq!(row.version, 1);
+    }
+
+    #[test]
+    fn replaying_the_same_request_id_is_a_no_op_even_with_a_stale_expected_version() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                ),
+            )
+        })
+        .expect("first set");
+
+        // The retry carries the expectedVersion it was originally built
+        // with (0), which is now stale -- a replay, not a conflict.
+        let outcome = db
+            .with_conn(|conn| {
+                set_attention_in_tx(
+                    conn,
+                    request(
+                        AttentionDisposition::Dismissed,
+                        "digest-1",
+                        None,
+                        "req-1",
+                        0,
+                    ),
+                )
+            })
+            .expect("replay must succeed");
+        assert!(outcome.replayed);
+        assert_eq!(outcome.version, 1);
+
+        let row = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("get attention")
+            .expect("row exists");
+        assert_eq!(row.version, 1, "a replay must not bump the version");
+    }
+
+    #[test]
+    fn reusing_a_request_id_for_a_different_decision_is_a_conflict() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                ),
+            )
+        })
+        .expect("first set");
+
+        let error = db
+            .with_conn(|conn| {
+                set_attention_in_tx(
+                    conn,
+                    request(AttentionDisposition::Flagged, "digest-1", None, "req-1", 1),
+                )
+            })
+            .expect_err("same requestId with a different decision must be rejected");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_different_actor_reusing_a_request_id_is_a_conflict_not_a_replay() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                ),
+            )
+        })
+        .expect("first set");
+
+        let error = db
+            .with_conn(|conn| {
+                let mut other = request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                );
+                other.actor_id = "user-2";
+                set_attention_in_tx(conn, other)
+            })
+            .expect_err("a different actor must not replay another's requestId");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn set_requires_an_actor_and_a_request_id() {
+        let db = fixture();
+        for (actor_id, request_id) in [
+            ("", "req-1"),
+            ("   ", "req-1"),
+            ("user-1", ""),
+            ("user-1", "  "),
+        ] {
+            let result = db.with_conn(|conn| {
+                let mut invalid = request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                );
+                invalid.actor_id = actor_id;
+                invalid.request_id = request_id;
+                set_attention_in_tx(conn, invalid)
+            });
+            assert!(
+                result.is_err(),
+                "actor '{actor_id}' / request '{request_id}' must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn clear_rejects_a_stale_expected_version_and_leaves_the_row() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-1",
+                    None,
+                    "req-1",
+                    0,
+                ),
+            )
+        })
+        .expect("set");
+
+        let error = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-2", 0)
+            })
+            .expect_err("stale clear must be rejected");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_VERSION_CONFLICT"),
+            "unexpected error: {error}"
+        );
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("get")
+            .is_some());
+    }
+
+    #[test]
+    fn clearing_an_absent_row_the_caller_expected_to_be_absent_is_a_replay() {
+        let db = fixture();
+        let outcome = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 0)
+            })
+            .expect("clearing an absent row is not an error");
+        assert!(outcome.replayed);
+        assert_eq!(outcome.version, 0);
+    }
+
+    #[test]
+    fn clear_requires_an_actor_and_a_request_id() {
+        let db = fixture();
+        assert!(db
+            .with_conn(|conn| clear_attention_in_tx(conn, "proj-1", "finding-a", "", "req-1", 0))
+            .is_err());
+        assert!(db
+            .with_conn(|conn| clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "", 0))
+            .is_err());
     }
 
     #[test]
@@ -387,7 +863,11 @@ mod tests {
             material_basis_digest: material_basis_digest.to_string(),
             snoozed_until: None,
             set_at: "2026-08-15T00:00:00.000Z".to_string(),
-            set_by: None,
+            actor_id: "user-1".to_string(),
+            request_id: "req-1".to_string(),
+            payload_digest: "sha256:test".to_string(),
+            reason: None,
+            version: 1,
         }
     }
 
@@ -399,7 +879,11 @@ mod tests {
             material_basis_digest: "digest-1".to_string(),
             snoozed_until: Some(snoozed_until.to_string()),
             set_at: "2026-08-15T00:00:00.000Z".to_string(),
-            set_by: None,
+            actor_id: "user-1".to_string(),
+            request_id: "req-1".to_string(),
+            payload_digest: "sha256:test".to_string(),
+            reason: None,
+            version: 1,
         }
     }
 
@@ -462,16 +946,15 @@ mod tests {
     fn get_attention_does_not_auto_delete_or_mutate_an_expired_snoozed_row() {
         let db = fixture();
         db.with_conn(|conn| {
-            set_attention_in_tx(
-                conn,
-                "proj-1",
-                "finding-a",
+            let mut expired = request(
                 AttentionDisposition::Snoozed,
                 "digest-1",
                 Some("2026-08-01T00:00:00.000Z"),
-                "2026-07-01T00:00:00.000Z",
-                None,
-            )
+                "req-1",
+                0,
+            );
+            expired.set_at = "2026-07-01T00:00:00.000Z";
+            set_attention_in_tx(conn, expired)
         })
         .expect("set snoozed");
 

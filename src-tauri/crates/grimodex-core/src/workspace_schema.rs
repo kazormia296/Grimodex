@@ -573,7 +573,7 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// columns for Verify, and widens the Run `run_kind` CHECK to admit
 /// `dependency-verify`/`dependency-repair`.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 24
+    Ok(SCHEMA_VERSION == 25
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -589,7 +589,32 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v23_semantic_build_graph_tables(conn)?
         && has_v23_execution_state_check_constraints(conn)?
         && has_v23_change_cursor_reservation_columns(conn)?
-        && has_v24_run_kind_policy_tables(conn)?)
+        && has_v24_run_kind_policy_tables(conn)?
+        && has_v25_attention_occ_columns(conn)?)
+}
+
+/// SCHEMA 25: Maintenance Attention carries the OCC / request-identity /
+/// actor columns its ADR 006 route requires. `set_by` is gone — `actor_id`
+/// replaces it and is NOT NULL, so an unattributed disposition cannot be
+/// written at all.
+fn has_v25_attention_occ_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_maintenance_attention")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_maintenance_attention")?;
+    let has_column = |name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+    Ok(has_column("actor_id", "TEXT", true)
+        && has_column("request_id", "TEXT", true)
+        && has_column("payload_digest", "TEXT", true)
+        && has_column("reason", "TEXT", false)
+        && has_column("version", "INTEGER", true)
+        && !columns.iter().any(|column| column.name == "set_by"))
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -1060,8 +1085,11 @@ fn has_v23_semantic_build_graph_tables(conn: &Connection) -> anyhow::Result<bool
         && has_column(&attention, "disposition", "TEXT", true)
         && has_column(&attention, "material_basis_digest", "TEXT", true)
         && has_column(&attention, "snoozed_until", "TEXT", false)
-        && has_column(&attention, "set_at", "TEXT", true)
-        && has_column(&attention, "set_by", "TEXT", false);
+        && has_column(&attention, "set_at", "TEXT", true);
+    // `set_by` deliberately absent: SCHEMA 25 replaced that nullable column
+    // with the NOT NULL `actor_id`, checked by
+    // `has_v25_attention_occ_columns`. Asserting it here would make the
+    // current schema fail its own invariants.
 
     let attention_sql = compact_sql(&table_sql(conn, "narrative_maintenance_attention")?);
     let freshness_sql = compact_sql(&table_sql(conn, "narrative_consumer_freshness")?);

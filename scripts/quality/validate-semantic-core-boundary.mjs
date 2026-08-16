@@ -17,7 +17,16 @@ const REPO_ROOT = path.resolve(
 // is operational lock state (like task_leases/workspace_lease), not semantic
 // content, so it stays outside this authority matrix by the same convention.
 // Neither warranted a concern-matrix change.
-export const EXPECTED_SCHEMA_VERSION = 24;
+// SCHEMA_VERSION 25 (Attention OCC / request identity / actor) reviewed:
+// narrative_maintenance_attention's new version / request_id /
+// payload_digest / actor_id / reason columns are concurrency control and
+// provenance, not semantic content. Attention remains durable user state
+// with backflowPolicy forbid and stays registered under EXCLUSION_REASONS
+// as non-backflow-invariant, so it is still not a Freshness or semantic
+// authority and the concern matrix is unchanged. The dropped nullable
+// set_by is superseded by the NOT NULL actor_id, which narrows rather than
+// widens what may be written.
+export const EXPECTED_SCHEMA_VERSION = 25;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

@@ -1090,13 +1090,18 @@ function requireNarrativeMaintenanceAttentionSetPayload(
 ): CommandArgs {
   const command = "narrative_maintenance_attention_set";
   const payload = requireRecord(args, "payload", command);
+  // setBy は actorId + requestId + expectedVersion（OCC）へ置換済み。
+  // 旧 wire を送ってきた renderer は unknown field で明示的に落とす。
   const allowedKeys = new Set([
     "projectId",
     "findingKey",
     "disposition",
     "materialBasisDigest",
     "snoozedUntil",
-    "setBy",
+    "actorId",
+    "requestId",
+    "reason",
+    "expectedVersion",
   ]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
@@ -1115,7 +1120,11 @@ function requireNarrativeMaintenanceAttentionSetPayload(
   }
   requireNonEmptyString(payload, "materialBasisDigest", command);
   optionalString(payload, "snoozedUntil", command);
-  optionalString(payload, "setBy", command);
+  requireNonEmptyString(payload, "actorId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  optionalString(payload, "reason", command);
+  // OCC トークン: 0 = 行が未作成であることを期待、N = version N の行を期待。
+  requireNonNegativeSafeInteger(payload, "expectedVersion", command);
   return payload;
 }
 
@@ -1124,7 +1133,13 @@ function requireNarrativeMaintenanceAttentionClearPayload(
 ): CommandArgs {
   const command = "narrative_maintenance_attention_clear";
   const payload = requireRecord(args, "payload", command);
-  const allowedKeys = new Set(["projectId", "findingKey"]);
+  const allowedKeys = new Set([
+    "projectId",
+    "findingKey",
+    "actorId",
+    "requestId",
+    "expectedVersion",
+  ]);
   for (const key of Object.keys(payload)) {
     if (!allowedKeys.has(key)) {
       throw new Error(
@@ -1134,6 +1149,9 @@ function requireNarrativeMaintenanceAttentionClearPayload(
   }
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "findingKey", command);
+  requireNonEmptyString(payload, "actorId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonNegativeSafeInteger(payload, "expectedVersion", command);
   return payload;
 }
 
@@ -1660,6 +1678,21 @@ function requireSafeInteger(
   if (!Number.isSafeInteger(value)) {
     throw new Error(
       `invalid args \`${key}\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return value;
+}
+
+/** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
+function requireNonNegativeSafeInteger(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): number {
+  const value = requireNumber(args, key, command);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a non-negative safe integer`,
     );
   }
   return value;

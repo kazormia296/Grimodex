@@ -4486,7 +4486,7 @@
     {
       "id": "narrative.maintenance-attention.set",
       "authorityRoute": "attention-typed-writer",
-      "controls": ["typed-writer"],
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },
@@ -4516,7 +4516,7 @@
     {
       "id": "narrative.maintenance-attention.clear",
       "authorityRoute": "attention-typed-writer",
-      "controls": ["typed-writer"],
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
       "feedPolicy": "excluded",
       "coverageStatus": "verified",
       "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },

@@ -3118,7 +3118,14 @@ export const narrativeMaintenanceAttention = sqliteTable(
     materialBasisDigest: text("material_basis_digest").notNull(),
     snoozedUntil: text("snoozed_until"),
     setAt: text("set_at").notNull(),
-    setBy: text("set_by"),
+    // SCHEMA_VERSION 25: OCC + request identity + mandatory actor. actorId
+    // replaces the nullable setBy — an Attention row is durable user state,
+    // so an unattributed one is not a meaningful record.
+    actorId: text("actor_id").notNull(),
+    requestId: text("request_id").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    reason: text("reason"),
+    version: integer("version").notNull(),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.findingKey] })],
 );

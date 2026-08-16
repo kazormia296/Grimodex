@@ -324,8 +324,18 @@ pub struct NarrativeMaintenanceAttentionSetPayload {
     pub material_basis_digest: String,
     #[serde(default)]
     pub snoozed_until: Option<String>,
+    /// Who is recording this disposition. Required (SCHEMA 25): the nullable
+    /// `setBy` this replaced let an Attention row exist with nobody
+    /// accountable for it.
+    pub actor_id: String,
+    /// Caller-supplied request identity. A retry carrying the same
+    /// `requestId` and the same decision is a replay, not a second decision.
+    pub request_id: String,
     #[serde(default)]
-    pub set_by: Option<String>,
+    pub reason: Option<String>,
+    /// OCC token: the `version` the caller believes the row is at, or `0`
+    /// when it believes no row exists yet.
+    pub expected_version: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -333,6 +343,9 @@ pub struct NarrativeMaintenanceAttentionSetPayload {
 pub struct NarrativeMaintenanceAttentionClearPayload {
     pub project_id: String,
     pub finding_key: String,
+    pub actor_id: String,
+    pub request_id: String,
+    pub expected_version: i64,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

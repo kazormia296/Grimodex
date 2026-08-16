@@ -5329,26 +5329,35 @@ impl Backend {
             with_db_state(&state.ws, |db| {
                 let disposition = AttentionDisposition::try_from(dto.disposition.as_str())?;
                 let set_at = grimodex_core::now_rfc3339_millis();
-                db.with_conn(|conn| {
-                    narrative_extraction::set_attention_in_tx(
-                        conn,
-                        &dto.project_id,
-                        &dto.finding_key,
+                // Caller-owned transaction: the OCC read and the write must
+                // not be separable, or a racing window could slip between
+                // them and the version check would prove nothing.
+                let outcome = narrative_extraction::set_attention(
+                    db,
+                    narrative_extraction::SetAttentionRequest {
+                        project_id: &dto.project_id,
+                        finding_key: &dto.finding_key,
                         disposition,
-                        &dto.material_basis_digest,
-                        dto.snoozed_until.as_deref(),
-                        &set_at,
-                        dto.set_by.as_deref(),
-                    )
-                })?;
-                Ok(serde_json::to_string(&serde_json::json!({ "ok": true }))?)
+                        material_basis_digest: &dto.material_basis_digest,
+                        snoozed_until: dto.snoozed_until.as_deref(),
+                        set_at: &set_at,
+                        actor_id: &dto.actor_id,
+                        request_id: &dto.request_id,
+                        reason: dto.reason.as_deref(),
+                        expected_version: dto.expected_version,
+                    },
+                )?;
+                Ok(serde_json::to_string(&outcome)?)
             })
         })
         .await
     }
 
-    /// Clear a Maintenance Attention disposition. A no-op, not an error,
-    /// when none exists for `(projectId, findingKey)`.
+    /// Clear a Maintenance Attention disposition under the caller's OCC
+    /// token. Clearing an absent row is a no-op success only when the caller
+    /// expected it to be absent (`expectedVersion: 0`); a row that has moved
+    /// on since the caller read it fails with
+    /// `NEX_ATTENTION_VERSION_CONFLICT` rather than being deleted silently.
     #[napi]
     pub async fn narrative_maintenance_attention_clear(
         &self,
@@ -5358,14 +5367,15 @@ impl Backend {
         run_blocking(move || {
             let dto: NarrativeMaintenanceAttentionClearPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                db.with_conn(|conn| {
-                    narrative_extraction::clear_attention_in_tx(
-                        conn,
-                        &dto.project_id,
-                        &dto.finding_key,
-                    )
-                })?;
-                Ok(serde_json::to_string(&serde_json::json!({ "ok": true }))?)
+                let outcome = narrative_extraction::clear_attention(
+                    db,
+                    &dto.project_id,
+                    &dto.finding_key,
+                    &dto.actor_id,
+                    &dto.request_id,
+                    dto.expected_version,
+                )?;
+                Ok(serde_json::to_string(&outcome)?)
             })
         })
         .await

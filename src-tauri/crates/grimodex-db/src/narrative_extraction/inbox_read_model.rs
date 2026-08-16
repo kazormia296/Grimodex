@@ -293,11 +293,50 @@ pub fn build_maintenance_inbox(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::narrative_extraction::attention::set_attention_in_tx;
+    use crate::narrative_extraction::attention::AttentionWriteOutcome;
+    use crate::narrative_extraction::attention::{
+        get_attention, set_attention_in_tx, SetAttentionRequest,
+    };
     use crate::narrative_extraction::evaluator::FindingReasonCode;
     use crate::narrative_extraction::finding_observation::record_finding_observation_in_tx;
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use crate::Database;
+
+    /// Positional shim keeping these Inbox read-model tests focused on the
+    /// read model rather than on Attention's OCC. Reads the current version
+    /// so repeated sets on one finding still upsert the way they did before
+    /// SCHEMA 25, and derives a fresh requestId per write so a second write
+    /// is a new decision rather than a replay.
+    #[allow(clippy::too_many_arguments)]
+    fn set_attention_for_test(
+        conn: &Connection,
+        project_id: &str,
+        finding_key: &str,
+        disposition: AttentionDisposition,
+        material_basis_digest: &str,
+        snoozed_until: Option<&str>,
+        set_at: &str,
+        actor: Option<&str>,
+    ) -> anyhow::Result<AttentionWriteOutcome> {
+        let expected_version =
+            get_attention(conn, project_id, finding_key)?.map_or(0, |row| row.version);
+        let request_id = format!("req-test-{expected_version}");
+        set_attention_in_tx(
+            conn,
+            SetAttentionRequest {
+                project_id,
+                finding_key,
+                disposition,
+                material_basis_digest,
+                snoozed_until,
+                set_at,
+                actor_id: actor.unwrap_or("test-actor"),
+                request_id: &request_id,
+                reason: None,
+                expected_version,
+            },
+        )
+    }
     use std::path::Path;
 
     fn test_db() -> Database {
@@ -461,7 +500,7 @@ mod tests {
                 "sha256:digest-a",
                 "2026-08-15T00:00:01.000Z",
             )?;
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 finding_key,
@@ -510,7 +549,7 @@ mod tests {
                 "sha256:digest-a",
                 "2026-08-15T00:00:01.000Z",
             )?;
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 finding_key,
@@ -574,7 +613,7 @@ mod tests {
                 "sha256:digest-new",
                 "2026-08-15T00:00:01.000Z",
             )?;
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 finding_key,
@@ -667,7 +706,7 @@ mod tests {
                 &epoch_id,
                 "2026-08-15T00:00:00.000Z",
             );
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 "proposal:proposal-1",
@@ -677,7 +716,7 @@ mod tests {
                 "2026-08-15T00:00:00.000Z",
                 Some("user-1"),
             )?;
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 "codex-entry:entry-1",
@@ -763,7 +802,7 @@ mod tests {
                 );
             }
             // Active, unexpired snooze -- would be hidden from the Inbox.
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 "proposal:proposal-1",
@@ -774,7 +813,7 @@ mod tests {
                 Some("user-1"),
             )?;
             // Lapsed snooze -- would resurface.
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 "codex-entry:entry-1",
@@ -785,7 +824,7 @@ mod tests {
                 Some("user-2"),
             )?;
             // Dismissed -- always surfaced.
-            set_attention_in_tx(
+            set_attention_for_test(
                 conn,
                 "project-1",
                 "codex-entry:entry-2",
@@ -797,7 +836,8 @@ mod tests {
             )?;
 
             // (project_id, finding_key, disposition, material_basis_digest,
-            // snoozed_until, set_at, set_by) -- clippy::type_complexity.
+            // snoozed_until, set_at, actor_id, version) --
+            // clippy::type_complexity.
             type AttentionRow = (
                 String,
                 String,
@@ -805,13 +845,14 @@ mod tests {
                 String,
                 Option<String>,
                 String,
-                Option<String>,
+                String,
+                i64,
             );
 
             let snapshot_before: Vec<AttentionRow> = conn
                 .prepare(
                     "SELECT project_id, finding_key, disposition, material_basis_digest,
-                            snoozed_until, set_at, set_by
+                            snoozed_until, set_at, actor_id, version
                        FROM narrative_maintenance_attention
                       ORDER BY finding_key ASC",
                 )?
@@ -824,6 +865,7 @@ mod tests {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;
@@ -841,7 +883,7 @@ mod tests {
             let snapshot_after: Vec<AttentionRow> = conn
                 .prepare(
                     "SELECT project_id, finding_key, disposition, material_basis_digest,
-                            snoozed_until, set_at, set_by
+                            snoozed_until, set_at, actor_id, version
                        FROM narrative_maintenance_attention
                       ORDER BY finding_key ASC",
                 )?
@@ -854,6 +896,7 @@ mod tests {
                         row.get(4)?,
                         row.get(5)?,
                         row.get(6)?,
+                        row.get(7)?,
                     ))
                 })?
                 .collect::<Result<Vec<_>, _>>()?;

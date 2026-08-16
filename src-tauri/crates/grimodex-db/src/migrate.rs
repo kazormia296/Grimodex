@@ -3465,6 +3465,13 @@ impl Database {
         // dependency-rebuild-derived reuse the existing 'backfill'/
         // 'semantic-index-rebuild' values and need no CHECK change.
         Self::migrate_run_kind_v24(&conn)?;
+        // SCHEMA 25: Maintenance Attention gains the controls its route in
+        // ADR 006 now requires — a row version for OCC, a request identity
+        // for idempotent replay, and a mandatory actor. Without them two
+        // windows setting a disposition on the same finding silently
+        // last-write-wins, and a retried set could not be told apart from a
+        // second deliberate one.
+        Self::migrate_narrative_maintenance_attention_v25(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -4294,6 +4301,130 @@ impl Database {
         anyhow::ensure!(
             foreign_key_errors == 0,
             "SCHEMA 24 run_kind migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA 25: give `narrative_maintenance_attention` the controls its
+    /// ADR 006 route requires — `version` (OCC), `request_id` +
+    /// `payload_digest` (idempotent replay), a mandatory `actor_id`, and an
+    /// optional `reason`.
+    ///
+    /// `actor_id` replaces the nullable `set_by`: an Attention row is durable
+    /// user state, so "who decided this" is not optional. Pre-existing rows
+    /// inherit `set_by` where it was set and the explicit sentinel
+    /// `'unknown-legacy-actor'` where it was NULL, rather than being dropped
+    /// or silently attributed to whoever migrates.
+    ///
+    /// Rebuild rather than ALTER TABLE ADD: `actor_id`/`request_id`/
+    /// `payload_digest` are NOT NULL with a non-empty CHECK, which SQLite
+    /// cannot add to a populated table in place.
+    fn migrate_narrative_maintenance_attention_v25(conn: &Connection) -> anyhow::Result<()> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_maintenance_attention'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            return Ok(());
+        }
+        let table_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'table' AND name = 'narrative_maintenance_attention'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        if Self::compact(&table_sql).contains("actor_idtextnotnull") {
+            return Ok(());
+        }
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 25 attention migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_attention",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_maintenance_attention_v25;
+                     CREATE TABLE narrative_maintenance_attention_v25 (
+                        project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        finding_key            TEXT NOT NULL CHECK(length(finding_key) > 0),
+                        disposition            TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')),
+                        material_basis_digest  TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
+                        snoozed_until          TEXT,
+                        set_at                 TEXT NOT NULL,
+                        actor_id               TEXT NOT NULL CHECK(length(actor_id) > 0),
+                        request_id             TEXT NOT NULL CHECK(length(request_id) > 0),
+                        payload_digest         TEXT NOT NULL CHECK(length(payload_digest) > 0),
+                        reason                 TEXT,
+                        version                INTEGER NOT NULL CHECK(version > 0),
+                        PRIMARY KEY(project_id, finding_key)
+                     );
+                     INSERT INTO narrative_maintenance_attention_v25
+                        (project_id, finding_key, disposition, material_basis_digest,
+                         snoozed_until, set_at, actor_id, request_id, payload_digest,
+                         reason, version)
+                     SELECT project_id, finding_key, disposition, material_basis_digest,
+                            snoozed_until, set_at,
+                            COALESCE(NULLIF(TRIM(COALESCE(set_by, '')), ''), 'unknown-legacy-actor'),
+                            'legacy-migration-v25',
+                            'legacy-migration-v25',
+                            NULL,
+                            1
+                       FROM narrative_maintenance_attention;
+                     DROP TABLE narrative_maintenance_attention;
+                     ALTER TABLE narrative_maintenance_attention_v25
+                        RENAME TO narrative_maintenance_attention;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_attention",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 25 attention migration changed row count ({row_count_before} -> {row_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_maintenance_attention'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 25 attention migration left foreign key violations"
         );
         Ok(())
     }

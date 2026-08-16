@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 24,
+  "schemaVersion": 25,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -7985,6 +7985,13 @@
     "narrative_maintenance_attention": {
       "kind": "table",
       "columns": {
+        "actor_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "disposition": {
           "ordinal": 2,
           "declaredType": "TEXT",
@@ -8006,12 +8013,33 @@
           "default": null,
           "primaryKey": 0
         },
+        "payload_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "project_id": {
           "ordinal": 0,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 1
+        },
+        "reason": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "request_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
         },
         "set_at": {
           "ordinal": 5,
@@ -8020,17 +8048,17 @@
           "default": null,
           "primaryKey": 0
         },
-        "set_by": {
-          "ordinal": 6,
+        "snoozed_until": {
+          "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
-        "snoozed_until": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": false,
+        "version": {
+          "ordinal": 10,
+          "declaredType": "INTEGER",
+          "notNull": true,
           "default": null,
           "primaryKey": 0
         }
@@ -8048,7 +8076,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_maintenance_attention ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), disposition TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), snoozed_until TEXT, set_at TEXT NOT NULL, set_by TEXT, PRIMARY KEY(project_id, finding_key) )"
+      "createSql": "CREATE TABLE \"narrative_maintenance_attention\" ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), disposition TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), snoozed_until TEXT, set_at TEXT NOT NULL, actor_id TEXT NOT NULL CHECK(length(actor_id) > 0), request_id TEXT NOT NULL CHECK(length(request_id) > 0), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), reason TEXT, version INTEGER NOT NULL CHECK(version > 0), PRIMARY KEY(project_id, finding_key) )"
     },
     "narrative_maintenance_finding_observations": {
       "kind": "table",
