@@ -671,6 +671,42 @@ fn duplicate_edge_keys(
     Ok(rows)
 }
 
+/// The `dependency-repair` Run Kind's `deactivate-duplicate-edge` category,
+/// made concrete: for every group of duplicate `(consumer_kind,
+/// consumer_key, source_object_identity)` keys ([`duplicate_edge_keys`]
+/// above only counts them), every id in that group *except* the
+/// most-recently-created one. `record_dependency_edge_in_tx`'s own upsert
+/// treats the newest Producer declaration as authoritative, so a Repair
+/// keeping that one and removing the rest is the one unambiguous,
+/// mechanically-derivable choice -- never a guess at which duplicate is
+/// "correct". `narrative_dependency_edges` has no soft-delete/status
+/// column, so "deactivate" here is the same hard `DELETE`
+/// [`rebuild_repair_dependency_edges_in_tx`] already performs for its own
+/// (pre-Run-Kind-Policy) callers.
+pub(crate) fn duplicate_edge_ids_to_deactivate(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id FROM narrative_dependency_edges e1
+          WHERE project_id = ?1
+            AND EXISTS (
+              SELECT 1 FROM narrative_dependency_edges e2
+               WHERE e2.project_id = e1.project_id
+                 AND e2.consumer_kind = e1.consumer_kind
+                 AND e2.consumer_key = e1.consumer_key
+                 AND e2.source_object_identity = e1.source_object_identity
+                 AND (e2.created_at > e1.created_at
+                      OR (e2.created_at = e1.created_at AND e2.id > e1.id))
+            )
+          ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// `RUN_CONSUMER_KIND`-declared Edges whose Consumer (Run) belongs to a
 /// different project than the Edge's own `project_id`. Edges under any
 /// other `consumer_kind` have no Run to cross-check against yet (this

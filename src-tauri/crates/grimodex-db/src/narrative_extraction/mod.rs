@@ -27,6 +27,7 @@ mod plot_thread_operations;
 mod plot_thread_undo;
 mod publish_runtime;
 mod reconciliation_envelope;
+mod repair;
 mod repository;
 mod restore_rebuild;
 mod semantic_bindings;

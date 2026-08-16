@@ -750,8 +750,76 @@ replayed against real SQLite via Python, plus four new
 `project_verify_*` Rust `#[cfg(test)]` unit tests and the snapshot-source
 regression test above.
 
-Still not implemented: the Repair lease/backup/sealed-plan/execution
-flow, and the five new IPC/N-API operations.
+**The `dependency-repair` Run Kind landed** (new module,
+`narrative_extraction/repair.rs`): the lease/backup/sealed-plan/execution
+machinery the ratified policy's `requiredPreconditions` fix, plus one
+real, end-to-end repair category.
+
+Scope, stated up front rather than discovered later: the policy's
+`allowedRepairs` names six categories; only `deactivate-duplicate-edge`
+is implemented, because it is the *only* one
+`verify_narrative_dependency_graph_for_project`'s current 6-of-13 check
+coverage can actually surface — the other five all need Verify checks
+this crate does not implement yet
+(`contribution-to-application-commit-correspondence`,
+`application-revision-artifact-references`,
+`legacy-mirror-migration-parity`). There is nothing yet to seal a repair
+plan *from* for those five. The safety machinery below is generic and
+does not need to change as more categories are added; only
+`seal_repair_plan` needs to grow.
+
+- `claim_repair_lease_in_tx`/`release_repair_lease_in_tx` — CAS over
+  `narrative_maintenance_repair_leases` (`PRIMARY KEY(project_id)`, one
+  row ever). A live (non-expired) lease for a *different* plan/owner is
+  rejected (`NEX_REPAIR_LEASE_HELD`); the *same* plan/owner re-claims
+  idempotently; an expired lease is freely reclaimed by anyone.
+- `seal_repair_plan` — deterministic plan sealing: sorts
+  `restore_rebuild::duplicate_edge_ids_to_deactivate`'s output (new —
+  for each duplicate-key group, every id except the newest, matching
+  `record_dependency_edge_in_tx`'s own "most recent Producer declaration
+  wins" semantic) into a canonical JSON shape and digests it
+  (`sha256:`-prefixed, via `digest_plan`). `RepairPlan::change_count()`
+  is the policy's `change-count-preview`.
+- `repair_narrative_dependency_declarations_for_project` — the
+  orchestrator, three ordered steps: (1) current-Semantic-Epoch match
+  (`NEX_REPAIR_EPOCH_MISMATCH` if the plan was sealed against a
+  since-rotated Epoch) + lease claim, one transaction; (2) automatic
+  backup (`backup_restore::create_persistent_live_safety_artifact`,
+  filesystem I/O, outside any DB transaction — a failure here releases
+  the lease just claimed and fails closed rather than proceeding without
+  a backup); (3) execute the plan
+  (`restore_rebuild::rebuild_repair_dependency_edges_in_tx`, pre-existing
+  Wave 2 code — `narrative_dependency_edges` has no soft-delete column,
+  so "deactivate" is the same hard `DELETE` that function already
+  performs) + release the lease, one transaction; on failure the lease is
+  explicitly released again in a fresh transaction (the failed
+  transaction's own rollback undoes the in-transaction release too), so
+  a failed repair never locks the project out of a corrected retry until
+  TTL expiry. `explicit_confirmation: bool` has no default — the caller
+  must pass `true`. An empty plan (nothing to repair) short-circuits
+  before the lease/backup machinery entirely.
+
+**Real bug caught by Python-replaying the lease CAS logic before
+committing**: a first draft of the "rejects a second different plan
+while active" test used a fixed near-term expiry
+(`2026-08-15T00:15:00Z`) that was already in the past relative to this
+sandbox's actual wall clock (`julianday('now')` compares against real
+time, not the session's fictional "current date") — the lease read as
+already-expired, so the intended rejection silently didn't fire. Fixed
+by using a deliberately far-future fixed timestamp
+(`2099-01-01T00:00:00Z`) instead of "a few minutes from whenever this
+test happens to run."
+
+Verified: the lease CAS logic (first claim, rejected second plan,
+idempotent re-claim, expired-lease reclaim) and the
+duplicate-edge-detection query replayed against real SQLite via Python,
+plus seven new Rust `#[cfg(test)]` unit tests against a real, file-backed
+(not `:memory:` — the backup step needs a real file to `VACUUM INTO`)
+`db.migrate()`-shaped workspace, covering plan sealing, confirmation
+requirement, full execute-and-release, epoch-mismatch rejection, and the
+lease CAS behavior end-to-end.
+
+Still not implemented: the five new IPC/N-API operations.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
