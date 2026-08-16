@@ -5291,7 +5291,7 @@ impl Backend {
                     "NEX_REPAIR_PLAN_DIGEST_REQUIRED: planDigest is required when apply is true"
                 )));
             };
-            if plan_digest != plan.digest.as_str() {
+            if plan_digest != plan.digest() {
                 return Err(AppError::Anyhow(anyhow::anyhow!(
                     "NEX_REPAIR_PLAN_DIGEST_MISMATCH: the supplied planDigest does not match \
                      the freshly-sealed plan -- the Durable Graph may have changed since the \

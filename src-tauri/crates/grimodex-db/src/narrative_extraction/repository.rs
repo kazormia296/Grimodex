@@ -406,10 +406,24 @@ fn find_run_by_request_identity(
         request.idempotency_domain,
         request.actor_id
     );
-    let outcome = outcome_json
-        .as_deref()
-        .and_then(|text| serde_json::from_str::<Value>(text).ok())
-        .unwrap_or(Value::Null);
+    // A stored outcome that will not parse is corruption, and this is a
+    // replay path: the caller is about to hand this value back as the
+    // authoritative answer for a request it believes already ran. Coercing
+    // unreadable JSON to `null` would turn that corruption into a
+    // confident-looking empty result, so it fails closed instead. A Run
+    // with *no* outcome recorded at all is different and stays `null` —
+    // that is the normal shape of a Run still in flight.
+    let outcome = match outcome_json.as_deref().map(str::trim) {
+        None | Some("") => Value::Null,
+        Some(text) => serde_json::from_str::<Value>(text).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_RUN_OUTCOME_MALFORMED: Run '{run_id}' (requestId '{}' in domain '{}') has \
+                 an unreadable outcome_summary_json: {error}",
+                request.request_id,
+                request.idempotency_domain
+            )
+        })?,
+    };
     Ok(Some(json!({
         "runId": run_id,
         "status": status,
