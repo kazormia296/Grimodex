@@ -6099,6 +6099,27 @@
     "narrative_application_contributions": {
       "kind": "table",
       "columns": {
+        "application_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "field_path": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -6113,13 +6134,6 @@
           "default": null,
           "primaryKey": 0
         },
-        "application_id": {
-          "ordinal": 2,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "target_object_identity": {
           "ordinal": 3,
           "declaredType": "TEXT",
@@ -6127,22 +6141,8 @@
           "default": null,
           "primaryKey": 0
         },
-        "field_path": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "target_state": {
           "ordinal": 5,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "created_at": {
-          "ordinal": 6,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6385,12 +6385,19 @@
     "narrative_change_cursors": {
       "kind": "table",
       "columns": {
-        "project_id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
+        "acknowledged_through_sequence": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
           "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "active_run_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
-          "primaryKey": 1
+          "primaryKey": 0
         },
         "consumer_id": {
           "ordinal": 1,
@@ -6399,15 +6406,8 @@
           "default": null,
           "primaryKey": 2
         },
-        "acknowledged_through_sequence": {
-          "ordinal": 2,
-          "declaredType": "INTEGER",
-          "notNull": true,
-          "default": "0",
-          "primaryKey": 0
-        },
-        "lease_owner": {
-          "ordinal": 3,
+        "last_error": {
+          "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -6420,17 +6420,24 @@
           "default": null,
           "primaryKey": 0
         },
-        "last_error": {
-          "ordinal": 5,
+        "lease_owner": {
+          "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
-        "updated_at": {
-          "ordinal": 6,
+        "project_id": {
+          "ordinal": 0,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "reserved_through_sequence": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -6441,17 +6448,10 @@
           "default": null,
           "primaryKey": 0
         },
-        "reserved_through_sequence": {
-          "ordinal": 8,
-          "declaredType": "INTEGER",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "active_run_id": {
-          "ordinal": 9,
+        "updated_at": {
+          "ordinal": 6,
           "declaredType": "TEXT",
-          "notNull": false,
+          "notNull": true,
           "default": null,
           "primaryKey": 0
         }
@@ -6489,7 +6489,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_change_cursors ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_id TEXT NOT NULL CHECK(length(consumer_id) > 0), acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged_through_sequence >= 0), lease_owner TEXT, lease_expires_at TEXT, last_error TEXT, updated_at TEXT NOT NULL, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), reserved_through_sequence INTEGER, active_run_id TEXT REFERENCES narrative_extraction_runs(id), PRIMARY KEY(project_id, consumer_id), CHECK( (active_run_id IS NULL AND reserved_through_sequence IS NULL) OR (active_run_id IS NOT NULL AND reserved_through_sequence IS NOT NULL AND semantic_epoch_id IS NOT NULL) ), CHECK( reserved_through_sequence IS NULL OR reserved_through_sequence >= acknowledged_through_sequence ) )"
+      "createSql": "CREATE TABLE \"narrative_change_cursors\" ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_id TEXT NOT NULL CHECK(length(consumer_id) > 0), acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged_through_sequence >= 0), lease_owner TEXT, lease_expires_at TEXT, last_error TEXT, updated_at TEXT NOT NULL, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), reserved_through_sequence INTEGER, active_run_id TEXT REFERENCES narrative_extraction_runs(id), PRIMARY KEY(project_id, consumer_id), CHECK( (active_run_id IS NULL AND reserved_through_sequence IS NULL) OR (active_run_id IS NOT NULL AND reserved_through_sequence IS NOT NULL AND semantic_epoch_id IS NOT NULL) ), CHECK( reserved_through_sequence IS NULL OR reserved_through_sequence >= acknowledged_through_sequence ) )"
     },
     "narrative_change_events": {
       "kind": "table",
@@ -7110,19 +7110,12 @@
     "narrative_consumer_freshness": {
       "kind": "table",
       "columns": {
-        "project_id": {
-          "ordinal": 0,
+        "build_action": {
+          "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
-          "primaryKey": 1
-        },
-        "consumer_kind": {
-          "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 2
+          "primaryKey": 0
         },
         "consumer_key": {
           "ordinal": 2,
@@ -7131,22 +7124,22 @@
           "default": null,
           "primaryKey": 3
         },
+        "consumer_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "dependency_set_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "evidence_freshness": {
           "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "build_action": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "semantic_epoch_id": {
-          "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -7159,17 +7152,24 @@
           "default": null,
           "primaryKey": 0
         },
-        "updated_at": {
-          "ordinal": 7,
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "semantic_epoch_id": {
+          "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
-        "dependency_set_digest": {
-          "ordinal": 8,
+        "updated_at": {
+          "ordinal": 7,
           "declaredType": "TEXT",
-          "notNull": false,
+          "notNull": true,
           "default": null,
           "primaryKey": 0
         }
@@ -7202,6 +7202,13 @@
     "narrative_dependency_edge_states": {
       "kind": "table",
       "columns": {
+        "build_action": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "edge_id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -7209,29 +7216,8 @@
           "default": null,
           "primaryKey": 1
         },
-        "project_id": {
-          "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "evidence_freshness": {
-          "ordinal": 2,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "reason_code": {
-          "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "build_action": {
-          "ordinal": 4,
+        "evaluated_at": {
+          "ordinal": 6,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -7244,10 +7230,17 @@
           "default": null,
           "primaryKey": 0
         },
-        "evaluated_at": {
-          "ordinal": 6,
+        "evidence_freshness": {
+          "ordinal": 2,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_source_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -7258,8 +7251,15 @@
           "default": null,
           "primaryKey": 0
         },
-        "observed_source_digest": {
-          "ordinal": 8,
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason_code": {
+          "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -7304,6 +7304,34 @@
     "narrative_dependency_edges": {
       "kind": "table",
       "columns": {
+        "consumer_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "generated_by_transaction_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -7318,27 +7346,6 @@
           "default": null,
           "primaryKey": 0
         },
-        "consumer_kind": {
-          "ordinal": 2,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "consumer_key": {
-          "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "source_object_identity": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "read_set_json": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -7346,15 +7353,8 @@
           "default": "'[]'",
           "primaryKey": 0
         },
-        "generated_by_transaction_id": {
-          "ordinal": 6,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "created_at": {
-          "ordinal": 7,
+        "source_object_identity": {
+          "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -7466,37 +7466,9 @@
     "narrative_extraction_attempts": {
       "kind": "table",
       "columns": {
-        "id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 1
-        },
-        "task_id": {
-          "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "attempt_number": {
           "ordinal": 2,
           "declaredType": "INTEGER",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "status": {
-          "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "started_at": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
@@ -7515,13 +7487,6 @@
           "default": null,
           "primaryKey": 0
         },
-        "output_json": {
-          "ordinal": 7,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
         "failure_code": {
           "ordinal": 8,
           "declaredType": "TEXT",
@@ -7529,8 +7494,22 @@
           "default": null,
           "primaryKey": 0
         },
-        "retry_disposition": {
-          "ordinal": 9,
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "next_attempt_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "output_json": {
+          "ordinal": 7,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -7543,114 +7522,44 @@
           "default": null,
           "primaryKey": 0
         },
-        "next_attempt_at": {
-          "ordinal": 11,
+        "retry_disposition": {
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
-        }
-      },
-      "foreignKeys": [],
-      "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_extraction_attempts ( id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','failed')), started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT, output_json TEXT, failure_code TEXT CHECK(failure_code IS NULL OR failure_code GLOB 'NEX_*'), retry_disposition TEXT CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')), policy_version TEXT, next_attempt_at TEXT, CHECK((next_attempt_at IS NULL) OR (retry_disposition IS NOT NULL AND retry_disposition = 'retryable')) )"
-    },
-    "narrative_extraction_runs": {
-      "kind": "table",
-      "columns": {
-        "id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 1
         },
-        "project_id": {
-          "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "surface_path_id": {
-          "ordinal": 2,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "scope_json": {
-          "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "spec_json": {
+        "started_at": {
           "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
-        "spec_digest": {
-          "ordinal": 5,
+        "status": {
+          "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
-        "snapshot_digest": {
-          "ordinal": 6,
+        "task_id": {
+          "ordinal": 1,
           "declaredType": "TEXT",
-          "notNull": false,
+          "notNull": true,
           "default": null,
           "primaryKey": 0
-        },
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE \"narrative_extraction_attempts\" ( id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','failed')), started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT, output_json TEXT, failure_code TEXT CHECK(failure_code IS NULL OR failure_code GLOB 'NEX_*'), retry_disposition TEXT CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')), policy_version TEXT, next_attempt_at TEXT, CHECK((next_attempt_at IS NULL) OR (retry_disposition IS NOT NULL AND retry_disposition = 'retryable')) )"
+    },
+    "narrative_extraction_runs": {
+      "kind": "table",
+      "columns": {
         "catalog_digest": {
           "ordinal": 7,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "registry_digest": {
-          "ordinal": 8,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "status": {
-          "ordinal": 9,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "coverage_json": {
-          "ordinal": 10,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": "'{}'",
-          "primaryKey": 0
-        },
-        "outcome_summary_json": {
-          "ordinal": 11,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "created_at": {
-          "ordinal": 12,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "started_at": {
-          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -7663,11 +7572,53 @@
           "default": null,
           "primaryKey": 0
         },
-        "version": {
-          "ordinal": 15,
-          "declaredType": "INTEGER",
+        "consumer_id": {
+          "ordinal": 17,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "coverage_json": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
           "notNull": true,
-          "default": "0",
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "outcome_summary_json": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "registry_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
           "primaryKey": 0
         },
         "run_kind": {
@@ -7677,10 +7628,10 @@
           "default": "'interpretation'",
           "primaryKey": 0
         },
-        "consumer_id": {
-          "ordinal": 17,
+        "scope_json": {
+          "ordinal": 3,
           "declaredType": "TEXT",
-          "notNull": false,
+          "notNull": true,
           "default": null,
           "primaryKey": 0
         },
@@ -7691,10 +7642,52 @@
           "default": null,
           "primaryKey": 0
         },
-        "work_key": {
-          "ordinal": 19,
+        "snapshot_digest": {
+          "ordinal": 6,
           "declaredType": "TEXT",
           "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "superseded_by_run_id": {
+          "ordinal": 21,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "surface_path_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
           "default": null,
           "primaryKey": 0
         },
@@ -7705,8 +7698,15 @@
           "default": null,
           "primaryKey": 0
         },
-        "superseded_by_run_id": {
-          "ordinal": 21,
+        "version": {
+          "ordinal": 15,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "work_key": {
+          "ordinal": 19,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -7746,7 +7746,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_extraction_runs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')), coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0, run_kind TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ( 'interpretation','freshness-evaluation','semantic-index-rebuild', 'manual-rebuild','backfill','dependency-verify','dependency-repair' )), consumer_id TEXT, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), work_key TEXT, terminal_reason_code TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'), superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id) )"
+      "createSql": "CREATE TABLE \"narrative_extraction_runs\" ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')), coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0, run_kind TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ( 'interpretation','freshness-evaluation','semantic-index-rebuild', 'manual-rebuild','backfill','dependency-verify','dependency-repair' )), consumer_id TEXT, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), work_key TEXT, terminal_reason_code TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'), superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id) )"
     },
     "narrative_extraction_task_edges": {
       "kind": "table",
@@ -7916,7 +7916,7 @@
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_extraction_tasks ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL, input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+      "createSql": "CREATE TABLE \"narrative_extraction_tasks\" ( id TEXT PRIMARY KEY, run_id TEXT NOT NULL, task_kind TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('queued','running','completed','failed','cancelled')), input_json TEXT NOT NULL DEFAULT '{}', output_json TEXT, priority INTEGER NOT NULL DEFAULT 0, attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT, heartbeat_at TEXT, error_message TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
     },
     "narrative_field_authority": {
       "kind": "table",
@@ -7985,12 +7985,12 @@
     "narrative_maintenance_attention": {
       "kind": "table",
       "columns": {
-        "project_id": {
-          "ordinal": 0,
+        "disposition": {
+          "ordinal": 2,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
-          "primaryKey": 1
+          "primaryKey": 0
         },
         "finding_key": {
           "ordinal": 1,
@@ -7999,13 +7999,6 @@
           "default": null,
           "primaryKey": 2
         },
-        "disposition": {
-          "ordinal": 2,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "material_basis_digest": {
           "ordinal": 3,
           "declaredType": "TEXT",
@@ -8013,12 +8006,12 @@
           "default": null,
           "primaryKey": 0
         },
-        "snoozed_until": {
-          "ordinal": 4,
+        "project_id": {
+          "ordinal": 0,
           "declaredType": "TEXT",
-          "notNull": false,
+          "notNull": true,
           "default": null,
-          "primaryKey": 0
+          "primaryKey": 1
         },
         "set_at": {
           "ordinal": 5,
@@ -8029,6 +8022,13 @@
         },
         "set_by": {
           "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "snoozed_until": {
+          "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -8053,6 +8053,27 @@
     "narrative_maintenance_finding_observations": {
       "kind": "table",
       "columns": {
+        "edge_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_freshness_snapshot": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finding_key": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -8060,8 +8081,29 @@
           "default": null,
           "primaryKey": 1
         },
+        "material_basis_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "project_id": {
           "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason_code": {
+          "ordinal": 6,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -8076,48 +8118,6 @@
         },
         "semantic_epoch_id": {
           "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "edge_id": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "finding_key": {
-          "ordinal": 5,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "reason_code": {
-          "ordinal": 6,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "evidence_freshness_snapshot": {
-          "ordinal": 7,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "material_basis_digest": {
-          "ordinal": 8,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "observed_at": {
-          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -8152,12 +8152,19 @@
     "narrative_maintenance_repair_leases": {
       "kind": "table",
       "columns": {
-        "project_id": {
-          "ordinal": 0,
+        "claimed_at": {
+          "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
-          "primaryKey": 1
+          "primaryKey": 0
+        },
+        "expires_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
         },
         "lease_owner": {
           "ordinal": 1,
@@ -8166,12 +8173,12 @@
           "default": null,
           "primaryKey": 0
         },
-        "verify_run_id": {
-          "ordinal": 2,
+        "project_id": {
+          "ordinal": 0,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
-          "primaryKey": 0
+          "primaryKey": 1
         },
         "repair_plan_digest": {
           "ordinal": 3,
@@ -8187,15 +8194,8 @@
           "default": null,
           "primaryKey": 0
         },
-        "claimed_at": {
-          "ordinal": 5,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "expires_at": {
-          "ordinal": 6,
+        "verify_run_id": {
+          "ordinal": 2,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -8817,6 +8817,20 @@
     "narrative_semantic_epochs": {
       "kind": "table",
       "columns": {
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "epoch_number": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -8827,13 +8841,6 @@
         "project_id": {
           "ordinal": 1,
           "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "epoch_number": {
-          "ordinal": 2,
-          "declaredType": "INTEGER",
           "notNull": true,
           "default": null,
           "primaryKey": 0
@@ -8849,13 +8856,6 @@
           "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "created_at": {
-          "ordinal": 5,
-          "declaredType": "TEXT",
-          "notNull": true,
           "default": null,
           "primaryKey": 0
         }
@@ -8885,36 +8885,8 @@
     "narrative_semantic_index_metadata": {
       "kind": "table",
       "columns": {
-        "project_id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 1
-        },
-        "index_key": {
-          "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 2
-        },
-        "generation": {
-          "ordinal": 2,
-          "declaredType": "INTEGER",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "built_at": {
           "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "source_digest": {
-          "ordinal": 4,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -8930,6 +8902,34 @@
         "dirty_cache_flag": {
           "ordinal": 6,
           "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "generation": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "index_key": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "source_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
