@@ -244,10 +244,11 @@ their own module doc comments, as internal helpers meant to be called from
   own doc comment says it never triggers a rebuild itself.
 - `legacy_backfill.rs` (Lane K) and `restore_rebuild.rs`'s
   `rebuild_verify_dependency_edges`/`rebuild_repair_dependency_edges_in_tx`
-  (Lane N): genuinely open — could be automatic (migration/restore-time)
-  or a human-triggered `integrity-repair` admin action
-  (`narrative_maintenance_backfill_run`/`_rebuild_verify`/`_rebuild_repair`
-  under the existing `restore-or-migration` route). Not yet decided.
+  (Lane N): **design ratified, see `narrative-run-kind-policy.json`
+  below** — Legacy Backfill and Rebuild-verify run automatically; only a
+  Repair that corrects a *durable* Dependency/Contribution declaration is
+  human-triggered. Run creation/scheduling for all four is still to be
+  implemented.
 
 No frontend UI exists yet for any of this beyond a Gate C0 placeholder
 (`src/features/narrative-extraction/.../StructureHealthPanel.tsx`,
@@ -380,9 +381,118 @@ been through `cargo check`/`cargo test`.
 
 Of Wave 1's 8 lanes, A, G, and H now have real transport landed; F needs
 none (a pure library). Lane N's own restore-path piece (epoch rotation)
-landed alongside Lane A above; its `rebuild_verify_dependency_edges`/
-`rebuild_repair_dependency_edges_in_tx` pair and Lane K's
-`legacy_backfill.rs` remain the one open admin-command question below.
+landed alongside Lane A above; its verify/rebuild pair and Lane K's
+`legacy_backfill.rs` now have a ratified Run Kind Policy (see below), but
+Run creation/scheduling for all four is still to be implemented.
+
+## Lane K/N Run Kind Policy (design ratified, implementation pending)
+
+`policies/narrative/narrative-run-kind-policy.json` (schema:
+`schemas/narrative-run-kind-policy.schema.json`, validator:
+`scripts/quality/validate-run-kind-policy.mjs`,
+`pnpm test:narrative:run-kind-policy`) fixes the design decision for the
+four remaining Lane K/N operations, replacing the earlier "genuinely
+open — automatic or human-triggered?" framing with one principle:
+
+> Migration and recomputation are the system's responsibility;
+> correcting a meaningful durable declaration is a human's responsibility.
+
+- **`dependency-backfill`** (Lane K; reuses the existing `run_kind =
+  'backfill'` column value) — automatic, once, after a schema upgrade. Not
+  inside the SCHEMA migration transaction itself: migration only creates
+  tables/columns/indexes and leaves a backfill-required marker; Workspace
+  open succeeds first, then a post-open bootstrap step detects the marker
+  and creates the Run. Lane G/H's dual-write into the Generic Graph must
+  already be enabled before Backfill starts, so no Application created
+  during Backfill is lost to the Backfill's own snapshot. The Run seals
+  `{projectId, runKind, semanticEpochId, legacySourceSchemaVersion,
+  legacyHighWaterMark, targetGraphContractDigest,
+  backfillAlgorithmVersion}` at creation. Editing is never blocked while
+  Backfill runs or if it fails — Legacy Freshness stays the read authority
+  throughout; only the C2-Z cutover is gated on completion. Auto-retry is
+  bounded to transient causes (SQLite busy, process interruption, app
+  shutdown, lease timeout, transient I/O); a contract-shaped failure
+  (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION` — cross-project
+  inconsistency, unknown legacy shape, digest mismatch, duplicate
+  identity, invalid Source, algorithm invariant violation) stops with
+  `retryDisposition: manual`. The admin commands
+  (`retryNarrativeLegacyBackfill`/`getNarrativeBackfillStatus`) are
+  failure-recovery tools, not the primary way to run it.
+- **`dependency-verify`** (Lane N's `rebuild_verify_dependency_edges`; no
+  existing `run_kind` value, new) — automatic after Backfill completes, a
+  Restore or Migration Semantic Epoch rotation, an Integrity Repair, or a
+  Dependency/Rule/Normalizer contract digest change, and once more right
+  before a C2-Z cutover attempt; manual re-run is also allowed. Skips
+  re-running when the same Epoch, graph contract, and Producer generation
+  set already passed. Read-only: may write only Run status, typed
+  diagnostics, Finding Observations, and its own report digest — it must
+  never repair Dependency Edge/Contribution/Freshness as a side effect
+  (`forbidSideEffectRepair: true` in the contract).
+- **`dependency-rebuild-derived`** (Lane N; reuses the existing `run_kind
+  = 'semantic-index-rebuild'` column value) — automatic whenever
+  Rebuildable Derived State (`narrative_dependency_edge_states`,
+  `narrative_consumer_freshness`,
+  `narrative_maintenance_finding_observations`, reanchor candidates,
+  Semantic Index generation/cache, the Freshness evaluator's cursor
+  reservation) is absent, contract-mismatched, digest-mismatched, or
+  Verify reports it as required. Never touches Domain data or the Durable
+  Dependency declarations Lane G/H own.
+- **`dependency-repair`** (Lane N's `rebuild_repair_dependency_edges_in_tx`,
+  generalized; no existing `run_kind` value, new) — manual-only. Requires
+  a successful Verify Run id, a sealed repair plan derived from that
+  Verify's result, the repair plan's digest, the current Semantic Epoch
+  matching, an exclusive Workspace lease, an automatic backup/snapshot,
+  explicit confirmation, a stable request id, and a change-count preview
+  before it runs. A crash mid-repair may resume the same already-approved
+  sealed plan automatically — that is recovery of an approved operation,
+  not a new repair decision. Allowed repairs are limited to what is
+  *reconstructible*, not *inferred*: an Edge fully rebuildable from the
+  Durable Ledger, an Artifact with an explicit Dependency Manifest, a
+  Proposal Revision Edge uniquely derivable from its own Source Basis/Read
+  Set, an Application Contribution uniquely derivable from its Commit
+  receipt, deactivating a duplicate Edge, or superseding a clear prior
+  generation. Forbidden: inferring a Dependency from payload semantic
+  analysis, AI-completing a missing Dependency, picking an ambiguous
+  target path, touching a Domain field, rewriting author ownership,
+  guessing an Evidence range, or re-adjudicating semantic truth. What
+  cannot be reconstructed this way is left `detached`/`unknown`/
+  `manual-review-required`, not guessed at.
+
+The prior two-value `rebuildNarrativeDependencyIndex(mode: verify|repair)`
+API shape is replaced by five named operations
+(`verifyNarrativeDependencyGraph`, `rebuildNarrativeDerivedState`,
+`repairNarrativeDependencyDeclarations`, `getNarrativeBackfillStatus`,
+`retryNarrativeLegacyBackfill`), so Background/scheduler code cannot
+accidentally reach Repair through a shared entrypoint.
+
+C2-Z cutover (Generic Consumer Freshness becoming canonical, ending
+Legacy Freshness's read authority) requires, per Workspace: Legacy
+Backfill completed, the current Epoch's Verify passed, no unresolved
+Durable Graph errors, Derived State rebuild completed, Legacy/Generic
+parity within contract, and no active Backfill/Repair Run. Until then,
+Legacy Freshness stays canonical and the Generic Graph stays shadow;
+ordinary editing is never blocked either way, only C2's own Structure
+Health/Freshness UI degrades to "semantic index is being prepared" or
+"semantic graph requires repair".
+
+This is a policy/schema-cross-check contract only — `validate-run-kind-policy.mjs`
+confirms internal consistency (all four Run Kinds present, repair-only
+fields confined to `dependency-repair`, `dependency-verify` is
+diagnostics-only and side-effect-free, every `adminCommands` entry is
+covered by the five named operations) and that every
+`existingRunKindColumnValue` it claims is actually accepted by the real
+`narrative_extraction_runs.run_kind` CHECK constraint in `migrate.rs`. It
+does not yet assert that Backfill/Verify/Rebuild/Repair Run creation, the
+post-open bootstrap trigger, the exclusive-lease/backup/sealed-plan Repair
+flow, or the five IPC operations exist. `dependency-backfill` and
+`dependency-rebuild-derived` reuse the existing `'backfill'`/
+`'semantic-index-rebuild'` column values with no schema change needed;
+`dependency-verify` and `dependency-repair` are genuinely new values the
+`run_kind` CHECK constraint does not accept yet, and extending it is
+itself a SCHEMA_VERSION bump (SQLite cannot `ALTER TABLE ADD` a
+multi-value `CHECK` to a populated table, the same constraint C2-01 hit
+for the status columns), so this remains a substantial, not-yet-started
+implementation task.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
