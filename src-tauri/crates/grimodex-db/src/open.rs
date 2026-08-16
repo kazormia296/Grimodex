@@ -539,6 +539,14 @@ pub(crate) fn spawn_workspace_maintenance_worker(
                     {
                         tracing::warn!("prune_old_logs in workspace maintenance failed: {error}");
                     }
+                    // Gate C2 Run Kind Policy `dependency-backfill`:
+                    // automatic-once, post-open, on this same detached
+                    // maintenance connection rather than the live
+                    // WorkspaceAuthority's -- best-effort by design, see
+                    // that function's own doc comment.
+                    crate::narrative_extraction::narrative_extraction_bootstrap_legacy_backfill(
+                        &maintenance_database,
+                    );
                     maybe_auto_backup(&workspace_path, &maintenance_database, config);
                 }
                 Err(error) => tracing::warn!(

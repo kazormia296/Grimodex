@@ -310,6 +310,43 @@ pub fn narrative_extraction_set_human_field_lock(
     })
 }
 
+/// Post-open bootstrap for Legacy Dependency Backfill (Gate C2 Run Kind
+/// Policy `dependency-backfill`): every Project in the workspace that
+/// doesn't already have a Backfill Run gets one, automatically. Meant to be
+/// called once from `open.rs`'s post-swap infallible zone; unlike every
+/// other function in this facade, it is not an IPC command (no payload, no
+/// `Value` return) and is best-effort by design — it logs and continues
+/// past a per-project failure rather than propagating, matching every
+/// other step in that zone (a failed Backfill must never fail the
+/// Workspace open itself; Legacy Freshness stays the read authority either
+/// way, per the Run Kind Policy's `duringBackfillProductBehavior`).
+pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
+    let project_ids: Vec<String> = match db.with_conn(|conn| {
+        let mut statement =
+            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }) {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(
+                "legacy dependency backfill bootstrap: failed to list projects: {error}"
+            );
+            return;
+        }
+    };
+    for project_id in project_ids {
+        if let Err(error) =
+            legacy_backfill::bootstrap_legacy_dependency_backfill_for_project(db, &project_id)
+        {
+            tracing::error!(
+                "legacy dependency backfill bootstrap failed for project '{project_id}': {error}"
+            );
+        }
+    }
+}
+
 pub fn temporal_scene_patch(
     db: &Database,
     payload: TemporalScenePatchPayload,

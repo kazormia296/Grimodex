@@ -589,8 +589,47 @@ end-to-end against real SQLite via Python, plus three new Rust
 re-run idempotency) alongside the four pre-existing Contribution-only
 tests, all against a real `db.migrate()`-shaped database.
 
-Still not implemented: the post-open bootstrap trigger for
-automatic-once Backfill, the evaluate→publish wiring gap (nothing yet
+**The post-open bootstrap trigger for automatic-once Backfill landed**
+(`legacy_backfill.rs`'s `bootstrap_legacy_dependency_backfill_for_project`,
+wired from `open.rs`'s `spawn_workspace_maintenance_worker` via
+`narrative_extraction_bootstrap_legacy_backfill`): every Project in a
+workspace that doesn't already have a `backfill` Run gets one,
+automatically, on the same detached maintenance connection
+`prune_old_logs`/`maybe_auto_backup` already use — not the live
+`WorkspaceAuthority`'s connection, so this never competes with or blocks
+the renderer's open. Three phases, each its own transaction, so a
+transform failure cannot erase the Run record explaining it: (1)
+reuse-check (`create_system_run_in_tx`,
+`SystemRunWorkKeyReuse::RunningAndCompleted`, matching the ratified
+policy's `sameWorkKeyReuse` exactly) + Run creation under a freshly
+ensured Semantic Epoch; (2) run
+`backfill_project_semantic_build_graph_in_tx`; (3) finalize the Run's
+status to `completed`/`failed`, always attempted even on phase 2 failure.
+A `failed` Run is not reused by phase 1, so the next workspace open
+retries automatically — `autoRetryableFailureClasses`' bounded auto-retry
+falls naturally out of "retry on next open," no separate retry loop
+needed. `create_system_run` (previous commit) was split into a
+`create_system_run_in_tx` core + a thin `Database`-level wrapper so this
+composes atomically in phase 1's transaction instead of nesting a second
+`BEGIN IMMEDIATE`.
+
+Known, documented gap: a crash strictly between phase 1 committing and
+phase 3 running leaves the Run stuck at `running`, which phase 1 then
+treats as "still in progress" and does not retry. Recovering a
+Run/Task/Attempt stuck `running` after a terminated process is a Lane B
+/ execution-state-model concern spanning every Run Kind (no existing
+mechanism for `narrative_extraction_runs` today, unlike
+`post_effect_runs`'s `recover_interrupted_post_effect_runs`), not
+something worth solving narrowly for Backfill alone here. Also not
+implemented: surfacing a persistent contract-violation failure to a human
+via the Maintenance Inbox rather than a per-open background log.
+
+Verified: the full 3-phase reuse/create/finalize sequence replayed
+end-to-end against real SQLite via Python, plus three new Rust
+`#[cfg(test)]` unit tests (creates-and-completes, automatic-once reuse
+across two calls, per-project independence).
+
+Still not implemented: the evaluate→publish wiring gap (nothing yet
 constructs an `EdgeComparisonInput` from real DB state to connect Lane
 F's `evaluator.rs` to Lane J's `publish_runtime.rs`), the ~10
 still-missing Verify checks in `restore_rebuild.rs`, the

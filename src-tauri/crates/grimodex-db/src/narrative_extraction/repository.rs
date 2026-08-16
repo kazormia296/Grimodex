@@ -223,44 +223,71 @@ pub(crate) fn create_system_run(
     spec_digest: &str,
     reuse: SystemRunWorkKeyReuse,
 ) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            create_system_run_in_tx(
+                conn,
+                project_id,
+                run_kind,
+                semantic_epoch_id,
+                work_key,
+                spec_json,
+                spec_digest,
+                reuse,
+            )
+        })
+    })
+}
+
+/// Core of [`create_system_run`], as an ambient-transaction helper: callers
+/// that need to compose Run creation atomically with other writes in the
+/// same transaction (e.g. the Backfill bootstrap trigger creating the Run
+/// and then immediately running the transform under it) call this directly
+/// instead of going through the `Database`-level wrapper, which would
+/// nest a second `BEGIN IMMEDIATE` on the same connection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_system_run_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+) -> anyhow::Result<Value> {
+    if let Some(reused) = find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)? {
+        return Ok(reused);
+    }
     let spec_json_text = serde_json::to_string(spec_json)?;
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
-    db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            if let Some(reused) =
-                find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)?
-            {
-                return Ok(reused);
-            }
-            let run_id = Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO narrative_extraction_runs
-                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, created_at, started_at, version,
-                     run_kind, semantic_epoch_id, work_key)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6,
-                         'running', ?7, datetime('now'), datetime('now'), 0,
-                         ?3, ?8, ?9)",
-                params![
-                    run_id,
-                    project_id,
-                    run_kind,
-                    scope_json_text,
-                    spec_json_text,
-                    spec_digest,
-                    coverage_json_text,
-                    semantic_epoch_id,
-                    work_key,
-                ],
-            )?;
-            Ok(json!({
-                "runId": run_id,
-                "status": "running",
-                "reused": false,
-            }))
-        })
-    })
+    let run_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, started_at, version,
+             run_kind, semantic_epoch_id, work_key)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                 'running', ?7, datetime('now'), datetime('now'), 0,
+                 ?3, ?8, ?9)",
+        params![
+            run_id,
+            project_id,
+            run_kind,
+            scope_json_text,
+            spec_json_text,
+            spec_digest,
+            coverage_json_text,
+            semantic_epoch_id,
+            work_key,
+        ],
+    )?;
+    Ok(json!({
+        "runId": run_id,
+        "status": "running",
+        "reused": false,
+    }))
 }
 
 fn find_reusable_system_run(

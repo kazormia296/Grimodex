@@ -70,12 +70,45 @@
 //! both report 0 on that second run.
 
 use rusqlite::{params, Connection};
+use serde_json::json;
 
 use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
 use super::dependency_edges::{
     record_dependency_edge_in_tx, source_object_identity_for, RUN_CONSUMER_KIND,
 };
+use super::digest_plan;
+use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
+use super::task_leases::with_immediate_transaction;
+use crate::Database;
+
+/// Work key every project's Legacy Dependency Backfill Run is created
+/// under (Run Kind Policy `dependency-backfill`). One logical Backfill per
+/// project, ever -- see [`bootstrap_legacy_dependency_backfill_for_project`].
+const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill";
+
+/// Sealed into the Run's `spec_json` per the Run Kind Policy's
+/// `sealedParameters`. This backfill has no legacy schema-version/
+/// high-water-mark to seal (its whole input is "every existing
+/// `narrative_proposal_applications`/`narrative_projection_dependencies`
+/// row", not a bounded/versioned slice), so `backfillAlgorithmVersion` is
+/// the one parameter worth sealing: bump it if this transform's write
+/// shape ever changes in a way that would make an older completed Run
+/// unsafe to treat as equivalent to a fresh one.
+const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "1";
+
+/// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
+pub(crate) enum LegacyBackfillBootstrapOutcome {
+    /// A Backfill Run for this project already existed
+    /// (`pending`/`running`/`completed`); this call did nothing further.
+    AlreadyRun { run_id: String },
+    /// This call created a fresh Run and ran the transform under it.
+    Ran {
+        run_id: String,
+        summary: BackfillSummary,
+    },
+}
 
 /// Field path recorded for every backfilled Contribution. Legacy
 /// Applications predate per-field Contribution tracking, so there is no
@@ -119,6 +152,115 @@ struct LegacyProjectionDependency {
     source_kind: String,
     source_key: String,
     observed_revision_token: String,
+}
+
+/// Automatic-once entry point for Legacy Dependency Backfill (Run Kind
+/// Policy `dependency-backfill`), meant to be called once per Project from
+/// a post-open bootstrap step (`open.rs`), not from any renderer-invoked
+/// IPC path. Unlike [`backfill_project_semantic_build_graph_in_tx`], this
+/// owns its own transaction(s) -- callers must not already be inside one.
+///
+/// Three phases, each its own transaction, so a Phase 2 failure cannot
+/// erase the Phase 1 Run record it should be explaining:
+///
+///   1. Reuse-check + Run creation (`create_system_run_in_tx`,
+///      `SystemRunWorkKeyReuse::RunningAndCompleted` -- matching the
+///      ratified policy's `sameWorkKeyReuse` exactly) under a freshly
+///      ensured/created Semantic Epoch. If a Run already exists
+///      `pending`/`running`/`completed`, this returns `AlreadyRun` and
+///      does nothing further.
+///   2. Run the transform itself
+///      (`backfill_project_semantic_build_graph_in_tx`) in its own
+///      transaction, so a failure rolls back only its own partial writes,
+///      never the Run record from phase 1.
+///   3. Finalize the Run's status to `completed`/`failed` based on phase
+///      2's outcome, in yet another transaction -- always attempted, even
+///      on phase 2 failure, so a failed attempt is visible via a `failed`
+///      Run row rather than stuck at `running` forever.
+///
+/// A `failed` Run is not reused by phase 1's `RunningAndCompleted` check,
+/// so the next workspace open retries automatically -- this is how
+/// `autoRetryableFailureClasses`' bounded auto-retry (SQLite busy,
+/// process interruption, app shutdown, lease timeout, transient I/O falls
+/// naturally out of "retry on next open", with no separate retry loop
+/// needed. A structurally-broken project
+/// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) would retry the same
+/// way and fail the same way every open; surfacing that persistently to a
+/// human via the Maintenance Inbox rather than a per-open background log
+/// is a follow-on, not implemented here.
+///
+/// Known gap, not addressed here: a crash strictly between phase 1
+/// committing and phase 3 running (the transform itself is a fast,
+/// bounded SQL scan+upsert, so this window is narrow but not zero) leaves
+/// the Run stuck at `running`, which phase 1's `RunningAndCompleted`
+/// check on the next open treats as "still in progress" and does not
+/// retry. Recovering a Run/Task/Attempt stuck `running` after a
+/// terminated process is a Lane B / execution-state-model concern
+/// spanning every Run Kind, not something specific to Backfill worth
+/// solving narrowly here.
+pub(crate) fn bootstrap_legacy_dependency_backfill_for_project(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
+    let now = grimodex_core::now_rfc3339_millis();
+
+    let (run_id, reused) = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let epoch_id = match get_current_epoch(conn, project_id)? {
+                Some(epoch) => epoch.id,
+                None => create_epoch_in_tx(conn, project_id, "initial", None)?,
+            };
+            let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            let created = create_system_run_in_tx(
+                conn,
+                project_id,
+                "backfill",
+                &epoch_id,
+                LEGACY_BACKFILL_WORK_KEY,
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningAndCompleted,
+            )?;
+            let run_id = created["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
+                .to_string();
+            let reused = created["reused"].as_bool().unwrap_or(false);
+            Ok((run_id, reused))
+        })
+    })?;
+
+    if reused {
+        return Ok(LegacyBackfillBootstrapOutcome::AlreadyRun { run_id });
+    }
+
+    let transform_result = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            backfill_project_semantic_build_graph_in_tx(conn, project_id, &now)
+        })
+    });
+
+    let finalize_status = if transform_result.is_ok() {
+        NarrativeRunStatus::Completed
+    } else {
+        NarrativeRunStatus::Failed
+    };
+    let finalize_result = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            transition_run_status_in_tx(conn, &run_id, finalize_status)
+        })
+    });
+    if let Err(finalize_error) = finalize_result {
+        tracing::error!(
+            "legacy dependency backfill: failed to finalize run '{run_id}' status: {finalize_error}"
+        );
+    }
+
+    match transform_result {
+        Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
+        Err(error) => Err(error),
+    }
 }
 
 /// Backfill one project's Semantic Build Graph foundation from its
@@ -752,5 +894,136 @@ mod tests {
             Ok(())
         })
         .expect("idempotent edge rerun");
+    }
+
+    fn run_kind_and_status(db: &Database, run_id: &str) -> (String, String, Option<String>) {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT run_kind, status, work_key FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read run")
+    }
+
+    #[test]
+    fn bootstrap_creates_and_completes_a_backfill_run() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+            seed_legacy_projection_dependency(
+                conn,
+                "app-1",
+                "scene-body",
+                "scene-1",
+                "v1@2026-08-14T00:00:00.000Z",
+            );
+            Ok(())
+        })
+        .expect("seed project");
+
+        let outcome = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("bootstrap backfill");
+        let run_id = match outcome {
+            LegacyBackfillBootstrapOutcome::Ran { run_id, summary } => {
+                assert_eq!(summary.contributions_created, 1);
+                assert_eq!(summary.edges_created, 1);
+                run_id
+            }
+            LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                panic!("first bootstrap call must create a fresh run, not reuse one")
+            }
+        };
+
+        let (run_kind, status, work_key) = run_kind_and_status(&db, &run_id);
+        assert_eq!(run_kind, "backfill");
+        assert_eq!(status, "completed");
+        assert_eq!(work_key.as_deref(), Some(LEGACY_BACKFILL_WORK_KEY));
+    }
+
+    #[test]
+    fn bootstrap_is_automatic_once_per_project() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            Ok(())
+        })
+        .expect("seed project");
+
+        let first = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("first bootstrap call");
+        let first_run_id = match first {
+            LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+            LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                panic!("first call must create a fresh run")
+            }
+        };
+
+        let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("second bootstrap call");
+        match second {
+            LegacyBackfillBootstrapOutcome::AlreadyRun { run_id } => {
+                assert_eq!(run_id, first_run_id, "must reuse the same completed run")
+            }
+            LegacyBackfillBootstrapOutcome::Ran { .. } => {
+                panic!("second call must not create a duplicate backfill run")
+            }
+        }
+
+        let run_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1' AND run_kind = 'backfill'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count backfill runs");
+        assert_eq!(run_count, 1, "exactly one backfill run must ever exist");
+    }
+
+    #[test]
+    fn bootstrap_handles_each_project_independently() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_project(conn, "project-2");
+            Ok(())
+        })
+        .expect("seed projects");
+
+        bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+            .expect("bootstrap project-1");
+        bootstrap_legacy_dependency_backfill_for_project(&db, "project-2")
+            .expect("bootstrap project-2");
+
+        for project_id in ["project-1", "project-2"] {
+            let run_count: i64 = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM narrative_extraction_runs
+                          WHERE project_id = ?1 AND run_kind = 'backfill'",
+                        params![project_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("count backfill runs");
+            assert_eq!(run_count, 1, "each project gets its own backfill run");
+        }
     }
 }
