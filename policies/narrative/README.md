@@ -542,8 +542,30 @@ is available (see the toolchain note below; unchanged from C2-01/Wave
 never regenerated in this environment; left as-is per the existing
 `pnpm generate:db-contract` note above rather than hand-edited.
 
-Still not implemented: `CreateRunPayload`/`create_run` accepting
-`run_kind`/`work_key`/`semantic_epoch_id` as inputs, the Backfill
+**`create_system_run` landed** (`narrative_extraction/repository.rs`): a
+new `pub(crate)` Run-creation path for the four system Run Kinds
+(Backfill/Verify/Rebuild-Derived/Repair), deliberately separate from the
+public, IPC-facing `create_run`/`CreateRunPayload` rather than an
+extension of it. Two reasons: extending `CreateRunPayload`'s fields would
+require updating every one of its ~29 struct-literal construction sites
+across 12 files with no working `cargo check` in this environment to
+catch a missed one; and system Run Kinds are infrastructure the system
+runs on itself, not AI extraction, so they must not gate on
+`require_narrative_extraction_allowed` the way `create_run` does — the
+"narrative extraction disabled" runtime toggle is about AI reading text,
+and per the policy's `duringBackfillProductBehavior`, the system's own
+Dependency Graph maintenance is never blocked by it. `create_system_run`
+takes `run_kind`/`semantic_epoch_id`/`work_key`/`spec_json`/`spec_digest`
+directly and implements `SystemRunWorkKeyReuse`
+(`RunningAndCompleted`/`RunningOnly`/`None`) matching each Run Kind's
+`sameWorkKeyReuse` policy field, so an idempotent trigger (e.g. the
+post-open Backfill bootstrap, still not implemented) can fire repeatedly
+without racing itself. Verified: the exact INSERT/reuse-query SQL
+replayed against real SQLite via Python, plus four Rust `#[cfg(test)]`
+unit tests against a real `db.migrate()`-shaped database covering kind/
+epoch/work_key persistence and all three reuse policies.
+
+Still not implemented: the Backfill
 Dependency Graph transform (`legacy_backfill.rs` reading
 `narrative_projection_dependencies`/`narrative_projection_freshness` and
 writing `narrative_dependency_edges` — today only Epoch/Contribution

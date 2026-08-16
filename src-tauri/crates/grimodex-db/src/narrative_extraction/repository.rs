@@ -180,6 +180,117 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     })
 }
 
+/// Work-key reuse policy for [`create_system_run`], per each Run Kind's
+/// `sameWorkKeyReuse` in `policies/narrative/narrative-run-kind-policy.json`.
+pub(crate) enum SystemRunWorkKeyReuse {
+    /// `dependency-backfill`: an automatic-once trigger firing again while a
+    /// prior attempt is still running, or after one already completed, must
+    /// not create a second Run.
+    RunningAndCompleted,
+    /// `dependency-verify` / `dependency-rebuild-derived`: a second trigger
+    /// while one is already running reuses it; a completed Run does not
+    /// short-circuit a fresh request on its own — Verify's `skipReRunWhen`
+    /// and Rebuild's `completedRunReuseNote` are the caller's decision to
+    /// make before calling this, not this dedup's.
+    RunningOnly,
+    /// `dependency-repair`: `sameWorkKeyReuse: "no-automatic-reuse-decision"`
+    /// — exclusivity is the Repair lease's job, not work-key dedup here.
+    None,
+}
+
+/// Create a system-triggered (Backfill/Verify/Rebuild-Derived/Repair) Run.
+///
+/// Distinct from [`create_run`]: system Run Kinds are infrastructure the
+/// system runs on itself, not AI extraction, so this does not gate on
+/// [`require_narrative_extraction_allowed`] — the "narrative extraction
+/// disabled" runtime policy toggle is about AI reading text, and per the
+/// Run Kind Policy's `duringBackfillProductBehavior`, editing (and by the
+/// same principle, the system's own maintenance of the Dependency Graph)
+/// is never blocked by it.
+///
+/// `work_key` scopes reuse: passing the same `work_key` for the same
+/// `run_kind`/`project_id` while a prior Run is still eligible per `reuse`
+/// returns that Run instead of creating a duplicate, so an idempotent
+/// trigger (e.g. the post-open Backfill bootstrap) can fire repeatedly
+/// without racing itself.
+pub(crate) fn create_system_run(
+    db: &Database,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+) -> anyhow::Result<Value> {
+    let spec_json_text = serde_json::to_string(spec_json)?;
+    let scope_json_text = serde_json::to_string(&default_object_json())?;
+    let coverage_json_text = serde_json::to_string(&default_object_json())?;
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            if let Some(reused) =
+                find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)?
+            {
+                return Ok(reused);
+            }
+            let run_id = Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, version,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                         'running', ?7, datetime('now'), datetime('now'), 0,
+                         ?3, ?8, ?9)",
+                params![
+                    run_id,
+                    project_id,
+                    run_kind,
+                    scope_json_text,
+                    spec_json_text,
+                    spec_digest,
+                    coverage_json_text,
+                    semantic_epoch_id,
+                    work_key,
+                ],
+            )?;
+            Ok(json!({
+                "runId": run_id,
+                "status": "running",
+                "reused": false,
+            }))
+        })
+    })
+}
+
+fn find_reusable_system_run(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    work_key: &str,
+    reuse: &SystemRunWorkKeyReuse,
+) -> anyhow::Result<Option<Value>> {
+    let status_clause = match reuse {
+        SystemRunWorkKeyReuse::RunningAndCompleted => "status IN ('pending','running','completed')",
+        SystemRunWorkKeyReuse::RunningOnly => "status IN ('pending','running')",
+        SystemRunWorkKeyReuse::None => return Ok(None),
+    };
+    let sql = format!(
+        "SELECT id, status FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3 AND {status_clause}
+          ORDER BY created_at DESC LIMIT 1"
+    );
+    conn.query_row(&sql, params![project_id, run_kind, work_key], |row| {
+        Ok(json!({
+            "runId": row.get::<_, String>(0)?,
+            "status": row.get::<_, String>(1)?,
+            "reused": true,
+        }))
+    })
+    .optional()
+    .map_err(Into::into)
+}
+
 fn insert_task_seed(
     conn: &Connection,
     run_id: &str,
@@ -1920,5 +2031,184 @@ mod unit_tests {
             2,
             "a legacy-unbound Proposal must not add or remove the Run's existing Edges"
         );
+    }
+
+    fn seed_epoch(db: &Database, project_id: &str) -> String {
+        db.with_conn(|conn| super::super::create_epoch_in_tx(conn, project_id, "initial", None))
+            .expect("create epoch")
+    }
+
+    #[test]
+    fn create_system_run_writes_kind_epoch_and_work_key() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+
+        let created = create_system_run(
+            &db,
+            "project-1",
+            "dependency-verify",
+            &epoch_id,
+            "verify-work-key",
+            &json!({ "graphContractDigest": "digest-graph-1" }),
+            "spec-digest-1",
+            SystemRunWorkKeyReuse::RunningOnly,
+        )
+        .expect("create system run");
+        assert_eq!(created["status"], "running");
+        assert_eq!(created["reused"], false);
+        let run_id = created["runId"].as_str().expect("runId").to_string();
+
+        let (run_kind, semantic_epoch_id, work_key, spec_digest): (String, String, String, String) =
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT run_kind, semantic_epoch_id, work_key, spec_digest
+                       FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read created run");
+        assert_eq!(run_kind, "dependency-verify");
+        assert_eq!(semantic_epoch_id, epoch_id);
+        assert_eq!(work_key, "verify-work-key");
+        assert_eq!(spec_digest, "spec-digest-1");
+    }
+
+    #[test]
+    fn create_system_run_running_only_reuses_running_but_not_completed() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "dependency-rebuild-derived",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+        )
+        .expect("create first run");
+        assert_eq!(first["reused"], false);
+
+        // A second request against the same work_key while the first is
+        // still 'running' must reuse it, not create a duplicate.
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "dependency-rebuild-derived",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+        )
+        .expect("create second run");
+        assert_eq!(second["reused"], true);
+        assert_eq!(second["runId"], first["runId"]);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'completed' WHERE id = ?1",
+                params![first["runId"].as_str().expect("runId")],
+            )?;
+            Ok(())
+        })
+        .expect("mark first run completed");
+
+        // RunningOnly must not reuse a completed Run: a fresh rebuild
+        // request after the prior one finished must be able to run again.
+        let third = create_system_run(
+            &db,
+            "project-1",
+            "dependency-rebuild-derived",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+        )
+        .expect("create third run");
+        assert_eq!(third["reused"], false);
+        assert_ne!(third["runId"], first["runId"]);
+    }
+
+    #[test]
+    fn create_system_run_running_and_completed_reuses_a_completed_run() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "backfill",
+            &epoch_id,
+            "backfill-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningAndCompleted,
+        )
+        .expect("create first run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'completed' WHERE id = ?1",
+                params![first["runId"].as_str().expect("runId")],
+            )?;
+            Ok(())
+        })
+        .expect("mark first run completed");
+
+        // dependency-backfill's automatic-once trigger firing again after
+        // the prior attempt already completed must not create a second Run.
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "backfill",
+            &epoch_id,
+            "backfill-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningAndCompleted,
+        )
+        .expect("create second run");
+        assert_eq!(second["reused"], true);
+        assert_eq!(second["runId"], first["runId"]);
+    }
+
+    #[test]
+    fn create_system_run_none_reuse_never_dedups() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "dependency-repair",
+            &epoch_id,
+            "repair-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::None,
+        )
+        .expect("create first run");
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "dependency-repair",
+            &epoch_id,
+            "repair-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::None,
+        )
+        .expect("create second run");
+        assert_eq!(first["reused"], false);
+        assert_eq!(second["reused"], false);
+        assert_ne!(first["runId"], second["runId"]);
     }
 }
