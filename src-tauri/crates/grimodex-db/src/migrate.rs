@@ -3897,8 +3897,7 @@ impl Database {
                      SELECT id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                             snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
                             outcome_summary_json, created_at, started_at, completed_at, version,
-                            run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
-                            superseded_by_run_id
+                            'interpretation', NULL, NULL, NULL, NULL, NULL
                        FROM narrative_extraction_runs;
                      DROP TABLE narrative_extraction_runs;
                      ALTER TABLE narrative_extraction_runs_v23 RENAME TO narrative_extraction_runs;

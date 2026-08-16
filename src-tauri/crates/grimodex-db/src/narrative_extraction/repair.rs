@@ -422,26 +422,43 @@ mod tests {
     }
 
     fn seed_duplicate_edges(db: &Database) -> (String, String) {
+        let old_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-1",
+                    r#"["v1@t"]"#,
+                    None,
+                    "2026-08-14T00:00:00.000Z",
+                )
+            })
+            .expect("seed first edge");
+        // `narrative_dependency_edges`'s own UNIQUE(project_id, consumer_kind,
+        // consumer_key, source_object_identity) makes a genuine duplicate
+        // structurally impossible through any writer -- including a raw
+        // INSERT with the same key, which SQLite enforces regardless of
+        // caller (exactly what `duplicate_edge_keys`'s doc comment
+        // describes). To build the fixture this test needs, drop that
+        // constraint on this throwaway per-test database only (`CREATE
+        // TABLE ... AS SELECT` never carries constraints over) before
+        // inserting the duplicate; the whole database is discarded when the
+        // test ends, so there is no need to restore it.
         db.with_conn(|conn| {
-            let old_id = record_dependency_edge_in_tx(
-                conn,
-                "project-1",
-                RUN_CONSUMER_KIND,
-                "run-1",
-                "project:scene:scene-1",
-                r#"["v1@t"]"#,
-                None,
-                "2026-08-14T00:00:00.000Z",
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 CREATE TABLE narrative_dependency_edges_unconstrained AS
+                    SELECT * FROM narrative_dependency_edges;
+                 DROP TABLE narrative_dependency_edges;
+                 ALTER TABLE narrative_dependency_edges_unconstrained
+                    RENAME TO narrative_dependency_edges;
+                 PRAGMA foreign_keys = ON;",
             )?;
-            Ok(old_id)
+            Ok(())
         })
-        .expect("seed first edge");
-        // A second write to a DIFFERENT project so the first row above is
-        // NOT upserted away: record_dependency_edge_in_tx upserts on the
-        // same (project, consumer, source) key, so a genuine duplicate
-        // pair must be inserted directly, bypassing that writer, exactly
-        // as `duplicate_edge_keys`'s own doc comment describes as the
-        // only way this table could ever hold one.
+        .expect("drop the UNIQUE constraint on this throwaway test db");
         let new_id = db
             .with_conn(|conn| {
                 let id = uuid::Uuid::new_v4().to_string();

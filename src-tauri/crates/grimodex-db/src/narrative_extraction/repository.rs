@@ -1928,7 +1928,7 @@ mod unit_tests {
                 .map_err(Into::into)
             })
             .expect("scene source revision");
-        let source_key = format!("project:scene:{scene_id}");
+        let source_key = scene_id.to_string();
         let revision_token = format!("v{version}@{updated_at}");
         let read_set = json!([{
             "kind": "snapshot-document",
@@ -2122,7 +2122,7 @@ mod unit_tests {
         let first = create_system_run(
             &db,
             "project-1",
-            "dependency-rebuild-derived",
+            "semantic-index-rebuild",
             &epoch_id,
             "rebuild-work-key",
             &spec,
@@ -2137,7 +2137,7 @@ mod unit_tests {
         let second = create_system_run(
             &db,
             "project-1",
-            "dependency-rebuild-derived",
+            "semantic-index-rebuild",
             &epoch_id,
             "rebuild-work-key",
             &spec,
@@ -2162,7 +2162,7 @@ mod unit_tests {
         let third = create_system_run(
             &db,
             "project-1",
-            "dependency-rebuild-derived",
+            "semantic-index-rebuild",
             &epoch_id,
             "rebuild-work-key",
             &spec,
