@@ -539,14 +539,33 @@ pub(crate) fn spawn_workspace_maintenance_worker(
                     {
                         tracing::warn!("prune_old_logs in workspace maintenance failed: {error}");
                     }
-                    // Gate C2 Run Kind Policy `dependency-backfill`:
-                    // automatic-once, post-open, on this same detached
-                    // maintenance connection rather than the live
-                    // WorkspaceAuthority's -- best-effort by design, see
-                    // that function's own doc comment.
-                    crate::narrative_extraction::narrative_extraction_bootstrap_legacy_backfill(
-                        &maintenance_database,
-                    );
+                    // Gate C2 Run Kind Policy `dependency-backfill` is
+                    // deliberately NOT triggered here. Do not re-add this
+                    // call without first fixing the hazard below.
+                    //
+                    // The backfill commits three times per project
+                    // (`legacy_backfill.rs`: Run creation / transform /
+                    // finalize), and `migrate` seeds `default-project`, so
+                    // it wrote on every workspace open -- including brand
+                    // new ones. Most foreground domain writes open a
+                    // *deferred* transaction (`unchecked_transaction()` in
+                    // `domain_writes.rs`), which takes a read snapshot and
+                    // only upgrades to a write on its first INSERT. Any
+                    // commit from another connection in that window fails
+                    // the upgrade with SQLITE_BUSY_SNAPSHOT, which
+                    // `busy_timeout` cannot retry -- the same hazard
+                    // `execute.rs`'s `BEGIN IMMEDIATE` comment documents
+                    // for the MCP process. The result was immediate
+                    // (single-digit ms) "database is locked" failures in
+                    // foreground writes running just after open.
+                    //
+                    // Re-wiring this needs one of: running the backfill on
+                    // the live authority's own connection (no second
+                    // writer), or making `domain_writes.rs`'s deferred
+                    // transactions IMMEDIATE. Bounded batching alone would
+                    // make it worse, not better -- it raises the commit
+                    // count. Until then the Backfill stays reachable via
+                    // its Admin IPC (`retryNarrativeLegacyBackfill`).
                     maybe_auto_backup(&workspace_path, &maintenance_database, config);
                 }
                 Err(error) => tracing::warn!(

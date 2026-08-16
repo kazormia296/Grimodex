@@ -338,16 +338,22 @@ pub fn narrative_extraction_set_human_field_lock(
     })
 }
 
-/// Post-open bootstrap for Legacy Dependency Backfill (Gate C2 Run Kind
-/// Policy `dependency-backfill`): every Project in the workspace that
-/// doesn't already have a Backfill Run gets one, automatically. Meant to be
-/// called once from `open.rs`'s post-swap infallible zone; unlike every
-/// other function in this facade, it is not an IPC command (no payload, no
+/// Workspace-wide bootstrap for Legacy Dependency Backfill (Gate C2 Run
+/// Kind Policy `dependency-backfill`): every Project in the workspace that
+/// doesn't already have a Backfill Run gets one. Unlike every other
+/// function in this facade it is not an IPC command (no payload, no
 /// `Value` return) and is best-effort by design — it logs and continues
-/// past a per-project failure rather than propagating, matching every
-/// other step in that zone (a failed Backfill must never fail the
-/// Workspace open itself; Legacy Freshness stays the read authority either
-/// way, per the Run Kind Policy's `duringBackfillProductBehavior`).
+/// past a per-project failure rather than propagating (a failed Backfill
+/// must never fail the Workspace open itself; Legacy Freshness stays the
+/// read authority either way, per the Run Kind Policy's
+/// `duringBackfillProductBehavior`).
+///
+/// **Currently unwired.** It was called from `open.rs`'s post-swap zone
+/// until that turned every workspace open into a second-connection writer
+/// and started failing foreground deferred transactions with
+/// SQLITE_BUSY_SNAPSHOT; see the comment at the former call site in
+/// `open.rs` for the hazard and what re-wiring requires. Retained because
+/// it is the intended automatic-once entry point once that is fixed.
 pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
     let project_ids: Vec<String> = match db.with_conn(|conn| {
         let mut statement =

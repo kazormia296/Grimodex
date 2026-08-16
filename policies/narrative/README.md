@@ -589,15 +589,31 @@ end-to-end against real SQLite via Python, plus three new Rust
 re-run idempotency) alongside the four pre-existing Contribution-only
 tests, all against a real `db.migrate()`-shaped database.
 
-**The post-open bootstrap trigger for automatic-once Backfill landed**
-(`legacy_backfill.rs`'s `bootstrap_legacy_dependency_backfill_for_project`,
-wired from `open.rs`'s `spawn_workspace_maintenance_worker` via
-`narrative_extraction_bootstrap_legacy_backfill`): every Project in a
-workspace that doesn't already have a `backfill` Run gets one,
-automatically, on the same detached maintenance connection
-`prune_old_logs`/`maybe_auto_backup` already use — not the live
-`WorkspaceAuthority`'s connection, so this never competes with or blocks
-the renderer's open. Three phases, each its own transaction, so a
+**The Backfill bootstrap landed, but its post-open trigger was
+subsequently unwired** (`legacy_backfill.rs`'s
+`bootstrap_legacy_dependency_backfill_for_project`; the
+`narrative_extraction_bootstrap_legacy_backfill` facade remains, with no
+caller). It was wired from `open.rs`'s workspace-maintenance worker, on
+the same detached maintenance connection
+`prune_old_logs`/`maybe_auto_backup` already use, on the assumption that
+staying off the live `WorkspaceAuthority`'s connection meant it could
+never compete with the renderer. That assumption was wrong: most
+foreground domain writes use a *deferred* transaction
+(`unchecked_transaction()` in `domain_writes.rs`), which takes a read
+snapshot and upgrades to a write on its first INSERT — and any commit
+from another connection in that window fails the upgrade with
+SQLITE_BUSY_SNAPSHOT, which `busy_timeout` cannot retry (the same hazard
+`execute.rs` documents for the standalone MCP process). Because `migrate`
+seeds `default-project`, the Backfill committed on *every* workspace
+open, including brand-new ones, so foreground writes running just after
+open failed immediately with "database is locked". Re-wiring requires
+either running the Backfill on the live authority's own connection or
+making `domain_writes.rs`'s deferred transactions IMMEDIATE; bounded
+batching alone would worsen it by raising the commit count. The Backfill
+stays reachable via its Admin IPC (`retryNarrativeLegacyBackfill`).
+
+The transform itself is unchanged and still uses three phases, each its
+own transaction, so a
 transform failure cannot erase the Run record explaining it: (1)
 reuse-check (`create_system_run_in_tx`,
 `SystemRunWorkKeyReuse::RunningAndCompleted`, matching the ratified
@@ -605,10 +621,11 @@ policy's `sameWorkKeyReuse` exactly) + Run creation under a freshly
 ensured Semantic Epoch; (2) run
 `backfill_project_semantic_build_graph_in_tx`; (3) finalize the Run's
 status to `completed`/`failed`, always attempted even on phase 2 failure.
-A `failed` Run is not reused by phase 1, so the next workspace open
-retries automatically — `autoRetryableFailureClasses`' bounded auto-retry
-falls naturally out of "retry on next open," no separate retry loop
-needed. `create_system_run` (previous commit) was split into a
+A `failed` Run is not reused by phase 1, so a later invocation retries it;
+with the post-open trigger unwired that retry is operator-driven, and
+`autoRetryableFailureClasses`' bounded auto-retry only falls out of
+"retry on next open" once that trigger is restored.
+`create_system_run` (previous commit) was split into a
 `create_system_run_in_tx` core + a thin `Database`-level wrapper so this
 composes atomically in phase 1's transaction instead of nesting a second
 `BEGIN IMMEDIATE`.

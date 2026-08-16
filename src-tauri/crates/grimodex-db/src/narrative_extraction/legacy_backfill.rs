@@ -155,11 +155,20 @@ struct LegacyProjectionDependency {
     observed_revision_token: String,
 }
 
-/// Automatic-once entry point for Legacy Dependency Backfill (Run Kind
-/// Policy `dependency-backfill`), meant to be called once per Project from
-/// a post-open bootstrap step (`open.rs`), not from any renderer-invoked
-/// IPC path. Unlike [`backfill_project_semantic_build_graph_in_tx`], this
-/// owns its own transaction(s) -- callers must not already be inside one.
+/// Entry point for Legacy Dependency Backfill (Run Kind Policy
+/// `dependency-backfill`), run once per Project. Unlike
+/// [`backfill_project_semantic_build_graph_in_tx`], this owns its own
+/// transaction(s) -- callers must not already be inside one.
+///
+/// Its only production caller today is the Admin IPC
+/// `retryNarrativeLegacyBackfill`. The policy's `automatic-once` post-open
+/// trigger is intentionally **not** wired: committing from a second
+/// connection while the foreground holds a deferred transaction fails that
+/// transaction with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` cannot
+/// retry (see the long comment at the former call site in `open.rs`, and
+/// `execute.rs`'s `BEGIN IMMEDIATE` note). Re-wiring it requires either
+/// running on the live authority's connection or making
+/// `domain_writes.rs`'s deferred transactions IMMEDIATE.
 ///
 /// Three phases, each its own transaction, so a Phase 2 failure cannot
 /// erase the Phase 1 Run record it should be explaining:
@@ -180,25 +189,24 @@ struct LegacyProjectionDependency {
 ///      Run row rather than stuck at `running` forever.
 ///
 /// A `failed` Run is not reused by phase 1's `RunningAndCompleted` check,
-/// so the next workspace open retries automatically -- this is how
+/// so a later invocation retries it. With the post-open trigger unwired,
+/// that retry is operator-driven (the Admin IPC) rather than automatic:
 /// `autoRetryableFailureClasses`' bounded auto-retry (SQLite busy,
-/// process interruption, app shutdown, lease timeout, transient I/O falls
-/// naturally out of "retry on next open", with no separate retry loop
-/// needed. A structurally-broken project
-/// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) would retry the same
-/// way and fail the same way every open; surfacing that persistently to a
-/// human via the Maintenance Inbox rather than a per-open background log
-/// is a follow-on, not implemented here.
+/// process interruption, app shutdown, lease timeout, transient I/O) will
+/// only fall out of "retry on next open" once that trigger is restored.
+/// A structurally-broken project
+/// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) fails the same way on
+/// every invocation; surfacing that persistently to a human via the
+/// Maintenance Inbox is a follow-on, not implemented here.
 ///
 /// Known gap, not addressed here: a crash strictly between phase 1
 /// committing and phase 3 running (the transform itself is a fast,
 /// bounded SQL scan+upsert, so this window is narrow but not zero) leaves
 /// the Run stuck at `running`, which phase 1's `RunningAndCompleted`
-/// check on the next open treats as "still in progress" and does not
-/// retry. Recovering a Run/Task/Attempt stuck `running` after a
-/// terminated process is a Lane B / execution-state-model concern
-/// spanning every Run Kind, not something specific to Backfill worth
-/// solving narrowly here.
+/// check treats as "still in progress" and does not retry. Recovering a
+/// Run/Task/Attempt stuck `running` after a terminated process is a Lane
+/// B / execution-state-model concern spanning every Run Kind, not
+/// something specific to Backfill worth solving narrowly here.
 pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
