@@ -26,6 +26,10 @@
 //! do with the `bool` this module returns (e.g. schedule a rebuild). This
 //! module never triggers a rebuild itself -- that trigger is a separate
 //! caller's responsibility, out of scope for this Lane.
+//!
+//! No production caller has landed yet -- kept alongside its own full unit
+//! test coverage until a Semantic Index build/rebuild path wires it in.
+#![allow(dead_code)]
 
 use sha2::Digest;
 

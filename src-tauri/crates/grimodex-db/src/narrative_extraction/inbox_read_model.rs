@@ -314,6 +314,7 @@ mod tests {
         db
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn seed_consumer_freshness(
         conn: &Connection,
         project_id: &str,
@@ -795,7 +796,9 @@ mod tests {
                 None,
             )?;
 
-            let snapshot_before: Vec<(
+            // (project_id, finding_key, disposition, material_basis_digest,
+            // snoozed_until, set_at, set_by) -- clippy::type_complexity.
+            type AttentionRow = (
                 String,
                 String,
                 String,
@@ -803,7 +806,9 @@ mod tests {
                 Option<String>,
                 String,
                 Option<String>,
-            )> = conn
+            );
+
+            let snapshot_before: Vec<AttentionRow> = conn
                 .prepare(
                     "SELECT project_id, finding_key, disposition, material_basis_digest,
                             snoozed_until, set_at, set_by
@@ -833,15 +838,7 @@ mod tests {
                 "one consumer hidden by an active snooze, two surfaced"
             );
 
-            let snapshot_after: Vec<(
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                String,
-                Option<String>,
-            )> = conn
+            let snapshot_after: Vec<AttentionRow> = conn
                 .prepare(
                     "SELECT project_id, finding_key, disposition, material_basis_digest,
                             snoozed_until, set_at, set_by

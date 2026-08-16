@@ -167,6 +167,11 @@ pub(crate) fn record_dependency_edge_in_tx(
 /// read of `source_object_identity` in this project. This is the core query
 /// the Freshness re-evaluation flow uses after a Source mutation lands on
 /// the Change Feed.
+/// No production caller yet -- the Change Feed-driven Freshness
+/// re-evaluation flow this Reverse Dependency Lookup is designed for
+/// (see `publish_runtime.rs`'s module doc pipeline diagram) has not
+/// landed.
+#[allow(dead_code)]
 pub(crate) fn find_edges_by_source(
     conn: &Connection,
     project_id: &str,
@@ -211,6 +216,10 @@ pub(crate) fn find_edges_by_consumer(
 /// can re-declare its current read set from a clean slate instead of
 /// accumulating Edges to Sources it no longer reads. Ambient-transaction
 /// helper: no `BEGIN`/`COMMIT` of its own.
+///
+/// No production caller yet -- the re-run Producer flow this clean-slate
+/// helper is designed for has not landed.
+#[allow(dead_code)]
 pub(crate) fn delete_edges_for_consumer_in_tx(
     conn: &Connection,
     project_id: &str,

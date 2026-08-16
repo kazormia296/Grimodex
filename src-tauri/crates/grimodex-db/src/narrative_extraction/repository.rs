@@ -195,6 +195,9 @@ pub(crate) enum SystemRunWorkKeyReuse {
     RunningOnly,
     /// `dependency-repair`: `sameWorkKeyReuse: "no-automatic-reuse-decision"`
     /// — exclusivity is the Repair lease's job, not work-key dedup here.
+    /// No production caller yet -- `create_system_run` below has none
+    /// (repair.rs's `seal_repair_plan` claims the lease directly instead).
+    #[allow(dead_code)]
     None,
 }
 
@@ -213,6 +216,14 @@ pub(crate) enum SystemRunWorkKeyReuse {
 /// returns that Run instead of creating a duplicate, so an idempotent
 /// trigger (e.g. the post-open Backfill bootstrap) can fire repeatedly
 /// without racing itself.
+///
+/// No production caller yet -- every current system Run Kind trigger
+/// (Backfill's post-open bootstrap, Verify/Rebuild-Derived's manual
+/// triggers, Repair's plan sealing) already runs inside its own
+/// transaction and calls [`create_system_run_in_tx`] directly; this
+/// standalone wrapper is for a future caller starting outside one.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn create_system_run(
     db: &Database,
     project_id: &str,

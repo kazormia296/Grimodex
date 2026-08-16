@@ -8,7 +8,7 @@
 //! that fan-out in both directions —
 //!   * target -> Applications ("which Proposals wrote this field?")
 //!   * Application -> targets ("what does undoing this Application touch?")
-//! without re-deriving it from the Prepared Commit plan JSON every time.
+//!     without re-deriving it from the Prepared Commit plan JSON every time.
 //!
 //! `ContributionTargetState` is a distinct axis from the Prepared Commit /
 //! Change Feed review vocabulary in
@@ -69,6 +69,11 @@ impl TryFrom<&str> for ContributionTargetState {
     }
 }
 
+/// No production reader yet -- `record_contribution_in_tx` above is wired
+/// (C2-T1); the walk-both-directions read queries below (`list_contributions_for_target`
+/// / `list_contributions_for_application`) are Undo/Redo and Freshness
+/// infrastructure whose caller has not landed yet.
+#[allow(dead_code)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ApplicationContribution {
     pub id: String,
@@ -144,6 +149,7 @@ pub(crate) fn record_contribution_in_tx(
 /// All Applications that contributed to a target object, across every field
 /// they touched. Answers "which Proposals wrote which fields on this scene
 /// (or other target)?".
+#[allow(dead_code)]
 pub(crate) fn list_contributions_for_target(
     conn: &Connection,
     project_id: &str,
@@ -167,6 +173,7 @@ pub(crate) fn list_contributions_for_target(
 
 /// All fields a single Application contributed to, across every target
 /// object it touched. Answers "what changes if this Application is undone?".
+#[allow(dead_code)]
 pub(crate) fn list_contributions_for_application(
     conn: &Connection,
     project_id: &str,
@@ -185,8 +192,10 @@ pub(crate) fn list_contributions_for_application(
     rows.into_iter().map(contribution_from_row).collect()
 }
 
+#[allow(dead_code)]
 type ContributionRow = (String, String, String, String, String, String, String);
 
+#[allow(dead_code)]
 fn map_contribution_row(row: &Row<'_>) -> rusqlite::Result<ContributionRow> {
     Ok((
         row.get(0)?,
@@ -199,6 +208,7 @@ fn map_contribution_row(row: &Row<'_>) -> rusqlite::Result<ContributionRow> {
     ))
 }
 
+#[allow(dead_code)]
 fn contribution_from_row(row: ContributionRow) -> anyhow::Result<ApplicationContribution> {
     let (
         id,

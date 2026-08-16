@@ -349,6 +349,12 @@ fn edge_material_basis_digest(
 /// let each individually commit, so a mid-sequence failure could leave
 /// durable state committed with no matching Run completion or cursor
 /// advance.
+/// No production caller yet -- `publish_freshness_evaluation_edges_only_in_tx`
+/// is the narrower variant the Run Kind Policy's Verify/Rebuild-Derived
+/// callers actually use; this wider Consumer-status-inclusive variant is
+/// designed for the full Change Feed-driven publish pipeline (see this
+/// module's doc comment), which has not landed.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_freshness_evaluation_in_tx(
     conn: &Connection,

@@ -88,6 +88,11 @@ pub(crate) fn rotate_epoch_for_restore_in_tx(
 /// Edges point at a Source that no longer resolves. Never written to a
 /// table -- callers that want this persisted (e.g. as a Finding Observation,
 /// Lane C) own that decision separately.
+/// No production caller yet -- kept for the single-Run diagnostic callers
+/// this doc comment describes; [`verify_narrative_dependency_graph_for_project`]
+/// below is the Run Kind Policy's project-wide Verify entry point actually
+/// wired to IPC.
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RebuildVerifyReport {
     pub total_edges: usize,
@@ -482,6 +487,7 @@ fn edge_source_is_missing(
 /// only `SELECT`s (through `find_edges_by_consumer` and
 /// `resolve_current_source_state`, neither of which mutate) and is safe to
 /// call outside a transaction.
+#[allow(dead_code)]
 pub(crate) fn rebuild_verify_dependency_edges(
     conn: &Connection,
     project_id: &str,
@@ -1067,7 +1073,11 @@ mod tests {
 
         let deleted = db
             .with_conn(|conn| {
-                rebuild_repair_dependency_edges_in_tx(conn, "project-1", &[broken_id.clone()])
+                rebuild_repair_dependency_edges_in_tx(
+                    conn,
+                    "project-1",
+                    std::slice::from_ref(&broken_id),
+                )
             })
             .expect("repair broken edge");
         assert_eq!(deleted, 1);
@@ -1090,7 +1100,11 @@ mod tests {
         // is deleted.
         let deleted = db
             .with_conn(|conn| {
-                rebuild_repair_dependency_edges_in_tx(conn, "project-2", &[project_1_edge.clone()])
+                rebuild_repair_dependency_edges_in_tx(
+                    conn,
+                    "project-2",
+                    std::slice::from_ref(&project_1_edge),
+                )
             })
             .expect("repair scoped to project-2");
         assert_eq!(deleted, 0);

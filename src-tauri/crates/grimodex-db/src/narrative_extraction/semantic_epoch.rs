@@ -98,6 +98,10 @@ pub fn get_current_epoch(
 }
 
 /// All Semantic Epochs for `project_id`, oldest first.
+///
+/// No production caller yet -- diagnostic/history read surface for a
+/// future IPC command.
+#[allow(dead_code)]
 pub(crate) fn list_epochs(
     conn: &Connection,
     project_id: &str,

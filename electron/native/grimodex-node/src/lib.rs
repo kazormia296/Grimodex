@@ -5162,7 +5162,7 @@ impl Backend {
                     "edgesEvaluated": summary.edges_evaluated,
                 }),
             };
-            Ok(serde_json::to_string(&wire)?)
+            Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -5223,7 +5223,7 @@ impl Backend {
                     "applicationsWithoutRunId": summary.applications_without_run_id,
                 }),
             };
-            Ok(serde_json::to_string(&wire)?)
+            Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -5275,7 +5275,7 @@ impl Backend {
                     "mode": "preview",
                     "plan": plan,
                 });
-                return Ok(serde_json::to_string(&preview)?);
+                return Ok(serde_json::to_string(&preview).map_err(anyhow::Error::from)?);
             }
 
             let Some(plan_digest) = dto.plan_digest.as_deref() else {
@@ -5310,7 +5310,7 @@ impl Backend {
                 "mode": "applied",
                 "outcome": outcome,
             });
-            Ok(serde_json::to_string(&applied)?)
+            Ok(serde_json::to_string(&applied).map_err(anyhow::Error::from)?)
         })
         .await
     }
