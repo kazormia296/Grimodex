@@ -702,9 +702,56 @@ with different Freshness outcomes both get evaluated and published
 correctly in one Run, and the `RunningOnly` reuse policy — reused while
 genuinely `running`, not reused once `completed`).
 
-Still not implemented: the ~10 still-missing Verify checks in
-`restore_rebuild.rs`, the Repair lease/backup/sealed-plan/execution flow,
-and the five new IPC/N-API operations.
+**6 of the 13 `dependency-verify` checks landed**
+(`restore_rebuild.rs`'s new `verify_narrative_dependency_graph_for_project`
+/ `DependencyGraphVerifyReport`): a project-wide diagnostic (every
+Consumer, not one Run's own Edges like the pre-existing
+`rebuild_verify_dependency_edges`, which predates the Run Kind Policy and
+stays as-is for its own narrower callers). Covers: the closest available
+match to `producer-and-generation-consistency` (this crate has no
+separate Producer "generation" concept yet, only "does the Source still
+resolve"), `active-edge-duplicates` (defense-in-depth: the `UNIQUE` index
+`record_dependency_edge_in_tx` relies on should make this structurally
+impossible through this crate's own writers), `cross-project-edge` (a
+`RUN_CONSUMER_KIND` Edge whose Run belongs to a different project — the
+one place the project boundary could silently slip, since
+`source_object_identity` carries no project scope of its own),
+`consumer-and-source-key-format`, `edge-state-belongs-to-current-epoch`,
+`finding-observation-belongs-to-current-epoch`. `DependencyGraphVerifyReport::is_clean()`
+reports whether all 6 covered checks passed — explicitly not a claim
+about the other 7.
+
+Not yet implemented, and not silently treated as passing:
+`application-revision-artifact-references`, `dependency-set-digest`/
+`consumer-freshness-dependency-set-digest` (nothing writes
+`narrative_consumer_freshness.dependency_set_digest`/
+`narrative_semantic_index_metadata` yet),
+`contribution-to-application-commit-correspondence`,
+`legacy-mirror-migration-parity`, `cursor-and-feed-head-consistency`,
+`semantic-index-generation-correspondence`.
+
+**Real bug found and fixed while building this**: the previous commit's
+`dependency-rebuild-derived` orchestrator passed the *Rebuild Run's own*
+`run_id` into `evaluate_edge_from_db` for every Edge, but
+`source_revision.rs`'s `resolve_snapshot_document` requires the id
+embedded in a `snapshot:<runId>` Source key to match the id passed in
+exactly — the *owning Consumer's* run, not whichever Run is doing the
+evaluating. Every `snapshot-document`-sourced Edge a Rebuild-Derived pass
+touched would have been misclassified `SourceMissing` (caught internally
+by `build_edge_comparison_input`'s own `Err` handling, not a crash, but a
+silent misclassification) instead of correctly resolving. Fixed by
+passing each Edge's own `consumer_key` instead; a regression test
+(`rebuild_derived_state_resolves_a_snapshot_document_source_correctly`)
+seeds a real sealed-snapshot Run and Edge and asserts it resolves
+`Fresh`, not `SourceMissing`.
+
+Verified: all new SQL (duplicate-key, cross-project, stale-epoch queries)
+replayed against real SQLite via Python, plus four new
+`project_verify_*` Rust `#[cfg(test)]` unit tests and the snapshot-source
+regression test above.
+
+Still not implemented: the Repair lease/backup/sealed-plan/execution
+flow, and the five new IPC/N-API operations.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

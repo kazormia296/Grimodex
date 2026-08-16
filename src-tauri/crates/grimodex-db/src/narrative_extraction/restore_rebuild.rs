@@ -406,7 +406,18 @@ fn rebuild_derived_state_edges_in_project(
                 }
                 let mut edges_and_observations = Vec::with_capacity(edges.len());
                 for edge in &edges {
-                    let observation = evaluate_edge_from_db(conn, project_id, run_id, edge)?;
+                    // NOT `run_id` (the Rebuild Run's own id): a
+                    // `snapshot-document` Source's key embeds the Run that
+                    // originally produced it (`resolve_snapshot_document`
+                    // requires an exact match), which is this edge's
+                    // *owning Consumer* -- `consumer_key`, under the
+                    // `RUN_CONSUMER_KIND` convention every Edge here uses
+                    // today -- not whichever Run is doing the rebuilding.
+                    // `run_id` (the Rebuild Run) is still the right id for
+                    // `publish_freshness_evaluation_edges_only_in_tx`
+                    // below: it records which Run *observed* this Finding,
+                    // correctly the Rebuild Run itself.
+                    let observation = evaluate_edge_from_db(conn, project_id, &consumer_key, edge)?;
                     edges_and_observations.push((edge.id.clone(), observation));
                 }
                 publish_freshness_evaluation_edges_only_in_tx(
@@ -488,6 +499,240 @@ pub(crate) fn rebuild_verify_dependency_edges(
         missing_sources: edge_ids_with_missing_source.len(),
         edge_ids_with_missing_source,
     })
+}
+
+// ---------------------------------------------------------------------
+// 2b. dependency-verify (Run Kind Policy) -- project-wide diagnostics
+// ---------------------------------------------------------------------
+
+/// Read-only diagnostic report for one `dependency-verify` Run
+/// (Run Kind Policy), across the whole project rather than one other
+/// Run's Edges (contrast [`rebuild_verify_dependency_edges`] above, which
+/// predates the Run Kind Policy and stays scoped to a single Run's own
+/// declared Edges for that narrower diagnostic's own callers).
+///
+/// Covers 6 of the policy's 13 named checks
+/// (`narrative-run-kind-policy.json`'s `verifiesDurableGraph`/
+/// `verifiesRebuildableState`); see [`verify_narrative_dependency_graph_for_project`]'s
+/// doc comment for exactly which, and which 7 remain unimplemented.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DependencyGraphVerifyReport {
+    pub total_edges: usize,
+    /// Edge whose Source no longer resolves, or whose
+    /// `source_object_identity` matches no recognized `source_kind`
+    /// prefix at all (`infer_source_kind`).
+    pub edge_ids_with_missing_source: Vec<String>,
+    /// Two-or-more `narrative_dependency_edges` rows sharing the same
+    /// `(project_id, consumer_kind, consumer_key, source_object_identity)`
+    /// key. Defense-in-depth: `record_dependency_edge_in_tx`'s own
+    /// `UNIQUE` index should make this structurally impossible through
+    /// this crate's own writers; a nonzero count here means something
+    /// wrote around that writer.
+    pub duplicate_edge_keys: Vec<(String, String, String, String)>,
+    /// A `RUN_CONSUMER_KIND`-declared Edge whose Consumer (Run) belongs to
+    /// a *different* project than the Edge's own `project_id` -- the
+    /// Edge's `source_object_identity` has no embedded project scope of
+    /// its own, so this is the one place that boundary could silently
+    /// slip.
+    pub edge_ids_with_cross_project_consumer: Vec<String>,
+    /// Edge with an empty `consumer_key` or a `source_object_identity`
+    /// matching no recognized prefix (`infer_source_kind`) -- the latter
+    /// overlaps `edge_ids_with_missing_source` by construction (an
+    /// unrecognized prefix is *always* treated as a missing Source, see
+    /// `edge_source_is_missing`'s doc comment), so this field exists to
+    /// name the *shape* problem distinctly from the *resolution* problem,
+    /// not to report a disjoint edge set.
+    pub edge_ids_with_malformed_keys: Vec<String>,
+    /// `narrative_dependency_edge_states` row whose `evaluated_at_epoch_id`
+    /// is not the project's *current* Semantic Epoch -- a stale diagnostic
+    /// snapshot left over from before the most recent Epoch rotation
+    /// (restore, migration, integrity repair), which
+    /// `dependency-rebuild-derived` should refresh.
+    pub edge_state_ids_outside_current_epoch: Vec<String>,
+    /// `narrative_maintenance_finding_observations` row whose
+    /// `semantic_epoch_id` is not the project's current Epoch -- same
+    /// staleness shape as `edge_state_ids_outside_current_epoch`, for the
+    /// Finding Observation history instead of the Edge State snapshot.
+    pub finding_observation_ids_outside_current_epoch: Vec<String>,
+}
+
+impl DependencyGraphVerifyReport {
+    /// Whether every check this report covers came back clean. Does not
+    /// mean the Durable Graph is fully healthy -- only that the 6 checks
+    /// this report actually runs found nothing; see the struct's own doc
+    /// comment on the 7 it does not.
+    pub fn is_clean(&self) -> bool {
+        self.edge_ids_with_missing_source.is_empty()
+            && self.duplicate_edge_keys.is_empty()
+            && self.edge_ids_with_cross_project_consumer.is_empty()
+            && self.edge_ids_with_malformed_keys.is_empty()
+            && self.edge_state_ids_outside_current_epoch.is_empty()
+            && self
+                .finding_observation_ids_outside_current_epoch
+                .is_empty()
+    }
+}
+
+/// `dependency-verify` (Run Kind Policy): read-only diagnostic across the
+/// Durable Dependency Graph and the Rebuildable Derived State for the
+/// *whole* project -- every Consumer, not one Run's own Edges. Writes
+/// nothing to any table this function reads from; the caller (the
+/// `dependency-verify` Run orchestrator, not yet implemented -- see this
+/// module's remaining scope) owns recording a Run/typed-diagnostic/
+/// Finding-Observation outcome from this report, per
+/// `forbidSideEffectRepair: true`.
+///
+/// Currently checks 6 of the policy's 13 named items:
+///
+/// - `verifiesDurableGraph`: an inlined version of
+///   [`edge_source_is_missing`] (closest existing match to
+///   "producer-and-generation-consistency" -- this crate does not yet
+///   track a separate Producer "generation" concept beyond "does the
+///   Source still resolve"), `active-edge-duplicates`,
+///   `cross-project-edge`, `consumer-and-source-key-format`.
+/// - `verifiesRebuildableState`: `edge-state-belongs-to-current-epoch`,
+///   `finding-observation-belongs-to-current-epoch`.
+///
+/// Not yet implemented, and not silently treated as passing (the caller
+/// must not present this report as if it covered them):
+/// `application-revision-artifact-references`, `dependency-set-digest`
+/// (nothing writes `narrative_consumer_freshness.dependency_set_digest`/
+/// `narrative_semantic_index_metadata` yet),
+/// `contribution-to-application-commit-correspondence`,
+/// `legacy-mirror-migration-parity`,
+/// `consumer-freshness-dependency-set-digest` (same reason as
+/// `dependency-set-digest`), `cursor-and-feed-head-consistency`,
+/// `semantic-index-generation-correspondence`.
+pub(crate) fn verify_narrative_dependency_graph_for_project(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<DependencyGraphVerifyReport> {
+    require_non_empty(project_id, "projectId")?;
+
+    let mut report = DependencyGraphVerifyReport::default();
+
+    let consumers = list_distinct_consumers(conn, project_id)?;
+    for (consumer_kind, consumer_key) in &consumers {
+        let edges = find_edges_by_consumer(conn, project_id, consumer_kind, consumer_key)?;
+        report.total_edges += edges.len();
+        for edge in &edges {
+            if consumer_key.trim().is_empty()
+                || infer_source_kind(&edge.source_object_identity).is_none()
+            {
+                report.edge_ids_with_malformed_keys.push(edge.id.clone());
+            }
+            if edge_source_is_missing(conn, project_id, consumer_key, edge) {
+                report.edge_ids_with_missing_source.push(edge.id.clone());
+            }
+        }
+    }
+
+    if let Some(current_epoch_id) = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id) {
+        report.edge_state_ids_outside_current_epoch =
+            edge_state_ids_outside_epoch(conn, project_id, &current_epoch_id)?;
+        report.finding_observation_ids_outside_current_epoch =
+            finding_observation_ids_outside_epoch(conn, project_id, &current_epoch_id)?;
+    }
+
+    report.duplicate_edge_keys = duplicate_edge_keys(conn, project_id)?;
+    report.edge_ids_with_cross_project_consumer =
+        cross_project_run_consumer_edge_ids(conn, project_id)?;
+
+    Ok(report)
+}
+
+/// Rows sharing the same `(project_id, consumer_kind, consumer_key,
+/// source_object_identity)` key -- see
+/// [`DependencyGraphVerifyReport::duplicate_edge_keys`]'s doc comment on
+/// why this should always come back empty through this crate's own
+/// writers.
+fn duplicate_edge_keys(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<(String, String, String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT consumer_kind, consumer_key, source_object_identity, COUNT(*) as c
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+          GROUP BY consumer_kind, consumer_key, source_object_identity
+         HAVING COUNT(*) > 1
+          ORDER BY consumer_kind ASC, consumer_key ASC, source_object_identity ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?.to_string(),
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// `RUN_CONSUMER_KIND`-declared Edges whose Consumer (Run) belongs to a
+/// different project than the Edge's own `project_id`. Edges under any
+/// other `consumer_kind` have no Run to cross-check against yet (this
+/// crate declares no other Consumer kind today), so this only inspects
+/// `RUN_CONSUMER_KIND` rows.
+fn cross_project_run_consumer_edge_ids(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT e.id
+           FROM narrative_dependency_edges e
+           INNER JOIN narrative_extraction_runs r ON r.id = e.consumer_key
+          WHERE e.project_id = ?1
+            AND e.consumer_kind = ?2
+            AND r.project_id != e.project_id
+          ORDER BY e.id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id, RUN_CONSUMER_KIND], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn edge_state_ids_outside_epoch(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT edge_id
+           FROM narrative_dependency_edge_states
+          WHERE project_id = ?1 AND evaluated_at_epoch_id != ?2
+          ORDER BY edge_id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id, current_epoch_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+fn finding_observation_ids_outside_epoch(
+    conn: &Connection,
+    project_id: &str,
+    current_epoch_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id
+           FROM narrative_maintenance_finding_observations
+          WHERE project_id = ?1 AND semantic_epoch_id != ?2
+          ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id, current_epoch_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 // ---------------------------------------------------------------------
@@ -1146,5 +1391,186 @@ mod tests {
                 panic!("a still-running run must be reused")
             }
         }
+    }
+
+    // -- verify_narrative_dependency_graph_for_project ----------------------
+
+    #[test]
+    fn project_verify_reports_missing_and_malformed_across_every_consumer() {
+        let db = test_db();
+        let healthy_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        let missing_id = seed_run_edge(
+            &db,
+            "project-1",
+            "run-1",
+            "project:scene:scene-does-not-exist",
+        );
+        let malformed_id = seed_run_edge(&db, "project-1", "run-2", "totally:unknown:identity");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(report.total_edges, 3);
+        assert!(report.edge_ids_with_missing_source.contains(&missing_id));
+        assert!(!report.edge_ids_with_missing_source.contains(&healthy_id));
+        // An unrecognized source-identity shape is always treated as a
+        // missing source too (edge_source_is_missing's own doc comment).
+        assert!(report.edge_ids_with_missing_source.contains(&malformed_id));
+        assert_eq!(
+            report.edge_ids_with_malformed_keys,
+            vec![malformed_id.clone()]
+        );
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_is_clean_with_only_healthy_edges() {
+        let db = test_db();
+        seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(report.total_edges, 1);
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_detects_an_edge_state_left_over_from_a_prior_epoch() {
+        let db = test_db();
+        let edge_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        let old_epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+            .expect("mint the first epoch");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES (?1, 'project-1', 'fresh', 'none', ?2, '2026-08-14T00:00:00.000Z')",
+                params![edge_id, old_epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed a stale edge state");
+        // Rotate to a new current epoch, leaving the edge_state row above
+        // behind under the old one.
+        db.with_conn(|conn| {
+            rotate_epoch_for_restore_in_tx(conn, "project-1", "project-restored", None)
+        })
+        .expect("rotate epoch")
+        .expect("restore must mint an epoch");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(report.edge_state_ids_outside_current_epoch, vec![edge_id]);
+        assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_detects_a_cross_project_run_consumer() {
+        let db = test_db();
+        // A Run that belongs to project-2 but has an Edge recorded under
+        // project-1 -- exactly the boundary slip this check exists to
+        // catch (the Edge's own source_object_identity carries no project
+        // scope of its own).
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, version)
+                 VALUES ('run-in-project-2', 'project-2', 'x', '{}', '{}', 'd',
+                         'completed', '{}', '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed a run belonging to project-2");
+        let crossing_id = seed_run_edge(
+            &db,
+            "project-1",
+            "run-in-project-2",
+            "project:scene:scene-live",
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_cross_project_consumer,
+            vec![crossing_id]
+        );
+        assert!(!report.is_clean());
+    }
+
+    // -- regression: rebuild-derived must resolve a snapshot-document Source
+    //    under its OWNING Consumer's run id, not the Rebuild Run's own id --
+
+    #[test]
+    fn rebuild_derived_state_resolves_a_snapshot_document_source_correctly() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+
+        // The Run that produced and sealed a snapshot -- this is the
+        // Consumer/owning run the Edge's source_object_identity
+        // ("snapshot:<runId>") must resolve against.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('owning-run', 'project-1', 'x', '{}', '{}', 'd',
+                         'completed', '{}', 'sha256:snapshot-digest-1',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed the owning run with a sealed snapshot digest");
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "owning-run",
+                "snapshot:owning-run",
+                r#"["sha256:snapshot-digest-1"]"#,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )
+        })
+        .expect("record an edge over the snapshot source");
+
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must not error resolving the snapshot source");
+        let summary = match outcome {
+            RebuildDerivedStateOutcome::Ran { summary, .. } => summary,
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first call must create a fresh run")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 1);
+        assert_eq!(summary.edges_evaluated, 1);
+
+        let freshness: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT evidence_freshness FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1' AND consumer_kind = ?1
+                        AND consumer_key = 'owning-run'",
+                    params![RUN_CONSUMER_KIND],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read consumer freshness");
+        // The stored token (recorded above) matches the current
+        // snapshot_digest exactly, so this must resolve Fresh -- if the
+        // Rebuild Run's own id were wrongly used instead of 'owning-run',
+        // resolve_snapshot_document would reject it with
+        // NEX_SOURCE_PROJECT_MISMATCH and this would incorrectly read
+        // 'source-missing'.
+        assert_eq!(freshness, "fresh");
     }
 }
