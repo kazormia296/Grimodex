@@ -68,7 +68,8 @@ use serde_json::json;
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::repository::{
-    create_system_run_in_tx, record_run_outcome_in_tx, RunRequestIdentity, SystemRunWorkKeyReuse,
+    create_system_run_in_tx, find_run_by_request_identity, record_run_outcome_in_tx,
+    RunRequestIdentity, SystemRunWorkKeyReuse,
 };
 use super::restore_rebuild::{
     duplicate_edge_ids_to_deactivate, rebuild_repair_dependency_edges_in_tx,
@@ -85,11 +86,20 @@ const REPAIR_LEASE_TTL_SECONDS: i64 = 15 * 60;
 /// minted by any other surface.
 const REPAIR_IDEMPOTENCY_DOMAIN: &str = "narrative.dependency-repair";
 
-/// Identity a Repair lease claim is made under.
+/// Identity a Repair lease claim is made under: who, for which Verify
+/// result, applying which sealed plan, under which Run.
+///
+/// All four together are the lease's identity, and all four are
+/// compare-and-swapped before the graph is touched -- see
+/// [`assert_repair_lease_still_held_in_tx`].
 pub(crate) struct RepairLeaseClaim {
     pub lease_owner: String,
     pub verify_run_id: String,
     pub repair_plan_digest: String,
+    /// The Run entitled to apply this plan. `lease_owner` says which
+    /// process; this says which execution, so a second attempt by the same
+    /// owner cannot inherit the first one's entitlement.
+    pub active_run_id: String,
 }
 
 /// Claims the project's one Repair lease row (`PRIMARY KEY(project_id)`,
@@ -128,6 +138,10 @@ pub(crate) fn claim_repair_lease_in_tx(
         "repairPlanDigest is required"
     );
     anyhow::ensure!(
+        !claim.active_run_id.trim().is_empty(),
+        "activeRunId is required"
+    );
+    anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
     );
@@ -162,15 +176,16 @@ pub(crate) fn claim_repair_lease_in_tx(
     conn.execute(
         "INSERT INTO narrative_maintenance_repair_leases
             (project_id, lease_owner, verify_run_id, repair_plan_digest, semantic_epoch_id,
-             claimed_at, expires_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             claimed_at, expires_at, active_run_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(project_id) DO UPDATE SET
              lease_owner = excluded.lease_owner,
              verify_run_id = excluded.verify_run_id,
              repair_plan_digest = excluded.repair_plan_digest,
              semantic_epoch_id = excluded.semantic_epoch_id,
              claimed_at = excluded.claimed_at,
-             expires_at = excluded.expires_at",
+             expires_at = excluded.expires_at,
+             active_run_id = excluded.active_run_id",
         params![
             project_id,
             claim.lease_owner,
@@ -179,23 +194,94 @@ pub(crate) fn claim_repair_lease_in_tx(
             semantic_epoch_id,
             now,
             expires_at,
+            claim.active_run_id,
         ],
     )?;
     Ok(())
 }
 
-/// Releases the project's Repair lease, if any. Not an error when there is
-/// none to release (a lease may already have expired, or this may be a
-/// best-effort cleanup call after a failure).
-pub(crate) fn release_repair_lease_in_tx(
+/// Proves, inside the mutation transaction, that this worker *still* holds
+/// the exclusive right it claimed -- and does not merely hold a plan that
+/// is still semantically valid.
+///
+/// These are different authorities. `revalidate_plan_in_tx` asks "does this
+/// plan still describe the graph?"; this asks "am I still the one allowed
+/// to apply it?". A lease has a TTL, and step 2 of the execution is a
+/// backup that can take minutes on a large workspace:
+///
+/// ```text
+/// A claims the lease  ->  A's backup runs long  ->  A's lease expires
+///                     ->  B claims the lease for its own plan
+///                     ->  A enters its mutation transaction
+/// ```
+///
+/// Without this check A would delete Edges while B holds the lease, and
+/// then delete *B's* lease row on the way out. The CAS covers every column
+/// that makes the lease this one, plus liveness, so an expired or
+/// re-claimed lease aborts the transaction before a single Edge is
+/// removed.
+pub(crate) fn assert_repair_lease_still_held_in_tx(
     conn: &Connection,
     project_id: &str,
+    claim: &RepairLeaseClaim,
+    semantic_epoch_id: &str,
 ) -> anyhow::Result<()> {
-    conn.execute(
-        "DELETE FROM narrative_maintenance_repair_leases WHERE project_id = ?1",
-        params![project_id],
+    let held: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_maintenance_repair_leases
+          WHERE project_id = ?1
+            AND lease_owner = ?2
+            AND verify_run_id = ?3
+            AND repair_plan_digest = ?4
+            AND semantic_epoch_id = ?5
+            AND active_run_id = ?6
+            AND julianday(expires_at) > julianday('now')",
+        params![
+            project_id,
+            claim.lease_owner,
+            claim.verify_run_id,
+            claim.repair_plan_digest,
+            semantic_epoch_id,
+            claim.active_run_id,
+        ],
+        |row| row.get(0),
     )?;
+    anyhow::ensure!(
+        held == 1,
+        "NEX_REPAIR_LEASE_LOST: Run '{}' no longer holds a live Repair lease on project          '{project_id}' for this plan -- it expired or was re-claimed while this attempt was          preparing. Nothing was changed; re-seal and retry",
+        claim.active_run_id
+    );
     Ok(())
+}
+
+/// Releases the lease under the same identity that claimed it, and reports
+/// whether a row was actually removed.
+///
+/// The unconditional `DELETE ... WHERE project_id = ?` this replaces would
+/// happily delete a lease that had since been re-claimed by someone else.
+pub(crate) fn release_held_repair_lease_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    claim: &RepairLeaseClaim,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<usize> {
+    let released = conn.execute(
+        "DELETE FROM narrative_maintenance_repair_leases
+          WHERE project_id = ?1
+            AND lease_owner = ?2
+            AND verify_run_id = ?3
+            AND repair_plan_digest = ?4
+            AND semantic_epoch_id = ?5
+            AND active_run_id = ?6",
+        params![
+            project_id,
+            claim.lease_owner,
+            claim.verify_run_id,
+            claim.repair_plan_digest,
+            semantic_epoch_id,
+            claim.active_run_id,
+        ],
+    )?;
+    Ok(released)
 }
 
 /// A sealed `dependency-repair` plan: the exact, deterministic set of
@@ -545,9 +631,167 @@ fn safety_artifact_path_string(artifact: &LiveSafetyArtifact) -> String {
     }
 }
 
-/// Executes one `dependency-repair` Run: claims the exclusive lease, takes
-/// an automatic backup, applies the sealed plan, and releases the lease.
-/// Owns its own transaction(s) -- callers must not already be inside one.
+/// **The entry point every transport should call.** Resolves the request
+/// *before* touching the Verify Run or the graph, then seals and executes
+/// only if this request has not been seen.
+///
+/// Sealing first is the mistake this exists to prevent. A caller whose
+/// repair succeeded but whose response was lost retries with the same
+/// `requestId` and `planDigest`; if the entry point re-seals before looking
+/// the request up, the duplicate Edges are already gone, the freshly sealed
+/// plan no longer matches the Verify report, and the retry fails with
+/// `NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY` -- never reaching the stored
+/// `completed` outcome sitting a few rows away. Request replay and work
+/// equivalence are separate contracts, and replay has to win.
+///
+/// A replay reproduces what the original request returned. It deliberately
+/// does *not* ask whether the same repair would still be possible against
+/// the graph as it stands now: that is a different question, and answering
+/// it is how a successful operation turns into a spurious failure.
+///
+/// `expected_plan_digest` is the digest the caller was shown at preview
+/// time. For a new request it is checked against a freshly sealed plan; for
+/// a known one it is checked against the digest that request was recorded
+/// under, so a caller cannot replay someone else's approval by guessing a
+/// `requestId`.
+#[allow(clippy::too_many_arguments)]
+pub fn repair_narrative_dependency_declarations_for_request(
+    db: &Database,
+    workspace_path: &Path,
+    project_id: &str,
+    verify_run_id: &str,
+    expected_plan_digest: &str,
+    lease_owner: &str,
+    explicit_confirmation: bool,
+    request_id: &str,
+    actor_id: &str,
+) -> anyhow::Result<RepairOutcome> {
+    anyhow::ensure!(
+        explicit_confirmation,
+        "NEX_REPAIR_CONFIRMATION_REQUIRED: dependency-repair requires explicit confirmation"
+    );
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!lease_owner.trim().is_empty(), "leaseOwner is required");
+    anyhow::ensure!(
+        !expected_plan_digest.trim().is_empty(),
+        "NEX_REPAIR_PLAN_DIGEST_REQUIRED: planDigest is required"
+    );
+    anyhow::ensure!(
+        !request_id.trim().is_empty(),
+        "NEX_REPAIR_REQUEST_ID_REQUIRED: dependency-repair requires a stable requestId"
+    );
+    anyhow::ensure!(
+        !actor_id.trim().is_empty(),
+        "NEX_REPAIR_ACTOR_REQUIRED: dependency-repair requires an actorId"
+    );
+
+    // 1. Request first. `find_run_by_request_identity` fails closed on a
+    //    payload-digest or actor mismatch, so a `requestId` presented with
+    //    a different plan or by a different person is a conflict here
+    //    rather than a replay.
+    let prior = db.with_conn(|conn| {
+        find_run_by_request_identity(
+            conn,
+            project_id,
+            &RunRequestIdentity {
+                request_id,
+                idempotency_domain: REPAIR_IDEMPOTENCY_DOMAIN,
+                payload_digest: expected_plan_digest,
+                actor_id,
+            },
+        )
+    })?;
+
+    if let Some(prior) = prior {
+        let run_id = prior["runId"].as_str().unwrap_or_default().to_string();
+        let status = prior["status"].as_str().unwrap_or("");
+        if !matches!(status, "pending" | "running") {
+            // Terminal: reproduce the recorded answer without consulting
+            // the graph at all.
+            return replay_repair_outcome(&run_id, status, &prior["outcome"]);
+        }
+
+        // Still `running`: either genuinely in flight, or a crashed attempt
+        // to resume. Resuming needs the approved plan, and the only
+        // trustworthy way to get one is to re-derive it and require that it
+        // digests to what this request was approved for.
+        let plan = seal_plan_matching_digest(db, project_id, verify_run_id, expected_plan_digest)?;
+        if plan.is_empty() {
+            return Ok(RepairOutcome {
+                edges_deactivated: 0,
+                backup_artifact_path: String::new(),
+            });
+        }
+        let (now_text, expires_at) = repair_lease_window();
+        return resume_or_report_in_progress(
+            db,
+            workspace_path,
+            project_id,
+            &plan,
+            lease_owner,
+            &now_text,
+            &expires_at,
+            &run_id,
+        );
+    }
+
+    // 2. Unseen request: seal now, and only accept the plan the caller was
+    //    actually shown.
+    let plan = seal_plan_matching_digest(db, project_id, verify_run_id, expected_plan_digest)?;
+    repair_narrative_dependency_declarations_for_project(
+        db,
+        workspace_path,
+        project_id,
+        &plan,
+        lease_owner,
+        explicit_confirmation,
+        request_id,
+        actor_id,
+    )
+}
+
+/// Seals a plan from `verify_run_id` and refuses to return it unless it is
+/// the plan the caller was shown.
+fn seal_plan_matching_digest(
+    db: &Database,
+    project_id: &str,
+    verify_run_id: &str,
+    expected_plan_digest: &str,
+) -> anyhow::Result<RepairPlan> {
+    let current_epoch_id = db
+        .with_conn(|conn| get_current_epoch(conn, project_id))?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_REPAIR_NO_EPOCH: project '{project_id}' has no Semantic Epoch")
+        })?;
+    let plan =
+        db.with_conn(|conn| seal_repair_plan(conn, project_id, verify_run_id, &current_epoch_id))?;
+    anyhow::ensure!(
+        plan.digest() == expected_plan_digest,
+        "NEX_REPAIR_PLAN_DIGEST_MISMATCH: the supplied planDigest does not match the \
+         freshly-sealed plan -- the Durable Graph may have changed since the preview; request a \
+         fresh preview before retrying"
+    );
+    Ok(plan)
+}
+
+fn repair_lease_window() -> (String, String) {
+    let now = chrono::Utc::now();
+    (
+        now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        (now + chrono::Duration::seconds(REPAIR_LEASE_TTL_SECONDS))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+    )
+}
+
+/// Executes one `dependency-repair` Run against an already-sealed plan.
+///
+/// Prefer [`repair_narrative_dependency_declarations_for_request`]: this
+/// takes a plan the caller sealed, so it can only resolve a replay *after*
+/// that sealing has already happened -- which is exactly the ordering that
+/// makes a lost response unreplayable. This remains public for callers that
+/// already hold a sealed plan and manage that ordering themselves.
 ///
 /// Order matters and is fixed:
 ///
@@ -561,13 +805,9 @@ fn safety_artifact_path_string(artifact: &LiveSafetyArtifact) -> String {
 ///      live file, not a SQL write). A backup failure releases the lease
 ///      just claimed and fails closed
 ///      (`NEX_REPAIR_BACKUP_FAILED`) rather than proceeding without one.
-///   3. Execute the plan
-///      (`restore_rebuild::rebuild_repair_dependency_edges_in_tx`) and
-///      release the lease, in one transaction. If execution fails, that
-///      transaction rolls back (the lease release along with it), so the
-///      lease is explicitly released again in a fresh transaction
-///      afterward -- a failed repair must not leave the project locked
-///      out of a corrected retry until TTL expiry.
+///   3. One transaction that re-proves the lease is still held, re-derives
+///      and re-checks the plan, deletes the Edges, releases the lease,
+///      records the outcome, and completes the Run.
 ///
 /// `explicit_confirmation` must be `true` -- the policy's
 /// `explicit-confirmation` precondition; this function takes no default.
@@ -695,24 +935,27 @@ pub fn repair_narrative_dependency_declarations_for_project(
 ///
 /// The policy's `manualRetry` for this Run Kind is
 /// `crash-recovery-of-an-already-approved-sealed-plan-only`, so this is
-/// that recovery — not a second repair. Four outcomes, in the order they
-/// must be checked:
+/// that recovery -- not a second repair. Two outcomes:
 ///
 /// 1. A *live* Repair lease means an attempt may still be running in
 ///    another process. There is no way to prove otherwise, so this fails
-///    closed as `NEX_REPAIR_REQUEST_IN_PROGRESS` and waits for the lease
-///    to lapse.
-/// 2. Otherwise the owner is gone. If the plan's Edges are all already
-///    deleted, the mutation committed and only the bookkeeping is missing
-///    (possible for a Run written by a build that finalized the Run in a
-///    separate transaction). The Run is terminalized `completed` with a
-///    reconstructed outcome rather than re-running anything.
-/// 3. If *some* of them are gone, the plan was applied in pieces --
-///    something this crate's own single-transaction writer cannot produce.
-///    Fail closed rather than guess.
-/// 4. If none are gone, nothing was applied. Resume: run the same
-///    already-approved sealed plan under the existing Run, so recovery
-///    never mints a duplicate Run.
+///    closed as `NEX_REPAIR_REQUEST_IN_PROGRESS` and waits for the lease to
+///    lapse.
+/// 2. Otherwise the previous worker is gone. Resume: run the same
+///    already-approved sealed plan under the *existing* Run, so recovery
+///    never mints a duplicate.
+///
+/// Deliberately absent: any attempt to infer, from the plan's Edges being
+/// gone, that *this* Run deleted them. Absence is not attribution -- a
+/// different request, a restore, or another graph repair could have removed
+/// the same rows, and crediting this Run with work it never did would write
+/// a fabricated success into the audit record. Because the mutation and the
+/// Run's completion now commit together, a `running` Run whose plan was
+/// applied is not a state this writer can produce, so nothing is lost by
+/// refusing to guess. The resume path re-validates the plan inside the
+/// mutation transaction; if the graph has moved on -- including because
+/// someone else already repaired it -- that fails closed and this Run is
+/// recorded as failed, which is the truth.
 #[allow(clippy::too_many_arguments)]
 fn resume_or_report_in_progress(
     db: &Database,
@@ -724,42 +967,13 @@ fn resume_or_report_in_progress(
     expires_at: &str,
     run_id: &str,
 ) -> anyhow::Result<RepairOutcome> {
-    let live_lease = db.with_conn(|conn| live_repair_lease_owner(conn, project_id))?;
-    if let Some(owner) = live_lease {
+    if let Some(owner) = db.with_conn(|conn| live_repair_lease_owner(conn, project_id))? {
         anyhow::bail!(
             "NEX_REPAIR_REQUEST_IN_PROGRESS: Run '{run_id}' is still running and '{owner}' holds \
              a live Repair lease on project '{project_id}'; wait for it to finish or lapse \
              rather than starting a second repair"
         );
     }
-
-    let remaining =
-        db.with_conn(|conn| surviving_edge_count(conn, project_id, plan.edge_ids_to_deactivate()))?;
-    let planned = plan.change_count();
-
-    if remaining == 0 {
-        // Already applied. Recover the bookkeeping without touching the
-        // graph again, and say plainly that the outcome was reconstructed
-        // rather than observed.
-        let recovered = json!({
-            "edgesDeactivated": planned,
-            "backupArtifactPath": "",
-            "recoveredAfterCrash": true,
-        });
-        finalize_repair_run(db, run_id, NarrativeRunStatus::Completed, Some(&recovered))?;
-        return Ok(RepairOutcome {
-            edges_deactivated: planned,
-            backup_artifact_path: String::new(),
-        });
-    }
-
-    anyhow::ensure!(
-        remaining == planned,
-        "NEX_REPAIR_PARTIALLY_APPLIED: Run '{run_id}' left {} of {planned} planned Edge(s) \
-         deleted; this writer applies a plan in one transaction, so a partial application means \
-         something wrote around it. Refusing to resume -- run a fresh dependency-verify",
-        planned - remaining
-    );
 
     execute_repair_under_run(
         db,
@@ -786,24 +1000,6 @@ fn live_repair_lease_owner(conn: &Connection, project_id: &str) -> anyhow::Resul
         )
         .optional()?;
     Ok(row.and_then(|(owner, expired)| if expired { None } else { Some(owner) }))
-}
-
-/// How many of `edge_ids` still exist. Used to tell "the plan never ran"
-/// from "the plan already ran" after a crash.
-fn surviving_edge_count(
-    conn: &Connection,
-    project_id: &str,
-    edge_ids: &[String],
-) -> anyhow::Result<usize> {
-    let mut statement = conn.prepare(
-        "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1 AND id = ?2",
-    )?;
-    let mut surviving = 0usize;
-    for edge_id in edge_ids {
-        let count: i64 = statement.query_row(params![project_id, edge_id], |row| row.get(0))?;
-        surviving += count as usize;
-    }
-    Ok(surviving)
 }
 
 /// Reproduce the response a previously-seen request already produced.
@@ -965,13 +1161,27 @@ fn execute_repair_under_run(
     ) {
         Ok(outcome) => Ok(outcome),
         Err(error) => {
-            // The mutation did not commit, so the lease it may have claimed
-            // is the only thing left to undo. Release it before failing, or
-            // a failed attempt locks the project out of a corrected retry
-            // until TTL expiry.
+            // The mutation did not commit, so the lease this attempt may
+            // have claimed is the only thing left to undo. Release it
+            // before failing, or a failed attempt locks the project out of
+            // a corrected retry until TTL expiry -- but release *only*
+            // this attempt's own lease. If it already expired and someone
+            // else re-claimed it, the predicate matches nothing and their
+            // lease is left alone.
+            let claim = RepairLeaseClaim {
+                lease_owner: lease_owner.to_string(),
+                verify_run_id: plan.verify_run_id.clone(),
+                repair_plan_digest: plan.digest.clone(),
+                active_run_id: run_id.to_string(),
+            };
             let _ = db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    release_repair_lease_in_tx(conn, project_id)
+                    release_held_repair_lease_in_tx(
+                        conn,
+                        project_id,
+                        &claim,
+                        &plan.semantic_epoch_id,
+                    )
                 })
             });
             Err(fail_repair_run(db, run_id, error))
@@ -990,6 +1200,13 @@ fn execute_repair_steps(
     expires_at: &str,
     run_id: &str,
 ) -> anyhow::Result<RepairOutcome> {
+    let claim = RepairLeaseClaim {
+        lease_owner: lease_owner.to_string(),
+        verify_run_id: plan.verify_run_id.clone(),
+        repair_plan_digest: plan.digest.clone(),
+        active_run_id: run_id.to_string(),
+    };
+
     // 1. Epoch match + lease claim.
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -1009,11 +1226,7 @@ fn execute_repair_steps(
             claim_repair_lease_in_tx(
                 conn,
                 project_id,
-                &RepairLeaseClaim {
-                    lease_owner: lease_owner.to_string(),
-                    verify_run_id: plan.verify_run_id.clone(),
-                    repair_plan_digest: plan.digest.clone(),
-                },
+                &claim,
                 &current_epoch_id,
                 now_text,
                 expires_at,
@@ -1021,22 +1234,37 @@ fn execute_repair_steps(
         })
     })?;
 
-    // 2. Automatic backup.
+    // 2. Automatic backup. Slow on a large workspace -- slow enough that
+    //    the lease claimed above can expire and be re-claimed by someone
+    //    else before step 3 starts, which is why step 3 re-proves it.
     let db_path = workspace_path.join("grimodex.db");
     let backup_artifact = create_persistent_live_safety_artifact(workspace_path, &db_path)
         .map_err(|error| anyhow::anyhow!("NEX_REPAIR_BACKUP_FAILED: {error}"))?;
     let backup_artifact_path = safety_artifact_path_string(&backup_artifact);
 
-    // 3. Re-validate, repair, release, record, terminalize -- atomically.
+    // 3. Re-prove authority, re-validate, repair, release, record,
+    //    terminalize -- atomically.
     let edges_deactivated = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            assert_repair_lease_still_held_in_tx(
+                conn,
+                project_id,
+                &claim,
+                &plan.semantic_epoch_id,
+            )?;
             revalidate_plan_in_tx(conn, project_id, plan)?;
             let deleted = rebuild_repair_dependency_edges_in_tx(
                 conn,
                 project_id,
                 plan.edge_ids_to_deactivate(),
             )?;
-            release_repair_lease_in_tx(conn, project_id)?;
+            let released =
+                release_held_repair_lease_in_tx(conn, project_id, &claim, &plan.semantic_epoch_id)?;
+            anyhow::ensure!(
+                released == 1,
+                "NEX_REPAIR_LEASE_LOST: the Repair lease changed hands inside the mutation \
+                 transaction; rolling back rather than releasing another holder's lease"
+            );
             record_run_outcome_in_tx(
                 conn,
                 run_id,
@@ -1735,17 +1963,16 @@ mod tests {
         );
     }
 
-    /// A Run left `running` after its mutation landed must not become a
-    /// permanently unanswerable request.
+    /// A Run forced back to `running` after its repair landed must never
+    /// repair a second time.
     ///
-    /// This used to return `NEX_REPAIR_REQUEST_IN_PROGRESS` forever: the
-    /// Run would never move on its own, so every retry of that requestId
-    /// got the same "wait for it to finish" for a repair that had already
-    /// finished. Recovery now reads the graph, sees the plan applied, and
-    /// terminalizes the Run. `a_running_run_with_a_live_lease_is_reported_in_progress`
-    /// covers the case where waiting really is the right answer.
+    /// The real writer cannot produce this state — the mutation and the
+    /// Run's completion commit together — so recovery does not try to
+    /// reconstruct a success from it. It resumes, the in-transaction
+    /// re-validation finds the duplicates already gone, and it fails
+    /// closed. The graph is what matters here: no second deletion.
     #[test]
-    fn a_request_left_running_after_its_repair_landed_is_recovered_not_deadlocked() {
+    fn a_request_forced_back_to_running_never_repairs_twice() {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         seed_duplicate_edges(&db);
@@ -1754,7 +1981,7 @@ mod tests {
             .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
-        let first = repair_narrative_dependency_declarations_for_project(
+        repair_narrative_dependency_declarations_for_project(
             &db,
             &workspace_path,
             "project-1",
@@ -1767,8 +1994,6 @@ mod tests {
         .expect("first repair");
         let after_repair = edge_count(&db);
 
-        // Force the Run back to `running`, as if the process had died
-        // before it could be finalized.
         db.with_conn(|conn| {
             conn.execute(
                 "UPDATE narrative_extraction_runs SET status = 'running'
@@ -1779,7 +2004,7 @@ mod tests {
         })
         .expect("force running");
 
-        let recovered = repair_narrative_dependency_declarations_for_project(
+        let error = repair_narrative_dependency_declarations_for_project(
             &db,
             &workspace_path,
             "project-1",
@@ -1789,12 +2014,17 @@ mod tests {
             "req-running-1",
             "operator-1",
         )
-        .expect("recovery resolves the Run instead of deadlocking on it");
-        assert_eq!(recovered.edges_deactivated, first.edges_deactivated);
+        .expect_err("a plan whose targets are gone cannot be applied again");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            "unexpected error: {error}"
+        );
         assert_eq!(
             edge_count(&db),
             after_repair,
-            "recovery must not repair a second time"
+            "recovery must never repair a second time"
         );
     }
 
@@ -1978,6 +2208,51 @@ mod tests {
             .map_err(Into::into)
         })
         .expect("count edges")
+    }
+
+    /// How many `dependency-repair` Runs exist. A replay must not add one.
+    fn repair_run_count(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE run_kind = 'dependency-repair'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("count repair runs")
+    }
+
+    /// Safety artifacts written under the fixture workspace. A replay must
+    /// not take a second backup.
+    fn backup_count(workspace_path: &Path) -> usize {
+        fn count_dir(dir: &Path) -> usize {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return 0;
+            };
+            entries.flatten().count()
+        }
+        // `create_persistent_live_safety_artifact` writes under the
+        // workspace; count everything that is not the live database itself.
+        let Ok(entries) = std::fs::read_dir(workspace_path) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                !name.starts_with("grimodex.db")
+            })
+            .map(|entry| {
+                if entry.path().is_dir() {
+                    count_dir(&entry.path())
+                } else {
+                    1
+                }
+            })
+            .sum()
     }
 
     fn surviving_edge_ids(db: &Database) -> Vec<String> {
@@ -2322,18 +2597,78 @@ mod tests {
         assert!(surviving_edge_ids(&db).contains(&new_id));
     }
 
+    /// The reviewer's counterexample, made a test: absence is not
+    /// attribution.
+    ///
+    /// Run A crashes before applying anything. A *different* request then
+    /// repairs the same duplicates for real. When A is resent, its plan's
+    /// Edges are all gone — but A did not delete them, and recording A as a
+    /// success would write work it never did into the audit trail.
     #[test]
-    fn a_crashed_run_whose_plan_already_applied_terminalizes_without_repairing_again() {
+    fn a_crashed_run_is_not_credited_with_another_requests_repair() {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
-        let (old_id, _new_id) = seed_duplicate_edges(&db);
+        seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
             .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
+        let crashed_run_id = seed_crashed_repair_run(&db, "project-1", &plan, "req-a", "actor-a");
+
+        // A different request does the actual repair.
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "owner-b",
+            true,
+            "req-b",
+            "actor-b",
+        )
+        .expect("the other request repairs");
+        let after_b = edge_count(&db);
+
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "owner-a",
+            true,
+            "req-a",
+            "actor-a",
+        )
+        .expect_err("Run A must not be credited with Run B's work");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &crashed_run_id),
+            "failed",
+            "a Run that applied nothing must be recorded as failed, not completed"
+        );
+        assert_eq!(edge_count(&db), after_b, "nothing more may be deleted");
+    }
+
+    #[test]
+    fn a_partially_applied_plan_refuses_to_resume() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        let (old_id, _new_id) = seed_duplicate_edges(&db);
+        let second_old_id = seed_second_duplicate_pair(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        assert_eq!(plan.change_count(), 2, "fixture needs two repair targets");
         let crashed_run_id =
-            seed_crashed_repair_run(&db, "project-1", &plan, "req-applied", "test-actor");
-        // The mutation landed; only the bookkeeping is missing.
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-partial", "test-actor");
+        // Half applied: a state this crate's single-transaction writer
+        // cannot produce, so something wrote around it.
         db.with_conn(|conn| {
             conn.execute(
                 "DELETE FROM narrative_dependency_edges WHERE id = ?1",
@@ -2341,45 +2676,31 @@ mod tests {
             )?;
             Ok(())
         })
-        .expect("simulate the applied mutation");
+        .expect("simulate a torn application");
         let before = edge_count(&db);
 
-        let outcome = repair_narrative_dependency_declarations_for_project(
+        let error = repair_narrative_dependency_declarations_for_project(
             &db,
             &workspace_path,
             "project-1",
             &plan,
             "test-owner",
             true,
-            "req-applied",
+            "req-partial",
             "test-actor",
         )
-        .expect("an applied plan terminalizes rather than failing");
-        assert_eq!(outcome.edges_deactivated, 1);
-        assert_eq!(run_status(&db, &crashed_run_id), "completed");
-        assert_eq!(
-            edge_count(&db),
-            before,
-            "recovering the bookkeeping must not touch the graph again"
+        .expect_err("a torn application must not be resumed");
+        // The in-transaction re-validation catches it: the plan no longer
+        // describes the graph, so nothing is applied and the Run is failed.
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            "unexpected error: {error}"
         );
-
-        let outcome_json: String = db
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
-                    params![crashed_run_id],
-                    |row| row.get(0),
-                )
-                .map_err(Into::into)
-            })
-            .expect("read the recovered outcome");
-        let outcome_json: serde_json::Value =
-            serde_json::from_str(&outcome_json).expect("outcome is json");
-        assert_eq!(
-            outcome_json["recoveredAfterCrash"].as_bool(),
-            Some(true),
-            "a reconstructed outcome must say so rather than pose as observed"
-        );
+        assert_eq!(run_status(&db, &crashed_run_id), "failed");
+        assert_eq!(edge_count(&db), before);
+        assert!(surviving_edge_ids(&db).contains(&second_old_id));
     }
 
     #[test]
@@ -2403,6 +2724,7 @@ mod tests {
                         lease_owner: "other-owner".to_string(),
                         verify_run_id: plan.verify_run_id().to_string(),
                         repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: "test-run".to_string(),
                     },
                     &epoch_id,
                     "2026-08-15T00:00:00.000Z",
@@ -2431,47 +2753,260 @@ mod tests {
         assert_eq!(edge_count(&db), before);
     }
 
+    // -- the public request-first entry point -------------------------------
+    //
+    // These exercise `..._for_request`, which is what the N-API handler
+    // calls. The `..._for_project` tests above take an already-sealed plan
+    // and so cannot see an ordering bug that lives in the sealing step.
+
     #[test]
-    fn a_partially_applied_plan_refuses_to_resume() {
+    fn a_lost_response_replays_the_stored_outcome_without_resealing() {
+        let (workspace_path, db) = test_workspace("case");
+        seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let epoch_id = db
+            .with_conn(|conn| get_current_epoch(conn, "project-1"))
+            .expect("epoch")
+            .expect("epoch present")
+            .id;
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("preview seals the plan the caller confirms");
+        let plan_digest = plan.digest().to_string();
+
+        let first = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "test-owner",
+            true,
+            "req-lost",
+            "test-actor",
+        )
+        .expect("apply");
+        let edges_after = edge_count(&db);
+        let backups_after = backup_count(&workspace_path);
+
+        // The response never reached the caller, so it retries the exact
+        // same payload. Re-sealing first would fail: the duplicates are
+        // gone, so a fresh plan no longer matches the Verify report.
+        let replay = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "test-owner",
+            true,
+            "req-lost",
+            "test-actor",
+        )
+        .expect("a retry of a landed request replays its stored outcome");
+
+        assert_eq!(replay.edges_deactivated, first.edges_deactivated);
+        assert_eq!(replay.backup_artifact_path, first.backup_artifact_path);
+        assert_eq!(edge_count(&db), edges_after, "no second deletion");
+        assert_eq!(
+            backup_count(&workspace_path),
+            backups_after,
+            "a replay must not take another backup"
+        );
+        assert_eq!(
+            repair_run_count(&db),
+            1,
+            "a replay must not create a second Run"
+        );
+    }
+
+    #[test]
+    fn the_request_first_entry_point_rejects_a_digest_the_caller_was_not_shown() {
+        let (workspace_path, db) = test_workspace("case");
+        seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let before = edge_count(&db);
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            "sha256:a-digest-nobody-was-shown",
+            "test-owner",
+            true,
+            "req-wrong-digest",
+            "test-actor",
+        )
+        .expect_err("apply must confirm the plan the caller actually saw");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_DIGEST_MISMATCH"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(edge_count(&db), before);
+        assert_eq!(repair_run_count(&db), 0, "a rejected apply creates no Run");
+    }
+
+    #[test]
+    fn a_replayed_request_cannot_be_claimed_by_a_different_actor() {
+        let (workspace_path, db) = test_workspace("case");
+        seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let epoch_id = db
+            .with_conn(|conn| get_current_epoch(conn, "project-1"))
+            .expect("epoch")
+            .expect("epoch present")
+            .id;
+        let plan_digest = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan")
+            .digest()
+            .to_string();
+        repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "test-owner",
+            true,
+            "req-shared",
+            "actor-one",
+        )
+        .expect("apply");
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "test-owner",
+            true,
+            "req-shared",
+            "actor-two",
+        )
+        .expect_err("a requestId is one person's approval, not a shared token");
+        assert!(
+            error.to_string().contains("NEX_RUN_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    // -- lease ownership ----------------------------------------------------
+
+    #[test]
+    fn a_worker_whose_lease_was_reclaimed_cannot_mutate_or_release() {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
-        let (old_id, _new_id) = seed_duplicate_edges(&db);
-        let second_old_id = seed_second_duplicate_pair(&db);
+        seed_duplicate_edges(&db);
         let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
             .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
-        assert_eq!(plan.change_count(), 2, "fixture needs two repair targets");
-        seed_crashed_repair_run(&db, "project-1", &plan, "req-partial", "test-actor");
-        // Half applied: a state this crate's single-transaction writer
-        // cannot produce, so something wrote around it.
-        db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM narrative_dependency_edges WHERE id = ?1",
-                params![old_id],
-            )?;
-            Ok(())
-        })
-        .expect("simulate a torn application");
         let before = edge_count(&db);
 
+        // Stand in for "A's lease expired during a long backup and B
+        // re-claimed it": B owns a live lease under a different owner and
+        // Run, so A's CAS must find nothing.
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &RepairLeaseClaim {
+                        lease_owner: "owner-b".to_string(),
+                        verify_run_id: verify_run_id.clone(),
+                        repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: "run-b".to_string(),
+                    },
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("B claims the lease");
+
+        // A's own claim attempt is refused while B's lease is live, so A
+        // never reaches the mutation transaction at all.
         let error = repair_narrative_dependency_declarations_for_project(
             &db,
             &workspace_path,
             "project-1",
             &plan,
-            "test-owner",
+            "owner-a",
             true,
-            "req-partial",
-            "test-actor",
+            "req-a",
+            "actor-a",
         )
-        .expect_err("a torn application must not be resumed");
+        .expect_err("a worker without the lease must not mutate");
         assert!(
-            error.to_string().contains("NEX_REPAIR_PARTIALLY_APPLIED"),
+            error.to_string().contains("NEX_REPAIR_LEASE_"),
             "unexpected error: {error}"
         );
-        assert_eq!(edge_count(&db), before);
-        assert!(surviving_edge_ids(&db).contains(&second_old_id));
+        assert_eq!(edge_count(&db), before, "no Edge may have been deleted");
+
+        // And B's lease is still B's — not deleted by A's failure path.
+        let (owner, run): (String, Option<String>) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lease_owner, active_run_id FROM narrative_maintenance_repair_leases
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("B's lease survives");
+        assert_eq!(owner, "owner-b");
+        assert_eq!(run.as_deref(), Some("run-b"));
+    }
+
+    #[test]
+    fn the_mutation_transaction_refuses_an_expired_lease() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let claim = RepairLeaseClaim {
+            lease_owner: "owner-a".to_string(),
+            verify_run_id: verify_run_id.clone(),
+            repair_plan_digest: plan.digest().to_string(),
+            active_run_id: "run-a".to_string(),
+        };
+        // Claimed, then expired — exactly what a long backup produces.
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &claim,
+                    &epoch_id,
+                    "2020-01-01T00:00:00.000Z",
+                    "2020-01-01T00:15:00.000Z",
+                )
+            })
+        })
+        .expect("claim a lease that is already past its TTL");
+
+        let error = db
+            .with_conn(|conn| {
+                assert_repair_lease_still_held_in_tx(conn, "project-1", &claim, &epoch_id)
+            })
+            .expect_err("an expired lease is not held");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_LEASE_LOST"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
@@ -2542,6 +3077,7 @@ mod tests {
                         lease_owner: "owner-a".to_string(),
                         verify_run_id: "verify-run-1".to_string(),
                         repair_plan_digest: "sha256:plan-a".to_string(),
+                        active_run_id: "test-run".to_string(),
                     },
                     &epoch_id,
                     now,
@@ -2561,6 +3097,7 @@ mod tests {
                             lease_owner: "owner-b".to_string(),
                             verify_run_id: "verify-run-2".to_string(),
                             repair_plan_digest: "sha256:plan-b".to_string(),
+                            active_run_id: "test-run".to_string(),
                         },
                         &epoch_id,
                         now,
@@ -2581,6 +3118,7 @@ mod tests {
                         lease_owner: "owner-a".to_string(),
                         verify_run_id: "verify-run-1".to_string(),
                         repair_plan_digest: "sha256:plan-a".to_string(),
+                        active_run_id: "test-run".to_string(),
                     },
                     &epoch_id,
                     now,
@@ -2605,6 +3143,7 @@ mod tests {
                         lease_owner: "owner-a".to_string(),
                         verify_run_id: "verify-run-1".to_string(),
                         repair_plan_digest: "sha256:plan-a".to_string(),
+                        active_run_id: "test-run".to_string(),
                     },
                     &epoch_id,
                     "2020-01-01T00:00:00.000Z",
@@ -2623,6 +3162,7 @@ mod tests {
                         lease_owner: "owner-b".to_string(),
                         verify_run_id: "verify-run-2".to_string(),
                         repair_plan_digest: "sha256:plan-b".to_string(),
+                        active_run_id: "test-run".to_string(),
                     },
                     &epoch_id,
                     "2026-08-15T00:00:00.000Z",

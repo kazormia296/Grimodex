@@ -362,7 +362,7 @@ pub(crate) struct RunRequestIdentity<'a> {
 /// `cancelled` is emphatically not a success, and treating "this request
 /// was seen before" as "this request succeeded" would report a repair that
 /// never ran as done.
-fn find_run_by_request_identity(
+pub(crate) fn find_run_by_request_identity(
     conn: &Connection,
     project_id: &str,
     request: &RunRequestIdentity<'_>,

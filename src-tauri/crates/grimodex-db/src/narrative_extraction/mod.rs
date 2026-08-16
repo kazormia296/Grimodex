@@ -123,7 +123,8 @@ pub use legacy_backfill::{
     BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome,
 };
 pub use repair::{
-    repair_narrative_dependency_declarations_for_project, seal_repair_plan, RepairOutcome,
+    repair_narrative_dependency_declarations_for_project,
+    repair_narrative_dependency_declarations_for_request, seal_repair_plan, RepairOutcome,
     RepairPlan,
 };
 pub use restore_rebuild::{

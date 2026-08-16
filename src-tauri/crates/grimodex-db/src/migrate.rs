@@ -3481,6 +3481,12 @@ impl Database {
         // interpretation Runs that have no request identity, keep NULL.
         Self::migrate_narrative_run_request_identity_v26(&conn)?;
 
+        // SCHEMA 27: a Repair lease names the Run currently entitled to
+        // apply it, so the mutation transaction can prove it still holds
+        // the lease rather than assuming the claim it made minutes earlier
+        // survived a slow backup.
+        Self::migrate_narrative_repair_lease_run_binding_v27(&conn)?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
@@ -4476,6 +4482,38 @@ impl Database {
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_runs_request_identity
                 ON narrative_extraction_runs(project_id, idempotency_domain, request_id)
              WHERE request_id IS NOT NULL AND idempotency_domain IS NOT NULL;",
+        )?;
+        Ok(())
+    }
+
+    /// SCHEMA 27: bind a Repair lease to the Run that holds it.
+    ///
+    /// The lease already records owner, Verify Run, plan digest and Epoch,
+    /// which is enough to say *what* was approved but not *which execution*
+    /// is currently entitled to apply it. `repair.rs` compare-and-swaps the
+    /// whole row — this column included — at the top of the transaction that
+    /// deletes Edges, and releases it under the same predicate, so a worker
+    /// whose lease expired and was re-claimed by someone else cannot mutate
+    /// the graph or delete the new holder's lease.
+    ///
+    /// Plain ADD COLUMN: nullable, so a lease claimed before this migration
+    /// simply carries NULL and fails the CAS, which is the safe direction.
+    fn migrate_narrative_repair_lease_run_binding_v27(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_maintenance_repair_leases'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        Self::add_column_if_missing(
+            conn,
+            "narrative_maintenance_repair_leases",
+            "active_run_id",
+            "TEXT",
         )?;
         Ok(())
     }
@@ -8431,6 +8469,55 @@ mod tests {
         // Idempotent: a second run against the now-current shape is a no-op.
         Database::migrate_run_kind_v24(&conn)
             .expect("second SCHEMA 24 run_kind migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_repair_lease_run_binding_v27_adds_the_column_and_keeps_existing_leases() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        // The pre-SCHEMA-27 shape: everything the lease needs to say *what*
+        // was approved, but nothing saying which execution may apply it.
+        conn.execute_batch(
+            "CREATE TABLE narrative_maintenance_repair_leases (
+                project_id              TEXT NOT NULL,
+                lease_owner             TEXT NOT NULL,
+                verify_run_id           TEXT NOT NULL,
+                repair_plan_digest      TEXT NOT NULL,
+                semantic_epoch_id       TEXT NOT NULL,
+                claimed_at              TEXT NOT NULL,
+                expires_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id)
+             );
+             INSERT INTO narrative_maintenance_repair_leases
+                VALUES ('proj-1', 'owner-1', 'verify-1', 'sha256:d', 'epoch-1',
+                        '2026-08-15T00:00:00.000Z', '2026-08-15T00:15:00.000Z');",
+        )
+        .expect("seed a pre-v27 lease table");
+
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("SCHEMA 27 lease run-binding migration");
+
+        // A lease claimed before this migration carries NULL, which fails
+        // `assert_repair_lease_still_held_in_tx`'s CAS — the safe direction.
+        let (owner, active_run_id): (String, Option<String>) = conn
+            .query_row(
+                "SELECT lease_owner, active_run_id FROM narrative_maintenance_repair_leases
+                  WHERE project_id = 'proj-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read the migrated lease");
+        assert_eq!(owner, "owner-1");
+        assert_eq!(active_run_id, None);
+
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("second SCHEMA 27 lease migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_repair_lease_run_binding_v27_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
+            .expect("a workspace with no lease table must migrate cleanly");
     }
 
     #[test]

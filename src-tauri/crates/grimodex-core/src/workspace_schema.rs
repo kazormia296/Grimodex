@@ -573,7 +573,7 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// columns for Verify, and widens the Run `run_kind` CHECK to admit
 /// `dependency-verify`/`dependency-repair`.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 26
+    Ok(SCHEMA_VERSION == 27
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -591,7 +591,22 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v23_change_cursor_reservation_columns(conn)?
         && has_v24_run_kind_policy_tables(conn)?
         && has_v25_attention_occ_columns(conn)?
-        && has_v26_run_request_identity_columns(conn)?)
+        && has_v26_run_request_identity_columns(conn)?
+        && has_v27_repair_lease_run_binding(conn)?)
+}
+
+/// SCHEMA 27: a Repair lease names the Run entitled to apply it, so the
+/// mutation transaction can compare-and-swap the whole lease row instead of
+/// trusting a claim it made before a slow backup. Nullable by design — a
+/// lease claimed before this migration carries NULL and fails the CAS,
+/// which is the safe direction.
+fn has_v27_repair_lease_run_binding(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_maintenance_repair_leases")? {
+        return Ok(false);
+    }
+    Ok(table_columns(conn, "narrative_maintenance_repair_leases")?
+        .iter()
+        .any(|column| column.name == "active_run_id" && column.declared_type == "TEXT"))
 }
 
 /// SCHEMA 26: a system Run records the request that asked for it, kept

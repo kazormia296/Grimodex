@@ -26,7 +26,7 @@ const REPO_ROOT = path.resolve(
 // authority and the concern matrix is unchanged. The dropped nullable
 // set_by is superseded by the NOT NULL actor_id, which narrows rather than
 // widens what may be written.
-export const EXPECTED_SCHEMA_VERSION = 26;
+export const EXPECTED_SCHEMA_VERSION = 27;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

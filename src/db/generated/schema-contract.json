@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 26,
+  "schemaVersion": 27,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -8208,6 +8208,13 @@
     "narrative_maintenance_repair_leases": {
       "kind": "table",
       "columns": {
+        "active_run_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "claimed_at": {
           "ordinal": 5,
           "declaredType": "TEXT",
@@ -8281,7 +8288,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_maintenance_repair_leases ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, lease_owner TEXT NOT NULL CHECK(length(lease_owner) > 0), verify_run_id TEXT NOT NULL CHECK(length(verify_run_id) > 0), repair_plan_digest TEXT NOT NULL CHECK(length(repair_plan_digest) > 0), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(project_id) )"
+      "createSql": "CREATE TABLE narrative_maintenance_repair_leases ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, lease_owner TEXT NOT NULL CHECK(length(lease_owner) > 0), verify_run_id TEXT NOT NULL CHECK(length(verify_run_id) > 0), repair_plan_digest TEXT NOT NULL CHECK(length(repair_plan_digest) > 0), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL, active_run_id TEXT, PRIMARY KEY(project_id) )"
     },
     "narrative_projection_dependencies": {
       "kind": "table",

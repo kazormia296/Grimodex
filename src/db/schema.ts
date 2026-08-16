@@ -3177,6 +3177,13 @@ export const narrativeMaintenanceRepairLeases = sqliteTable(
       .references(() => narrativeSemanticEpochs.id),
     claimedAt: text("claimed_at").notNull(),
     expiresAt: text("expires_at").notNull(),
+    // SCHEMA_VERSION 27. The Run currently entitled to apply this plan.
+    // `lease_owner` identifies the process; this identifies the execution,
+    // so the mutation transaction can compare-and-swap the whole row and
+    // refuse to mutate under a lease that expired and was re-claimed.
+    // Nullable: a lease claimed before this migration carries NULL and
+    // fails that CAS, which is the safe direction.
+    activeRunId: text("active_run_id"),
   },
   (table) => [primaryKey({ columns: [table.projectId] })],
 );

@@ -5259,26 +5259,31 @@ impl Backend {
             let authority = active_database(&state.ws)?;
             let db = authority.db();
 
-            let current_epoch_id = db
-                .with_conn(|conn| narrative_extraction::get_current_epoch(conn, &dto.project_id))?
-                .ok_or_else(|| {
-                    AppError::Anyhow(anyhow::anyhow!(
-                        "NEX_REPAIR_NO_EPOCH: project '{}' has no Semantic Epoch",
-                        dto.project_id
-                    ))
-                })?
-                .id;
-
-            let plan = db.with_conn(|conn| {
-                narrative_extraction::seal_repair_plan(
-                    conn,
-                    &dto.project_id,
-                    &dto.verify_run_id,
-                    &current_epoch_id,
-                )
-            })?;
-
+            // Preview seals a plan to show the human what would change.
+            // Apply must NOT start by sealing: a retry whose first attempt
+            // succeeded but whose response was lost would re-seal against
+            // an already-repaired graph and fail, never reaching the stored
+            // outcome. `..._for_request` resolves the request first.
             if !dto.apply {
+                let current_epoch_id = db
+                    .with_conn(|conn| {
+                        narrative_extraction::get_current_epoch(conn, &dto.project_id)
+                    })?
+                    .ok_or_else(|| {
+                        AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_REPAIR_NO_EPOCH: project '{}' has no Semantic Epoch",
+                            dto.project_id
+                        ))
+                    })?
+                    .id;
+                let plan = db.with_conn(|conn| {
+                    narrative_extraction::seal_repair_plan(
+                        conn,
+                        &dto.project_id,
+                        &dto.verify_run_id,
+                        &current_epoch_id,
+                    )
+                })?;
                 let preview = serde_json::json!({
                     "mode": "preview",
                     "plan": plan,
@@ -5291,13 +5296,6 @@ impl Backend {
                     "NEX_REPAIR_PLAN_DIGEST_REQUIRED: planDigest is required when apply is true"
                 )));
             };
-            if plan_digest != plan.digest() {
-                return Err(AppError::Anyhow(anyhow::anyhow!(
-                    "NEX_REPAIR_PLAN_DIGEST_MISMATCH: the supplied planDigest does not match \
-                     the freshly-sealed plan -- the Durable Graph may have changed since the \
-                     preview; request a fresh preview before retrying"
-                )));
-            }
             let Some(lease_owner) = dto.lease_owner.as_deref() else {
                 return Err(AppError::Anyhow(anyhow::anyhow!(
                     "NEX_REPAIR_LEASE_OWNER_REQUIRED: leaseOwner is required when apply is true"
@@ -5306,11 +5304,12 @@ impl Backend {
 
             let workspace_path = active_workspace_path(&state.ws)?;
             let outcome =
-                narrative_extraction::repair_narrative_dependency_declarations_for_project(
+                narrative_extraction::repair_narrative_dependency_declarations_for_request(
                     db,
                     &workspace_path,
                     &dto.project_id,
-                    &plan,
+                    &dto.verify_run_id,
+                    plan_digest,
                     lease_owner,
                     true,
                     &dto.request_id,
