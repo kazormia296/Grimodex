@@ -1928,7 +1928,7 @@ mod unit_tests {
                 .map_err(Into::into)
             })
             .expect("scene source revision");
-        let source_key = scene_id.to_string();
+        let source_key = format!("project:scene:{scene_id}");
         let revision_token = format!("v{version}@{updated_at}");
         let read_set = json!([{
             "kind": "snapshot-document",

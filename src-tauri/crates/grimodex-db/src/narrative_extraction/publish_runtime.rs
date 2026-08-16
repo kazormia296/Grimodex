@@ -630,14 +630,19 @@ mod tests {
         create_epoch_in_tx(conn, project_id, "initial", None).expect("create epoch")
     }
 
-    fn seed_run(conn: &Connection, run_id: &str, project_id: &str) {
+    /// `epoch_id` seeds the Run's own `semantic_epoch_id` column, exactly
+    /// as [`create_system_run_in_tx`](super::super::repository::create_system_run_in_tx)
+    /// stamps it at real creation time -- [`verify_publish_reservation_in_tx`]
+    /// requires this to match the reservation's epoch, so every test Run
+    /// needs a real one, not `NULL`.
+    fn seed_run(conn: &Connection, run_id: &str, project_id: &str, epoch_id: &str) {
         conn.execute(
             "INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                 status, coverage_json, created_at, version)
+                 status, coverage_json, created_at, version, semantic_epoch_id)
              VALUES (?1, ?2, 'chronicle.extract', '{}', '{}', 'digest-1',
-                     'running', '{}', datetime('now'), 0)",
-            params![run_id, project_id],
+                     'running', '{}', datetime('now'), 0, ?3)",
+            params![run_id, project_id, epoch_id],
         )
         .expect("insert run");
     }
@@ -734,7 +739,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 5);
             let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
@@ -803,7 +808,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 3);
             let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
@@ -857,7 +862,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 7);
             let edge_fresh = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
@@ -927,7 +932,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 42);
             let edge_id = seed_edge(
@@ -988,7 +993,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 1);
 
@@ -1035,7 +1040,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-1", "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             let edge_id = seed_edge(
                 conn,
@@ -1133,7 +1138,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_e1 = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-a", "project-1");
+            seed_run(conn, "run-a", "project-1", &epoch_e1);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_e1, "run-a", 5);
             let edge_id = seed_edge(
@@ -1151,7 +1156,7 @@ mod tests {
 
             // Run B reserves a fresh range against the new Epoch -- this
             // UPSERTs the same cursor row, taking over its reservation.
-            seed_run(conn, "run-b", "project-1");
+            seed_run(conn, "run-b", "project-1", &epoch_e2);
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_e2, "run-b", 8);
 
             // Run A's stale publish must be rejected: its own Epoch (E1)
@@ -1222,8 +1227,8 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-a", "project-1");
-            seed_run(conn, "run-b", "project-1");
+            seed_run(conn, "run-a", "project-1", &epoch_id);
+            seed_run(conn, "run-b", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             // The cursor is reserved for run-b, but run-a is the one
             // attempting to publish.
@@ -1264,7 +1269,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-a", "project-1");
+            seed_run(conn, "run-a", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-a", 5);
             let edge_id = seed_edge(
@@ -1306,7 +1311,7 @@ mod tests {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = seed_epoch(conn, "project-1");
-            seed_run(conn, "run-a", "project-1");
+            seed_run(conn, "run-a", "project-1", &epoch_id);
             seed_cursor(conn, "project-1", "consumer-a");
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-a", 5);
             let edge_id = seed_edge(

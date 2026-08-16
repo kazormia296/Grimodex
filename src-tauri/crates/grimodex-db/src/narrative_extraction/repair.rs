@@ -440,15 +440,30 @@ mod tests {
         // structurally impossible through any writer -- including a raw
         // INSERT with the same key, which SQLite enforces regardless of
         // caller (exactly what `duplicate_edge_keys`'s doc comment
-        // describes). To build the fixture this test needs, drop that
-        // constraint on this throwaway per-test database only (`CREATE
-        // TABLE ... AS SELECT` never carries constraints over) before
-        // inserting the duplicate; the whole database is discarded when the
-        // test ends, so there is no need to restore it.
+        // describes). To build the fixture this test needs, drop that one
+        // constraint on this throwaway per-test database only, while
+        // keeping PRIMARY KEY(id) intact -- `narrative_dependency_edge_states`
+        // has a foreign key to `narrative_dependency_edges(id)`, and SQLite
+        // requires the referenced column to still carry a unique index or
+        // every later write through that FK fails closed with "foreign key
+        // mismatch". The whole database is discarded when the test ends, so
+        // there is no need to restore the dropped UNIQUE afterwards.
         db.with_conn(|conn| {
             conn.execute_batch(
                 "PRAGMA foreign_keys = OFF;
-                 CREATE TABLE narrative_dependency_edges_unconstrained AS
+                 CREATE TABLE narrative_dependency_edges_unconstrained (
+                    id                          TEXT NOT NULL,
+                    project_id                  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    consumer_kind               TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                    consumer_key                TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                    source_object_identity      TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                    read_set_json                TEXT NOT NULL DEFAULT '[]'
+                        CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'),
+                    generated_by_transaction_id TEXT,
+                    created_at                  TEXT NOT NULL,
+                    PRIMARY KEY(id)
+                 );
+                 INSERT INTO narrative_dependency_edges_unconstrained
                     SELECT * FROM narrative_dependency_edges;
                  DROP TABLE narrative_dependency_edges;
                  ALTER TABLE narrative_dependency_edges_unconstrained
