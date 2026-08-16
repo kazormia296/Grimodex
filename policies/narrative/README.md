@@ -565,17 +565,38 @@ replayed against real SQLite via Python, plus four Rust `#[cfg(test)]`
 unit tests against a real `db.migrate()`-shaped database covering kind/
 epoch/work_key persistence and all three reuse policies.
 
-Still not implemented: the Backfill
-Dependency Graph transform (`legacy_backfill.rs` reading
-`narrative_projection_dependencies`/`narrative_projection_freshness` and
-writing `narrative_dependency_edges` — today only Epoch/Contribution
-seeding exists), the post-open bootstrap trigger for automatic-once
-Backfill, the evaluate→publish wiring gap (nothing yet constructs an
-`EdgeComparisonInput` from real DB state to connect Lane F's
-`evaluator.rs` to Lane J's `publish_runtime.rs`), the ~10 still-missing
-Verify checks in `restore_rebuild.rs`, the `dependency-rebuild-derived`
-orchestrator, the Repair lease/backup/sealed-plan/execution flow, and the
-five new IPC/N-API operations.
+**Backfill's Dependency Graph transform landed** (`legacy_backfill.rs`):
+`backfill_project_semantic_build_graph_in_tx` now also writes one
+`narrative_dependency_edges` row per pre-existing
+`narrative_projection_dependencies` row, alongside the epoch/Contribution
+seeding it already did. Consumer identity mirrors Producer-time C2-T1
+wiring exactly — `(RUN_CONSUMER_KIND, run_id)`, read from the owning
+`narrative_apply_commits.run_id` column, never the individual
+Application — so a later Verify/Rebuild walking `find_edges_by_consumer`
+sees the same shape whether a Run's Edges came from a live
+Reconciliation Envelope or from this backfill. A commit with a `NULL`
+`run_id` (predates the Run/Task/Attempt execution-state model entirely)
+has no Run-scoped Consumer identity to backfill an Edge under; its
+Contribution row is still seeded, and the skip is counted in the new
+`applications_without_run_id` summary field rather than silently
+dropped. `narrative_projection_dependencies.source_kind` values are
+drawn from the exact same vocabulary `source_object_identity_for`
+already accepts — confirmed by inspection, since `commit.rs` writes both
+tables from the same `SourceBasisRow`s for every post-C2-T1 commit.
+Verified: the exact application/dependency/edge-upsert SQL replayed
+end-to-end against real SQLite via Python, plus three new Rust
+`#[cfg(test)]` unit tests (Run-scoped backfill, no-run_id skip counting,
+re-run idempotency) alongside the four pre-existing Contribution-only
+tests, all against a real `db.migrate()`-shaped database.
+
+Still not implemented: the post-open bootstrap trigger for
+automatic-once Backfill, the evaluate→publish wiring gap (nothing yet
+constructs an `EdgeComparisonInput` from real DB state to connect Lane
+F's `evaluator.rs` to Lane J's `publish_runtime.rs`), the ~10
+still-missing Verify checks in `restore_rebuild.rs`, the
+`dependency-rebuild-derived` orchestrator, the Repair
+lease/backup/sealed-plan/execution flow, and the five new IPC/N-API
+operations.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

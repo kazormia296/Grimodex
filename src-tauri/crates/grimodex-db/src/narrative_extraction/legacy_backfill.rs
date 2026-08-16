@@ -13,17 +13,33 @@
 //! `application_contributions.rs`) for downstream Freshness / Undo fan-out
 //! to walk.
 //!
-//! This module is the one-time, idempotent migration job that seeds both:
+//! This module is the one-time, idempotent migration job that seeds:
 //!
 //!   1. an `initial` Semantic Epoch (epoch 0) for a project that has none
 //!      yet -- nothing in the Build Graph can be evaluated without a
 //!      generation boundary to evaluate against (`semantic_epoch.rs`, Lane
-//!      A); and
+//!      A);
 //!   2. one Contribution row per pre-existing Application, state
 //!      `unchanged` -- "not yet evaluated", not "confirmed current". A
 //!      later Freshness pass (Lane F's evaluator, out of scope here) is
 //!      what actually determines whether a legacy Application's target is
-//!      still faithful to what it wrote.
+//!      still faithful to what it wrote; and
+//!   3. one generic Dependency Edge per pre-existing
+//!      `narrative_projection_dependencies` row, so the Generic Graph
+//!      (`dependency_edges.rs`) carries the same Source knowledge Legacy
+//!      Freshness (`narrative_projection_freshness`) already has. Consumer
+//!      identity mirrors Producer-time C2-T1 wiring exactly
+//!      (`repository.rs`'s `record_run_dependency_edges_in_tx`):
+//!      `(RUN_CONSUMER_KIND, run_id)`, the owning `narrative_apply_commits`
+//!      row's own `run_id` column -- never the individual Application, so a
+//!      later Verify/Rebuild walking `find_edges_by_consumer` sees the same
+//!      shape whether a Run's Edges came from a live Reconciliation
+//!      Envelope or from this backfill. A commit with a `NULL` `run_id`
+//!      (predates the Run/Task/Attempt execution-state model entirely) has
+//!      no Run-scoped Consumer identity to backfill an Edge under; its
+//!      Contribution row is still seeded, just with no matching Edge, and
+//!      it is counted separately in the summary rather than silently
+//!      dropped.
 //!
 //! `target_object_identity` is built directly from the Application's own
 //! `applied_entity_kind`/`applied_entity_id` columns (`"{kind}:{id}"`)
@@ -37,23 +53,28 @@
 //! field-level detail unknown": these Applications predate per-field
 //! Contribution tracking, so there is no real field path to recover.
 //!
-//! Both writes are layered directly on the Lane A / Lane H primitives
-//! (`create_epoch_in_tx`, `record_contribution_in_tx`); this module adds no
-//! SQL beyond the read query that enumerates existing Applications. Like
-//! its dependencies, it is an ambient-transaction helper -- the caller owns
-//! `BEGIN`/`COMMIT`.
+//! All three writes are layered directly on existing Lane primitives
+//! (`create_epoch_in_tx`, `record_contribution_in_tx`,
+//! `record_dependency_edge_in_tx`); this module adds no SQL beyond the read
+//! queries that enumerate existing Applications and their legacy Freshness
+//! dependencies. Like its dependencies, it is an ambient-transaction helper
+//! -- the caller owns `BEGIN`/`COMMIT`.
 //!
 //! Idempotency: epoch creation is guarded by `get_current_epoch` (only
-//! mints epoch 0 when the project has none yet), and
-//! `record_contribution_in_tx` upserts on `(project_id, application_id,
-//! target_object_identity, field_path)`, so re-running this backfill for a
-//! project that already ran it creates no duplicate rows --
-//! `contributions_created` in the returned summary reports 0 on that
-//! second run.
+//! mints epoch 0 when the project has none yet), `record_contribution_in_tx`
+//! upserts on `(project_id, application_id, target_object_identity,
+//! field_path)`, and `record_dependency_edge_in_tx` upserts on `(project_id,
+//! consumer_kind, consumer_key, source_object_identity)` -- so re-running
+//! this backfill for a project that already ran it creates no duplicate
+//! rows. `contributions_created`/`edges_created` in the returned summary
+//! both report 0 on that second run.
 
 use rusqlite::{params, Connection};
 
 use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
+use super::dependency_edges::{
+    record_dependency_edge_in_tx, source_object_identity_for, RUN_CONSUMER_KIND,
+};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 
 /// Field path recorded for every backfilled Contribution. Legacy
@@ -73,12 +94,31 @@ pub(crate) struct BackfillSummary {
     /// reports 0 here (the upserts still run, they just match existing
     /// rows), not the total number of legacy Applications seen.
     pub contributions_created: usize,
+    /// Number of `narrative_dependency_edges` rows this call actually
+    /// inserted (see `contributions_created`'s same re-run caveat: an
+    /// upsert against an already-backfilled Edge reports 0 here, not the
+    /// total number of legacy dependency rows seen).
+    pub edges_created: usize,
+    /// Legacy Applications seen whose owning `narrative_apply_commits` row
+    /// has a `NULL` `run_id` -- predates the Run/Task/Attempt
+    /// execution-state model, so there is no Run-scoped Consumer identity
+    /// to backfill a Dependency Edge under. Their Contribution row is still
+    /// seeded; only Edge backfill is skipped for these, and this count
+    /// makes that skip visible rather than silent.
+    pub applications_without_run_id: usize,
 }
 
 struct LegacyApplication {
     id: String,
     applied_entity_kind: String,
     applied_entity_id: String,
+    run_id: Option<String>,
+}
+
+struct LegacyProjectionDependency {
+    source_kind: String,
+    source_key: String,
+    observed_revision_token: String,
 }
 
 /// Backfill one project's Semantic Build Graph foundation from its
@@ -109,6 +149,8 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
     };
 
     let contributions_before = count_contributions(conn, project_id)?;
+    let edges_before = count_edges(conn, project_id)?;
+    let mut applications_without_run_id = 0usize;
     for application in load_legacy_applications(conn, project_id)? {
         let target_object_identity = format!(
             "{}:{}",
@@ -123,13 +165,60 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             ContributionTargetState::Unchanged,
             now,
         )?;
+
+        match &application.run_id {
+            Some(run_id) => {
+                record_legacy_dependency_edges_in_tx(
+                    conn,
+                    project_id,
+                    run_id,
+                    &application.id,
+                    now,
+                )?;
+            }
+            None => applications_without_run_id += 1,
+        }
     }
     let contributions_after = count_contributions(conn, project_id)?;
+    let edges_after = count_edges(conn, project_id)?;
 
     Ok(BackfillSummary {
         epoch_created,
         contributions_created: contributions_after.saturating_sub(contributions_before),
+        edges_created: edges_after.saturating_sub(edges_before),
+        applications_without_run_id,
     })
+}
+
+/// Producer-time-shaped Dependency Edge backfill for one legacy Application:
+/// every `narrative_projection_dependencies` row it left behind becomes one
+/// Edge declared by its owning Run, mirroring `repository.rs`'s
+/// `record_run_dependency_edges_in_tx` exactly (same Consumer identity, same
+/// one-element `read_set_json`) so this Run's Edge set looks identical
+/// whether it was declared live or backfilled.
+fn record_legacy_dependency_edges_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    application_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    for dependency in load_legacy_projection_dependencies(conn, application_id)? {
+        let source_object_identity =
+            source_object_identity_for(&dependency.source_kind, &dependency.source_key)?;
+        let read_set_json = serde_json::to_string(&[dependency.observed_revision_token.as_str()])?;
+        record_dependency_edge_in_tx(
+            conn,
+            project_id,
+            RUN_CONSUMER_KIND,
+            run_id,
+            &source_object_identity,
+            &read_set_json,
+            None,
+            now,
+        )?;
+    }
+    Ok(())
 }
 
 fn count_contributions(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
@@ -139,6 +228,41 @@ fn count_contributions(conn: &Connection, project_id: &str) -> anyhow::Result<us
         |row| row.get(0),
     )?;
     Ok(usize::try_from(count).unwrap_or(0))
+}
+
+fn count_edges(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    Ok(usize::try_from(count).unwrap_or(0))
+}
+
+/// Every `narrative_projection_dependencies` row a legacy Application left
+/// behind. `propagation` is always `'freshness-only'` today (the table's own
+/// `CHECK`), so it carries no information beyond what `source_kind`/
+/// `source_key`/`observed_revision_token` already give the Generic Graph.
+fn load_legacy_projection_dependencies(
+    conn: &Connection,
+    application_id: &str,
+) -> anyhow::Result<Vec<LegacyProjectionDependency>> {
+    let mut statement = conn.prepare(
+        "SELECT source_kind, source_key, observed_revision_token
+           FROM narrative_projection_dependencies
+          WHERE application_id = ?1
+          ORDER BY source_kind ASC, source_key ASC",
+    )?;
+    let rows = statement
+        .query_map(params![application_id], |row| {
+            Ok(LegacyProjectionDependency {
+                source_kind: row.get(0)?,
+                source_key: row.get(1)?,
+                observed_revision_token: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Every pre-existing Application for `project_id`, oldest first.
@@ -152,7 +276,7 @@ fn load_legacy_applications(
     project_id: &str,
 ) -> anyhow::Result<Vec<LegacyApplication>> {
     let mut statement = conn.prepare(
-        "SELECT a.id, a.applied_entity_kind, a.applied_entity_id
+        "SELECT a.id, a.applied_entity_kind, a.applied_entity_id, c.run_id
            FROM narrative_proposal_applications a
            INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
           WHERE c.project_id = ?1
@@ -164,6 +288,7 @@ fn load_legacy_applications(
                 id: row.get(0)?,
                 applied_entity_kind: row.get(1)?,
                 applied_entity_id: row.get(2)?,
+                run_id: row.get(3)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -212,13 +337,40 @@ mod tests {
         applied_entity_id: &str,
         created_at: &str,
     ) {
+        seed_legacy_application_with_run(
+            conn,
+            project_id,
+            commit_id,
+            application_id,
+            applied_entity_kind,
+            applied_entity_id,
+            created_at,
+            None,
+        );
+    }
+
+    /// As [`seed_legacy_application`], but also lets the owning commit's
+    /// `run_id` be set -- needed to exercise Dependency Edge backfill, which
+    /// is Run-scoped.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_legacy_application_with_run(
+        conn: &Connection,
+        project_id: &str,
+        commit_id: &str,
+        application_id: &str,
+        applied_entity_kind: &str,
+        applied_entity_id: &str,
+        created_at: &str,
+        run_id: Option<&str>,
+    ) {
         conn.execute(
             "INSERT INTO narrative_apply_commits
-                (id, project_id, request_id, plan_digest, status, created_at, version)
-             VALUES (?1, ?2, ?3, ?4, 'applied', ?5, 0)",
+                (id, project_id, run_id, request_id, plan_digest, status, created_at, version)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'applied', ?6, 0)",
             params![
                 commit_id,
                 project_id,
+                run_id,
                 format!("request-{commit_id}"),
                 format!("digest-{commit_id}"),
                 created_at,
@@ -241,6 +393,27 @@ mod tests {
             ],
         )
         .expect("seed application");
+    }
+
+    fn seed_legacy_projection_dependency(
+        conn: &Connection,
+        application_id: &str,
+        source_kind: &str,
+        source_key: &str,
+        observed_revision_token: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO narrative_projection_dependencies
+                (application_id, source_kind, source_key, observed_revision_token, propagation)
+             VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
+            params![
+                application_id,
+                source_kind,
+                source_key,
+                observed_revision_token
+            ],
+        )
+        .expect("seed projection dependency");
     }
 
     #[test]
@@ -445,5 +618,139 @@ mod tests {
         assert!(error
             .to_string()
             .starts_with("NEX_BACKFILL_CREATED_AT_INVALID"));
+    }
+
+    #[test]
+    fn applications_with_run_id_get_backfilled_dependency_edges() {
+        use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+            seed_legacy_projection_dependency(
+                conn,
+                "app-1",
+                "scene-body",
+                "scene-1",
+                "v1@2026-08-14T00:00:00.000Z",
+            );
+
+            let summary = backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+            assert_eq!(summary.edges_created, 1);
+            assert_eq!(summary.applications_without_run_id, 0);
+
+            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0].source_object_identity, "project:scene:scene-1");
+            assert_eq!(edges[0].read_set_json, "[\"v1@2026-08-14T00:00:00.000Z\"]");
+            Ok(())
+        })
+        .expect("backfill with run-scoped dependency edges");
+    }
+
+    #[test]
+    fn applications_without_run_id_are_counted_and_skipped() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            // seed_legacy_application (no run_id) matches every commit
+            // predating the Run/Task/Attempt execution-state model.
+            seed_legacy_application(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+            );
+            seed_legacy_projection_dependency(
+                conn,
+                "app-1",
+                "scene-body",
+                "scene-1",
+                "v1@2026-08-14T00:00:00.000Z",
+            );
+
+            let summary = backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+            assert_eq!(
+                summary.contributions_created, 1,
+                "Contribution seeding must still happen with no run_id"
+            );
+            assert_eq!(
+                summary.edges_created, 0,
+                "no Run-scoped Consumer identity exists to backfill an Edge under"
+            );
+            assert_eq!(summary.applications_without_run_id, 1);
+            Ok(())
+        })
+        .expect("backfill with no run id");
+    }
+
+    #[test]
+    fn rerunning_backfill_edges_is_idempotent() {
+        use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+            seed_legacy_projection_dependency(
+                conn,
+                "app-1",
+                "scene-body",
+                "scene-1",
+                "v1@2026-08-14T00:00:00.000Z",
+            );
+
+            let first = backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+            assert_eq!(first.edges_created, 1);
+
+            let second = backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T03:00:00.000Z",
+            )?;
+            assert_eq!(
+                second.edges_created, 0,
+                "re-run must not create a duplicate Edge row"
+            );
+
+            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            assert_eq!(edges.len(), 1, "no duplicate edge row");
+            Ok(())
+        })
+        .expect("idempotent edge rerun");
     }
 }
