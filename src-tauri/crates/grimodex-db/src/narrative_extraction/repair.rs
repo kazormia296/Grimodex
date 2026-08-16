@@ -394,6 +394,28 @@ impl RepairPlan {
     }
 }
 
+/// The digest a Repair request is filed under.
+///
+/// Covers the *API payload*, not just the plan: `verifyRunId` and
+/// `planDigest` arrive as two independent fields, and the plan digest is an
+/// opaque string as far as the boundary is concerned. Sealing `verifyRunId`
+/// inside the plan digest therefore proves nothing about the `verifyRunId`
+/// the caller actually sent alongside it.
+///
+/// Without this, a retry carrying the right `requestId`, the right
+/// `planDigest` and the right actor but a *different* `verifyRunId` would
+/// be accepted as a replay, re-seal from the wrong Verify Run, fail, and
+/// terminalize the original Run -- letting a malformed retry kill a repair
+/// that was executing correctly. With it, that retry is
+/// `NEX_RUN_REQUEST_CONFLICT` before anything is read or written.
+fn repair_request_payload_digest(verify_run_id: &str, plan_digest: &str) -> String {
+    let payload = json!({
+        "verifyRunId": verify_run_id,
+        "repairPlanDigest": plan_digest,
+    });
+    format!("sha256:{}", digest_plan(&payload))
+}
+
 /// The one definition of a Repair plan's digest, so sealing and
 /// re-validating cannot drift into computing it two different ways.
 fn repair_plan_digest(
@@ -734,8 +756,10 @@ pub fn repair_narrative_dependency_declarations_for_request(
 
     // 1. Request first. `find_run_by_request_identity` fails closed on a
     //    payload-digest or actor mismatch, so a `requestId` presented with
-    //    a different plan or by a different person is a conflict here
-    //    rather than a replay.
+    //    a different plan, a different Verify Run, or by a different person
+    //    is a conflict here rather than a replay -- and, crucially, before
+    //    anything can terminalize the Run that requestId already owns.
+    let payload_digest = repair_request_payload_digest(verify_run_id, expected_plan_digest);
     let prior = db.with_conn(|conn| {
         find_run_by_request_identity(
             conn,
@@ -743,7 +767,7 @@ pub fn repair_narrative_dependency_declarations_for_request(
             &RunRequestIdentity {
                 request_id,
                 idempotency_domain: REPAIR_IDEMPOTENCY_DOMAIN,
-                payload_digest: expected_plan_digest,
+                payload_digest: &payload_digest,
                 actor_id,
             },
         )
@@ -768,21 +792,42 @@ pub fn repair_narrative_dependency_declarations_for_request(
         // must not be left `running`, or every future retry returns the
         // same pre-resume error and the Run stays forever in flight,
         // blocking the C2-Z `no-active-backfill-or-repair-run` check.
-        let plan =
-            match seal_plan_matching_digest(db, project_id, verify_run_id, expected_plan_digest) {
-                Ok(plan) => plan,
-                Err(seal_error) => {
-                    return terminalize_unresumable_run(
-                        db,
-                        project_id,
-                        &run_id,
-                        request_id,
-                        expected_plan_digest,
-                        actor_id,
-                        seal_error,
-                    );
-                }
-            };
+        //
+        // The Run's own stored spec is the authority for *what* to resume,
+        // not this call's arguments. They should agree -- the payload digest
+        // above already covers both -- but a resume that read its identity
+        // from the incoming request would be trusting the very thing it is
+        // meant to be checking.
+        let approved = load_approved_request_spec(db, &run_id)?;
+        anyhow::ensure!(
+            approved.verify_run_id == verify_run_id
+                && approved.repair_plan_digest == expected_plan_digest,
+            "NEX_RUN_REQUEST_CONFLICT: requestId '{request_id}' was approved for Verify Run \
+             '{}' with plan digest '{}', but this call presents Verify Run '{verify_run_id}' \
+             with plan digest '{expected_plan_digest}'",
+            approved.verify_run_id,
+            approved.repair_plan_digest
+        );
+
+        let plan = match seal_plan_matching_digest(
+            db,
+            project_id,
+            &approved.verify_run_id,
+            &approved.repair_plan_digest,
+        ) {
+            Ok(plan) => plan,
+            Err(seal_error) => {
+                return terminalize_unresumable_run(
+                    db,
+                    project_id,
+                    &run_id,
+                    request_id,
+                    &payload_digest,
+                    actor_id,
+                    seal_error,
+                );
+            }
+        };
         if plan.is_empty() {
             return Ok(RepairOutcome {
                 edges_deactivated: 0,
@@ -815,6 +860,45 @@ pub fn repair_narrative_dependency_declarations_for_request(
         request_id,
         actor_id,
     )
+}
+
+/// What a Repair Run was originally approved to do, read back from the spec
+/// stored when it was created.
+struct ApprovedRequestSpec {
+    verify_run_id: String,
+    repair_plan_digest: String,
+}
+
+/// Reads a Run's approved spec. This -- not the incoming call's arguments
+/// -- is what a resume re-derives its plan from.
+fn load_approved_request_spec(
+    db: &Database,
+    run_id: &str,
+) -> anyhow::Result<ApprovedRequestSpec> {
+    let spec_json: String = db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT spec_json FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    })?;
+    let spec: serde_json::Value = serde_json::from_str(&spec_json).map_err(|error| {
+        anyhow::anyhow!("NEX_REPAIR_RUN_SPEC_MALFORMED: Run '{run_id}' spec is unreadable: {error}")
+    })?;
+    let read = |key: &str| -> anyhow::Result<String> {
+        spec.get(key)
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!("NEX_REPAIR_RUN_SPEC_MALFORMED: Run '{run_id}' spec has no {key}")
+            })
+    };
+    Ok(ApprovedRequestSpec {
+        verify_run_id: read("verifyRunId")?,
+        repair_plan_digest: read("repairPlanDigest")?,
+    })
 }
 
 /// Lands a Run that can never be resumed, without ever reporting work it
@@ -860,6 +944,17 @@ fn terminalize_unresumable_run(
         if !matches!(status, "pending" | "running") {
             return replay_repair_outcome(run_id, status, &current["outcome"]);
         }
+    }
+
+    // Belt and braces against killing a healthy repair: if another attempt
+    // holds this Run's lease, it is executing right now and this call's
+    // inability to re-derive the plan says nothing about it. Report it as in
+    // flight and leave it alone.
+    if lease_is_held_for_run(db, project_id, run_id) {
+        return Err(seal_error.context(format!(
+            "NEX_REPAIR_REQUEST_IN_PROGRESS: Run '{run_id}' holds a live Repair lease under \
+             another attempt; refusing to terminalize a Run that is executing"
+        )));
     }
 
     let epoch_moved = db.with_conn(|conn| {
@@ -1020,7 +1115,10 @@ pub fn repair_narrative_dependency_declarations_for_project(
                 Some(&RunRequestIdentity {
                     request_id,
                     idempotency_domain: REPAIR_IDEMPOTENCY_DOMAIN,
-                    payload_digest: &plan.digest,
+                    payload_digest: &repair_request_payload_digest(
+                        &plan.verify_run_id,
+                        &plan.digest,
+                    ),
                     actor_id,
                 }),
             )
@@ -1577,23 +1675,33 @@ mod tests {
         actor_id: &str,
     ) -> String {
         let run_id = format!("crashed-{request_id}");
+        // Must mirror exactly what `..._for_project` writes: the spec a
+        // resume reads its identity back from, and the request payload
+        // digest a replay is looked up by. A fixture that drifts from the
+        // real writer tests nothing.
+        let spec = json!({
+            "verifyRunId": plan.verify_run_id(),
+            "repairPlanDigest": plan.digest(),
+            "edgeIdsToDeactivate": plan.change_count(),
+        });
         db.with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                      status, created_at, run_kind, semantic_epoch_id, work_key,
                      request_id, idempotency_domain, request_payload_digest, actor_id)
-                 VALUES (?1, ?2, 'surface', '{}', '{}', 'sha256:spec', 'running',
-                         '2026-08-15T00:00:00.000Z', 'dependency-repair', ?3, ?4,
-                         ?5, ?6, ?7, ?8)",
+                 VALUES (?1, ?2, 'surface', '{}', ?3, 'sha256:spec', 'running',
+                         '2026-08-15T00:00:00.000Z', 'dependency-repair', ?4, ?5,
+                         ?6, ?7, ?8, ?9)",
                 params![
                     run_id,
                     project_id,
+                    spec.to_string(),
                     plan.semantic_epoch_id(),
                     plan.digest(),
                     request_id,
                     REPAIR_IDEMPOTENCY_DOMAIN,
-                    plan.digest(),
+                    repair_request_payload_digest(plan.verify_run_id(), plan.digest()),
                     actor_id,
                 ],
             )?;
@@ -3424,6 +3532,145 @@ mod tests {
         );
         assert_eq!(edge_count(&db), before);
         assert_eq!(repair_run_count(&db), 0, "a rejected apply creates no Run");
+    }
+
+    /// `verifyRunId` and `planDigest` arrive as two independent API fields.
+    /// A retry that keeps the requestId, plan digest and actor but swaps the
+    /// Verify Run is not a replay — and it must be rejected before it can
+    /// re-seal from the wrong Verify Run and terminalize the Run its
+    /// requestId already owns.
+    #[test]
+    fn a_retry_that_swaps_the_verify_run_is_a_conflict_not_a_replay() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-swap", "actor-a");
+        let before = edge_count(&db);
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            "some-other-verify-run",
+            plan.digest(),
+            "owner-a",
+            true,
+            "req-swap",
+            "actor-a",
+        )
+        .expect_err("a different Verify Run is different work under the same id");
+        assert!(
+            error.to_string().contains("NEX_RUN_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &crashed_run_id),
+            "running",
+            "a malformed retry must not terminalize the Run its requestId owns"
+        );
+        assert_eq!(edge_count(&db), before);
+    }
+
+    /// The same malformed retry, while the Run is genuinely executing under
+    /// another attempt's lease. Neither the Run nor the lease may be
+    /// disturbed.
+    #[test]
+    fn a_mismatched_retry_cannot_disturb_a_run_that_is_executing() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-busy", "actor-a");
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &RepairLeaseClaim {
+                        lease_owner: "owner-executing".to_string(),
+                        verify_run_id: verify_run_id.clone(),
+                        repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: crashed_run_id.clone(),
+                    },
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("the executing attempt holds the lease");
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            "some-other-verify-run",
+            plan.digest(),
+            "owner-intruder",
+            true,
+            "req-busy",
+            "actor-a",
+        )
+        .expect_err("a mismatched retry must not proceed");
+        assert!(
+            error.to_string().contains("NEX_RUN_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(run_status(&db, &crashed_run_id), "running");
+        let (owner, active): (String, Option<String>) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT lease_owner, active_run_id FROM narrative_maintenance_repair_leases
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("the lease survives");
+        assert_eq!(owner, "owner-executing");
+        assert_eq!(active.as_deref(), Some(crashed_run_id.as_str()));
+    }
+
+    /// And the honest retry — identical verifyRunId, planDigest and actor —
+    /// still resumes as before.
+    #[test]
+    fn an_identical_retry_still_resumes_the_crashed_run() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        let (old_id, _new_id) = seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-honest", "actor-a");
+
+        let outcome = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            plan.digest(),
+            "owner-a",
+            true,
+            "req-honest",
+            "actor-a",
+        )
+        .expect("an identical retry resumes");
+        assert_eq!(outcome.edges_deactivated, 1);
+        assert_eq!(run_status(&db, &crashed_run_id), "completed");
+        assert!(!surviving_edge_ids(&db).contains(&old_id));
+        assert_eq!(repair_run_count(&db), 1, "resume must not mint a second Run");
     }
 
     #[test]
