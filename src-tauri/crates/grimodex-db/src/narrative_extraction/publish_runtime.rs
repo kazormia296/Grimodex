@@ -48,7 +48,7 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
-use super::cursor_reservation::acknowledge_cursor_in_tx;
+use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::evaluator::{EdgeObservation, EvidenceFreshness, FindingReasonCode};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_observation::record_finding_observation_in_tx;
@@ -318,10 +318,91 @@ fn edge_material_basis_digest(
     )
 }
 
+/// Fail-closed CAS precondition for [`publish_freshness_evaluation_in_tx`]:
+/// proves, in one query, that the reservation this publish is about to act
+/// on is still the live one, and that the Run's own Semantic Epoch is still
+/// the project's *current* Epoch. A Run that reserved a range under an
+/// Epoch that a Restore/rebuild has since rotated past must never be
+/// allowed to publish — its `EdgeObservation`s were computed against a
+/// generation of the Durable Graph that no longer exists, and an
+/// unconditional write would silently overwrite whatever a fresher Run
+/// (reserved against the new Epoch) has already published or is about to.
+///
+/// Checks, all in a single `SELECT EXISTS`:
+/// - the Run exists, belongs to `project_id`, is still `running`, and its
+///   `semantic_epoch_id` equals `semantic_epoch_id`;
+/// - the cursor row for `(project_id, consumer_id)` is still reserved for
+///   exactly this Run (`active_run_id = run.id`), at the same Epoch
+///   (`semantic_epoch_id = run.semantic_epoch_id`), through exactly
+///   `through_sequence`;
+/// - that Epoch is still `project_id`'s current one (highest
+///   `epoch_number`).
+///
+/// Any single mismatch — a stale Epoch, a reservation another Run has since
+/// taken over, a Run no longer `running`, a `through_sequence` that no
+/// longer matches — fails the whole check without distinguishing which
+/// condition failed. Belt-and-suspenders with
+/// [`acknowledge_cursor_reservation_in_tx`]'s own full-`WHERE` `UPDATE`:
+/// this is the up-front check before any write happens; that function's
+/// `WHERE` is the final authority at write time.
+fn verify_publish_reservation_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    consumer_id: &str,
+    semantic_epoch_id: &str,
+    through_sequence: i64,
+) -> anyhow::Result<()> {
+    let verified: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1
+              FROM narrative_extraction_runs r
+              JOIN narrative_change_cursors c ON c.project_id = r.project_id
+             WHERE r.id = ?1
+               AND r.project_id = ?2
+               AND r.semantic_epoch_id = ?3
+               AND r.status = 'running'
+               AND c.consumer_id = ?4
+               AND c.active_run_id = r.id
+               AND c.semantic_epoch_id = r.semantic_epoch_id
+               AND c.reserved_through_sequence = ?5
+               AND r.semantic_epoch_id = (
+                 SELECT id FROM narrative_semantic_epochs
+                  WHERE project_id = ?2
+                  ORDER BY epoch_number DESC
+                  LIMIT 1
+               )
+         )",
+        params![
+            run_id,
+            project_id,
+            semantic_epoch_id,
+            consumer_id,
+            through_sequence,
+        ],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        verified,
+        "NEX_PUBLISH_RUNTIME_STALE_RESERVATION: run '{run_id}' for consumer '{consumer_id}' in \
+         project '{project_id}' is no longer a live reservation at epoch \
+         '{semantic_epoch_id}' through sequence {through_sequence} -- the Semantic Epoch has \
+         rotated, the reservation has been superseded, or the run is no longer running"
+    );
+    Ok(())
+}
+
 /// Publish the outcome of one Freshness-evaluation Run for one Consumer,
 /// across every Edge that Run evaluated, as a single integrated write
 /// inside the caller's own transaction. In fixed order:
 ///
+/// 0. [`verify_publish_reservation_in_tx`] -- fail-closed CAS precondition:
+///    the Run must still be `running`, its own Semantic Epoch must still be
+///    `project_id`'s current one, and the cursor's reservation must still
+///    be exactly this Run's, at that Epoch, through `through_sequence`. A
+///    Run that lost the race against a Semantic Epoch rotation (or a
+///    second Run reserving the same range) is rejected here, before step
+///    (a) writes anything.
 /// a. [`write_edge_state_in_tx`] for every `(edge_id, observation)` pair.
 /// b. [`write_consumer_freshness_in_tx`] exactly once, with the single
 ///    worst Freshness across all of `edges_and_observations`
@@ -333,8 +414,11 @@ fn edge_material_basis_digest(
 ///    is something to explain", so a Fresh Edge with `reason_code: None`
 ///    produces no Finding.
 /// d. [`transition_run_status_in_tx`] to `Completed`.
-/// e. [`acknowledge_cursor_in_tx`] through `through_sequence`, releasing
-///    the Change Feed cursor reservation this Run held.
+/// e. [`acknowledge_cursor_reservation_in_tx`] through `through_sequence`,
+///    releasing the Change Feed cursor reservation this Run held -- itself
+///    re-checking the same reservation identity in its own `UPDATE ...
+///    WHERE`, so a race landing between step 0's check and this step still
+///    fails closed rather than silently no-op-ing.
 ///
 /// Requires `edges_and_observations` to be non-empty: with zero Edges
 /// there is no basis to pick a worst Freshness for step (b), and a Run
@@ -368,7 +452,21 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
     through_sequence: i64,
     now: &str,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
     anyhow::ensure!(!consumer_id.trim().is_empty(), "consumerId is required");
+
+    // 0. Fail-closed CAS precondition -- before any write happens.
+    verify_publish_reservation_in_tx(
+        conn,
+        project_id,
+        run_id,
+        consumer_id,
+        semantic_epoch_id,
+        through_sequence,
+    )?;
 
     publish_freshness_evaluation_edges_only_in_tx(
         conn,
@@ -384,8 +482,16 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
     // d. Complete the Run.
     transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
 
-    // e. Release the Change Feed cursor reservation this Run held.
-    acknowledge_cursor_in_tx(conn, project_id, consumer_id, through_sequence)?;
+    // e. Release the Change Feed cursor reservation this Run held -- the
+    //    same reservation identity checked again, at write time.
+    acknowledge_cursor_reservation_in_tx(
+        conn,
+        project_id,
+        consumer_id,
+        run_id,
+        semantic_epoch_id,
+        through_sequence,
+    )?;
 
     Ok(())
 }
@@ -493,6 +599,7 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::cursor_reservation::reserve_cursor_range_in_tx;
     use crate::narrative_extraction::dependency_edges::record_dependency_edge_in_tx;
     use crate::narrative_extraction::evaluator::BuildAction;
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
@@ -542,6 +649,30 @@ mod tests {
             params![project_id, consumer_id],
         )
         .expect("insert cursor");
+    }
+
+    /// Reserves `[0, through_sequence]` for `run_id` at `epoch_id`, in its
+    /// own transaction -- the precondition every real publish call must
+    /// satisfy now that [`verify_publish_reservation_in_tx`] checks it.
+    fn reserve_cursor(
+        conn: &Connection,
+        project_id: &str,
+        consumer_id: &str,
+        epoch_id: &str,
+        run_id: &str,
+        through_sequence: i64,
+    ) {
+        with_immediate_transaction(conn, |conn| {
+            reserve_cursor_range_in_tx(
+                conn,
+                project_id,
+                consumer_id,
+                epoch_id,
+                run_id,
+                through_sequence,
+            )
+        })
+        .expect("reserve cursor range");
     }
 
     fn seed_edge(
@@ -604,6 +735,7 @@ mod tests {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1");
             seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 5);
             let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
 
             with_immediate_transaction(conn, |conn| {
@@ -672,6 +804,7 @@ mod tests {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1");
             seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 3);
             let edge_id = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
 
             with_immediate_transaction(conn, |conn| {
@@ -725,6 +858,7 @@ mod tests {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1");
             seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 7);
             let edge_fresh = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-1");
             let edge_stale = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-2");
             let edge_missing = seed_edge(conn, "project-1", "proposal", "proposal-1", "project:scene:scene-3");
@@ -794,6 +928,7 @@ mod tests {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1");
             seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 42);
             let edge_id = seed_edge(
                 conn,
                 "project-1",
@@ -854,6 +989,7 @@ mod tests {
             let epoch_id = seed_epoch(conn, "project-1");
             seed_run(conn, "run-1", "project-1");
             seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-1", 1);
 
             let error = with_immediate_transaction(conn, |conn| {
                 publish_freshness_evaluation_in_tx(
@@ -873,20 +1009,21 @@ mod tests {
             assert!(error.to_string().contains("NEX_PUBLISH_RUNTIME_NO_EDGES"));
 
             // Nothing must have been written: the Run must still be running
-            // and the cursor must still be unacknowledged.
+            // and the cursor must still be unacknowledged and reserved.
             let run_status: String = conn.query_row(
                 "SELECT status FROM narrative_extraction_runs WHERE id = 'run-1'",
                 [],
                 |row| row.get(0),
             )?;
             assert_eq!(run_status, "running");
-            let acknowledged: i64 = conn.query_row(
-                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+            let (acknowledged, active_run): (i64, Option<String>) = conn.query_row(
+                "SELECT acknowledged_through_sequence, active_run_id FROM narrative_change_cursors
                   WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
                 [],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
             assert_eq!(acknowledged, 0);
+            assert_eq!(active_run.as_deref(), Some("run-1"));
             Ok(())
         })
         .expect("query after rejected publish");
@@ -980,5 +1117,232 @@ mod tests {
             Ok(())
         })
         .expect("query after rejected write");
+    }
+
+    // -- verify_publish_reservation_in_tx / acknowledge_cursor_reservation_in_tx --
+
+    /// The exact hazard this CAS check exists to prevent: Run A reserves
+    /// and evaluates against Epoch E1; a Restore rotates the project to
+    /// Epoch E2 before Run A publishes; Run B reserves a fresh range
+    /// against E2. Run A's now-stale publish must be rejected outright --
+    /// not partially applied, not silently overwriting Run B's live
+    /// reservation or `narrative_consumer_freshness` with E1-era results.
+    #[test]
+    fn stale_run_from_a_rotated_epoch_cannot_publish_over_a_fresher_reservation() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_e1 = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-a", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_e1, "run-a", 5);
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+
+            // Restore rotates the project to a new Semantic Epoch while
+            // Run A is still mid-flight (already reserved, not yet
+            // published).
+            let epoch_e2 = create_epoch_in_tx(conn, "project-1", "restore", None)?;
+
+            // Run B reserves a fresh range against the new Epoch -- this
+            // UPSERTs the same cursor row, taking over its reservation.
+            seed_run(conn, "run-b", "project-1");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_e2, "run-b", 8);
+
+            // Run A's stale publish must be rejected: its own Epoch (E1)
+            // is no longer current, and the cursor's reservation now
+            // belongs to Run B, not Run A.
+            let error = with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-a",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id, fresh())],
+                    &epoch_e1,
+                    5,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })
+            .expect_err("a stale run's publish must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_STALE_RESERVATION"));
+
+            // Nothing must have been written: no Consumer Freshness row at
+            // all (neither Run has published yet), Run A is still
+            // running, and Run B's reservation is completely undisturbed.
+            let freshness_row_exists: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM narrative_consumer_freshness
+                     WHERE project_id = 'project-1' AND consumer_kind = 'proposal'
+                       AND consumer_key = 'proposal-1'
+                 )",
+                [],
+                |row| row.get(0),
+            )?;
+            assert!(
+                !freshness_row_exists,
+                "stale publish must not create or overwrite the Consumer Freshness row"
+            );
+            let run_a_status: String = conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'run-a'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(run_a_status, "running");
+            let (semantic_epoch, reserved, active_run): (
+                Option<String>,
+                Option<i64>,
+                Option<String>,
+            ) = conn.query_row(
+                "SELECT semantic_epoch_id, reserved_through_sequence, active_run_id
+                       FROM narrative_change_cursors
+                      WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(semantic_epoch.as_deref(), Some(epoch_e2.as_str()));
+            assert_eq!(reserved, Some(8));
+            assert_eq!(active_run.as_deref(), Some("run-b"));
+            Ok(())
+        })
+        .expect("query after rejected stale publish");
+    }
+
+    #[test]
+    fn publish_rejects_when_the_reservation_belongs_to_a_different_run() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-a", "project-1");
+            seed_run(conn, "run-b", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            // The cursor is reserved for run-b, but run-a is the one
+            // attempting to publish.
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-b", 5);
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+
+            let error = with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-a",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id, fresh())],
+                    &epoch_id,
+                    5,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })
+            .expect_err("a run without the live reservation must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_STALE_RESERVATION"));
+            Ok(())
+        })
+        .expect("query after rejected publish");
+    }
+
+    #[test]
+    fn publish_rejects_when_through_sequence_does_not_match_the_reservation() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-a", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-a", 5);
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+
+            // Publishing a through_sequence other than the one actually
+            // reserved (10, not 5) must be rejected, not silently
+            // truncated or extended.
+            let error = with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-a",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id, fresh())],
+                    &epoch_id,
+                    10,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })
+            .expect_err("a through_sequence mismatch must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_STALE_RESERVATION"));
+            Ok(())
+        })
+        .expect("query after rejected publish");
+    }
+
+    #[test]
+    fn publish_rejects_when_the_run_is_no_longer_running() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-a", "project-1");
+            seed_cursor(conn, "project-1", "consumer-a");
+            reserve_cursor(conn, "project-1", "consumer-a", &epoch_id, "run-a", 5);
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "project:scene:scene-1",
+            );
+
+            // A Run that has already terminated (e.g. cancelled out from
+            // under an in-flight evaluation) must not be able to publish.
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'cancelled' WHERE id = 'run-a'",
+                [],
+            )?;
+
+            let error = with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-a",
+                    "consumer-a",
+                    "proposal",
+                    "proposal-1",
+                    &[(edge_id, fresh())],
+                    &epoch_id,
+                    5,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })
+            .expect_err("a non-running run must be rejected");
+            assert!(error
+                .to_string()
+                .contains("NEX_PUBLISH_RUNTIME_STALE_RESERVATION"));
+            Ok(())
+        })
+        .expect("query after rejected publish");
     }
 }

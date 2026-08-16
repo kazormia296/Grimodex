@@ -422,20 +422,19 @@ mod tests {
     }
 
     fn seed_duplicate_edges(db: &Database) -> (String, String) {
-        let old_id = db
-            .with_conn(|conn| {
-                record_dependency_edge_in_tx(
-                    conn,
-                    "project-1",
-                    RUN_CONSUMER_KIND,
-                    "run-1",
-                    "project:scene:scene-1",
-                    r#"["v1@t"]"#,
-                    None,
-                    "2026-08-14T00:00:00.000Z",
-                )
-            })
-            .expect("seed first edge");
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-1",
+                r#"["v1@t"]"#,
+                None,
+                "2026-08-14T00:00:00.000Z",
+            )
+        })
+        .expect("seed first edge");
         // `narrative_dependency_edges`'s own UNIQUE(project_id, consumer_kind,
         // consumer_key, source_object_identity) makes a genuine duplicate
         // structurally impossible through any writer -- including a raw

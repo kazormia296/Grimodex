@@ -198,6 +198,88 @@ pub(crate) fn acknowledge_cursor_in_tx(
     Ok(())
 }
 
+/// CAS-checked confirm-and-release, for a publish that must prove its
+/// reservation is still the one live on the cursor row before it is allowed
+/// to advance `acknowledged_through_sequence` at all.
+///
+/// [`acknowledge_cursor_in_tx`] above trusts its caller: it advances the
+/// cursor unconditionally once `(project_id, consumer_id)` resolves to a
+/// row, with no check that the caller is the reservation currently holding
+/// that row. That is fine for a caller with no reservation to prove (a
+/// pre-C2 consumer, or a deliberate manual override) but wrong for a Run
+/// racing a Semantic Epoch rotation: if a Restore mints a new Epoch and a
+/// second Run reserves a fresh range against it while an *older* Run (still
+/// holding stale, already-evaluated results from the previous Epoch) is
+/// mid-publish, an unconditional ack would let that stale Run both
+/// overwrite `narrative_consumer_freshness` with outdated results and
+/// silently delete the second Run's own live reservation out from under it
+/// — the exact hazard Semantic Epochs exist to prevent.
+///
+/// This function instead folds the same identity check into the `UPDATE
+/// ... WHERE` itself: the row is only touched when it is still reserved for
+/// `run_id`, at `semantic_epoch_id`, through exactly `through_sequence` --
+/// a publish acknowledges exactly the range it reserved, never a partial or
+/// extended one, so one value serves both as the CAS match and the new
+/// acknowledged point. A row that has moved on (reserved by a different
+/// Run, at a different Epoch, or a different range) matches zero rows;
+/// `updated == 0` fails closed rather than silently no-op-ing, so a caller
+/// that reaches this function believing it holds a reservation never
+/// mistakes "my ack did nothing" for "my ack succeeded".
+///
+/// Callers own the surrounding `BEGIN`/`COMMIT`.
+pub(crate) fn acknowledge_cursor_reservation_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_id: &str,
+    run_id: &str,
+    semantic_epoch_id: &str,
+    through_sequence: i64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Change Feed cursor acknowledgement requires a caller-owned transaction"
+    );
+    require_non_empty(project_id, "projectId")?;
+    require_non_empty(consumer_id, "consumerId")?;
+    require_non_empty(run_id, "runId")?;
+    require_non_empty(semantic_epoch_id, "semanticEpochId")?;
+    anyhow::ensure!(
+        through_sequence >= 0,
+        "NEX_CURSOR_RESERVATION_INVALID: throughSequence must not be negative"
+    );
+
+    let updated_at = now_string();
+    let updated = conn.execute(
+        "UPDATE narrative_change_cursors
+            SET acknowledged_through_sequence = MAX(acknowledged_through_sequence, ?1),
+                semantic_epoch_id = NULL,
+                reserved_through_sequence = NULL,
+                active_run_id = NULL,
+                updated_at = ?2
+          WHERE project_id = ?3
+            AND consumer_id = ?4
+            AND active_run_id = ?5
+            AND semantic_epoch_id = ?6
+            AND reserved_through_sequence = ?1",
+        params![
+            through_sequence,
+            updated_at,
+            project_id,
+            consumer_id,
+            run_id,
+            semantic_epoch_id,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_CURSOR_RESERVATION_STALE: cursor for consumer '{consumer_id}' in project \
+         '{project_id}' is no longer reserved for run '{run_id}' at epoch \
+         '{semantic_epoch_id}' through sequence {through_sequence} -- another Run or \
+         Semantic Epoch rotation has moved past this reservation"
+    );
+    Ok(())
+}
+
 /// Startup-time Lease re-acquisition: recover a cursor row's
 /// `lease_owner`/`lease_expires_at` without waiting out the normal TTL,
 /// when this process can prove — by already holding this workspace's
