@@ -9,6 +9,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use sha2::Digest;
 
+use super::change_feed;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CurrentSourceRevision {
     pub revision_token: String,
@@ -35,6 +37,152 @@ pub(crate) fn resolve_source_revision(
             "NEX_SOURCE_KIND_UNSUPPORTED: no source revision resolver is registered for '{other}'"
         ),
     }
+}
+
+/// Lazy-load-safe summary of a source's current state. Deliberately has no
+/// `canonical_text` (or any other body-shaped) field: this is the contract
+/// that lets callers cheaply check "did the source I bound to change" on
+/// every Prepared Commit / Edge revalidation without ever paying for a body
+/// read. Only when a caller's held token/digest disagrees with this state
+/// should it escalate to [`load_canonical_text_for_revalidation`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CurrentSourceState {
+    pub exists: bool,
+    pub revision_token: Option<String>,
+    pub content_digest: Option<String>,
+    pub version: Option<i64>,
+    pub normalizer_version: Option<String>,
+}
+
+/// Resolves the current state of a source the way [`resolve_source_revision`]
+/// does, except a missing source becomes `exists: false` instead of an
+/// `Err`. This is the Lazy Text entry point: routine freshness checks (does
+/// my bound source still exist, and if so under what token) should call this
+/// instead of `resolve_source_revision` directly, so "the source was
+/// deleted" does not have to be special-cased by every caller as an error.
+///
+/// This function never reads scene/document body content -- `version` and
+/// `content_digest` are derived by parsing the already-resolved
+/// `revision_token` string, not by issuing additional body-bearing queries.
+/// Its cost is therefore independent of how large the underlying source is.
+///
+/// Gate C2 Lane E ships this as the Lazy Text entry point ahead of its Edge
+/// revalidation callers; `#[allow(dead_code)]` is temporary until those
+/// callers land.
+#[allow(dead_code)]
+pub(crate) fn resolve_current_source_state(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_kind: &str,
+    source_key: &str,
+) -> anyhow::Result<CurrentSourceState> {
+    let resolved = match resolve_source_revision(conn, project_id, run_id, source_kind, source_key)
+    {
+        Ok(resolved) => resolved,
+        Err(error) if is_source_missing_error(&error) => {
+            return Ok(CurrentSourceState {
+                exists: false,
+                revision_token: None,
+                content_digest: None,
+                version: None,
+                normalizer_version: None,
+            });
+        }
+        Err(error) => return Err(error),
+    };
+    let CurrentSourceRevision { revision_token } = resolved;
+    let version = parse_leading_version(&revision_token);
+    let content_digest = revision_token
+        .starts_with("sha256:")
+        .then(|| revision_token.clone());
+    let normalizer_version = (source_kind == "scene-body")
+        .then(|| change_feed::CANONICAL_TEXT_NORMALIZER_VERSION.to_string());
+    Ok(CurrentSourceState {
+        exists: true,
+        revision_token: Some(revision_token),
+        content_digest,
+        version,
+        normalizer_version,
+    })
+}
+
+/// Loads the actual canonical body text for a source so a caller can
+/// re-anchor a stale Range/quote against it.
+///
+/// # Contract
+/// Call this ONLY after [`resolve_current_source_state`] (or an equivalent
+/// token/digest comparison) has shown that the caller's held revision is
+/// stale and a structural re-anchor is genuinely required. Do not call this
+/// speculatively on every read or freshness check, and never forward its
+/// return value verbatim into an IPC/N-API response payload -- full body
+/// text must not leave this process boundary as part of routine
+/// revalidation plumbing; it exists only to feed a server-side reanchor
+/// computation.
+///
+/// Only `"scene-body"` is implemented today. Every other `source_kind` fails
+/// closed with `NEX_CANONICAL_TEXT_UNSUPPORTED` rather than guessing at a
+/// text representation; widening coverage to additional kinds is future
+/// scope.
+///
+/// Gate C2 Lane E ships this ahead of its Edge revalidation callers;
+/// `#[allow(dead_code)]` is temporary until those callers land.
+#[allow(dead_code)]
+pub(crate) fn load_canonical_text_for_revalidation(
+    conn: &Connection,
+    project_id: &str,
+    source_kind: &str,
+    source_key: &str,
+) -> anyhow::Result<String> {
+    match source_kind {
+        "scene-body" => load_scene_canonical_text(conn, project_id, source_key),
+        other => anyhow::bail!(
+            "NEX_CANONICAL_TEXT_UNSUPPORTED: no canonical text loader is registered for '{other}'"
+        ),
+    }
+}
+
+fn load_scene_canonical_text(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+) -> anyhow::Result<String> {
+    let scene_id = source_key
+        .strip_prefix("project:scene:")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_SOURCE_KEY_INVALID: scene-body sourceKey must be project:scene:<id>"
+            )
+        })?;
+    let content: Option<String> = conn
+        .query_row(
+            "SELECT content
+               FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![scene_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(content) = content else {
+        anyhow::bail!("NEX_SOURCE_MISSING: scene '{scene_id}' was not found");
+    };
+    Ok(change_feed::scene_canonical_text(&content))
+}
+
+fn is_source_missing_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("NEX_SOURCE_MISSING")
+}
+
+/// Parses the `v<version>@...` token shape shared by scene-body,
+/// domain-projection, and import-capture revision tokens. Returns `None` for
+/// tokens that do not follow this shape -- snapshot-document, codex-catalog,
+/// narrative-artifact, and evidence-anchor all encode digests instead, and
+/// are left for a future kind-specific extension rather than guessed at.
+fn parse_leading_version(token: &str) -> Option<i64> {
+    let rest = token.strip_prefix('v')?;
+    let (digits, _) = rest.split_once('@')?;
+    digits.parse::<i64>().ok()
 }
 
 fn resolve_snapshot_document(
@@ -344,5 +492,236 @@ fn canonical_json_value(value: &Value) -> Value {
             Value::Object(entries.into_iter().collect())
         }
         _ => value.clone(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::Database;
+    use std::path::Path;
+
+    /// A single-paragraph ProseMirror doc whose canonical text is exactly
+    /// `text` -- lets tests assert on `load_canonical_text_for_revalidation`
+    /// output without depending on `collect_canonical_blocks` internals.
+    fn scene_doc_json(text: &str) -> String {
+        json!({
+            "type": "doc",
+            "content": [{
+                "type": "paragraph",
+                "content": [{ "type": "text", "text": text }]
+            }]
+        })
+        .to_string()
+    }
+
+    fn test_db() -> Database {
+        let db = Database::new(Path::new(":memory:")).expect("open test db");
+        db.migrate().expect("migrate");
+        db.execute(
+            "INSERT INTO projects (id, title) VALUES (?, 'Project')",
+            &[Value::String("p1".into())],
+            "run",
+        )
+        .expect("insert project");
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+             VALUES (?, ?, 'scene', 'Scene', ?)",
+            &[
+                Value::String("s1".into()),
+                Value::String("p1".into()),
+                Value::String(scene_doc_json("Hello world")),
+            ],
+            "run",
+        )
+        .expect("insert scene");
+        db
+    }
+
+    #[test]
+    fn current_source_state_is_exhaustively_destructurable_with_no_canonical_text_field() {
+        // If a `canonical_text` (or any other body-shaped) field is ever
+        // added to `CurrentSourceState`, this exhaustive destructure stops
+        // compiling until the test is deliberately updated to name it --
+        // making a silent "the lazy state now carries the body" regression
+        // impossible to land unnoticed. This is the type-level guarantee
+        // the design calls for, rather than a timing-based proxy.
+        let state = CurrentSourceState {
+            exists: true,
+            revision_token: Some("v0@2026-08-15T00:00:00.000Z".to_string()),
+            content_digest: None,
+            version: Some(0),
+            normalizer_version: Some("gdx-canonical-text/1".to_string()),
+        };
+        let CurrentSourceState {
+            exists,
+            revision_token,
+            content_digest,
+            version,
+            normalizer_version,
+        } = state;
+        assert!(exists);
+        assert!(revision_token.is_some());
+        assert!(content_digest.is_none());
+        assert_eq!(version, Some(0));
+        assert_eq!(normalizer_version.as_deref(), Some("gdx-canonical-text/1"));
+    }
+
+    #[test]
+    fn resolve_current_source_state_reports_missing_source_without_erroring() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let state = resolve_current_source_state(
+                conn,
+                "p1",
+                "run-1",
+                "scene-body",
+                "project:scene:does-not-exist",
+            )?;
+            assert_eq!(
+                state,
+                CurrentSourceState {
+                    exists: false,
+                    revision_token: None,
+                    content_digest: None,
+                    version: None,
+                    normalizer_version: None,
+                }
+            );
+            Ok(())
+        })
+        .expect("resolve missing source state");
+    }
+
+    #[test]
+    fn resolve_current_source_state_still_errors_on_malformed_source_key() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let error =
+                resolve_current_source_state(conn, "p1", "run-1", "scene-body", "not-a-valid-key")
+                    .expect_err("malformed sourceKey must still fail closed");
+            assert!(error.to_string().contains("NEX_SOURCE_KEY_INVALID"));
+            Ok(())
+        })
+        .expect("run malformed key check");
+    }
+
+    #[test]
+    fn resolve_current_source_state_for_large_scene_body_never_grows_with_body_length() {
+        // A ~64,000 char body. If `resolve_current_source_state` ever started
+        // loading the body (e.g. to hash it for `content_digest`), the
+        // resulting token/digest strings would scale with this length. They
+        // must not: the struct has no field capable of holding the body, and
+        // every field it does return stays short regardless of body size.
+        let big_text = "A".repeat(64_000);
+        let db = test_db();
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+             VALUES ('s-big', 'p1', 'scene', 'Big Scene', ?)",
+            &[Value::String(scene_doc_json(&big_text))],
+            "run",
+        )
+        .expect("insert big scene");
+
+        db.with_conn(|conn| {
+            let state = resolve_current_source_state(
+                conn,
+                "p1",
+                "run-1",
+                "scene-body",
+                "project:scene:s-big",
+            )?;
+            let CurrentSourceState {
+                exists,
+                revision_token,
+                content_digest,
+                version,
+                normalizer_version,
+            } = state;
+            assert!(exists);
+            let token = revision_token.expect("token present for existing source");
+            assert!(
+                token.len() < 128,
+                "revision token must stay short regardless of body length, got {} bytes",
+                token.len()
+            );
+            assert_eq!(version, Some(0));
+            assert!(content_digest.is_none());
+            assert_eq!(normalizer_version.as_deref(), Some("gdx-canonical-text/1"));
+            Ok(())
+        })
+        .expect("resolve large scene source state");
+    }
+
+    #[test]
+    fn load_canonical_text_for_revalidation_returns_the_actual_scene_body() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let text =
+                load_canonical_text_for_revalidation(conn, "p1", "scene-body", "project:scene:s1")?;
+            assert_eq!(text, "Hello world");
+            Ok(())
+        })
+        .expect("load scene canonical text");
+    }
+
+    #[test]
+    fn load_canonical_text_for_revalidation_returns_full_length_body_when_explicitly_called() {
+        let big_text = "B".repeat(64_000);
+        let db = test_db();
+        db.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content)
+             VALUES ('s-big', 'p1', 'scene', 'Big Scene', ?)",
+            &[Value::String(scene_doc_json(&big_text))],
+            "run",
+        )
+        .expect("insert big scene");
+
+        db.with_conn(|conn| {
+            let text = load_canonical_text_for_revalidation(
+                conn,
+                "p1",
+                "scene-body",
+                "project:scene:s-big",
+            )?;
+            assert_eq!(text, big_text);
+            Ok(())
+        })
+        .expect("load big scene canonical text");
+    }
+
+    #[test]
+    fn load_canonical_text_for_revalidation_fails_closed_for_unsupported_source_kind() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let error = load_canonical_text_for_revalidation(
+                conn,
+                "p1",
+                "domain-projection",
+                "projection:whatever",
+            )
+            .expect_err("unsupported kind must fail closed");
+            assert!(error.to_string().contains("NEX_CANONICAL_TEXT_UNSUPPORTED"));
+            Ok(())
+        })
+        .expect("run unsupported kind check");
+    }
+
+    #[test]
+    fn load_canonical_text_for_revalidation_reports_missing_scene() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let error = load_canonical_text_for_revalidation(
+                conn,
+                "p1",
+                "scene-body",
+                "project:scene:does-not-exist",
+            )
+            .expect_err("missing scene must fail closed");
+            assert!(error.to_string().contains("NEX_SOURCE_MISSING"));
+            Ok(())
+        })
+        .expect("run missing scene check");
     }
 }

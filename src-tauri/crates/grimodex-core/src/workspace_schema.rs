@@ -562,11 +562,18 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 }
 
 /// Whether the live DB satisfies every checkpoint invariant for the *current*
-/// [`SCHEMA_VERSION`]. Version 22 requires an explicit writer origin on every
-/// Native-owned Narrative Maintenance Change Feed transaction while preserving
-/// the version 21 Foundation schema and every Gate B invariant through v20.
+/// [`SCHEMA_VERSION`]. Version 23 adds the Gate C2-01 Semantic Build Graph
+/// (Dependency Edge / Edge State / Consumer Freshness / Application
+/// Contribution / Finding Observation / Attention / Semantic Epoch tables),
+/// per-entity Run/Task/Attempt status CHECK constraints, and Change Feed
+/// consumer cursor reservation columns, while preserving the version 22
+/// Foundation schema and every Gate B invariant through v20. Version 24 adds
+/// the Gate C2 Run Kind Policy's Semantic Index metadata and Repair lease
+/// tables, Dependency Edge State / Consumer Freshness baseline-digest
+/// columns for Verify, and widens the Run `run_kind` CHECK to admit
+/// `dependency-verify`/`dependency-repair`.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 22
+    Ok(SCHEMA_VERSION == 27
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -578,7 +585,75 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v20_retraction_columns(conn)?
         && has_v21_change_feed_columns(conn)?
         && has_v22_change_feed_writer_correlation(conn)?
-        && has_change_feed_object_heads(conn)?)
+        && has_change_feed_object_heads(conn)?
+        && has_v23_semantic_build_graph_tables(conn)?
+        && has_v23_execution_state_check_constraints(conn)?
+        && has_v23_change_cursor_reservation_columns(conn)?
+        && has_v24_run_kind_policy_tables(conn)?
+        && has_v25_attention_occ_columns(conn)?
+        && has_v26_run_request_identity_columns(conn)?
+        && has_v27_repair_lease_run_binding(conn)?)
+}
+
+/// SCHEMA 27: a Repair lease names the Run entitled to apply it, so the
+/// mutation transaction can compare-and-swap the whole lease row instead of
+/// trusting a claim it made before a slow backup. Nullable by design — a
+/// lease claimed before this migration carries NULL and fails the CAS,
+/// which is the safe direction.
+fn has_v27_repair_lease_run_binding(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_maintenance_repair_leases")? {
+        return Ok(false);
+    }
+    Ok(table_columns(conn, "narrative_maintenance_repair_leases")?
+        .iter()
+        .any(|column| column.name == "active_run_id" && column.declared_type == "TEXT"))
+}
+
+/// SCHEMA 26: a system Run records the request that asked for it, kept
+/// separate from `work_key`'s work equivalence. Nullable by design —
+/// interpretation Runs and every Run created before this have no request
+/// identity — so this checks presence and type, not NOT NULL.
+fn has_v26_run_request_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_extraction_runs")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_extraction_runs")?;
+    Ok([
+        "request_id",
+        "idempotency_domain",
+        "request_payload_digest",
+        "actor_id",
+    ]
+    .iter()
+    .all(|name| {
+        columns
+            .iter()
+            .any(|column| column.name == *name && column.declared_type == "TEXT")
+    }))
+}
+
+/// SCHEMA 25: Maintenance Attention carries the OCC / request-identity /
+/// actor columns its ADR 006 route requires. `set_by` is gone — `actor_id`
+/// replaces it and is NOT NULL, so an unattributed disposition cannot be
+/// written at all.
+fn has_v25_attention_occ_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_maintenance_attention")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_maintenance_attention")?;
+    let has_column = |name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+    Ok(has_column("actor_id", "TEXT", true)
+        && has_column("request_id", "TEXT", true)
+        && has_column("payload_digest", "TEXT", true)
+        && has_column("reason", "TEXT", false)
+        && has_column("version", "INTEGER", true)
+        && !columns.iter().any(|column| column.name == "set_by"))
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -948,22 +1023,280 @@ fn has_change_feed_object_heads(conn: &Connection) -> anyhow::Result<bool> {
     if !has_columns {
         return Ok(false);
     }
-    let identity_index = index_columns(
-        conn,
-        "sqlite_autoindex_narrative_change_object_heads_1",
-    )?;
-    let sequence_index = index_columns(
-        conn,
-        "idx_narrative_change_object_heads_project_sequence",
-    )?;
+    let identity_index = index_columns(conn, "sqlite_autoindex_narrative_change_object_heads_1")?;
+    let sequence_index = index_columns(conn, "idx_narrative_change_object_heads_project_sequence")?;
     Ok(identity_index
         .iter()
         .map(String::as_str)
         .eq(["project_id", "object_identity"])
-        && sequence_index
-            .iter()
-            .map(String::as_str)
-            .eq(["project_id", "canonical_sequence", "event_ordinal"]))
+        && sequence_index.iter().map(String::as_str).eq([
+            "project_id",
+            "canonical_sequence",
+            "event_ordinal",
+        ]))
+}
+
+fn has_v23_semantic_build_graph_tables(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_semantic_epochs",
+        "narrative_dependency_edges",
+        "narrative_dependency_edge_states",
+        "narrative_consumer_freshness",
+        "narrative_application_contributions",
+        "narrative_maintenance_finding_observations",
+        "narrative_maintenance_attention",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+
+    let epochs = table_columns(conn, "narrative_semantic_epochs")?;
+    let edges = table_columns(conn, "narrative_dependency_edges")?;
+    let edge_states = table_columns(conn, "narrative_dependency_edge_states")?;
+    let freshness = table_columns(conn, "narrative_consumer_freshness")?;
+    let contributions = table_columns(conn, "narrative_application_contributions")?;
+    let observations = table_columns(conn, "narrative_maintenance_finding_observations")?;
+    let attention = table_columns(conn, "narrative_maintenance_attention")?;
+
+    let epochs_ok = has_column(&epochs, "id", "TEXT", true)
+        && has_column(&epochs, "project_id", "TEXT", true)
+        && has_column(&epochs, "epoch_number", "INTEGER", true)
+        && has_column(&epochs, "reason", "TEXT", true)
+        && has_column(&epochs, "triggered_by_change_event_uid", "TEXT", false)
+        && has_column(&epochs, "created_at", "TEXT", true);
+
+    let edges_ok = has_column(&edges, "id", "TEXT", true)
+        && has_column(&edges, "project_id", "TEXT", true)
+        && has_column(&edges, "consumer_kind", "TEXT", true)
+        && has_column(&edges, "consumer_key", "TEXT", true)
+        && has_column(&edges, "source_object_identity", "TEXT", true)
+        && has_column(&edges, "read_set_json", "TEXT", true)
+        && has_column(&edges, "generated_by_transaction_id", "TEXT", false)
+        && has_column(&edges, "created_at", "TEXT", true);
+
+    let edge_states_ok = has_column(&edge_states, "edge_id", "TEXT", true)
+        && has_column(&edge_states, "project_id", "TEXT", true)
+        && has_column(&edge_states, "evidence_freshness", "TEXT", true)
+        && has_column(&edge_states, "reason_code", "TEXT", false)
+        && has_column(&edge_states, "build_action", "TEXT", true)
+        && has_column(&edge_states, "evaluated_at_epoch_id", "TEXT", true)
+        && has_column(&edge_states, "evaluated_at", "TEXT", true);
+
+    let freshness_ok = has_column(&freshness, "project_id", "TEXT", true)
+        && has_column(&freshness, "consumer_kind", "TEXT", true)
+        && has_column(&freshness, "consumer_key", "TEXT", true)
+        && has_column(&freshness, "evidence_freshness", "TEXT", true)
+        && has_column(&freshness, "build_action", "TEXT", true)
+        && has_column(&freshness, "semantic_epoch_id", "TEXT", true)
+        && has_column(&freshness, "last_evaluated_run_id", "TEXT", false)
+        && has_column(&freshness, "updated_at", "TEXT", true);
+
+    let contributions_ok = has_column(&contributions, "id", "TEXT", true)
+        && has_column(&contributions, "project_id", "TEXT", true)
+        && has_column(&contributions, "application_id", "TEXT", true)
+        && has_column(&contributions, "target_object_identity", "TEXT", true)
+        && has_column(&contributions, "field_path", "TEXT", true)
+        && has_column(&contributions, "target_state", "TEXT", true)
+        && has_column(&contributions, "created_at", "TEXT", true);
+
+    let observations_ok = has_column(&observations, "id", "TEXT", true)
+        && has_column(&observations, "project_id", "TEXT", true)
+        && has_column(&observations, "run_id", "TEXT", true)
+        && has_column(&observations, "semantic_epoch_id", "TEXT", true)
+        && has_column(&observations, "edge_id", "TEXT", false)
+        && has_column(&observations, "finding_key", "TEXT", true)
+        && has_column(&observations, "reason_code", "TEXT", true)
+        && has_column(&observations, "evidence_freshness_snapshot", "TEXT", true)
+        && has_column(&observations, "material_basis_digest", "TEXT", true)
+        && has_column(&observations, "observed_at", "TEXT", true);
+
+    let attention_ok = has_column(&attention, "project_id", "TEXT", true)
+        && has_column(&attention, "finding_key", "TEXT", true)
+        && has_column(&attention, "disposition", "TEXT", true)
+        && has_column(&attention, "material_basis_digest", "TEXT", true)
+        && has_column(&attention, "snoozed_until", "TEXT", false)
+        && has_column(&attention, "set_at", "TEXT", true);
+    // `set_by` deliberately absent: SCHEMA 25 replaced that nullable column
+    // with the NOT NULL `actor_id`, checked by
+    // `has_v25_attention_occ_columns`. Asserting it here would make the
+    // current schema fail its own invariants.
+
+    let attention_sql = compact_sql(&table_sql(conn, "narrative_maintenance_attention")?);
+    let freshness_sql = compact_sql(&table_sql(conn, "narrative_consumer_freshness")?);
+
+    Ok(epochs_ok
+        && edges_ok
+        && edge_states_ok
+        && freshness_ok
+        && contributions_ok
+        && observations_ok
+        && attention_ok
+        // Attention is a durable, non-epoch-bound, no-backflow typed-writer
+        // table: its disposition enum must never include a Freshness value,
+        // which would make it look like a second Freshness authority.
+        && attention_sql.contains("check(dispositionin('snoozed','dismissed','flagged'))")
+        // The one Freshness authority: evidence_freshness stays a closed
+        // enum on the canonical current-value table.
+        && freshness_sql.contains(
+            "check(evidence_freshnessin('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown'))",
+        ))
+}
+
+fn has_v23_execution_state_check_constraints(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_extraction_runs",
+        "narrative_extraction_tasks",
+        "narrative_extraction_attempts",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let runs = table_columns(conn, "narrative_extraction_runs")?;
+    let attempts = table_columns(conn, "narrative_extraction_attempts")?;
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+
+    let runs_columns_ok = has_column(&runs, "run_kind", "TEXT", true)
+        && has_column(&runs, "consumer_id", "TEXT", false)
+        && has_column(&runs, "semantic_epoch_id", "TEXT", false)
+        && has_column(&runs, "work_key", "TEXT", false)
+        && has_column(&runs, "terminal_reason_code", "TEXT", false)
+        && has_column(&runs, "superseded_by_run_id", "TEXT", false);
+
+    let attempts_columns_ok = has_column(&attempts, "failure_code", "TEXT", false)
+        && has_column(&attempts, "retry_disposition", "TEXT", false)
+        && has_column(&attempts, "policy_version", "TEXT", false)
+        && has_column(&attempts, "next_attempt_at", "TEXT", false);
+
+    let runs_sql = compact_sql(&table_sql(conn, "narrative_extraction_runs")?);
+    let tasks_sql = compact_sql(&table_sql(conn, "narrative_extraction_tasks")?);
+    let attempts_sql = compact_sql(&table_sql(conn, "narrative_extraction_attempts")?);
+
+    Ok(runs_columns_ok
+        && attempts_columns_ok
+        && runs_sql.contains(
+            "check(statusin('pending','running','completed','failed','cancelled','superseded'))",
+        )
+        && tasks_sql.contains(
+            "check(statusin('queued','running','completed','failed','cancelled'))",
+        )
+        && attempts_sql.contains("check(statusin('running','completed','failed'))")
+        && attempts_sql.contains("check(failure_codeisnullorfailure_codeglob'nex_*')")
+        && attempts_sql.contains(
+            "check(retry_dispositionisnullorretry_dispositionin('retryable','terminal','superseded','manual'))",
+        ))
+}
+
+fn has_v23_change_cursor_reservation_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_change_cursors")? {
+        return Ok(false);
+    }
+    let cursors = table_columns(conn, "narrative_change_cursors")?;
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+    let columns_ok = has_column(&cursors, "semantic_epoch_id", "TEXT", false)
+        && has_column(&cursors, "reserved_through_sequence", "INTEGER", false)
+        && has_column(&cursors, "active_run_id", "TEXT", false);
+    if !columns_ok {
+        return Ok(false);
+    }
+    let cursors_sql = compact_sql(&table_sql(conn, "narrative_change_cursors")?);
+    Ok(cursors_sql.contains(
+        "check((active_run_idisnullandreserved_through_sequenceisnull)or(active_run_idisnotnullandreserved_through_sequenceisnotnullandsemantic_epoch_idisnotnull))",
+    ) && cursors_sql.contains(
+        "check(reserved_through_sequenceisnullorreserved_through_sequence>=acknowledged_through_sequence)",
+    ))
+}
+
+fn has_v24_run_kind_policy_tables(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_semantic_index_metadata",
+        "narrative_maintenance_repair_leases",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    if !table_exists(conn, "narrative_dependency_edge_states")?
+        || !table_exists(conn, "narrative_consumer_freshness")?
+        || !table_exists(conn, "narrative_extraction_runs")?
+    {
+        return Ok(false);
+    }
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+
+    let index_metadata = table_columns(conn, "narrative_semantic_index_metadata")?;
+    let repair_leases = table_columns(conn, "narrative_maintenance_repair_leases")?;
+    let edge_states = table_columns(conn, "narrative_dependency_edge_states")?;
+    let freshness = table_columns(conn, "narrative_consumer_freshness")?;
+
+    let index_metadata_ok = has_column(&index_metadata, "project_id", "TEXT", true)
+        && has_column(&index_metadata, "index_key", "TEXT", true)
+        && has_column(&index_metadata, "generation", "INTEGER", true)
+        && has_column(&index_metadata, "built_at", "TEXT", true)
+        && has_column(&index_metadata, "source_digest", "TEXT", true)
+        && has_column(&index_metadata, "dependency_set_digest", "TEXT", true)
+        && has_column(&index_metadata, "dirty_cache_flag", "INTEGER", true);
+
+    let repair_leases_ok = has_column(&repair_leases, "project_id", "TEXT", true)
+        && has_column(&repair_leases, "lease_owner", "TEXT", true)
+        && has_column(&repair_leases, "verify_run_id", "TEXT", true)
+        && has_column(&repair_leases, "repair_plan_digest", "TEXT", true)
+        && has_column(&repair_leases, "semantic_epoch_id", "TEXT", true)
+        && has_column(&repair_leases, "claimed_at", "TEXT", true)
+        && has_column(&repair_leases, "expires_at", "TEXT", true);
+
+    let baseline_columns_ok =
+        has_column(
+            &edge_states,
+            "observed_source_revision_token",
+            "TEXT",
+            false,
+        ) && has_column(&edge_states, "observed_source_digest", "TEXT", false)
+            && has_column(&freshness, "dependency_set_digest", "TEXT", false);
+
+    if !(index_metadata_ok && repair_leases_ok && baseline_columns_ok) {
+        return Ok(false);
+    }
+
+    let index_metadata_sql = compact_sql(&table_sql(conn, "narrative_semantic_index_metadata")?);
+    let repair_leases_sql = compact_sql(&table_sql(conn, "narrative_maintenance_repair_leases")?);
+    let runs_sql = compact_sql(&table_sql(conn, "narrative_extraction_runs")?);
+
+    Ok(index_metadata_sql.contains("check(generation>=0)")
+        && index_metadata_sql.contains("check(dirty_cache_flagin(0,1))")
+        && repair_leases_sql.contains("primarykey(project_id)")
+        && runs_sql.contains(
+            "check(run_kindin('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill','dependency-verify','dependency-repair'))",
+        ))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

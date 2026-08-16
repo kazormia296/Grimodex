@@ -1,24 +1,38 @@
 //! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
+mod application_contributions;
+mod attention;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod cursor_reservation;
+mod dependency_edges;
 mod detail_operations;
+mod evaluator;
+mod execution_state;
 mod field_authority;
+mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
+mod inbox_read_model;
+mod legacy_backfill;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
 mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
+mod publish_runtime;
 mod reconciliation_envelope;
+mod repair;
 mod repository;
+mod restore_rebuild;
 mod semantic_bindings;
+mod semantic_epoch;
+mod semantic_index_diagnostics;
 mod source_revision;
 mod task_leases;
 mod temporal_constraints;
@@ -28,6 +42,109 @@ mod temporal_projections;
 mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
+
+// Gate C2 Wave 1 / Wave 2 (core Rust modules only; no IPC/N-API entrypoint
+// is wired up yet, so every re-export below is unreachable from outside
+// its own module's tests until Transport Assembly (C2-T1/T2) adds a
+// caller).
+#[allow(unused_imports)]
+pub(crate) use application_contributions::{
+    list_contributions_for_application, list_contributions_for_target, record_contribution_in_tx,
+    ApplicationContribution, ContributionTargetState,
+};
+#[allow(unused_imports)]
+pub(crate) use attention::{get_attention, is_attention_applicable};
+// C2-T1: exposed through narrative_maintenance_attention_set/_clear
+// (electron/native/grimodex-node/src/lib.rs).
+pub use attention::{
+    clear_attention, clear_attention_in_tx, set_attention, set_attention_in_tx,
+    AttentionDisposition, AttentionRow, AttentionWriteOutcome, SetAttentionRequest,
+};
+// cursor_reservation::acknowledge_cursor_in_tx is the SCHEMA_VERSION 23
+// reservation-aware acknowledge (Lane I); it is a distinct function from
+// the pre-existing change_feed::acknowledge_cursor_in_tx (accessed as
+// `change_feed::acknowledge_cursor_in_tx` since `change_feed` stays a
+// `pub mod`, not flattened here) — same table, two different consumer
+// protocols, not interchangeable.
+#[allow(unused_imports)]
+pub(crate) use cursor_reservation::{
+    acknowledge_cursor_in_tx, get_cursor, reclaim_stale_reservation_in_tx,
+    reserve_cursor_range_in_tx, CursorRow,
+};
+#[allow(unused_imports)]
+pub(crate) use dependency_edges::{
+    delete_edges_for_consumer_in_tx, find_edges_by_consumer, find_edges_by_source,
+    record_dependency_edge_in_tx, DependencyEdge,
+};
+#[allow(unused_imports)]
+pub(crate) use evaluator::{evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation};
+#[allow(unused_imports)]
+pub(crate) use execution_state::{
+    supersede_run_in_tx, transition_attempt_status_in_tx, transition_run_status_in_tx,
+    transition_task_status_in_tx, NarrativeAttemptStatus, NarrativeRunStatus, NarrativeTaskStatus,
+};
+#[allow(unused_imports)]
+pub(crate) use finding_observation::{
+    list_observations_for_epoch, record_finding_observation_in_tx,
+};
+// C2-T1: FindingObservationRow crosses the N-API boundary as a field of
+// InboxEntry (narrative_maintenance_inbox_list).
+pub use finding_observation::FindingObservationRow;
+// EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
+// (Lane F); `finding_observation` (Lane C) imports them from there instead
+// of a second, drifting copy — both Lanes independently defined this pair
+// in parallel and the Integration Owner collapsed it during Wave 1 merge.
+#[allow(unused_imports)]
+pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
+#[allow(unused_imports)]
+pub(crate) use inbox_read_model::{list_consumer_freshness, ConsumerFreshnessRow};
+// C2-T1: called from narrative_maintenance_inbox_list
+// (electron/native/grimodex-node/src/lib.rs).
+pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
+#[allow(unused_imports)]
+pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
+#[allow(unused_imports)]
+pub(crate) use publish_runtime::{
+    publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,
+};
+#[allow(unused_imports)]
+pub(crate) use restore_rebuild::{
+    rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
+    rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
+};
+
+// Gate C2 Run Kind Policy: the five named operations replacing the old
+// two-value `rebuildNarrativeDependencyIndex(mode: verify|repair)`
+// (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`).
+// `pub` (not `pub(crate)`): called directly from
+// `electron/native/grimodex-node/src/lib.rs`, a different crate.
+pub use legacy_backfill::{
+    bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
+    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome,
+};
+pub use repair::{
+    repair_narrative_dependency_declarations_for_project,
+    repair_narrative_dependency_declarations_for_request, seal_repair_plan, RepairOutcome,
+    RepairPlan,
+};
+pub use restore_rebuild::{
+    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
+    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
+};
+#[allow(unused_imports)]
+pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
+// `pub`: `get_current_epoch`/`CurrentEpoch` resolve the Semantic Epoch a
+// sealed Repair plan is bound to, needed from
+// `electron/native/grimodex-node/src/lib.rs`'s
+// `repair_narrative_dependency_declarations` before calling
+// `seal_repair_plan`.
+pub use semantic_epoch::{get_current_epoch, CurrentEpoch};
+#[allow(unused_imports)]
+pub(crate) use semantic_index_diagnostics::{
+    compute_dependency_set_digest, is_semantic_index_dirty,
+    semantic_index_metadata_from_dependency_edges, SemanticIndexMetadata,
+};
 
 pub(crate) use foreshadow_operations::collect_aggregate_snapshot;
 pub(crate) use foreshadow_undo::{
@@ -48,9 +165,13 @@ pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    HumanFieldLockPayload, ListResumableRunsPayload, PrepareCommitPayload, ProposalSeed,
-    ReconciliationEnvelopeInheritance, ReviseAndDecidePayload, RunRefPayload,
-    SaveProposalSetPayload, UndoCommitPayload,
+    GetNarrativeBackfillStatusPayload, HumanFieldLockPayload, ListResumableRunsPayload,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
+    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use temporal_operations::TemporalScenePatchPayload;
@@ -218,6 +339,49 @@ pub fn narrative_extraction_set_human_field_lock(
             field_authority::set_human_field_lock_in_tx(conn, &payload)
         })
     })
+}
+
+/// Workspace-wide bootstrap for Legacy Dependency Backfill (Gate C2 Run
+/// Kind Policy `dependency-backfill`): every Project in the workspace that
+/// doesn't already have a Backfill Run gets one. Unlike every other
+/// function in this facade it is not an IPC command (no payload, no
+/// `Value` return) and is best-effort by design — it logs and continues
+/// past a per-project failure rather than propagating (a failed Backfill
+/// must never fail the Workspace open itself; Legacy Freshness stays the
+/// read authority either way, per the Run Kind Policy's
+/// `duringBackfillProductBehavior`).
+///
+/// **Currently unwired.** It was called from `open.rs`'s post-swap zone
+/// until that turned every workspace open into a second-connection writer
+/// and started failing foreground deferred transactions with
+/// SQLITE_BUSY_SNAPSHOT; see the comment at the former call site in
+/// `open.rs` for the hazard and what re-wiring requires. Retained because
+/// it is the intended automatic-once entry point once that is fixed.
+pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
+    let project_ids: Vec<String> = match db.with_conn(|conn| {
+        let mut statement =
+            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(Into::into)
+    }) {
+        Ok(ids) => ids,
+        Err(error) => {
+            tracing::warn!(
+                "legacy dependency backfill bootstrap: failed to list projects: {error}"
+            );
+            return;
+        }
+    };
+    for project_id in project_ids {
+        if let Err(error) =
+            legacy_backfill::bootstrap_legacy_dependency_backfill_for_project(db, &project_id)
+        {
+            tracing::error!(
+                "legacy dependency backfill bootstrap failed for project '{project_id}': {error}"
+            );
+        }
+    }
 }
 
 pub fn temporal_scene_patch(

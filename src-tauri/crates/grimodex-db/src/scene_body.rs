@@ -21,9 +21,9 @@ use crate::{
         IdempotencyRequest,
     },
     narrative_extraction::change_feed::{
-        append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
-        scene_text_impact, AppendNarrativeChangeTransactionInput,
-        NarrativeChangeCauseKind, NarrativeChangeEventInput, NarrativeChangeOrigin,
+        append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest, scene_text_impact,
+        AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeEventInput,
+        NarrativeChangeOrigin,
     },
     Database,
 };
@@ -1198,9 +1198,8 @@ mod tests {
             assert_eq!(events[0].1, "content");
             assert_eq!(events[0].2, "update");
             assert_eq!((events[0].3, events[0].4), (Some(0), Some(1)));
-            let text_impact: Value = serde_json::from_str(
-                events[0].6.as_deref().expect("scene feed text impact"),
-            )?;
+            let text_impact: Value =
+                serde_json::from_str(events[0].6.as_deref().expect("scene feed text impact"))?;
             assert_eq!(
                 text_impact["normalizerVersion"],
                 crate::narrative_extraction::change_feed::CANONICAL_TEXT_NORMALIZER_VERSION

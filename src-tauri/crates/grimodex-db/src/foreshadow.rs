@@ -21,12 +21,11 @@ use super::{
     },
     Database,
 };
-use crate::change_events::AppendChangeEvent;
 use crate::agent_writes::{
-    canonical_payload_with_authority_context,
-    validate_agent_field_authority_for_entity,
+    canonical_payload_with_authority_context, validate_agent_field_authority_for_entity,
     validate_renderer_authority_context_for_routes, RendererCanonicalWriteContext,
 };
+use crate::change_events::AppendChangeEvent;
 use crate::narrative_extraction::change_feed::{
     append_canonical_and_narrative_change_in_tx, narrative_snapshot_digest,
     require_typed_inverse_lineage_in_project, AppendNarrativeChangeTransactionInput,
@@ -867,11 +866,7 @@ pub fn create_with_renderer_authority(
     if let Some(context) = renderer_context.as_ref() {
         validate_renderer_authority_context_for_routes(
             context,
-            &[
-                "human-direct",
-                "history-replay",
-                "restore-or-migration",
-            ],
+            &["human-direct", "history-replay", "restore-or-migration"],
         )?;
         anyhow::ensure!(
             context.request_id == payload.context.request_id,
@@ -1112,11 +1107,7 @@ pub fn update_with_renderer_authority(
     if let Some(context) = renderer_context.as_ref() {
         validate_renderer_authority_context_for_routes(
             context,
-            &[
-                "human-direct",
-                "history-replay",
-                "restore-or-migration",
-            ],
+            &["human-direct", "history-replay", "restore-or-migration"],
         )?;
         anyhow::ensure!(
             context.request_id == patch.context.request_id,
@@ -1513,9 +1504,10 @@ pub fn delete_with_renderer_authority(
                 base_version,
             )?;
 
-            if renderer_context.as_ref().is_some_and(|context| {
-                context.authority_route == "interactive-agent-command"
-            }) {
+            if renderer_context
+                .as_ref()
+                .is_some_and(|context| context.authority_route == "interactive-agent-command")
+            {
                 let authority_paths = FORESHADOW_AUTHORITY_FIELDS
                     .iter()
                     .map(|path| (*path).to_string())
@@ -1904,11 +1896,7 @@ pub fn update_setup_with_renderer_authority(
         "foreshadow setup update",
         &patch.context,
         &renderer_context,
-        &[
-            "human-direct",
-            "history-replay",
-            "restore-or-migration",
-        ],
+        &["human-direct", "history-replay", "restore-or-migration"],
     )?;
     update_setup_with_operation(
         db,

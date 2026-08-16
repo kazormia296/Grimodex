@@ -1433,12 +1433,13 @@ mod tests {
             );
         }
 
-        let error = db.execute_renderer(
-            "UPDATE projects SET title = 'Renamed' WHERE id = 'default-project'",
-            &[],
-            "run",
-        )
-        .expect_err("project metadata must use the typed Native writer");
+        let error = db
+            .execute_renderer(
+                "UPDATE projects SET title = 'Renamed' WHERE id = 'default-project'",
+                &[],
+                "run",
+            )
+            .expect_err("project metadata must use the typed Native writer");
         assert!(error.to_string().contains(PROTECTED_WRITER_SQL_ERROR));
         let rows = db
             .execute(

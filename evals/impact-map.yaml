@@ -309,7 +309,9 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_runtime_policy.rs
       - src-tauri/crates/grimodex-db/src/protected_writers.rs
       - src-tauri/crates/grimodex-db/src/execute.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/**
       - src-tauri/crates/grimodex-db/tests/narrative_runtime_authority.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_semantic_build_graph_adversarial.rs
       - scripts/quality/validate-narrative-writers.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
     requirements:

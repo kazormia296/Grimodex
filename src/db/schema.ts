@@ -2214,6 +2214,25 @@ export const narrativeExtractionRuns = sqliteTable(
     startedAt: text("started_at"),
     completedAt: text("completed_at"),
     version: integer("version").notNull().default(0),
+    // SCHEMA_VERSION 23 (Gate C2-01): see narrative-execution-state.json /
+    // narrative-failure-policy.json for the status/failure contract these
+    // columns implement.
+    runKind: text("run_kind").notNull().default("interpretation"),
+    consumerId: text("consumer_id"),
+    semanticEpochId: text("semantic_epoch_id").references(
+      () => narrativeSemanticEpochs.id,
+    ),
+    workKey: text("work_key"),
+    terminalReasonCode: text("terminal_reason_code"),
+    supersededByRunId: text("superseded_by_run_id"),
+    // SCHEMA_VERSION 26: request identity, deliberately separate from
+    // workKey. workKey answers "is this the same work?"; these answer "is
+    // this the same request?" and drive sameRequestIdReuse:
+    // idempotent-replay. Nullable — interpretation Runs have no request.
+    requestId: text("request_id"),
+    idempotencyDomain: text("idempotency_domain"),
+    requestPayloadDigest: text("request_payload_digest"),
+    actorId: text("actor_id"),
   },
 );
 
@@ -2262,6 +2281,13 @@ export const narrativeExtractionAttempts = sqliteTable(
     completedAt: text("completed_at"),
     errorMessage: text("error_message"),
     outputJson: text("output_json"),
+    // SCHEMA_VERSION 23 (Gate C2-01): typed failure per
+    // narrative-failure-policy.json. next_attempt_at is set iff
+    // retryDisposition is "retryable" (SQL CHECK in migrate.rs).
+    failureCode: text("failure_code"),
+    retryDisposition: text("retry_disposition"),
+    policyVersion: text("policy_version"),
+    nextAttemptAt: text("next_attempt_at"),
   },
 );
 
@@ -2903,6 +2929,17 @@ export const narrativeChangeCursors = sqliteTable(
     leaseExpiresAt: text("lease_expires_at"),
     lastError: text("last_error"),
     updatedAt: text("updated_at").notNull().$defaultFn(nowInstantString),
+    // SCHEMA_VERSION 23 (Gate C2-01): reservation columns for the Change
+    // Feed consumer that drives the Freshness evaluator Run. NULL for
+    // pre-C2 consumers, which keep using only acknowledgedThroughSequence
+    // and the lease columns above.
+    semanticEpochId: text("semantic_epoch_id").references(
+      () => narrativeSemanticEpochs.id,
+    ),
+    reservedThroughSequence: integer("reserved_through_sequence"),
+    activeRunId: text("active_run_id").references(
+      () => narrativeExtractionRuns.id,
+    ),
   },
   (table) => [
     primaryKey({ columns: [table.projectId, table.consumerId] }),
@@ -2911,6 +2948,244 @@ export const narrativeChangeCursors = sqliteTable(
       table.consumerId,
     ),
   ],
+);
+
+// =========================================================================
+// Gate C2-01 Semantic Build Graph. Physical DDL is mirrored in migrate.rs
+// (SCHEMA_VERSION 23). narrativeConsumerFreshness is the one durable
+// Freshness authority (see policies/narrative/semantic-core-authorities.json,
+// concern "evidence-freshness"); narrativeMaintenanceFindingObservations is
+// epoch-bound rebuildable diagnostic history, never the current value; a
+// Semantic Epoch is the generation boundary a restore/migration/full
+// rebuild advances.
+// =========================================================================
+export const narrativeSemanticEpochs = sqliteTable(
+  "narrative_semantic_epochs",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    epochNumber: integer("epoch_number").notNull(),
+    reason: text("reason").notNull(),
+    triggeredByChangeEventUid: text("triggered_by_change_event_uid"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_semantic_epochs_project").on(
+      table.projectId,
+      table.epochNumber,
+    ),
+  ],
+);
+
+export const narrativeDependencyEdges = sqliteTable(
+  "narrative_dependency_edges",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    sourceObjectIdentity: text("source_object_identity").notNull(),
+    readSetJson: text("read_set_json").notNull().default("[]"),
+    generatedByTransactionId: text("generated_by_transaction_id"),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_dependency_edges_source").on(
+      table.projectId,
+      table.sourceObjectIdentity,
+    ),
+    index("idx_narrative_dependency_edges_consumer").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+    ),
+  ],
+);
+
+export const narrativeDependencyEdgeStates = sqliteTable(
+  "narrative_dependency_edge_states",
+  {
+    edgeId: text("edge_id")
+      .primaryKey()
+      .references(() => narrativeDependencyEdges.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    evidenceFreshness: text("evidence_freshness").notNull(),
+    reasonCode: text("reason_code"),
+    buildAction: text("build_action").notNull(),
+    evaluatedAtEpochId: text("evaluated_at_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    evaluatedAt: text("evaluated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): the Source revision
+    // token/digest this edge was last evaluated against, so Verify can
+    // detect drift without a full Rebuild-Derived-State.
+    observedSourceRevisionToken: text("observed_source_revision_token"),
+    observedSourceDigest: text("observed_source_digest"),
+  },
+  (table) => [
+    index("idx_narrative_dependency_edge_states_project").on(
+      table.projectId,
+      table.evidenceFreshness,
+    ),
+  ],
+);
+
+export const narrativeConsumerFreshness = sqliteTable(
+  "narrative_consumer_freshness",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    evidenceFreshness: text("evidence_freshness").notNull(),
+    buildAction: text("build_action").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    lastEvaluatedRunId: text("last_evaluated_run_id"),
+    updatedAt: text("updated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): digest of the Consumer's
+    // current dependency set, so Verify can detect a dependency-set change
+    // Evaluate hasn't reconciled yet.
+    dependencySetDigest: text("dependency_set_digest"),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.consumerKind, table.consumerKey],
+    }),
+    index("idx_narrative_consumer_freshness_epoch").on(
+      table.projectId,
+      table.semanticEpochId,
+    ),
+  ],
+);
+
+export const narrativeApplicationContributions = sqliteTable(
+  "narrative_application_contributions",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    applicationId: text("application_id").notNull(),
+    targetObjectIdentity: text("target_object_identity").notNull(),
+    fieldPath: text("field_path").notNull(),
+    targetState: text("target_state").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_application_contributions_target").on(
+      table.projectId,
+      table.targetObjectIdentity,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceFindingObservations = sqliteTable(
+  "narrative_maintenance_finding_observations",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    edgeId: text("edge_id"),
+    findingKey: text("finding_key").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    evidenceFreshnessSnapshot: text("evidence_freshness_snapshot").notNull(),
+    materialBasisDigest: text("material_basis_digest").notNull(),
+    observedAt: text("observed_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_finding_observations_key").on(
+      table.projectId,
+      table.findingKey,
+      table.semanticEpochId,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceAttention = sqliteTable(
+  "narrative_maintenance_attention",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    findingKey: text("finding_key").notNull(),
+    disposition: text("disposition").notNull(),
+    materialBasisDigest: text("material_basis_digest").notNull(),
+    snoozedUntil: text("snoozed_until"),
+    setAt: text("set_at").notNull(),
+    // SCHEMA_VERSION 25: OCC + request identity + mandatory actor. actorId
+    // replaces the nullable setBy — an Attention row is durable user state,
+    // so an unattributed one is not a meaningful record.
+    actorId: text("actor_id").notNull(),
+    requestId: text("request_id").notNull(),
+    payloadDigest: text("payload_digest").notNull(),
+    reason: text("reason"),
+    version: integer("version").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.findingKey] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy). A Semantic Index may own only
+// the five fields fixed in semantic-core-authorities.json's
+// semanticIndexAllowedFields; indexKey distinguishes multiple indexes a
+// project may build (e.g. embeddings vs. a future secondary index) under one
+// row shape.
+export const narrativeSemanticIndexMetadata = sqliteTable(
+  "narrative_semantic_index_metadata",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    indexKey: text("index_key").notNull(),
+    generation: integer("generation").notNull(),
+    builtAt: text("built_at").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    dependencySetDigest: text("dependency_set_digest").notNull(),
+    dirtyCacheFlag: integer("dirty_cache_flag").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.indexKey] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy, Repair). Durable claim covering
+// the human-approval interval between a Verify-derived sealed repair plan
+// being shown to a human and its approved execution; not a general workspace
+// write lock. One active claim per project by construction.
+export const narrativeMaintenanceRepairLeases = sqliteTable(
+  "narrative_maintenance_repair_leases",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    leaseOwner: text("lease_owner").notNull(),
+    verifyRunId: text("verify_run_id").notNull(),
+    repairPlanDigest: text("repair_plan_digest").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    claimedAt: text("claimed_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    // SCHEMA_VERSION 27. The Run currently entitled to apply this plan.
+    // `lease_owner` identifies the process; this identifies the execution,
+    // so the mutation transaction can compare-and-swap the whole row and
+    // refuse to mutate under a lease that expired and was re-claimed.
+    // Nullable: a lease claimed before this migration carries NULL and
+    // fails that CAS, which is the safe direction.
+    activeRunId: text("active_run_id"),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
 );
 
 export const narrativeChangeSets = sqliteTable(

@@ -58,6 +58,54 @@ function mutationIdentity(requestId: string, projectId = "p1") {
   } as const;
 }
 
+/** 必須キー欠落ケースを組み立てる（テスト用の最小 omit）。 */
+function omitKey<T extends Record<string, unknown>>(
+  source: T,
+  key: keyof T & string,
+): Record<string, unknown> {
+  const clone: Record<string, unknown> = { ...source };
+  delete clone[key];
+  return clone;
+}
+
+// Gate C2-T1 Attention typed writer の wire 契約
+// （actor identity 必須 / requestId による idempotency / expectedVersion の OCC）。
+const MAINTENANCE_ATTENTION_SET_PAYLOAD = {
+  projectId: "project-1",
+  findingKey: "finding-1",
+  disposition: "snoozed",
+  materialBasisDigest: "digest-1",
+  actorId: "actor-1",
+  requestId: "req-attention-1",
+  expectedVersion: 0,
+};
+
+const MAINTENANCE_ATTENTION_CLEAR_PAYLOAD = {
+  projectId: "project-1",
+  findingKey: "finding-1",
+  actorId: "actor-1",
+  requestId: "req-attention-2",
+  expectedVersion: 3,
+};
+
+// Gate C2 dependency-repair の wire 契約。run kind policy が
+// requiredPreconditions: stable-request-id / sameRequestIdReuse:
+// idempotent-replay を宣言しているので、preview / apply どちらでも
+// requestId（再送の同一性）と actorId（承認者）が必須。
+const REPAIR_DEPENDENCY_PREVIEW_PAYLOAD = {
+  projectId: "project-1",
+  verifyRunId: "verify-1",
+  requestId: "req-repair-1",
+  actorId: "actor-1",
+};
+
+const REPAIR_DEPENDENCY_APPLY_PAYLOAD = {
+  ...REPAIR_DEPENDENCY_PREVIEW_PAYLOAD,
+  apply: true,
+  planDigest: "sha256:abc",
+  leaseOwner: "renderer-session-1",
+};
+
 // agent_writes 系の代表返り値（AgentWriteResult / ProseStageResult、camelCase）。
 const AGENT_WRITE_RESULT = Promise.resolve(
   '{"entityId":"e1","version":1,"changeEventUid":"ce1","undoJournalId":"uj1"}',
@@ -1620,6 +1668,237 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       ok: false,
       error:
         "NARRATIVE_RUNTIME_POLICY_CONFLICT: runtime policy version conflict",
+    });
+  });
+
+  it("narrative_maintenance_attention_set: actor/idempotency/OCC 込みの payload を native adapter へ渡す", async () => {
+    const narrativeMaintenanceAttentionSet = vi
+      .fn()
+      .mockResolvedValue('{"findingKey":"finding-1","version":1}');
+    const { backend } = fakeBackend({
+      narrativeMaintenanceAttentionSet:
+        narrativeMaintenanceAttentionSet as never,
+    });
+    const payload = {
+      ...MAINTENANCE_ATTENTION_SET_PAYLOAD,
+      snoozedUntil: "2026-09-01T00:00:00.000Z",
+      reason: "材料が揃うまで保留",
+    };
+    const env = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      { payload },
+      { backend, shell: noShell },
+    );
+    expect(narrativeMaintenanceAttentionSet).toHaveBeenCalledWith(payload);
+    expect(env).toEqual({
+      ok: true,
+      value: { findingKey: "finding-1", version: 1 },
+    });
+  });
+
+  it("narrative_maintenance_attention_set: 任意項目なし・expectedVersion=0（行未作成期待）を受理する", async () => {
+    const narrativeMaintenanceAttentionSet = vi
+      .fn()
+      .mockResolvedValue('{"findingKey":"finding-1","version":1}');
+    const { backend } = fakeBackend({
+      narrativeMaintenanceAttentionSet:
+        narrativeMaintenanceAttentionSet as never,
+    });
+    const env = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      { payload: MAINTENANCE_ATTENTION_SET_PAYLOAD },
+      { backend, shell: noShell },
+    );
+    expect(narrativeMaintenanceAttentionSet).toHaveBeenCalledWith(
+      MAINTENANCE_ATTENTION_SET_PAYLOAD,
+    );
+    expect(env).toMatchObject({ ok: true });
+  });
+
+  it("narrative_maintenance_attention_set は必須 actor/requestId/OCC 欠落と旧 setBy を拒否する", async () => {
+    const narrativeMaintenanceAttentionSet = vi
+      .fn()
+      .mockResolvedValue('{"findingKey":"finding-1","version":1}');
+    const { backend } = fakeBackend({
+      narrativeMaintenanceAttentionSet:
+        narrativeMaintenanceAttentionSet as never,
+    });
+    const valid = MAINTENANCE_ATTENTION_SET_PAYLOAD;
+    const invalidPayloads: unknown[] = [
+      null,
+      [],
+      "payload",
+      {},
+      // 旧 wire: setBy は削除済みなので unknown field で落ちる
+      { ...valid, setBy: "actor-1" },
+      omitKey(valid, "actorId"),
+      omitKey(valid, "requestId"),
+      omitKey(valid, "expectedVersion"),
+      omitKey(valid, "projectId"),
+      omitKey(valid, "findingKey"),
+      omitKey(valid, "disposition"),
+      omitKey(valid, "materialBasisDigest"),
+      { ...valid, actorId: "" },
+      { ...valid, actorId: 1 },
+      { ...valid, actorId: null },
+      { ...valid, requestId: "" },
+      { ...valid, requestId: 42 },
+      { ...valid, projectId: "" },
+      { ...valid, findingKey: "" },
+      { ...valid, materialBasisDigest: "" },
+      { ...valid, disposition: "ignored" },
+      { ...valid, disposition: null },
+      { ...valid, expectedVersion: -1 },
+      { ...valid, expectedVersion: 1.5 },
+      { ...valid, expectedVersion: "1" },
+      { ...valid, expectedVersion: null },
+      { ...valid, expectedVersion: Number.NaN },
+      { ...valid, snoozedUntil: 1 },
+      { ...valid, reason: 1 },
+      { ...valid, extra: true },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const result = await dispatchInvoke(
+        "narrative_maintenance_attention_set",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(narrativeMaintenanceAttentionSet).not.toHaveBeenCalled();
+
+    const missingPayload = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      {},
+      { backend, shell: noShell },
+    );
+    expect(missingPayload.ok).toBe(false);
+
+    const setByError = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      { payload: { ...valid, setBy: "actor-1" } },
+      { backend, shell: noShell },
+    );
+    expect(setByError).toMatchObject({
+      ok: false,
+      error:
+        "invalid args `setBy` for command `narrative_maintenance_attention_set`: unknown field",
+    });
+
+    const occError = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      { payload: { ...valid, expectedVersion: -1 } },
+      { backend, shell: noShell },
+    );
+    expect(occError).toMatchObject({
+      ok: false,
+      error:
+        "invalid args `expectedVersion` for command `narrative_maintenance_attention_set`: expected a non-negative safe integer",
+    });
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_maintenance_attention_set",
+      { payload: valid },
+      {
+        backend: { ...backend, narrativeMaintenanceAttentionSet: undefined },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeMaintenanceAttentionSet`,
+    });
+  });
+
+  it("narrative_maintenance_attention_clear: actor/idempotency/OCC 必須の payload を native adapter へ渡す", async () => {
+    const narrativeMaintenanceAttentionClear = vi
+      .fn()
+      .mockResolvedValue('{"findingKey":"finding-1","cleared":true}');
+    const { backend } = fakeBackend({
+      narrativeMaintenanceAttentionClear:
+        narrativeMaintenanceAttentionClear as never,
+    });
+    const env = await dispatchInvoke(
+      "narrative_maintenance_attention_clear",
+      { payload: MAINTENANCE_ATTENTION_CLEAR_PAYLOAD },
+      { backend, shell: noShell },
+    );
+    expect(narrativeMaintenanceAttentionClear).toHaveBeenCalledWith(
+      MAINTENANCE_ATTENTION_CLEAR_PAYLOAD,
+    );
+    expect(env).toEqual({
+      ok: true,
+      value: { findingKey: "finding-1", cleared: true },
+    });
+  });
+
+  it("narrative_maintenance_attention_clear は必須 actor/requestId/OCC を強制する", async () => {
+    const narrativeMaintenanceAttentionClear = vi
+      .fn()
+      .mockResolvedValue('{"findingKey":"finding-1","cleared":true}');
+    const { backend } = fakeBackend({
+      narrativeMaintenanceAttentionClear:
+        narrativeMaintenanceAttentionClear as never,
+    });
+    const valid = MAINTENANCE_ATTENTION_CLEAR_PAYLOAD;
+    const invalidPayloads: unknown[] = [
+      null,
+      [],
+      "payload",
+      {},
+      omitKey(valid, "projectId"),
+      omitKey(valid, "findingKey"),
+      omitKey(valid, "actorId"),
+      omitKey(valid, "requestId"),
+      omitKey(valid, "expectedVersion"),
+      { ...valid, projectId: "" },
+      { ...valid, findingKey: "" },
+      { ...valid, actorId: "" },
+      { ...valid, actorId: null },
+      { ...valid, requestId: "" },
+      { ...valid, requestId: 7 },
+      { ...valid, expectedVersion: -1 },
+      { ...valid, expectedVersion: 2.5 },
+      { ...valid, expectedVersion: "2" },
+      { ...valid, expectedVersion: null },
+      { ...valid, setBy: "actor-1" },
+      { ...valid, reason: "なんとなく" },
+      { ...valid, extra: true },
+    ];
+
+    for (const payload of invalidPayloads) {
+      const result = await dispatchInvoke(
+        "narrative_maintenance_attention_clear",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(result.ok).toBe(false);
+    }
+    expect(narrativeMaintenanceAttentionClear).not.toHaveBeenCalled();
+
+    const missingActor = await dispatchInvoke(
+      "narrative_maintenance_attention_clear",
+      { payload: omitKey(valid, "actorId") },
+      { backend, shell: noShell },
+    );
+    expect(missingActor).toMatchObject({
+      ok: false,
+      error:
+        "invalid args `actorId` for command `narrative_maintenance_attention_clear`: expected a string",
+    });
+
+    const missingMethod = await dispatchInvoke(
+      "narrative_maintenance_attention_clear",
+      { payload: valid },
+      {
+        backend: { ...backend, narrativeMaintenanceAttentionClear: undefined },
+        shell: noShell,
+      },
+    );
+    expect(missingMethod).toMatchObject({
+      ok: false,
+      error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method narrativeMaintenanceAttentionClear`,
     });
   });
 
@@ -4291,6 +4570,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "get_ai_settings",
       "get_global_settings",
       "get_license_state",
+      "get_narrative_backfill_status",
       "ime_export_clear_all",
       "ime_export_get_status",
       "ime_export_refresh",
@@ -4339,6 +4619,9 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_extraction_save_proposal_set",
       "narrative_extraction_set_human_field_lock",
       "narrative_extraction_undo_commit",
+      "narrative_maintenance_attention_clear",
+      "narrative_maintenance_attention_set",
+      "narrative_maintenance_inbox_list",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
       "open_workspace",
@@ -4364,10 +4647,13 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "project_snapshot_create",
       "project_snapshot_restore_context",
       "quarantine_live_database",
+      "rebuild_narrative_derived_state",
       "repair_integrity",
+      "repair_narrative_dependency_declarations",
       "reply_to_annotation",
       "restore_backup",
       "restore_recovery_candidate",
+      "retry_narrative_legacy_backfill",
       "revalidate_license",
       "revision_scene_restore",
       "runtime_performance_seed",
@@ -4414,8 +4700,364 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "update_annotation_status",
       "vacuum_database",
       "validate_workspace_path",
+      "verify_narrative_dependency_graph",
       "verify_recovery_candidate",
     ]);
+  });
+
+  describe("Gate C2 Run Kind Policy commands", () => {
+    it("verify_narrative_dependency_graph: projectId だけの payload を native adapter へ渡す", async () => {
+      const verifyNarrativeDependencyGraph = vi
+        .fn()
+        .mockResolvedValue(
+          '{"runId":"run-verify-1","semanticEpochId":"epoch-1","reportDigest":"sha256:report","report":{"totalEdges":2,"edgeIdsWithMissingSource":[],"duplicateEdgeKeys":[],"edgeIdsWithCrossProjectConsumer":[],"edgeIdsWithMalformedKeys":[],"edgeStateIdsOutsideCurrentEpoch":[],"findingObservationIdsOutsideCurrentEpoch":[],"duplicateEdgeIdsToDeactivate":[]}}',
+        ) as never;
+      const { backend } = fakeBackend({ verifyNarrativeDependencyGraph });
+      const payload = { projectId: "project-1" };
+      const env = await dispatchInvoke(
+        "verify_narrative_dependency_graph",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(verifyNarrativeDependencyGraph).toHaveBeenCalledWith(payload);
+      // Verify now runs under a real Run so `dependency-repair` can prove
+      // which Verify result its sealed plan came from -- the report is
+      // nested under the Run identity rather than being the whole response.
+      expect(env).toMatchObject({
+        ok: true,
+        value: {
+          runId: "run-verify-1",
+          reportDigest: "sha256:report",
+          report: { totalEdges: 2 },
+        },
+      });
+    });
+
+    it("verify_narrative_dependency_graph は malformed payload と backend skew を明示拒否する", async () => {
+      const { backend, calls } = fakeBackend();
+      for (const payload of [null, [], "payload", {}, { projectId: "" }]) {
+        const result = await dispatchInvoke(
+          "verify_narrative_dependency_graph",
+          { payload },
+          { backend, shell: noShell },
+        );
+        expect(result.ok).toBe(false);
+      }
+      expect(calls).toHaveLength(0);
+
+      const unavailable = await dispatchInvoke(
+        "verify_narrative_dependency_graph",
+        { payload: { projectId: "project-1" } },
+        { backend: null, shell: noShell },
+      );
+      expect(unavailable).toMatchObject({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} verify_narrative_dependency_graph`,
+      });
+
+      const missingMethod = await dispatchInvoke(
+        "verify_narrative_dependency_graph",
+        { payload: { projectId: "project-1" } },
+        {
+          backend: { ...backend, verifyNarrativeDependencyGraph: undefined },
+          shell: noShell,
+        },
+      );
+      expect(missingMethod).toMatchObject({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} native method verifyNarrativeDependencyGraph`,
+      });
+    });
+
+    it("rebuild_narrative_derived_state: projectId だけの payload を native adapter へ渡す", async () => {
+      const rebuildNarrativeDerivedState = vi
+        .fn()
+        .mockResolvedValue(
+          '{"outcome":"ran","runId":"run-1","consumersEvaluated":1,"edgesEvaluated":3}',
+        ) as never;
+      const { backend } = fakeBackend({ rebuildNarrativeDerivedState });
+      const payload = { projectId: "project-1" };
+      const env = await dispatchInvoke(
+        "rebuild_narrative_derived_state",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(rebuildNarrativeDerivedState).toHaveBeenCalledWith(payload);
+      expect(env).toMatchObject({
+        ok: true,
+        value: { outcome: "ran", runId: "run-1" },
+      });
+    });
+
+    it("rebuild_narrative_derived_state は malformed payload と backend skew を明示拒否する", async () => {
+      const { backend } = fakeBackend();
+      const invalid = await dispatchInvoke(
+        "rebuild_narrative_derived_state",
+        { payload: { projectId: "" } },
+        { backend, shell: noShell },
+      );
+      expect(invalid.ok).toBe(false);
+
+      const unavailable = await dispatchInvoke(
+        "rebuild_narrative_derived_state",
+        { payload: { projectId: "project-1" } },
+        { backend: null, shell: noShell },
+      );
+      expect(unavailable).toMatchObject({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} rebuild_narrative_derived_state`,
+      });
+    });
+
+    it("get_narrative_backfill_status: projectId だけの payload を native adapter へ渡す", async () => {
+      const getNarrativeBackfillStatus = vi
+        .fn()
+        .mockResolvedValue(
+          '{"runId":"run-1","status":"completed","createdAt":"2026-08-15T00:00:00.000Z","startedAt":"2026-08-15T00:00:00.000Z","completedAt":"2026-08-15T00:01:00.000Z"}',
+        ) as never;
+      const { backend } = fakeBackend({ getNarrativeBackfillStatus });
+      const payload = { projectId: "project-1" };
+      const env = await dispatchInvoke(
+        "get_narrative_backfill_status",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(getNarrativeBackfillStatus).toHaveBeenCalledWith(payload);
+      expect(env).toMatchObject({ ok: true, value: { status: "completed" } });
+    });
+
+    it("get_narrative_backfill_status は null（未実行）を素通しする", async () => {
+      const { backend } = fakeBackend({
+        getNarrativeBackfillStatus: vi.fn().mockResolvedValue("null") as never,
+      });
+      const env = await dispatchInvoke(
+        "get_narrative_backfill_status",
+        { payload: { projectId: "project-1" } },
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: null });
+    });
+
+    it("retry_narrative_legacy_backfill: projectId だけの payload を native adapter へ渡す", async () => {
+      const retryNarrativeLegacyBackfill = vi
+        .fn()
+        .mockResolvedValue('{"outcome":"alreadyRun","runId":"run-1"}') as never;
+      const { backend } = fakeBackend({ retryNarrativeLegacyBackfill });
+      const payload = { projectId: "project-1" };
+      const env = await dispatchInvoke(
+        "retry_narrative_legacy_backfill",
+        { payload },
+        { backend, shell: noShell },
+      );
+      expect(retryNarrativeLegacyBackfill).toHaveBeenCalledWith(payload);
+      expect(env).toMatchObject({
+        ok: true,
+        value: { outcome: "alreadyRun" },
+      });
+    });
+
+    it("retry_narrative_legacy_backfill は backend 不在を明示拒否する", async () => {
+      const unavailable = await dispatchInvoke(
+        "retry_narrative_legacy_backfill",
+        { payload: { projectId: "project-1" } },
+        { backend: null, shell: noShell },
+      );
+      expect(unavailable).toMatchObject({
+        ok: false,
+        error: `${IPC_BACKEND_UNAVAILABLE_MARKER} retry_narrative_legacy_backfill`,
+      });
+    });
+
+    it("repair_narrative_dependency_declarations: apply 省略時は requestId/actorId 付き preview payload を渡す", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue(
+          '{"mode":"preview","plan":{"verifyRunId":"verify-1","semanticEpochId":"epoch-1","edgeIdsToDeactivate":[],"digest":"sha256:abc"}}',
+        ) as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const env = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: REPAIR_DEPENDENCY_PREVIEW_PAYLOAD },
+        { backend, shell: noShell },
+      );
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledWith(
+        REPAIR_DEPENDENCY_PREVIEW_PAYLOAD,
+      );
+      expect(env).toMatchObject({ ok: true, value: { mode: "preview" } });
+    });
+
+    it("repair_narrative_dependency_declarations は requestId/actorId を preview でも必須とする", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue('{"mode":"preview","plan":null}') as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const valid = REPAIR_DEPENDENCY_PREVIEW_PAYLOAD;
+      const invalidPayloads: unknown[] = [
+        null,
+        [],
+        "payload",
+        {},
+        omitKey(valid, "requestId"),
+        omitKey(valid, "actorId"),
+        omitKey(valid, "projectId"),
+        omitKey(valid, "verifyRunId"),
+        { ...valid, requestId: "" },
+        { ...valid, requestId: 1 },
+        { ...valid, requestId: null },
+        { ...valid, requestId: {} },
+        { ...valid, actorId: "" },
+        { ...valid, actorId: 42 },
+        { ...valid, actorId: null },
+        { ...valid, actorId: [] },
+        { ...valid, extra: true },
+      ];
+
+      for (const payload of invalidPayloads) {
+        const result = await dispatchInvoke(
+          "repair_narrative_dependency_declarations",
+          { payload },
+          { backend, shell: noShell },
+        );
+        expect(result.ok).toBe(false);
+      }
+      expect(repairNarrativeDependencyDeclarations).not.toHaveBeenCalled();
+
+      const missingRequestId = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: omitKey(valid, "requestId") },
+        { backend, shell: noShell },
+      );
+      expect(missingRequestId).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `requestId` for command `repair_narrative_dependency_declarations`: expected a string",
+      });
+
+      const emptyActorId = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: { ...valid, actorId: "" } },
+        { backend, shell: noShell },
+      );
+      expect(emptyActorId).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `actorId` for command `repair_narrative_dependency_declarations`: expected a non-empty string",
+      });
+
+      const unknownField = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: { ...valid, setBy: "actor-1" } },
+        { backend, shell: noShell },
+      );
+      expect(unknownField).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `setBy` for command `repair_narrative_dependency_declarations`: unknown field",
+      });
+    });
+
+    it("repair_narrative_dependency_declarations: apply=true には planDigest/leaseOwner を必須とする", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue('{"mode":"applied","outcome":null}') as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const base = REPAIR_DEPENDENCY_PREVIEW_PAYLOAD;
+      const missingBoth = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: { ...base, apply: true } },
+        { backend, shell: noShell },
+      );
+      expect(missingBoth.ok).toBe(false);
+
+      const missingLeaseOwner = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        {
+          payload: { ...base, apply: true, planDigest: "sha256:abc" },
+        },
+        { backend, shell: noShell },
+      );
+      expect(missingLeaseOwner.ok).toBe(false);
+
+      const missingIdentity = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: omitKey(REPAIR_DEPENDENCY_APPLY_PAYLOAD, "actorId") },
+        { backend, shell: noShell },
+      );
+      expect(missingIdentity.ok).toBe(false);
+      expect(repairNarrativeDependencyDeclarations).not.toHaveBeenCalled();
+    });
+
+    it("repair_narrative_dependency_declarations: apply=true で planDigest/leaseOwner が揃っていれば実行する", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue(
+          '{"mode":"applied","outcome":{"edgesDeactivated":1,"backupArtifactPath":"/tmp/backup.db"}}',
+        ) as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const env = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
+        { backend, shell: noShell },
+      );
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledWith(
+        REPAIR_DEPENDENCY_APPLY_PAYLOAD,
+      );
+      expect(env).toMatchObject({ ok: true, value: { mode: "applied" } });
+    });
+
+    it("repair_narrative_dependency_declarations: 同じ requestId の再送も native へそのまま渡す（idempotent replay は native 側の判定）", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue(
+          '{"mode":"applied","outcome":{"edgesDeactivated":1,"backupArtifactPath":"/tmp/backup.db"}}',
+        ) as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const env = await dispatchInvoke(
+          "repair_narrative_dependency_declarations",
+          { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
+          { backend, shell: noShell },
+        );
+        expect(env).toMatchObject({ ok: true, value: { mode: "applied" } });
+      }
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledTimes(2);
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenNthCalledWith(
+        2,
+        REPAIR_DEPENDENCY_APPLY_PAYLOAD,
+      );
+    });
+
+    it("repair_narrative_dependency_declarations はドメインエラーマーカーをそのまま伝播する", async () => {
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations: vi
+          .fn()
+          .mockRejectedValue(
+            new Error(
+              "NEX_REPAIR_EPOCH_MISMATCH: sealed plan's Semantic Epoch is no longer current",
+            ),
+          ) as never,
+      });
+      const env = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
+        { backend, shell: noShell },
+      );
+      expect(env).toMatchObject({
+        ok: false,
+        error:
+          "NEX_REPAIR_EPOCH_MISMATCH: sealed plan's Semantic Epoch is no longer current",
+      });
+    });
   });
 
   describe("Semantic reranker shadow score command", () => {
@@ -6227,9 +6869,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { payload },
       { backend, shell: noShell },
     );
-    expect(calls).toEqual([
-      { method: "codexCreate", args: [payload] },
-    ]);
+    expect(calls).toEqual([{ method: "codexCreate", args: [payload] }]);
     expect(created).toEqual({
       ok: true,
       value: {

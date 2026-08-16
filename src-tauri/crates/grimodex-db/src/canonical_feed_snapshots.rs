@@ -405,20 +405,17 @@ pub(crate) fn canonical_snapshot_for_object_key(
 ) -> anyhow::Result<Option<Value>> {
     let kind = object_key.get("kind").and_then(Value::as_str);
     let result = match kind {
-        Some("project") => canonical_project_snapshot(
-            conn,
-            {
-                let object_project_id = object_key
-                    .get("projectId")
-                    .and_then(Value::as_str)
-                    .unwrap_or(project_id);
-                anyhow::ensure!(
-                    object_project_id == project_id,
-                    "project snapshot escaped its project"
-                );
-                object_project_id
-            },
-        ),
+        Some("project") => canonical_project_snapshot(conn, {
+            let object_project_id = object_key
+                .get("projectId")
+                .and_then(Value::as_str)
+                .unwrap_or(project_id);
+            anyhow::ensure!(
+                object_project_id == project_id,
+                "project snapshot escaped its project"
+            );
+            object_project_id
+        }),
         Some("scene") => canonical_scene_snapshot(
             conn,
             project_id,

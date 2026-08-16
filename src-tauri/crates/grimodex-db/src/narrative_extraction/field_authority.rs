@@ -978,18 +978,14 @@ pub(crate) fn legacy_value_present(
         ("codex-entry", "/summary") => Some(("codex_entries", "summary", "text")),
         ("codex-entry", "/content") => Some(("codex_entries", "content", "text")),
         ("codex-entry", "/aliases") => Some(("codex_entries", "aliases", "text")),
-        ("codex-entry", "/excludedAliases") => {
-            Some(("codex_entries", "excluded_aliases", "text"))
-        }
+        ("codex-entry", "/excludedAliases") => Some(("codex_entries", "excluded_aliases", "text")),
         ("codex-entry", "/readings") => Some(("codex_entries", "readings", "text")),
         ("codex-entry", "/tagsCache") => Some(("codex_entries", "tags_cache", "text")),
         ("codex-entry", "/type") => Some(("codex_entries", "type", "text")),
         ("codex-entry", "/parentId") => Some(("codex_entries", "parent_id", "text")),
         ("codex-entry", "/contextMode") => Some(("codex_entries", "context_mode", "text")),
         ("codex-entry", "/icon") => Some(("codex_entries", "icon", "text")),
-        ("codex-entry", "/childrenBudget") => {
-            Some(("codex_entries", "children_budget", "text"))
-        }
+        ("codex-entry", "/childrenBudget") => Some(("codex_entries", "children_budget", "text")),
         ("codex-entry", "/notes") => Some(("codex_entries", "notes", "text")),
         ("event", "/title") => Some(("events", "title", "text")),
         ("event", "/note") => Some(("events", "note", "text")),
@@ -1005,27 +1001,17 @@ pub(crate) fn legacy_value_present(
         ("event", "/endTime") => Some(("events", "end_time", "present")),
         ("event", "/startMinute") => Some(("events", "start_minute", "present")),
         ("event", "/endMinute") => Some(("events", "end_minute", "present")),
-        ("event", "/startGranularity") => {
-            Some(("events", "start_granularity", "text"))
-        }
+        ("event", "/startGranularity") => Some(("events", "start_granularity", "text")),
         ("event", "/endGranularity") => Some(("events", "end_granularity", "text")),
         ("event", "/secret") => Some(("events", "secret", "boolean")),
         ("foreshadow", "/title") => Some(("foreshadows", "title", "text")),
         ("foreshadow", "/intent") => Some(("foreshadows", "intent", "text")),
         ("foreshadow", "/notes") => Some(("foreshadows", "notes", "text")),
         ("foreshadow", "/loadBearing") => Some(("foreshadows", "load_bearing", "text")),
-        ("foreshadow", "/payoffSceneId") => {
-            Some(("foreshadows", "payoff_scene_id", "text"))
-        }
-        ("foreshadow", "/payoffFromPos") => {
-            Some(("foreshadows", "payoff_from_pos", "present"))
-        }
-        ("foreshadow", "/payoffToPos") => {
-            Some(("foreshadows", "payoff_to_pos", "present"))
-        }
-        ("foreshadow", "/payoffConfirmed") => {
-            Some(("foreshadows", "payoff_confirmed", "boolean"))
-        }
+        ("foreshadow", "/payoffSceneId") => Some(("foreshadows", "payoff_scene_id", "text")),
+        ("foreshadow", "/payoffFromPos") => Some(("foreshadows", "payoff_from_pos", "present")),
+        ("foreshadow", "/payoffToPos") => Some(("foreshadows", "payoff_to_pos", "present")),
+        ("foreshadow", "/payoffConfirmed") => Some(("foreshadows", "payoff_confirmed", "boolean")),
         ("foreshadow", "/abandoned") => Some(("foreshadows", "abandoned", "boolean")),
         ("foreshadow", "/secret") => Some(("foreshadows", "secret", "boolean")),
         // Tree nodes predate Field Authority rows. An existing row is the

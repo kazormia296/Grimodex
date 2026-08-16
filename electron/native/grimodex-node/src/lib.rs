@@ -46,8 +46,7 @@ use grimodex_db::domain_writes::{
 use grimodex_db::editor_stickies;
 use grimodex_db::events::EventSink;
 use grimodex_db::foreshadow::{
-    self, ForeshadowCreatePayload, ForeshadowDeletePayload, ForeshadowPatch,
-    ForeshadowSetupPatch,
+    self, ForeshadowCreatePayload, ForeshadowDeletePayload, ForeshadowPatch, ForeshadowSetupPatch,
 };
 use grimodex_db::ime_export::{
     clear_all_exports, get_status as get_ime_export_status, refresh_project_export,
@@ -61,7 +60,12 @@ use grimodex_db::lint_terms::{
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
-    self, ListResumableRunsPayload, RunRefPayload, TemporalScenePatchPayload,
+    self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
+    ListResumableRunsPayload, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -728,20 +732,18 @@ where
             let context: grimodex_db::agent_writes::RendererCanonicalWriteContext =
                 from_wire(label, payload.clone())?;
             agent_writes::validate_renderer_authority_context(&context)?;
-            Some(
-                serde_json::to_value(context)
-                    .map_err(|error| AppError::Anyhow(error.into()))?,
-            )
+            Some(serde_json::to_value(context).map_err(|error| AppError::Anyhow(error.into()))?)
         } else {
             None
         };
         let dto: T = from_wire(label, payload)?;
         with_db_state(&state.ws, |db| {
             let result = match authority_context {
-                Some(context) => grimodex_db::change_events::with_renderer_authority_context(
-                    context,
-                    || f(db, dto),
-                )?,
+                Some(context) => {
+                    grimodex_db::change_events::with_renderer_authority_context(context, || {
+                        f(db, dto)
+                    })?
+                }
                 None => f(db, dto)?,
             };
             Ok(serde_json::to_string(&result)?)
@@ -773,13 +775,12 @@ where
         let dto: T = from_wire(label, payload.clone())?;
         let context = from_wire(label, payload)?;
         agent_writes::validate_renderer_authority_context(&context)?;
-        let context_json = serde_json::to_value(&context)
-            .map_err(|error| AppError::Anyhow(error.into()))?;
+        let context_json =
+            serde_json::to_value(&context).map_err(|error| AppError::Anyhow(error.into()))?;
         with_db_state(&state.ws, |db| {
-            grimodex_db::change_events::with_renderer_authority_context(
-                context_json,
-                || Ok(serde_json::to_string(&f(db, dto, context)?)?),
-            )
+            grimodex_db::change_events::with_renderer_authority_context(context_json, || {
+                Ok(serde_json::to_string(&f(db, dto, context)?)?)
+            })
         })
     })
     .await
@@ -4242,12 +4243,8 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                foreshadow::save_anchors_for_scene_with_renderer_authority(
-                    db,
-                    payload,
-                    context,
-                )
-                .map(serde_json::Value::Array)
+                foreshadow::save_anchors_for_scene_with_renderer_authority(db, payload, context)
+                    .map(serde_json::Value::Array)
             },
         )
         .await
@@ -4470,9 +4467,9 @@ impl Backend {
         run_blocking(move || {
             let payload: agent_writes::AgentUndoJournalPayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(&agent_writes::agent_undo_journal_impl(
-                    db, payload,
-                )?)?)
+                Ok(serde_json::to_string(
+                    &agent_writes::agent_undo_journal_impl(db, payload)?,
+                )?)
             })
         })
         .await
@@ -4509,11 +4506,7 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                agent_writes::agent_event_create_with_authority_impl(
-                    db,
-                    payload,
-                    Some(context),
-                )
+                agent_writes::agent_event_create_with_authority_impl(db, payload, Some(context))
             },
         )
         .await
@@ -4668,11 +4661,7 @@ impl Backend {
             "payload",
             payload,
             |db, payload, context| {
-                agent_writes::agent_event_create_with_authority_impl(
-                    db,
-                    payload,
-                    Some(context),
-                )
+                agent_writes::agent_event_create_with_authority_impl(db, payload, Some(context))
             },
         )
         .await
@@ -5109,6 +5098,315 @@ impl Backend {
             payload,
             narrative_extraction::narrative_extraction_redo_commit,
         )
+        .await
+    }
+
+    // ─────────────────────── Gate C2 Run Kind Policy: the five named
+    // operations replacing the old two-value
+    // rebuildNarrativeDependencyIndex(mode: verify|repair)
+    // (policies/narrative/narrative-run-kind-policy.json's apiSplit). Same
+    // toolchain caveat as the block above: not through `cargo check` or
+    // `napi build`, index.d.ts not regenerated. ───────────────────────────
+
+    /// `dependency-verify`: a read-only diagnostic across the Durable
+    /// Dependency Graph and Rebuildable Derived State for one project,
+    /// recorded under a real Run.
+    ///
+    /// The diagnostic itself writes nothing to the tables it reads; the
+    /// Run and its stored result exist so a later `dependency-repair` can
+    /// prove *which* Verify result its sealed plan came from (the policy's
+    /// `verify-first` precondition -- see `seal_repair_plan`). The response
+    /// therefore carries `runId`/`reportDigest` alongside the report, not
+    /// the bare report.
+    ///
+    /// Owns its own transactions internally, so this goes through the live
+    /// `Database` rather than `with_db_state`'s single-closure shape.
+    #[napi]
+    pub async fn verify_narrative_dependency_graph(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: VerifyNarrativeDependencyGraphPayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::run_dependency_verify_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            Ok(serde_json::to_string(&outcome).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// `dependency-rebuild-derived`: discards and recomputes every
+    /// Rebuildable Derived State row from the Durable Graph and current
+    /// Source state, for every Consumer in the project. Owns its own
+    /// transaction(s) internally (see the shared crate's own doc
+    /// comment), so this calls it directly against the live `Database`
+    /// rather than through `with_db_state`'s single-closure shape.
+    #[napi]
+    pub async fn rebuild_narrative_derived_state(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RebuildNarrativeDerivedStatePayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::rebuild_narrative_derived_state_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            let wire = match outcome {
+                RebuildDerivedStateOutcome::AlreadyRunning { run_id } => serde_json::json!({
+                    "outcome": "alreadyRunning",
+                    "runId": run_id,
+                }),
+                RebuildDerivedStateOutcome::Ran { run_id, summary } => serde_json::json!({
+                    "outcome": "ran",
+                    "runId": run_id,
+                    "consumersEvaluated": summary.consumers_evaluated,
+                    "edgesEvaluated": summary.edges_evaluated,
+                }),
+            };
+            Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Read-only: status of the most recent Legacy Dependency Backfill Run
+    /// for one project, if any.
+    #[napi]
+    pub async fn get_narrative_backfill_status(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: GetNarrativeBackfillStatusPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let status = db.with_conn(|conn| {
+                    narrative_extraction::get_backfill_status_for_project(conn, &dto.project_id)
+                })?;
+                Ok(serde_json::to_string(&status)?)
+            })
+        })
+        .await
+    }
+
+    /// Manual retry for Legacy Dependency Backfill
+    /// (`dependency-backfill`'s `manualRetryRole:
+    /// failure-recovery-only`) -- the automatic post-open bootstrap
+    /// trigger already retries on the next Workspace open when a prior
+    /// attempt failed (a `failed` Run is not reused); this triggers that
+    /// same retry immediately, without waiting for a reopen. A no-op
+    /// (`outcome: "alreadyRun"`) when the project already has a
+    /// `pending`/`running`/`completed` Backfill Run -- there is nothing
+    /// to retry.
+    #[napi]
+    pub async fn retry_narrative_legacy_backfill(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RetryNarrativeLegacyBackfillPayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            let wire = match outcome {
+                LegacyBackfillBootstrapOutcome::AlreadyRun { run_id } => serde_json::json!({
+                    "outcome": "alreadyRun",
+                    "runId": run_id,
+                }),
+                LegacyBackfillBootstrapOutcome::Ran { run_id, summary } => serde_json::json!({
+                    "outcome": "ran",
+                    "runId": run_id,
+                    "epochCreated": summary.epoch_created,
+                    "contributionsCreated": summary.contributions_created,
+                    "edgesCreated": summary.edges_created,
+                    "applicationsWithoutRunId": summary.applications_without_run_id,
+                }),
+            };
+            Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// `dependency-repair`, manual-only. `apply: false` (the default)
+    /// seals a repair plan against the project's *current* Semantic
+    /// Epoch and returns it as a preview -- the policy's
+    /// `change-count-preview` precondition -- without executing
+    /// anything. `apply: true` executes: `planDigest` must match the
+    /// digest a preview call just returned (binds the confirmation to
+    /// the exact plan a human saw, not a blind re-seal that could differ
+    /// if the Durable Graph changed in between) and `leaseOwner` claims
+    /// the exclusive Repair lease. Every precondition failure
+    /// (`NEX_REPAIR_*`) is a typed, `?`-propagated error from the shared
+    /// crate or an explicit one constructed here -- never a silent
+    /// fallback.
+    #[napi]
+    pub async fn repair_narrative_dependency_declarations(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RepairNarrativeDependencyDeclarationsPayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let db = authority.db();
+
+            // Preview seals a plan to show the human what would change.
+            // Apply must NOT start by sealing: a retry whose first attempt
+            // succeeded but whose response was lost would re-seal against
+            // an already-repaired graph and fail, never reaching the stored
+            // outcome. `..._for_request` resolves the request first.
+            if !dto.apply {
+                let current_epoch_id = db
+                    .with_conn(|conn| {
+                        narrative_extraction::get_current_epoch(conn, &dto.project_id)
+                    })?
+                    .ok_or_else(|| {
+                        AppError::Anyhow(anyhow::anyhow!(
+                            "NEX_REPAIR_NO_EPOCH: project '{}' has no Semantic Epoch",
+                            dto.project_id
+                        ))
+                    })?
+                    .id;
+                let plan = db.with_conn(|conn| {
+                    narrative_extraction::seal_repair_plan(
+                        conn,
+                        &dto.project_id,
+                        &dto.verify_run_id,
+                        &current_epoch_id,
+                    )
+                })?;
+                let preview = serde_json::json!({
+                    "mode": "preview",
+                    "plan": plan,
+                });
+                return Ok(serde_json::to_string(&preview).map_err(anyhow::Error::from)?);
+            }
+
+            let Some(plan_digest) = dto.plan_digest.as_deref() else {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_REPAIR_PLAN_DIGEST_REQUIRED: planDigest is required when apply is true"
+                )));
+            };
+            let Some(lease_owner) = dto.lease_owner.as_deref() else {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_REPAIR_LEASE_OWNER_REQUIRED: leaseOwner is required when apply is true"
+                )));
+            };
+
+            let workspace_path = active_workspace_path(&state.ws)?;
+            let outcome =
+                narrative_extraction::repair_narrative_dependency_declarations_for_request(
+                    db,
+                    &workspace_path,
+                    &dto.project_id,
+                    &dto.verify_run_id,
+                    plan_digest,
+                    lease_owner,
+                    true,
+                    &dto.request_id,
+                    &dto.actor_id,
+                )?;
+            let applied = serde_json::json!({
+                "mode": "applied",
+                "outcome": outcome,
+            });
+            Ok(serde_json::to_string(&applied).map_err(anyhow::Error::from)?)
+        })
+        .await
+    }
+
+    /// Set (upsert) a Maintenance Attention disposition. Never touches the
+    /// Change Feed: `narrative_maintenance_attention` is durable,
+    /// non-epoch-bound, `backflowPolicy: "forbid"` user state.
+    #[napi]
+    pub async fn narrative_maintenance_attention_set(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceAttentionSetPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let disposition = AttentionDisposition::try_from(dto.disposition.as_str())?;
+                let set_at = grimodex_core::now_rfc3339_millis();
+                // Caller-owned transaction: the OCC read and the write must
+                // not be separable, or a racing window could slip between
+                // them and the version check would prove nothing.
+                let outcome = narrative_extraction::set_attention(
+                    db,
+                    narrative_extraction::SetAttentionRequest {
+                        project_id: &dto.project_id,
+                        finding_key: &dto.finding_key,
+                        disposition,
+                        material_basis_digest: &dto.material_basis_digest,
+                        snoozed_until: dto.snoozed_until.as_deref(),
+                        set_at: &set_at,
+                        actor_id: &dto.actor_id,
+                        request_id: &dto.request_id,
+                        reason: dto.reason.as_deref(),
+                        expected_version: dto.expected_version,
+                    },
+                )?;
+                Ok(serde_json::to_string(&outcome)?)
+            })
+        })
+        .await
+    }
+
+    /// Clear a Maintenance Attention disposition under the caller's OCC
+    /// token. Clearing an absent row is a no-op success only when the caller
+    /// expected it to be absent (`expectedVersion: 0`); a row that has moved
+    /// on since the caller read it fails with
+    /// `NEX_ATTENTION_VERSION_CONFLICT` rather than being deleted silently.
+    #[napi]
+    pub async fn narrative_maintenance_attention_clear(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceAttentionClearPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let outcome = narrative_extraction::clear_attention(
+                    db,
+                    &dto.project_id,
+                    &dto.finding_key,
+                    &dto.actor_id,
+                    &dto.request_id,
+                    dto.expected_version,
+                )?;
+                Ok(serde_json::to_string(&outcome)?)
+            })
+        })
+        .await
+    }
+
+    /// Read-only: assemble the Maintenance Inbox for one project as of now.
+    #[napi]
+    pub async fn narrative_maintenance_inbox_list(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: NarrativeMaintenanceInboxListPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let now = grimodex_core::now_rfc3339_millis();
+                let entries = db.with_conn(|conn| {
+                    narrative_extraction::build_maintenance_inbox(conn, &dto.project_id, &now)
+                })?;
+                Ok(serde_json::to_string(&entries)?)
+            })
+        })
         .await
     }
 

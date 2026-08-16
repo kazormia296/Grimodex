@@ -1,6 +1,25 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createBrowserMock } from "./browser-mock";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createBrowserMock, type PersistentBrowserMock } from "./browser-mock";
+
+// Every createBrowserMock() allocates a full sql.js database inside the
+// ASM.js build's fixed heap. Left open they accumulate across the file and
+// eventually abort the whole suite with Aborted(OOM) -- the same
+// `owned` + afterEach discipline browser-mock.ai-audit.test.ts already
+// uses. close() is idempotent, so tests that close explicitly still work.
+const owned: PersistentBrowserMock[] = [];
+
+afterEach(() => {
+  while (owned.length > 0) owned.pop()?.close();
+});
+
+async function createOwnedMock(
+  ...args: Parameters<typeof createBrowserMock>
+): Promise<PersistentBrowserMock> {
+  const mock = await createBrowserMock(...args);
+  owned.push(mock);
+  return mock;
+}
 
 function browserAuditContext(executionId: string) {
   return {
@@ -78,7 +97,7 @@ describe("BrowserMock web AI runtime contract", () => {
       "grimodex:global-settings",
       JSON.stringify(legacySettings),
     );
-    const mock = await createBrowserMock();
+    const mock = await createOwnedMock();
 
     const normalized = await mock.invoke<typeof legacySettings>(
       "get_global_settings",
@@ -112,7 +131,7 @@ describe("BrowserMock web AI runtime contract", () => {
       blocks: [{ type: "text", content: "local response" }],
       stopReason: "end_turn",
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest,
       aiTransport: { complete },
     });
@@ -162,7 +181,7 @@ describe("BrowserMock web AI runtime contract", () => {
       stopReason: "end_turn",
     });
     const listModels = vi.fn().mockResolvedValue([]);
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete, listModels },
     });
@@ -208,7 +227,7 @@ describe("BrowserMock web AI runtime contract", () => {
     const listModels = vi
       .fn()
       .mockResolvedValue([{ id: "qwen3:8b", name: "qwen3:8b" }]);
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest,
       aiTransport: { complete, listModels },
     });
@@ -258,7 +277,7 @@ describe("BrowserMock web AI runtime contract", () => {
       blocks: [{ type: "text", content: "sakana response" }],
       stopReason: "end_turn",
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete },
     });
@@ -297,7 +316,7 @@ describe("BrowserMock web AI runtime contract", () => {
       inputTokens: 4,
       outputTokens: 2,
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest,
       aiTransport: { complete },
     });
@@ -334,7 +353,7 @@ describe("BrowserMock web AI runtime contract", () => {
 
   it("does not reach the provider when consent authorization fails", async () => {
     const complete = vi.fn();
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi
         .fn()
         .mockRejectedValue(new Error("ai-data-consent-required")),
@@ -364,7 +383,7 @@ describe("BrowserMock web AI runtime contract", () => {
         return Response.json({ data: [] });
       }),
     );
-    const mock = await createBrowserMock({ authorizeAiRequest });
+    const mock = await createOwnedMock({ authorizeAiRequest });
     await mock.invoke("save_api_key", {
       provider: "openai",
       key: "disposable-test-key",
@@ -396,7 +415,7 @@ describe("BrowserMock web AI runtime contract", () => {
         Response.json({ choices: [{ message: { content: "Agent OK" } }] }),
       );
     vi.stubGlobal("fetch", fetchMock);
-    const mock = await createBrowserMock({ authorizeAiRequest });
+    const mock = await createOwnedMock({ authorizeAiRequest });
     await mock.invoke("save_ai_settings", {
       settings: {
         provider: "ollama",
@@ -461,7 +480,7 @@ describe("BrowserMock web AI runtime contract", () => {
         transportTerminationObserved: true,
       };
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
     });
@@ -523,7 +542,7 @@ describe("BrowserMock web AI runtime contract", () => {
         sink.done({ stopReason: "end_turn" });
       },
     );
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream },
     });
@@ -574,7 +593,7 @@ describe("BrowserMock web AI runtime contract", () => {
       abortCommandAcknowledged: true as const,
       transportTerminationObserved: false,
     }));
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest,
       aiTransport: { complete: vi.fn(), stream, abort: transportAbort },
     });
@@ -625,7 +644,7 @@ describe("BrowserMock web AI runtime contract", () => {
       abortCommandAcknowledged: true as const,
       transportTerminationObserved: false,
     }));
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort: transportAbort },
     });
@@ -674,7 +693,7 @@ describe("BrowserMock web AI runtime contract", () => {
       release();
       throw new Error("Authorization: Bearer must-not-surface");
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
     });
@@ -742,7 +761,7 @@ describe("BrowserMock web AI runtime contract", () => {
         transportTerminationObserved: true,
       };
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
     });
@@ -854,7 +873,7 @@ describe("BrowserMock web AI runtime contract", () => {
         transportTerminationObserved: true,
       };
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
     });
@@ -926,7 +945,7 @@ describe("BrowserMock web AI runtime contract", () => {
         transportTerminationObserved: true,
       };
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream, abort },
     });
@@ -979,7 +998,7 @@ describe("BrowserMock web AI runtime contract", () => {
         throw new Error("Authorization: Bearer must-not-surface");
       },
     );
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: { complete: vi.fn(), stream },
     });
@@ -1025,7 +1044,7 @@ describe("BrowserMock web AI runtime contract", () => {
       blocks: [{ type: "text", content: "BYOK agent response" }],
       stopReason: "end_turn",
     });
-    const mock = await createBrowserMock({
+    const mock = await createOwnedMock({
       authorizeAiRequest: vi.fn().mockResolvedValue(undefined),
       aiTransport: {
         complete: vi.fn(),

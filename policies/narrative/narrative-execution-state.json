@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-execution-state",
+  "entities": {
+    "run": {
+      "statuses": [
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "cancelled",
+        "superseded"
+      ],
+      "terminalStatuses": ["completed", "failed", "cancelled", "superseded"],
+      "derivedView": {
+        "pending": { "phase": "queued", "outcome": null },
+        "running": { "phase": "running", "outcome": null },
+        "completed": { "phase": "terminal", "outcome": "succeeded" },
+        "failed": { "phase": "terminal", "outcome": "failed" },
+        "cancelled": { "phase": "terminal", "outcome": "cancelled" },
+        "superseded": { "phase": "terminal", "outcome": "superseded" }
+      }
+    },
+    "task": {
+      "statuses": ["queued", "running", "completed", "failed", "cancelled"],
+      "terminalStatuses": ["completed", "failed", "cancelled"],
+      "derivedView": {
+        "queued": { "phase": "queued", "outcome": null },
+        "running": { "phase": "running", "outcome": null },
+        "completed": { "phase": "terminal", "outcome": "succeeded" },
+        "failed": { "phase": "terminal", "outcome": "failed" },
+        "cancelled": { "phase": "terminal", "outcome": "cancelled" }
+      }
+    },
+    "attempt": {
+      "statuses": ["running", "completed", "failed"],
+      "terminalStatuses": ["completed", "failed"],
+      "derivedView": {
+        "running": { "phase": "running", "outcome": null },
+        "completed": { "phase": "terminal", "outcome": "succeeded" },
+        "failed": { "phase": "terminal", "outcome": "failed" }
+      }
+    }
+  },
+  "runSupersedeCascade": {
+    "task": {
+      "fromStatuses": ["queued", "running"],
+      "toStatus": "cancelled"
+    },
+    "attempt": {
+      "fromStatuses": ["running"],
+      "toStatus": "failed",
+      "failureCode": "NEX_RUN_SUPERSEDED",
+      "retryDisposition": "superseded"
+    }
+  },
+  "crossEntityInvariant": "no single status enum is shared across run, task, and attempt; each entity owns its own vocabulary and CHECK constraint"
+}

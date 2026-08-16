@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-finding-contract",
+  "reasonCodes": [
+    "source-revision-changed",
+    "source-missing",
+    "evidence-overlap",
+    "context-overlap",
+    "exact-content-relocated",
+    "quote-not-found",
+    "quote-ambiguous",
+    "read-set-drift",
+    "normalizer-incompatible",
+    "component-incompatible",
+    "target-modified"
+  ],
+  "unknownReasonCodePolicy": "fail-closed",
+  "observationStorageClass": "rebuildable-derived-state",
+  "epochBinding": "required",
+  "freshnessSnapshotPolicy": "diagnostic-only",
+  "currentFreshnessLookup": "narrative-consumer-freshness",
+  "negativeFixture": "editing a Finding Observation row alone must not change the current Freshness shown in the Maintenance Inbox; only narrative_consumer_freshness governs the current value"
+}

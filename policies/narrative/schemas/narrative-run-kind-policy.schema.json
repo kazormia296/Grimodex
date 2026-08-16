@@ -1,0 +1,291 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-run-kind-policy-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "principle",
+    "runKinds",
+    "apiSplit",
+    "cutover"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "narrative-run-kind-policy" },
+    "principle": { "type": "string", "minLength": 1 },
+    "runKinds": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/runKindPolicy" }
+    },
+    "apiSplit": {
+      "type": "object",
+      "required": ["replaces", "reason", "operations"],
+      "properties": {
+        "replaces": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "operations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "cutover": {
+      "type": "object",
+      "required": [
+        "gate",
+        "requiredForCanonicalCutover",
+        "beforeCutover",
+        "afterCutover",
+        "editingNeverBlockedByCutoverReadiness",
+        "uiDegradationWhenNotReady"
+      ],
+      "properties": {
+        "gate": { "const": "C2-Z" },
+        "requiredForCanonicalCutover": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "beforeCutover": {
+          "type": "object",
+          "required": ["freshnessAuthority", "genericGraphRole"],
+          "properties": {
+            "freshnessAuthority": { "const": "legacy" },
+            "genericGraphRole": { "const": "shadow" }
+          },
+          "additionalProperties": false
+        },
+        "afterCutover": {
+          "type": "object",
+          "required": ["freshnessAuthority"],
+          "properties": {
+            "freshnessAuthority": { "const": "generic-consumer-freshness" }
+          },
+          "additionalProperties": false
+        },
+        "editingNeverBlockedByCutoverReadiness": { "const": true },
+        "uiDegradationWhenNotReady": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "runKindPolicy": {
+      "type": "object",
+      "required": [
+        "runKind",
+        "existingRunKindColumnValue",
+        "purpose",
+        "trigger",
+        "sameWorkKeyReuse",
+        "epochBound",
+        "cursorBound",
+        "periodic",
+        "manualRetry",
+        "writes",
+        "adminCommands",
+        "implementationStatus"
+      ],
+      "properties": {
+        "runKind": {
+          "enum": [
+            "dependency-backfill",
+            "dependency-verify",
+            "dependency-rebuild-derived",
+            "dependency-repair"
+          ]
+        },
+        "existingRunKindColumnValue": {
+          "anyOf": [{ "type": "null" }, { "type": "string", "minLength": 1 }]
+        },
+        "purpose": { "type": "string", "minLength": 1 },
+        "trigger": {
+          "enum": [
+            "automatic-once-after-schema-upgrade",
+            "automatic-on-trigger-event",
+            "automatic-when-derived-state-absent-or-invalid",
+            "manual-only"
+          ]
+        },
+        "triggerDetail": { "type": "string", "minLength": 1 },
+        "triggerEvents": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "manualTriggerAllowed": { "type": "boolean" },
+        "sameWorkKeyReuse": {
+          "enum": [
+            "reuse-running-and-completed",
+            "reuse-running-only",
+            "no-automatic-reuse-decision"
+          ]
+        },
+        "sameRequestIdReuse": { "const": "idempotent-replay" },
+        "completedRunManualRepeat": { "type": "boolean" },
+        "completedRunReuseNote": { "type": "string", "minLength": 1 },
+        "skipReRunWhen": { "type": "string", "minLength": 1 },
+        "epochBound": { "const": true },
+        "cursorBound": { "const": false },
+        "periodic": { "const": false },
+        "manualRetry": {
+          "anyOf": [{ "type": "boolean" }, { "type": "string", "minLength": 1 }]
+        },
+        "manualRetryRole": { "type": "string", "minLength": 1 },
+        "manualRetryNote": { "type": "string", "minLength": 1 },
+        "writes": {
+          "enum": [
+            "durable-graph",
+            "rebuildable-state-only",
+            "diagnostics-only"
+          ]
+        },
+        "writesAllowed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbidSideEffectRepair": { "type": "boolean" },
+        "forbiddenWrites": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "dualWriteOrdering": { "type": "string", "minLength": 1 },
+        "sealedParameters": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "duringBackfillProductBehavior": {
+          "type": "object",
+          "required": [
+            "editingBlocked",
+            "freshnessReadAuthority",
+            "genericGraphRole",
+            "onFailure"
+          ],
+          "properties": {
+            "editingBlocked": { "const": false },
+            "freshnessReadAuthority": { "const": "legacy" },
+            "genericGraphRole": { "const": "shadow-building" },
+            "onFailure": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        },
+        "autoRetryableFailureClasses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "manualOnlyFailureClasses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "manualOnlyFailureCode": {
+          "type": "string",
+          "pattern": "^NEX_[A-Z0-9_]+$"
+        },
+        "verifiesDurableGraph": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "verifiesRebuildableState": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "rebuildableTargets": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredPreconditions": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "allowedRepairs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbiddenRepairs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "unrecoverableDisposition": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "adminCommands": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "implementationStatus": {
+          "type": "object",
+          "description": "Whether this Run Kind's declared trigger is actually wired in the shipping runtime. Declared per Run Kind so the contract cannot silently describe a future state as if it were live; validate-run-kind-policy.mjs cross-checks it against the real Rust call graph in both directions.",
+          "required": ["state", "productionEntryPoints"],
+          "properties": {
+            "state": { "enum": ["wired", "unwired-blocked"] },
+            "triggerSymbol": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Rust function an automatic trigger must call for this Run Kind to count as wired. Required when trigger is automatic-*."
+            },
+            "productionEntryPoints": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "How this Run Kind can actually be started today."
+            },
+            "blockedReason": { "type": "string", "minLength": 1 },
+            "blockedOn": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

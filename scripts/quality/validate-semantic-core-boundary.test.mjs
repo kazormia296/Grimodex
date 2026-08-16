@@ -61,6 +61,11 @@ function minimalFixtureRoot() {
         requiredControls: ["semantic-epoch-event"],
         forbiddenCallers: [],
       },
+      {
+        id: "attention-typed-writer",
+        requiredControls: ["typed-writer"],
+        forbiddenCallers: ["background-maintenance"],
+      },
     ],
   });
   writeJson(root, "policies/narrative/semantic-state-vocabulary.json", {
@@ -85,6 +90,15 @@ function minimalFixtureRoot() {
       "stale",
       "not-applicable",
     ],
+    contributionTargetStates: [
+      "unchanged",
+      "modified",
+      "missing",
+      "superseded",
+      "undone",
+      "not-applicable",
+    ],
+    maintenanceOwnershipStates: ["maintained", "user-owned", "detached"],
   });
   writeJson(root, "policies/narrative/semantic-core-authorities.json", {
     schemaVersion: 1,
@@ -159,7 +173,7 @@ function minimalFixtureRoot() {
   });
   writeFileSync(
     path.join(root, "src-tauri/crates/grimodex-core/src/lib.rs"),
-    "pub const SCHEMA_VERSION: i32 = 22;\n",
+    "pub const SCHEMA_VERSION: i32 = 23;\n",
   );
   mkdirSync(path.join(root, "electron/shared"), { recursive: true });
   writeFileSync(
@@ -186,7 +200,7 @@ describe("validate-semantic-core-boundary", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
-    assert.equal(result.schemaVersion, 22);
+    assert.equal(result.schemaVersion, 27);
   });
 
   it("fails closed for an unknown route and a forbidden interpreter import", () => {
@@ -376,6 +390,56 @@ describe("validate-semantic-core-boundary", () => {
           "semanticBoundary required scan root is missing or not a directory: electron/main",
         ),
       ),
+    );
+  });
+
+  it("accepts contributionTargetStates and maintenanceOwnershipStates when both are fully populated", () => {
+    const root = minimalFixtureRoot();
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      !result.errors.some((error) =>
+        error.includes("contributionTargetStates"),
+      ),
+      `unexpected contributionTargetStates error: ${JSON.stringify(result.errors)}`,
+    );
+    assert.ok(
+      !result.errors.some((error) =>
+        error.includes("maintenanceOwnershipStates"),
+      ),
+      `unexpected maintenanceOwnershipStates error: ${JSON.stringify(result.errors)}`,
+    );
+    assert.ok(
+      !result.errors.some((error) => /mixed across axes/i.test(error)),
+      `unexpected axis overlap error: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("fails closed when contributionTargetStates is missing one of the six Rust states", () => {
+    const root = minimalFixtureRoot();
+    const vocabulary = path.join(
+      root,
+      "policies/narrative/semantic-state-vocabulary.json",
+    );
+    const parsed = JSON.parse(readFileSync(vocabulary, "utf8"));
+    parsed.contributionTargetStates = [
+      "unchanged",
+      "modified",
+      "missing",
+      "superseded",
+      "undone",
+      // "not-applicable" intentionally omitted
+    ];
+    writeFileSync(vocabulary, JSON.stringify(parsed));
+
+    const result = validateSemanticCoreBoundary({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("contributionTargetStates") &&
+          error.includes("not-applicable"),
+      ),
+      `expected a missing-value error for contributionTargetStates: ${JSON.stringify(result.errors)}`,
     );
   });
 });

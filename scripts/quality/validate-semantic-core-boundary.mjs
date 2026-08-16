@@ -10,7 +10,23 @@ const REPO_ROOT = path.resolve(
   "../..",
 );
 
-export const EXPECTED_SCHEMA_VERSION = 22;
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy) reviewed: the new
+// narrative_semantic_index_metadata table's columns match
+// semantic-core-authorities.json's existing "search-generation" concern
+// and semanticIndexAllowedFields verbatim; narrative_maintenance_repair_leases
+// is operational lock state (like task_leases/workspace_lease), not semantic
+// content, so it stays outside this authority matrix by the same convention.
+// Neither warranted a concern-matrix change.
+// SCHEMA_VERSION 25 (Attention OCC / request identity / actor) reviewed:
+// narrative_maintenance_attention's new version / request_id /
+// payload_digest / actor_id / reason columns are concurrency control and
+// provenance, not semantic content. Attention remains durable user state
+// with backflowPolicy forbid and stays registered under EXCLUSION_REASONS
+// as non-backflow-invariant, so it is still not a Freshness or semantic
+// authority and the concern matrix is unchanged. The dropped nullable
+// set_by is superseded by the NOT NULL actor_id, which narrows rather than
+// widens what may be written.
+export const EXPECTED_SCHEMA_VERSION = 27;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -35,6 +51,7 @@ export const AUTHORITY_ROUTE_IDS = Object.freeze([
   "import-apply",
   "history-replay",
   "restore-or-migration",
+  "attention-typed-writer",
 ]);
 
 const REQUIRED_ROUTE_CONTROLS = Object.freeze({
@@ -87,6 +104,16 @@ const REQUIRED_ROUTE_CONTROLS = Object.freeze({
     "semantic-epoch-event",
     "full-rebuild-marker",
   ],
+  // Staying out of the Change Feed says nothing about whether two windows
+  // may silently overwrite each other's decision. SCHEMA 25 gave this route
+  // real concurrency control, and these entries stop it being narrowed back
+  // to a bare typed-writer without the gate noticing.
+  "attention-typed-writer": [
+    "typed-writer",
+    "occ",
+    "stable-request-id",
+    "actor-context",
+  ],
 });
 
 const REQUIRED_STATE_FIELDS = Object.freeze([
@@ -96,6 +123,31 @@ const REQUIRED_STATE_FIELDS = Object.freeze([
   "buildActions",
   "componentCompatibility",
   "projectionApplicationStates",
+]);
+
+// Gate C2 Lane L: Application field-contribution bookkeeping
+// (`ContributionTargetState` in
+// `src-tauri/crates/grimodex-db/src/narrative_extraction/application_contributions.rs`)
+// and the not-yet-implemented Maintenance ownership axis. These are
+// deliberately NOT folded into REQUIRED_STATE_FIELDS above: that constant
+// drives the review/build/reconciliation overlap map in
+// `validateStateVocabulary`, and mixing Lane L's axes into it would let a
+// rename on either side silently change what the original six-axis overlap
+// check tolerates. Lane L gets its own required-values check and its own
+// overlap check, see `validateContributionAxes`.
+const REQUIRED_CONTRIBUTION_TARGET_STATES = Object.freeze([
+  "unchanged",
+  "modified",
+  "missing",
+  "superseded",
+  "undone",
+  "not-applicable",
+]);
+
+const REQUIRED_MAINTENANCE_OWNERSHIP_STATES = Object.freeze([
+  "maintained",
+  "user-owned",
+  "detached",
 ]);
 
 const REQUIRED_DISCLOSURE_RULES = Object.freeze([
@@ -150,6 +202,7 @@ const EXPECTED_ALLOWED_CALLERS = Object.freeze({
     "migration-runner",
     "integrity-repair",
   ],
+  "attention-typed-writer": ["human-ui"],
 });
 
 const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
@@ -161,6 +214,7 @@ const EXPECTED_CONDITIONAL_CONTROLS = Object.freeze({
   "import-apply": [],
   "history-replay": [],
   "restore-or-migration": [],
+  "attention-typed-writer": [],
 });
 
 // These are the small Native typed-writer bridges that intentionally call
@@ -310,7 +364,7 @@ function validateRouteRegistry(registry, errors) {
     registry.routes.length !== AUTHORITY_ROUTE_IDS.length
   ) {
     errors.push(
-      "mutation authority route registry must define exactly six routes",
+      `mutation authority route registry must define exactly ${AUTHORITY_ROUTE_IDS.length} routes`,
     );
     return new Map();
   }
@@ -565,6 +619,102 @@ function validateStateVocabulary(vocabulary, errors) {
   }
   if (!vocabulary.reconciliationSignals?.includes("needs-reconciliation")) {
     errors.push("reconciliationSignals must contain needs-reconciliation");
+  }
+}
+
+// Gate C2 Lane L: validates the two Application-contribution / Maintenance-
+// ownership axes registered alongside (but independent of) the original six
+// REQUIRED_STATE_FIELDS axes above. This intentionally does not reuse
+// `validateStateVocabulary`'s `values` map / `allowedOverlap` set — that
+// machinery stays scoped to the original six axes so a Lane L edit can never
+// silently widen or narrow what counts as an allowed overlap there. Instead
+// this runs its own lightweight required-values check plus a dedicated
+// cross-axis overlap check against the six existing axes.
+function validateContributionAxes(vocabulary, errors) {
+  if (!isObject(vocabulary)) return;
+
+  const checkRequiredValues = (field, required) => {
+    if (!Array.isArray(vocabulary[field]) || vocabulary[field].length === 0) {
+      errors.push(
+        `semantic state vocabulary ${field} must be a non-empty array`,
+      );
+      return;
+    }
+    for (const value of vocabulary[field]) {
+      if (!isNonEmptyString(value)) {
+        errors.push(`${field} contains an empty state value`);
+      }
+    }
+    const missing = required.filter(
+      (value) => !vocabulary[field].includes(value),
+    );
+    const extra = vocabulary[field].filter(
+      (value) => !required.includes(value),
+    );
+    if (missing.length > 0 || extra.length > 0) {
+      errors.push(
+        `semantic state vocabulary ${field} must contain exactly [${required.join(", ")}]` +
+          (missing.length > 0 ? `; missing: ${missing.join(", ")}` : "") +
+          (extra.length > 0 ? `; unexpected: ${extra.join(", ")}` : ""),
+      );
+    }
+  };
+
+  checkRequiredValues(
+    "contributionTargetStates",
+    REQUIRED_CONTRIBUTION_TARGET_STATES,
+  );
+  checkRequiredValues(
+    "maintenanceOwnershipStates",
+    REQUIRED_MAINTENANCE_OWNERSHIP_STATES,
+  );
+
+  // Cross-axis overlap check against the original six REQUIRED_STATE_FIELDS
+  // axes only (not against each other -- contributionTargetStates and
+  // maintenanceOwnershipStates share no values today).
+  const existingValues = new Map();
+  for (const field of REQUIRED_STATE_FIELDS) {
+    for (const value of vocabulary[field] ?? []) {
+      const fields = existingValues.get(value) ?? [];
+      fields.push(field);
+      existingValues.set(value, fields);
+    }
+  }
+
+  // Same word, deliberately different axis -- allowed the same way the
+  // pre-existing evidenceFreshness/projectionApplicationStates 'stale'
+  // overlap is allowed above:
+  //   - reviewStates/contributionTargetStates 'superseded': a Proposal being
+  //     superseded by a later one (review lifecycle) vs. a field write being
+  //     superseded by a later Application (contribution bookkeeping). See
+  //     the "distinct axis" doc comment on ContributionTargetState in
+  //     application_contributions.rs.
+  //   - contributionTargetStates/projectionApplicationStates 'undone' and
+  //     'not-applicable': Undo/Redo and Prepared Commit applicability are
+  //     one mechanism described from two different bookkeeping vantage
+  //     points (the projection row vs. the field-level contribution row for
+  //     the same Application), so the same terms recur by design.
+  // Any other collision is a real naming clash and must fail closed.
+  const allowedContributionOverlap = new Set([
+    "contributionTargetStates|reviewStates:superseded",
+    "contributionTargetStates|projectionApplicationStates:undone",
+    "contributionTargetStates|projectionApplicationStates:not-applicable",
+  ]);
+
+  for (const axis of [
+    "contributionTargetStates",
+    "maintenanceOwnershipStates",
+  ]) {
+    for (const value of vocabulary[axis] ?? []) {
+      const collidingFields = existingValues.get(value);
+      if (!collidingFields || collidingFields.length === 0) continue;
+      const key = [...collidingFields, axis].sort().join("|") + `:${value}`;
+      if (!allowedContributionOverlap.has(key)) {
+        errors.push(
+          `state vocabulary value '${value}' is mixed across axes: ${[...collidingFields, axis].join(", ")}`,
+        );
+      }
+    }
   }
 }
 
@@ -967,7 +1117,7 @@ function validateSchemaVersion(repoRoot, errors) {
   const version = match ? Number(match[1]) : null;
   if (version !== EXPECTED_SCHEMA_VERSION) {
     errors.push(
-      `C1.5 must not bump the workspace schema; expected SCHEMA_VERSION ${EXPECTED_SCHEMA_VERSION}, got ${version ?? "unknown"}`,
+      `workspace schema drifted from the version this semantic contract was last ratified against; expected SCHEMA_VERSION ${EXPECTED_SCHEMA_VERSION}, got ${version ?? "unknown"}`,
     );
   }
   return version;
@@ -1005,6 +1155,7 @@ export function validateSemanticCoreBoundary({
     "semantic state vocabulary",
   );
   validateStateVocabulary(vocabulary, errors);
+  validateContributionAxes(vocabulary, errors);
   const authorityMatrix = readJson(
     repoRoot,
     authorityMatrixPath,

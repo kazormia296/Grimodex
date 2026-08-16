@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
@@ -29,7 +30,8 @@ use super::detail_operations::{
     apply_detail_value_set_in_tx, parse_detail_value_set_payload, OP_KIND_DETAIL_VALUE_SET,
 };
 use super::field_authority::{
-    load_decision_authority, record_operation_field_authority, validate_operation_field_authority,
+    affected_fields, load_decision_authority, record_operation_field_authority,
+    validate_operation_field_authority,
 };
 use super::foreshadow_operations::{
     apply_create as apply_foreshadow_create, apply_patch as apply_foreshadow_patch,
@@ -1484,6 +1486,35 @@ pub fn narrative_extraction_apply_commit(
                 &now,
                 &commit_map,
             )?;
+
+            // Gate C2 Lane H (`application_contributions.rs`, wired in
+            // C2-T1): record which Application most recently touched which
+            // field, reusing the same `affected_fields` coverage table
+            // `record_operation_field_authority` above already relies on
+            // rather than re-deriving field ownership per operation kind a
+            // second, drifting way. `application_ids` is 1:1 with
+            // `payload.operations` by construction (both built from the
+            // same per-index `payload.applications` loop above).
+            // `Unchanged` is the correct initial `targetState`: this write
+            // just landed, so the field currently matches exactly what this
+            // Application applied; a later process (Undo/Redo, a
+            // superseding Application, a hand edit) is what would ever
+            // transition it away from `Unchanged`, not this commit itself.
+            for (operation, application_id) in payload.operations.iter().zip(&application_ids) {
+                for field in affected_fields(operation, &commit_map)? {
+                    let target_object_identity =
+                        format!("{}:{}", field.entity_kind, field.entity_id);
+                    record_contribution_in_tx(
+                        conn,
+                        &payload.project_id,
+                        application_id,
+                        &target_object_identity,
+                        &field.field_path,
+                        ContributionTargetState::Unchanged,
+                        &now,
+                    )?;
+                }
+            }
 
             let after_json = json!({
                 "entities": after_snapshots,

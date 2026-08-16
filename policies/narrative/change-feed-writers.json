@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "gateId": "gate-c1",
+  "operationFragments": ["policies/narrative/change-feed-operations/*.json"],
   "semanticBoundary": {
     "schemaVersion": 1,
     "scanRoots": [
@@ -4481,6 +4482,66 @@
         "transactionId"
       ],
       "canonical": { "origin": "mcp", "opType": "event.relation" }
+    },
+    {
+      "id": "narrative.maintenance-attention.set",
+      "authorityRoute": "attention-typed-writer",
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },
+      "reason": "Maintenance Attention is durable, non-epoch-bound user disposition (policies/narrative/maintenance-attention-contract.json: backflowPolicy forbid); it never appends to the Change Feed.",
+      "exclusionReason": "non-backflow-invariant",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+        "symbol": "set_attention_in_tx"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_maintenance_attention_set",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_maintenance_attention_set",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.maintenance-attention"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
+      "id": "narrative.maintenance-attention.clear",
+      "authorityRoute": "attention-typed-writer",
+      "controls": ["typed-writer", "occ", "stable-request-id", "actor-context"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "runtimeEvidence": { "status": "excluded", "reason": "non-backflow-invariant" },
+      "reason": "Clearing Maintenance Attention is the same durable, non-epoch-bound user disposition as set; it never appends to the Change Feed.",
+      "exclusionReason": "non-backflow-invariant",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
+        "symbol": "clear_attention_in_tx"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "narrative_maintenance_attention_clear",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "narrative_maintenance_attention_clear",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": ["narrative.maintenance-attention"],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
     }
   ]
 }

@@ -4,6 +4,9 @@
 
 Accepted — 2026-08-14（Gate C1.5）
 
+Amended — 2026-08-15（Gate C2, C2-T1 Transport Assembly）: added the
+`attention-typed-writer` route. See "Attention Typed Writer" below.
+
 This ADR ratifies the mutation authority boundary used by ADR 004 and ADR 005.
 It does not change the existing low-level `origin` field or introduce a new
 database table. The machine-readable contract is
@@ -41,7 +44,8 @@ type MutationAuthorityRoute =
   | "interpreter-projection"
   | "import-apply"
   | "history-replay"
-  | "restore-or-migration";
+  | "restore-or-migration"
+  | "attention-typed-writer";
 ```
 
 Unknown and unclassified routes fail closed.
@@ -116,6 +120,31 @@ they do not pretend to be a set of ordinary row-level mutations.
 `ai-apply` is intentionally ambiguous between the Interactive Agent Command
 and Interpreter Projection routes. Callers must provide `authorityRoute`
 explicitly; no canonical writer may infer a route from `ai-apply`.
+
+### Attention Typed Writer
+
+```text
+Human UI (Maintenance Inbox)
+  → Typed Writer
+  → narrative_maintenance_attention
+```
+
+None of the six routes above fit a Maintenance Attention disposition
+(`policies/narrative/maintenance-attention-contract.json`:
+`storageClass: "durable-user-state"`, `epochBinding: "none"`,
+`backflowPolicy: "forbid"`). Every existing route either requires OCC plus
+the canonical Change Event and Change Feed controls (Human Direct,
+Interactive Agent Command, Import, History Replay), the Proposal/Decision/
+Prepared Commit pipeline (Interpreter Projection), or is reserved for
+Restore/Migration/Integrity Repair. Attention is none of these: it is a
+single upsert or delete against one durable, non-epoch-bound row, with no
+OCC, no Proposal, and — by contract — no Change Feed emission at all.
+
+`attention-typed-writer` requires only the Typed Writer control. Only a
+Human UI caller (the Maintenance Inbox) may use it; Background Maintenance,
+the Reconciler, and idle schedulers are forbidden callers, matching
+`maintenance-attention-contract.json`'s negative fixture that Run publish,
+Finding Observation writes, and epoch rotation must never mutate these rows.
 
 ## Invariants
 

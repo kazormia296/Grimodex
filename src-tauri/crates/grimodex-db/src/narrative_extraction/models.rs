@@ -304,3 +304,109 @@ pub struct HumanFieldLockPayload {
 pub(crate) fn default_object_json() -> Value {
     Value::Object(Default::default())
 }
+
+// ─────────────────────── Gate C2-T1 Transport Assembly ───────────────────
+// Wire payloads for the C2 commands promoted from pub(crate) to pub during
+// Transport Assembly: Lane D's Attention typed writer and Lane O's
+// Maintenance Inbox read model.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionSetPayload {
+    pub project_id: String,
+    pub finding_key: String,
+    /// One of `AttentionDisposition::as_str()`'s three values
+    /// (`"snoozed"`/`"dismissed"`/`"flagged"`); validated by
+    /// `AttentionDisposition::try_from` in the N-API handler, not here, so
+    /// the fail-closed error path stays the same as every other Gate C2
+    /// disposition/reason-code string.
+    pub disposition: String,
+    pub material_basis_digest: String,
+    #[serde(default)]
+    pub snoozed_until: Option<String>,
+    /// Who is recording this disposition. Required (SCHEMA 25): the nullable
+    /// `setBy` this replaced let an Attention row exist with nobody
+    /// accountable for it.
+    pub actor_id: String,
+    /// Caller-supplied request identity. A retry carrying the same
+    /// `requestId` and the same decision is a replay, not a second decision.
+    pub request_id: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// OCC token: the `version` the caller believes the row is at, or `0`
+    /// when it believes no row exists yet.
+    pub expected_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceAttentionClearPayload {
+    pub project_id: String,
+    pub finding_key: String,
+    pub actor_id: String,
+    pub request_id: String,
+    pub expected_version: i64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NarrativeMaintenanceInboxListPayload {
+    pub project_id: String,
+}
+
+// ─────────────────────── Gate C2 Run Kind Policy IPC ───────────────────
+// Wire payloads for the five named operations
+// (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`)
+// replacing the old two-value `rebuildNarrativeDependencyIndex(mode:
+// verify|repair)` shape.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyNarrativeDependencyGraphPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildNarrativeDerivedStatePayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNarrativeBackfillStatusPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryNarrativeLegacyBackfillPayload {
+    pub project_id: String,
+}
+
+/// `apply: false` (default) seals and returns a repair plan preview
+/// without executing it -- the policy's `change-count-preview`
+/// precondition. `apply: true` executes: `plan_digest` must match the
+/// digest a preview call just returned (binds the confirmation to the
+/// exact plan the human saw, not a blind re-seal that could differ if
+/// the Durable Graph changed in between) and `lease_owner` identifies
+/// the caller claiming the exclusive Repair lease.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairNarrativeDependencyDeclarationsPayload {
+    pub project_id: String,
+    pub verify_run_id: String,
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    #[serde(default)]
+    pub lease_owner: Option<String>,
+    /// The policy's `stable-request-id` precondition. Together with the
+    /// sealed plan digest this makes a retry of an already-approved repair
+    /// replay instead of deactivating the same edges twice.
+    pub request_id: String,
+    /// Who approved this destructive operation. Recorded on the
+    /// `dependency-repair` Run as its audit identity.
+    pub actor_id: String,
+}

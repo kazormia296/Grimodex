@@ -1,0 +1,262 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-run-kind-policy",
+  "principle": "Migration and recomputation are the system's responsibility; correcting a meaningful durable declaration is a human's responsibility.",
+  "runKinds": [
+    {
+      "runKind": "dependency-backfill",
+      "existingRunKindColumnValue": "backfill",
+      "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
+      "trigger": "automatic-once-after-schema-upgrade",
+      "triggerDetail": "A post-open bootstrap step, not the SCHEMA migration transaction itself: the migration only creates tables/columns/indexes and leaves a backfill-required marker; Workspace open succeeds first, then bootstrap detects the marker and creates the Run.",
+      "sameWorkKeyReuse": "reuse-running-and-completed",
+      "epochBound": true,
+      "cursorBound": false,
+      "periodic": false,
+      "manualRetry": true,
+      "manualRetryRole": "failure-recovery-only",
+      "writes": "durable-graph",
+      "dualWriteOrdering": "Lane G/H dual-write to the Generic Graph is enabled before Backfill starts, so every Application created during Backfill is captured by the new writers, not lost to the Backfill's own snapshot.",
+      "sealedParameters": [
+        "projectId",
+        "runKind",
+        "semanticEpochId",
+        "legacySourceSchemaVersion",
+        "legacyHighWaterMark",
+        "targetGraphContractDigest",
+        "backfillAlgorithmVersion"
+      ],
+      "duringBackfillProductBehavior": {
+        "editingBlocked": false,
+        "freshnessReadAuthority": "legacy",
+        "genericGraphRole": "shadow-building",
+        "onFailure": [
+          "workspace-still-opens",
+          "body-still-editable",
+          "legacy-freshness-path-preserved",
+          "only-c2z-cutover-is-blocked"
+        ]
+      },
+      "autoRetryableFailureClasses": [
+        "sqlite-busy",
+        "process-interruption",
+        "app-shutdown",
+        "lease-timeout",
+        "transient-io-error"
+      ],
+      "manualOnlyFailureClasses": [
+        "cross-project-inconsistency",
+        "unknown-legacy-shape",
+        "contract-digest-mismatch",
+        "duplicate-identity-conflict",
+        "invalid-dependency-source",
+        "backfill-algorithm-invariant-violation"
+      ],
+      "manualOnlyFailureCode": "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+      "adminCommands": [
+        "retryNarrativeLegacyBackfill",
+        "getNarrativeBackfillStatus"
+      ],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "narrative_extraction_bootstrap_legacy_backfill",
+        "productionEntryPoints": ["retryNarrativeLegacyBackfill"],
+        "blockedReason": "The post-open bootstrap was wired and then removed: running it on the detached workspace-maintenance connection made every Workspace open a second writer, and a commit from a second connection fails the foreground's in-flight deferred transaction with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot retry. Because migrate seeds default-project, this fired on every open, including brand-new workspaces.",
+        "blockedOn": [
+          "run-the-backfill-on-the-live-workspace-authority-connection",
+          "or-make-domain-writes-deferred-transactions-immediate"
+        ]
+      }
+    },
+    {
+      "runKind": "dependency-verify",
+      "existingRunKindColumnValue": null,
+      "purpose": "Read-only diagnostic across the Durable Dependency Graph and the Rebuildable Derived State.",
+      "trigger": "automatic-on-trigger-event",
+      "triggerEvents": [
+        "legacy-backfill-completed",
+        "restore-semantic-epoch-rotation",
+        "migration-semantic-epoch-rotation",
+        "integrity-repair-completed",
+        "dependency-rule-or-normalizer-contract-digest-changed",
+        "before-c2z-cutover"
+      ],
+      "manualTriggerAllowed": true,
+      "sameWorkKeyReuse": "reuse-running-only",
+      "completedRunManualRepeat": true,
+      "skipReRunWhen": "same semantic epoch AND same graph contract AND same producer generation set AND the prior Verify already succeeded",
+      "epochBound": true,
+      "cursorBound": false,
+      "periodic": false,
+      "manualRetry": true,
+      "writes": "diagnostics-only",
+      "writesAllowed": [
+        "run-status",
+        "typed-diagnostic",
+        "finding-observation",
+        "verify-report-digest"
+      ],
+      "verifiesDurableGraph": [
+        "producer-and-generation-consistency",
+        "active-edge-duplicates",
+        "cross-project-edge",
+        "consumer-and-source-key-format",
+        "application-revision-artifact-references",
+        "dependency-set-digest",
+        "contribution-to-application-commit-correspondence",
+        "legacy-mirror-migration-parity"
+      ],
+      "verifiesRebuildableState": [
+        "edge-state-belongs-to-current-epoch",
+        "consumer-freshness-dependency-set-digest",
+        "finding-observation-belongs-to-current-epoch",
+        "cursor-and-feed-head-consistency",
+        "semantic-index-generation-correspondence"
+      ],
+      "forbidSideEffectRepair": true,
+      "adminCommands": ["verifyNarrativeDependencyGraph"],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "run_dependency_verify_for_project",
+        "productionEntryPoints": ["verifyNarrativeDependencyGraph"],
+        "blockedReason": "The Verify checks themselves are implemented and tested, but nothing subscribes them to the declared triggerEvents: no production caller fires Verify on backfill completion, Semantic Epoch rotation, integrity repair, or contract-digest change. Only the manual Admin IPC starts a Verify Run today.",
+        "blockedOn": ["c2-t2-trigger-event-subscription"]
+      }
+    },
+    {
+      "runKind": "dependency-rebuild-derived",
+      "existingRunKindColumnValue": "semantic-index-rebuild",
+      "purpose": "Discard and recompute Rebuildable Derived State from the Durable Graph, Source State, and Change Feed. Never touches Domain state or Durable Dependency declarations.",
+      "rebuildableTargets": [
+        "narrative_dependency_edge_states",
+        "narrative_consumer_freshness",
+        "narrative_maintenance_finding_observations",
+        "reanchor-candidates",
+        "semantic-index-generation-cache",
+        "freshness-evaluator-cursor-reservation"
+      ],
+      "trigger": "automatic-when-derived-state-absent-or-invalid",
+      "triggerEvents": [
+        "semantic-epoch-rotation",
+        "derived-table-row-missing",
+        "contract-version-mismatch",
+        "dependency-set-digest-mismatch",
+        "verify-reports-derived-rebuild-required",
+        "restore-completed",
+        "before-c2z-cutover"
+      ],
+      "manualTriggerAllowed": true,
+      "sameWorkKeyReuse": "reuse-running-only",
+      "completedRunReuseNote": "a completed Run is not reused for a new rebuild request; deleting derived state and then wanting to rebuild again must be able to run, not be short-circuited by a stale completed Run.",
+      "epochBound": true,
+      "cursorBound": false,
+      "periodic": false,
+      "manualRetry": true,
+      "writes": "rebuildable-state-only",
+      "forbiddenWrites": [
+        "codex",
+        "chronicle",
+        "foreshadow",
+        "application",
+        "proposal-decision",
+        "semantic-retraction",
+        "attention",
+        "domain-undo-journal"
+      ],
+      "adminCommands": ["rebuildNarrativeDerivedState"],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "rebuild_narrative_derived_state_for_project",
+        "productionEntryPoints": ["rebuildNarrativeDerivedState"],
+        "blockedReason": "The orchestrator is implemented and tested, but nothing detects the declared conditions and starts it: no production caller fires Rebuild-Derived on Semantic Epoch rotation, a missing derived row, a contract-version or dependency-set-digest mismatch, or a Verify report asking for it. Only the manual Admin IPC starts a Rebuild-Derived Run today.",
+        "blockedOn": ["c2-t2-derived-state-invalidation-detection"]
+      }
+    },
+    {
+      "runKind": "dependency-repair",
+      "existingRunKindColumnValue": null,
+      "purpose": "Human-triggered correction of Durable Dependency/Provenance declarations: narrative_dependency_edges, narrative_application_contributions, Producer generation, Application-to-Dependency correspondence, and an Artifact/Proposal-Revision Dependency Manifest.",
+      "trigger": "manual-only",
+      "sameRequestIdReuse": "idempotent-replay",
+      "sameWorkKeyReuse": "no-automatic-reuse-decision",
+      "epochBound": true,
+      "cursorBound": false,
+      "periodic": false,
+      "manualRetry": "crash-recovery-of-an-already-approved-sealed-plan-only",
+      "manualRetryNote": "resuming an approved sealed repair plan after a crash is recovery of an already-approved operation, not a new repair decision.",
+      "writes": "durable-graph",
+      "requiredPreconditions": [
+        "successful-verify-run-id",
+        "sealed-repair-plan-from-verify-result",
+        "repair-plan-digest",
+        "current-semantic-epoch-match",
+        "exclusive-workspace-lease",
+        "automatic-backup-or-snapshot",
+        "explicit-confirmation",
+        "stable-request-id",
+        "change-count-preview"
+      ],
+      "allowedRepairs": [
+        "edge-fully-reconstructible-from-durable-ledger",
+        "artifact-with-explicit-dependency-manifest",
+        "proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set",
+        "application-contribution-uniquely-derivable-from-commit-receipt",
+        "deactivate-duplicate-edge",
+        "supersede-a-clear-prior-generation"
+      ],
+      "forbiddenRepairs": [
+        "infer-dependency-from-payload-semantic-analysis",
+        "ai-completion-of-a-missing-dependency",
+        "select-an-ambiguous-target-path",
+        "modify-a-domain-field",
+        "rewrite-author-ownership",
+        "guess-an-evidence-range",
+        "re-adjudicate-semantic-truth"
+      ],
+      "unrecoverableDisposition": [
+        "detached",
+        "unknown",
+        "manual-review-required"
+      ],
+      "adminCommands": ["repairNarrativeDependencyDeclarations"],
+      "implementationStatus": {
+        "state": "wired",
+        "productionEntryPoints": ["repairNarrativeDependencyDeclarations"]
+      }
+    }
+  ],
+  "apiSplit": {
+    "replaces": "rebuildNarrativeDependencyIndex(mode: verify|repair)",
+    "reason": "a two-value mode parameter lets Background code accidentally call Repair; one named operation per Run Kind removes that possibility at the call site.",
+    "operations": [
+      "verifyNarrativeDependencyGraph",
+      "rebuildNarrativeDerivedState",
+      "repairNarrativeDependencyDeclarations",
+      "getNarrativeBackfillStatus",
+      "retryNarrativeLegacyBackfill"
+    ]
+  },
+  "cutover": {
+    "gate": "C2-Z",
+    "requiredForCanonicalCutover": [
+      "legacy-backfill-completed",
+      "current-epoch-verify-passed",
+      "no-unresolved-durable-graph-errors",
+      "derived-state-rebuild-completed",
+      "legacy-generic-parity-within-contract",
+      "no-active-backfill-or-repair-run"
+    ],
+    "beforeCutover": {
+      "freshnessAuthority": "legacy",
+      "genericGraphRole": "shadow"
+    },
+    "afterCutover": {
+      "freshnessAuthority": "generic-consumer-freshness"
+    },
+    "editingNeverBlockedByCutoverReadiness": true,
+    "uiDegradationWhenNotReady": [
+      "semantic-index-is-being-prepared",
+      "semantic-graph-requires-repair"
+    ]
+  }
+}

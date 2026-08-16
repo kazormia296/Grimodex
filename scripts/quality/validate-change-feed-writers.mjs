@@ -12,7 +12,7 @@
  * validator proved runtime atomicity by itself.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,6 +54,7 @@ const EXCLUSION_REASONS = new Set([
   "derived-state",
   "feed-self-write",
   "migration",
+  "non-backflow-invariant",
   "project-deletion",
   "snapshot-capture",
   "staging-only",
@@ -61,6 +62,87 @@ const EXCLUSION_REASONS = new Set([
   "untrusted-generic-sql",
   "workspace-import",
 ]);
+
+// Gate C2 lets each Wave lane own one operation-fragment file instead of
+// editing the single root manifest, so parallel lanes stop colliding on the
+// same JSON document. A fragment operation only ever lands with
+// coverageStatus "verified": there is no interim "declared" state for C2
+// operations on master, because the command, its N-API/Electron pair, and
+// its BrowserMock parity are supposed to land together at Transport
+// Assembly (C2-T1/T2).
+const OPERATION_FRAGMENT_GLOB_SUFFIX = "/*.json";
+
+function expandOperationFragmentGlob(repoRoot, pattern, errors) {
+  if (!pattern.endsWith(OPERATION_FRAGMENT_GLOB_SUFFIX)) {
+    errors.push(
+      `operationFragments pattern must end with '/*.json': ${pattern}`,
+    );
+    return [];
+  }
+  const relativeDir = pattern.slice(0, -OPERATION_FRAGMENT_GLOB_SUFFIX.length);
+  const dir = safeRepoPath(
+    repoRoot,
+    relativeDir,
+    `operationFragments pattern '${pattern}'`,
+    errors,
+  );
+  if (!dir || !existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".json"))
+    .sort()
+    .map((name) => path.join(dir, name));
+}
+
+function loadOperationFragments(repoRoot, manifest, errors) {
+  const patterns = manifest.operationFragments;
+  if (patterns === undefined) return [];
+  if (!Array.isArray(patterns) || patterns.some((p) => !nonEmptyString(p))) {
+    errors.push(
+      "operationFragments must be an array of non-empty glob strings",
+    );
+    return [];
+  }
+  const fragmentOperations = [];
+  for (const pattern of patterns) {
+    for (const filePath of expandOperationFragmentGlob(
+      repoRoot,
+      pattern,
+      errors,
+    )) {
+      const relativePath = path.relative(repoRoot, filePath);
+      const fragment = readJson(
+        filePath,
+        `change feed operation fragment ${relativePath}`,
+        errors,
+      );
+      if (!fragment) continue;
+      if (fragment.schemaVersion !== 1) {
+        errors.push(`${relativePath} schemaVersion must be 1`);
+        continue;
+      }
+      if (!nonEmptyString(fragment.owner)) {
+        errors.push(`${relativePath} must declare a non-empty owner`);
+        continue;
+      }
+      if (!Array.isArray(fragment.operations)) {
+        errors.push(`${relativePath} operations must be an array`);
+        continue;
+      }
+      for (const operation of fragment.operations) {
+        if (
+          isObject(operation) &&
+          operation.coverageStatus !== "verified"
+        ) {
+          errors.push(
+            `${relativePath} operation ${operation.id ?? "?"} must have coverageStatus verified; fragment operations only land with full Transport Assembly evidence, never as 'declared'`,
+          );
+        }
+        fragmentOperations.push(operation);
+      }
+    }
+  }
+  return fragmentOperations;
+}
 const TRANSACTION_IDENTITIES = [
   "projectId",
   "requestId",
@@ -803,6 +885,10 @@ export function validateChangeFeedWriters({
       knownRouteCount: knownRoutes.length,
     };
   }
+  manifest.operations = [
+    ...manifest.operations,
+    ...loadOperationFragments(repoRoot, manifest, errors),
+  ];
   if (!Array.isArray(registry)) {
     errors.push("protected writer registry must be an array");
     return {

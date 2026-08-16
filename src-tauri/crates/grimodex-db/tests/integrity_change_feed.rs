@@ -263,6 +263,29 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(counts, (1, 1, 5, 1));
+
+        // Gate C2 Lane A/N: Integrity Repair mints exactly one Semantic
+        // Epoch, even though repair_integrity was called three times above
+        // (first repair, idempotent replay, and a rejected occurredAt
+        // conflict that never reached the epoch-rotation call).
+        let epochs: Vec<(i64, String, Option<String>)> = conn
+            .prepare(
+                "SELECT epoch_number, reason, triggered_by_change_event_uid
+                   FROM narrative_semantic_epochs
+                  WHERE project_id = 'repair-p1'
+                  ORDER BY epoch_number ASC",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert_eq!(
+            epochs.len(),
+            1,
+            "the idempotent replay must not mint a second Epoch: {epochs:?}"
+        );
+        assert_eq!(epochs[0].0, 0);
+        assert_eq!(epochs[0].1, "migration");
+        assert_eq!(epochs[0].2.as_deref(), Some("repair-event-1"));
+
         let foreign_authorities: (i64, i64) = conn.query_row(
             "SELECT
                (SELECT COUNT(*) FROM chat_messages message
@@ -322,6 +345,15 @@ fn repair_integrity_feed_failure_rolls_back_domain_canonical_and_retry_ledger() 
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         assert_eq!(counts, (0, 0, 0));
+        let epoch_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = 'repair-p1'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            epoch_count, 0,
+            "a rolled-back repair must not leave a Semantic Epoch behind"
+        );
         Ok(())
     })
     .expect("verify complete rollback");

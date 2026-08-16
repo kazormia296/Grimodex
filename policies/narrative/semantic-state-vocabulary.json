@@ -40,6 +40,15 @@
     "stale",
     "not-applicable"
   ],
+  "contributionTargetStates": [
+    "unchanged",
+    "modified",
+    "missing",
+    "superseded",
+    "undone",
+    "not-applicable"
+  ],
+  "maintenanceOwnershipStates": ["maintained", "user-owned", "detached"],
   "separationRules": [
     ["accepted", "review"],
     ["stale", "evidenceFreshness"],

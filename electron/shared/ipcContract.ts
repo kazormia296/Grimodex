@@ -776,6 +776,17 @@ export interface NapiBackendLike {
   narrativeExtractionGetCommitStatus(payload: unknown): Promise<string>;
   narrativeExtractionUndoCommit(payload: unknown): Promise<string>;
   narrativeExtractionRedoCommit(payload: unknown): Promise<string>;
+  // Gate C2-T1: Attention typed writer / Maintenance Inbox read model
+  narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
+  narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
+  narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  // Gate C2 Run Kind Policy: the five named operations replacing the old
+  // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
+  verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
+  rebuildNarrativeDerivedState?(payload: unknown): Promise<string>;
+  getNarrativeBackfillStatus?(payload: unknown): Promise<string>;
+  retryNarrativeLegacyBackfill?(payload: unknown): Promise<string>;
+  repairNarrativeDependencyDeclarations?(payload: unknown): Promise<string>;
   // post_effect pure-db 7 コマンド
   listPostEffectRuns(
     projectId: string,
@@ -1066,6 +1077,223 @@ function requireNarrativeRuntimePolicySetPayload(
     genericImportEnabled: payload.genericImportEnabled,
     backgroundAiEnabled: payload.backgroundAiEnabled,
   };
+}
+
+const NARRATIVE_MAINTENANCE_ATTENTION_DISPOSITIONS = new Set([
+  "snoozed",
+  "dismissed",
+  "flagged",
+]);
+
+function requireNarrativeMaintenanceAttentionSetPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_attention_set";
+  const payload = requireRecord(args, "payload", command);
+  // setBy は actorId + requestId + expectedVersion（OCC）へ置換済み。
+  // 旧 wire を送ってきた renderer は unknown field で明示的に落とす。
+  const allowedKeys = new Set([
+    "projectId",
+    "findingKey",
+    "disposition",
+    "materialBasisDigest",
+    "snoozedUntil",
+    "actorId",
+    "requestId",
+    "reason",
+    "expectedVersion",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "findingKey", command);
+  const disposition = requireString(payload, "disposition", command);
+  if (!NARRATIVE_MAINTENANCE_ATTENTION_DISPOSITIONS.has(disposition)) {
+    throw new Error(
+      `invalid args \`disposition\` for command \`${command}\`: expected snoozed|dismissed|flagged`,
+    );
+  }
+  requireNonEmptyString(payload, "materialBasisDigest", command);
+  optionalString(payload, "snoozedUntil", command);
+  requireNonEmptyString(payload, "actorId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  optionalString(payload, "reason", command);
+  // OCC トークン: 0 = 行が未作成であることを期待、N = version N の行を期待。
+  requireNonNegativeSafeInteger(payload, "expectedVersion", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceAttentionClearPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_attention_clear";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "findingKey",
+    "actorId",
+    "requestId",
+    "expectedVersion",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "findingKey", command);
+  requireNonEmptyString(payload, "actorId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonNegativeSafeInteger(payload, "expectedVersion", command);
+  return payload;
+}
+
+function requireNarrativeMaintenanceInboxListPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "narrative_maintenance_inbox_list";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+// Gate C2 Run Kind Policy: the five named operations replacing the old
+// two-value rebuildNarrativeDependencyIndex(mode: verify|repair).
+
+function requireVerifyNarrativeDependencyGraphPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "verify_narrative_dependency_graph";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireRebuildNarrativeDerivedStatePayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "rebuild_narrative_derived_state";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireGetNarrativeBackfillStatusPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "get_narrative_backfill_status";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireRetryNarrativeLegacyBackfillPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "retry_narrative_legacy_backfill";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+/**
+ * `apply: false`（省略時デフォルト）は sealed repair plan のプレビューのみ。
+ * `apply: true` で実行する場合は `planDigest`（直前の preview 呼び出しが
+ * 返した digest と一致必須 — Durable Graph が変化していれば native 側で
+ * NEX_REPAIR_PLAN_DIGEST_MISMATCH として拒否される）と `leaseOwner`
+ * （排他 Repair lease の claim 者識別子）が必須になる。native 側の
+ * 前提条件チェック（NEX_REPAIR_*）と重複するが、明らかに欠けている必須
+ * フィールドはここで早期に拒否する。
+ *
+ * `requestId` / `actorId` は preview・apply どちらでも必須。
+ * run kind policy（policies/narrative/narrative-run-kind-policy.json の
+ * dependency-repair）が `requiredPreconditions: stable-request-id` と
+ * `sameRequestIdReuse: idempotent-replay` を宣言しているため、
+ * 同じ `requestId` + 同じ plan digest の再送は新規 Repair ではなく
+ * idempotent replay として扱われる（stable な値を renderer が採番する）。
+ * `actorId` はこの破壊的操作を誰が承認したかの記録で、省略を許すと
+ * explicit-confirmation の監査証跡が欠落する。
+ */
+function requireRepairNarrativeDependencyDeclarationsPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "repair_narrative_dependency_declarations";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "verifyRunId",
+    "requestId",
+    "actorId",
+    "apply",
+    "planDigest",
+    "leaseOwner",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "verifyRunId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "actorId", command);
+  const apply = optionalBoolean(payload, "apply", command) ?? false;
+  optionalString(payload, "planDigest", command);
+  optionalString(payload, "leaseOwner", command);
+  if (apply) {
+    requireNonEmptyString(payload, "planDigest", command);
+    requireNonEmptyString(payload, "leaseOwner", command);
+  }
+  return payload;
 }
 
 function requirePlotThreadBranchCreatePayload(args: CommandArgs): CommandArgs {
@@ -1463,6 +1691,21 @@ function requireSafeInteger(
   if (!Number.isSafeInteger(value)) {
     throw new Error(
       `invalid args \`${key}\` for command \`${command}\`: expected a safe integer`,
+    );
+  }
+  return value;
+}
+
+/** OCC トークンや件数など「0 以上の整数」必須フィールド用。 */
+function requireNonNegativeSafeInteger(
+  args: CommandArgs,
+  key: string,
+  command: string,
+): number {
+  const value = requireNumber(args, key, command);
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a non-negative safe integer`,
     );
   }
   return value;
@@ -2937,7 +3180,9 @@ function requireAiTreePlanApplyPayload(args: CommandArgs): CommandArgs {
   if (interactiveAgentTreePlan) {
     const ops = requireArray(payload, "ops", command);
     if (ops.length === 0) {
-      throw new Error(`invalid args \`ops\` for command \`${command}\`: empty plan`);
+      throw new Error(
+        `invalid args \`ops\` for command \`${command}\`: empty plan`,
+      );
     }
   }
   const originalTransactionId = requireNullableStringField(
@@ -7007,7 +7252,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   codex_mutate: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.codexMutate, "codexMutate")(
+        await requireNapiMethod(
+          b,
+          b.codexMutate,
+          "codexMutate",
+        )(
           requireCanonicalWriterIdentity(
             a,
             "codex_mutate",
@@ -7101,7 +7350,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_create: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventCreate, "eventCreate")(
+        await requireNapiMethod(
+          b,
+          b.eventCreate,
+          "eventCreate",
+        )(
           requireAgentChroniclePayload(
             a,
             "event_create",
@@ -7121,7 +7374,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_update: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventUpdate, "eventUpdate")(
+        await requireNapiMethod(
+          b,
+          b.eventUpdate,
+          "eventUpdate",
+        )(
           requireEventMutationPayload(
             a,
             "event_update",
@@ -7141,7 +7398,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   event_delete: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.eventDelete, "eventDelete")(
+        await requireNapiMethod(
+          b,
+          b.eventDelete,
+          "eventDelete",
+        )(
           requireEventMutationPayload(
             a,
             "event_delete",
@@ -7211,7 +7472,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   scene_event_link: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.sceneEventLink, "sceneEventLink")(
+        await requireNapiMethod(
+          b,
+          b.sceneEventLink,
+          "sceneEventLink",
+        )(
           requireAgentChroniclePayload(
             a,
             "scene_event_link",
@@ -7257,7 +7522,11 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   scene_event_unlink: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(b, b.sceneEventUnlink, "sceneEventUnlink")(
+        await requireNapiMethod(
+          b,
+          b.sceneEventUnlink,
+          "sceneEventUnlink",
+        )(
           requireAgentChroniclePayload(
             a,
             "scene_event_unlink",
@@ -7510,6 +7779,90 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrative_extraction_redo_commit",
           ),
         ),
+      ),
+  },
+  // Gate C2-T1: Attention typed writer / Maintenance Inbox read model
+  narrative_maintenance_attention_set: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceAttentionSet,
+          "narrativeMaintenanceAttentionSet",
+        )(requireNarrativeMaintenanceAttentionSetPayload(a)),
+      ),
+  },
+  narrative_maintenance_attention_clear: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceAttentionClear,
+          "narrativeMaintenanceAttentionClear",
+        )(requireNarrativeMaintenanceAttentionClearPayload(a)),
+      ),
+  },
+  narrative_maintenance_inbox_list: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.narrativeMaintenanceInboxList,
+          "narrativeMaintenanceInboxList",
+        )(requireNarrativeMaintenanceInboxListPayload(a)),
+      ),
+  },
+  // Gate C2 Run Kind Policy: the five named operations replacing the old
+  // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
+  // (policies/narrative/narrative-run-kind-policy.json's apiSplit).
+  verify_narrative_dependency_graph: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.verifyNarrativeDependencyGraph,
+          "verifyNarrativeDependencyGraph",
+        )(requireVerifyNarrativeDependencyGraphPayload(a)),
+      ),
+  },
+  rebuild_narrative_derived_state: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.rebuildNarrativeDerivedState,
+          "rebuildNarrativeDerivedState",
+        )(requireRebuildNarrativeDerivedStatePayload(a)),
+      ),
+  },
+  get_narrative_backfill_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.getNarrativeBackfillStatus,
+          "getNarrativeBackfillStatus",
+        )(requireGetNarrativeBackfillStatusPayload(a)),
+      ),
+  },
+  retry_narrative_legacy_backfill: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.retryNarrativeLegacyBackfill,
+          "retryNarrativeLegacyBackfill",
+        )(requireRetryNarrativeLegacyBackfillPayload(a)),
+      ),
+  },
+  repair_narrative_dependency_declarations: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.repairNarrativeDependencyDeclarations,
+          "repairNarrativeDependencyDeclarations",
+        )(requireRepairNarrativeDependencyDeclarationsPayload(a)),
       ),
   },
   // post_effect pure-db 7 コマンド（Phase 3 バッチ1）。effectType / status は

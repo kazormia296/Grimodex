@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-failure-policy",
+  "failureCodePrefix": "NEX_",
+  "retryDispositions": ["retryable", "terminal", "superseded", "manual"],
+  "nextAttemptInvariant": "next_attempt_at is set if and only if retryDisposition is retryable",
+  "policies": [
+    {
+      "failureCode": "NEX_RUN_CREATE_IDEMPOTENCY_CONFLICT",
+      "retryDisposition": "terminal",
+      "maxAttempts": 1,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_SEMANTIC_EPOCH_CHANGED",
+      "retryDisposition": "retryable",
+      "maxAttempts": 3,
+      "backoffPolicy": "immediate-requeue-next-epoch",
+      "nextAttemptPolicy": "requeue-with-current-epoch",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_CURSOR_RESERVATION_CONFLICT",
+      "retryDisposition": "retryable",
+      "maxAttempts": 5,
+      "backoffPolicy": "exponential-jitter",
+      "nextAttemptPolicy": "requeue-after-lease-expiry",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_RUN_SUPERSEDED",
+      "retryDisposition": "superseded",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_ATTENTION_VERSION_CONFLICT",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_EXECUTION_STATUS_INVALID",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_LEGACY_UNCLASSIFIED",
+      "retryDisposition": "terminal",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "legacy"
+    }
+  ]
+}

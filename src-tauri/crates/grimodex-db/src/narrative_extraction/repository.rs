@@ -6,6 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
+use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -175,6 +176,303 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
             }))
         })
     })
+}
+
+/// Work-key reuse policy for [`create_system_run`], per each Run Kind's
+/// `sameWorkKeyReuse` in `policies/narrative/narrative-run-kind-policy.json`.
+pub(crate) enum SystemRunWorkKeyReuse {
+    /// `dependency-backfill`: an automatic-once trigger firing again while a
+    /// prior attempt is still running, or after one already completed, must
+    /// not create a second Run.
+    RunningAndCompleted,
+    /// `dependency-verify` / `dependency-rebuild-derived`: a second trigger
+    /// while one is already running reuses it; a completed Run does not
+    /// short-circuit a fresh request on its own — Verify's `skipReRunWhen`
+    /// and Rebuild's `completedRunReuseNote` are the caller's decision to
+    /// make before calling this, not this dedup's.
+    RunningOnly,
+    /// `dependency-repair`: `sameWorkKeyReuse: "no-automatic-reuse-decision"`
+    /// — exclusivity is the Repair lease's job, not work-key dedup here.
+    /// No production caller yet -- `create_system_run` below has none
+    /// (repair.rs's `seal_repair_plan` claims the lease directly instead).
+    #[allow(dead_code)]
+    None,
+}
+
+/// Create a system-triggered (Backfill/Verify/Rebuild-Derived/Repair) Run.
+///
+/// Distinct from [`create_run`]: system Run Kinds are infrastructure the
+/// system runs on itself, not AI extraction, so this does not gate on
+/// [`require_narrative_extraction_allowed`] — the "narrative extraction
+/// disabled" runtime policy toggle is about AI reading text, and per the
+/// Run Kind Policy's `duringBackfillProductBehavior`, editing (and by the
+/// same principle, the system's own maintenance of the Dependency Graph)
+/// is never blocked by it.
+///
+/// `work_key` scopes reuse: passing the same `work_key` for the same
+/// `run_kind`/`project_id` while a prior Run is still eligible per `reuse`
+/// returns that Run instead of creating a duplicate, so an idempotent
+/// trigger (e.g. the post-open Backfill bootstrap) can fire repeatedly
+/// without racing itself.
+///
+/// No production caller yet -- every current system Run Kind trigger
+/// (Backfill's post-open bootstrap, Verify/Rebuild-Derived's manual
+/// triggers, Repair's plan sealing) already runs inside its own
+/// transaction and calls [`create_system_run_in_tx`] directly; this
+/// standalone wrapper is for a future caller starting outside one.
+#[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_system_run(
+    db: &Database,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
+) -> anyhow::Result<Value> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            create_system_run_in_tx(
+                conn,
+                project_id,
+                run_kind,
+                semantic_epoch_id,
+                work_key,
+                spec_json,
+                spec_digest,
+                reuse,
+                request,
+            )
+        })
+    })
+}
+
+/// Core of [`create_system_run`], as an ambient-transaction helper: callers
+/// that need to compose Run creation atomically with other writes in the
+/// same transaction (e.g. the Backfill bootstrap trigger creating the Run
+/// and then immediately running the transform under it) call this directly
+/// instead of going through the `Database`-level wrapper, which would
+/// nest a second `BEGIN IMMEDIATE` on the same connection.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_system_run_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+    spec_json: &Value,
+    spec_digest: &str,
+    reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
+) -> anyhow::Result<Value> {
+    // Request replay is resolved before work-key equivalence, because they
+    // answer different questions: "did this exact request already run?"
+    // versus "is some other Run already doing this work?". A retry of an
+    // approved `dependency-repair` must replay its own Run rather than be
+    // judged by a work-key policy that deliberately says
+    // `no-automatic-reuse-decision`.
+    if let Some(request) = request {
+        anyhow::ensure!(
+            !request.request_id.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: requestId must not be empty"
+        );
+        anyhow::ensure!(
+            !request.idempotency_domain.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: idempotencyDomain must not be empty"
+        );
+        anyhow::ensure!(
+            !request.actor_id.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: actorId must not be empty"
+        );
+        if let Some(replayed) = find_run_by_request_identity(conn, project_id, request)? {
+            return Ok(replayed);
+        }
+    }
+
+    if let Some(reused) = find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)? {
+        return Ok(reused);
+    }
+    let spec_json_text = serde_json::to_string(spec_json)?;
+    let scope_json_text = serde_json::to_string(&default_object_json())?;
+    let coverage_json_text = serde_json::to_string(&default_object_json())?;
+    let run_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, started_at, version,
+             run_kind, semantic_epoch_id, work_key,
+             request_id, idempotency_domain, request_payload_digest, actor_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                 'running', ?7, datetime('now'), datetime('now'), 0,
+                 ?3, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            run_id,
+            project_id,
+            run_kind,
+            scope_json_text,
+            spec_json_text,
+            spec_digest,
+            coverage_json_text,
+            semantic_epoch_id,
+            work_key,
+            request.map(|request| request.request_id),
+            request.map(|request| request.idempotency_domain),
+            request.map(|request| request.payload_digest),
+            request.map(|request| request.actor_id),
+        ],
+    )?;
+    Ok(json!({
+        "runId": run_id,
+        "status": "running",
+        "reused": false,
+        "replayed": false,
+    }))
+}
+
+/// Who asked for a system Run, and which request it was.
+///
+/// Deliberately separate from `work_key`: `work_key` is work equivalence
+/// (`sameWorkKeyReuse`), this is request identity
+/// (`sameRequestIdReuse: idempotent-replay`). `payload_digest` is what makes
+/// a replay distinguishable from a different request that happens to reuse
+/// an id.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RunRequestIdentity<'a> {
+    pub request_id: &'a str,
+    /// Scopes `request_id` so two unrelated surfaces cannot collide on one.
+    pub idempotency_domain: &'a str,
+    pub payload_digest: &'a str,
+    pub actor_id: &'a str,
+}
+
+/// An existing Run for exactly this request, if any.
+///
+/// Fails closed on two different kinds of reuse: the same
+/// `(domain, requestId)` carrying a different payload, and the same
+/// `(domain, requestId)` presented by a different actor. Both are a caller
+/// reusing an id rather than retrying, and replaying someone else's
+/// approved operation is exactly the confusion request identity exists to
+/// prevent.
+///
+/// Reports the Run's `status` and stored `outcome` verbatim. Callers must
+/// branch on that status — a replayed Run that is `failed`, `running`, or
+/// `cancelled` is emphatically not a success, and treating "this request
+/// was seen before" as "this request succeeded" would report a repair that
+/// never ran as done.
+pub(crate) fn find_run_by_request_identity(
+    conn: &Connection,
+    project_id: &str,
+    request: &RunRequestIdentity<'_>,
+) -> anyhow::Result<Option<Value>> {
+    let existing: Option<(String, String, String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, status, COALESCE(request_payload_digest, ''), COALESCE(actor_id, ''),
+                    outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND idempotency_domain = ?2
+                AND request_id = ?3",
+            params![project_id, request.idempotency_domain, request.request_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((run_id, status, payload_digest, actor_id, outcome_json)) = existing else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        payload_digest == request.payload_digest,
+        "NEX_RUN_REQUEST_CONFLICT: requestId '{}' in domain '{}' already ran for project \
+         '{project_id}' with a different payload; reusing a requestId for different work is not \
+         an idempotent replay",
+        request.request_id,
+        request.idempotency_domain
+    );
+    anyhow::ensure!(
+        actor_id == request.actor_id,
+        "NEX_RUN_REQUEST_CONFLICT: requestId '{}' in domain '{}' was issued by actor \
+         '{actor_id}' for project '{project_id}'; actor '{}' may not replay it",
+        request.request_id,
+        request.idempotency_domain,
+        request.actor_id
+    );
+    // A stored outcome that will not parse is corruption, and this is a
+    // replay path: the caller is about to hand this value back as the
+    // authoritative answer for a request it believes already ran. Coercing
+    // unreadable JSON to `null` would turn that corruption into a
+    // confident-looking empty result, so it fails closed instead. A Run
+    // with *no* outcome recorded at all is different and stays `null` —
+    // that is the normal shape of a Run still in flight.
+    let outcome = match outcome_json.as_deref().map(str::trim) {
+        None | Some("") => Value::Null,
+        Some(text) => serde_json::from_str::<Value>(text).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_RUN_OUTCOME_MALFORMED: Run '{run_id}' (requestId '{}' in domain '{}') has \
+                 an unreadable outcome_summary_json: {error}",
+                request.request_id,
+                request.idempotency_domain
+            )
+        })?,
+    };
+    Ok(Some(json!({
+        "runId": run_id,
+        "status": status,
+        "reused": true,
+        "replayed": true,
+        "outcome": outcome,
+    })))
+}
+
+/// Record a Run's terminal outcome so a later replay of the same request
+/// can reproduce the original response instead of inventing a new one.
+pub(crate) fn record_run_outcome_in_tx(
+    conn: &Connection,
+    run_id: &str,
+    outcome: &Value,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE narrative_extraction_runs SET outcome_summary_json = ?1 WHERE id = ?2",
+        params![serde_json::to_string(outcome)?, run_id],
+    )?;
+    Ok(())
+}
+
+fn find_reusable_system_run(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+    work_key: &str,
+    reuse: &SystemRunWorkKeyReuse,
+) -> anyhow::Result<Option<Value>> {
+    let status_clause = match reuse {
+        SystemRunWorkKeyReuse::RunningAndCompleted => "status IN ('pending','running','completed')",
+        SystemRunWorkKeyReuse::RunningOnly => "status IN ('pending','running')",
+        SystemRunWorkKeyReuse::None => return Ok(None),
+    };
+    let sql = format!(
+        "SELECT id, status FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3 AND {status_clause}
+          ORDER BY created_at DESC LIMIT 1"
+    );
+    conn.query_row(&sql, params![project_id, run_kind, work_key], |row| {
+        Ok(json!({
+            "runId": row.get::<_, String>(0)?,
+            "status": row.get::<_, String>(1)?,
+            "reused": true,
+        }))
+    })
+    .optional()
+    .map_err(Into::into)
 }
 
 fn insert_task_seed(
@@ -760,6 +1058,16 @@ fn insert_proposal_seed(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
+    record_run_dependency_edges_in_tx(
+        conn,
+        project_id,
+        run_id,
+        validated_envelope
+            .as_ref()
+            .map(|envelope| envelope.source_basis.as_slice())
+            .unwrap_or(&[]),
+        &created_at,
+    )?;
 
     Ok(json!({
         "proposalId": proposal_id,
@@ -789,6 +1097,57 @@ fn insert_source_basis_rows(
                 row.revision_token,
                 row.observed_at,
             ],
+        )?;
+    }
+    Ok(())
+}
+
+/// Producer-time Dependency Edge declaration (ADR 005 Amendment /
+/// `dependency_edges.rs`, C2-T1): for every `SourceBasisRow` a Proposal's
+/// validated Reconciliation Envelope carries, declares that this Proposal's
+/// owning Run read that Source. Consumer identity is always
+/// `(RUN_CONSUMER_KIND, run_id)`, never the individual Proposal -- Edges
+/// accumulate across every Proposal/Revision the Run produces (an upsert
+/// per Source, see `record_dependency_edge_in_tx`'s own doc comment), so
+/// this never deletes a Run's existing Edges; it only adds/refreshes the
+/// ones this Proposal's current envelope declares. `rows` empty (a
+/// legacy-unbound Proposal/Revision with no envelope) is a no-op.
+///
+/// `read_set_json` per Edge is a one-element JSON array holding the
+/// `SourceBasisRow`'s own `revision_token` -- the Reconciliation Envelope
+/// has no field-path-level read-set below the whole-Source granularity
+/// `sourceBasis` already validates, so this is the most specific true claim
+/// available rather than a fabricated field list.
+///
+/// `row.source_key` is used directly as the Edge's `source_object_identity`
+/// -- it is *not* run back through [`source_object_identity_for`]. By the
+/// time this runs, `insert_proposal_seed` has already called
+/// `validate_reconciliation_envelope` (which requires every `sourceBasis[].
+/// sourceKey` to equal some `readSet[].inputRef`) and
+/// `validate_envelope_source_tokens` (whose `resolve_source_revision` call
+/// strips each source kind's own identity prefix, e.g. `project:scene:`,
+/// off that same `inputRef`). So `row.source_key` already *is* the
+/// fully-qualified identity `source_object_identity_for` would build --
+/// re-deriving it here would prepend the prefix a second time and produce
+/// an Edge no later resolver could ever match back to its real Source.
+fn record_run_dependency_edges_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    rows: &[SourceBasisRow],
+    created_at: &str,
+) -> anyhow::Result<()> {
+    for row in rows {
+        let read_set_json = serde_json::to_string(&[row.revision_token.as_str()])?;
+        record_dependency_edge_in_tx(
+            conn,
+            project_id,
+            RUN_CONSUMER_KIND,
+            run_id,
+            &row.source_key,
+            &read_set_json,
+            None,
+            created_at,
         )?;
     }
     Ok(())
@@ -945,6 +1304,16 @@ fn append_revision_on_conn(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
+    record_run_dependency_edges_in_tx(
+        conn,
+        &payload.project_id,
+        &payload.run_id,
+        validated_envelope
+            .as_ref()
+            .map(|envelope| envelope.source_basis.as_slice())
+            .unwrap_or(&[]),
+        &created_at,
+    )?;
 
     let updated = conn.execute(
         "UPDATE narrative_proposals
@@ -1627,6 +1996,28 @@ mod unit_tests {
         db
     }
 
+    /// `ensure_test_schema` above is a hand-rolled, deliberately narrow
+    /// schema subset for fast isolated tests -- it has no `tree_nodes` and
+    /// no Gate C2 tables (`narrative_dependency_edges`, ...). Tests that
+    /// exercise a real Reconciliation Envelope's `sourceBasis` (which
+    /// re-resolves Source revisions against real domain tables, e.g.
+    /// `scene-body` against `tree_nodes`) or Dependency Edge recording need
+    /// the full real migration instead, matching every `tests/*.rs`
+    /// integration test's own `migrated_db()` helper.
+    fn full_migrated_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project");
+        db
+    }
+
     #[test]
     fn create_and_get_run_round_trip() {
         let db = test_db();
@@ -1660,5 +2051,374 @@ mod unit_tests {
         assert_eq!(loaded["run"]["status"], "running");
         assert_eq!(loaded["tasks"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(loaded["taskCounts"]["queued"], 1);
+    }
+
+    /// Inserts a minimal `tree_nodes` scene row so `scene_body_envelope`
+    /// below can build an envelope whose `sourceBasis`/`readSet`
+    /// `revisionToken` actually matches what
+    /// `source_revision::resolve_source_revision`'s `scene-body` resolver
+    /// (`format!("v{version}@{updated_at}")`) will independently compute --
+    /// `validate_envelope_source_tokens` re-resolves and compares against
+    /// this live row, so a fabricated token would fail closed.
+    fn seed_scene(db: &Database, scene_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO tree_nodes (id, project_id, node_type, title, version)
+                 VALUES (?1, 'project-1', 'scene', 'Scene', 0)",
+                params![scene_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed scene");
+    }
+
+    fn scene_body_envelope(db: &Database, run_id: &str, task_id: &str, scene_id: &str) -> Value {
+        use super::super::commit::digest_plan;
+        let (version, updated_at): (i64, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT version, updated_at FROM tree_nodes
+                      WHERE id = ?1 AND project_id = 'project-1'",
+                    params![scene_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("scene source revision");
+        // `sourceBasis[].sourceKey` must equal this same Source's
+        // `readSet[].inputRef` (`validate_reconciliation_envelope`'s
+        // NEX_ENVELOPE_SOURCE_BASIS_NOT_READ check), and `resolve_scene_body`
+        // requires that shared value to already carry the `project:scene:`
+        // prefix -- `record_run_dependency_edges_in_tx` uses it verbatim as
+        // the Edge's `source_object_identity`, so one prefixed value serves
+        // both fields.
+        let source_key = format!("project:scene:{scene_id}");
+        let revision_token = format!("v{version}@{updated_at}");
+        let read_set = json!([{
+            "kind": "snapshot-document",
+            "inputRef": source_key.clone(),
+            "sourceKind": "scene-body",
+            "revisionToken": revision_token.clone()
+        }]);
+        json!({
+            "changeKind": "revise",
+            "readSetDigest": format!("sha256:{}", digest_plan(&read_set)),
+            "readSet": read_set,
+            "evidenceSet": [],
+            "sourceBasis": [{
+                "revisionToken": revision_token,
+                "sourceKey": source_key,
+                "sourceKind": "scene-body"
+            }],
+            "proposalSchemaVersion": "1",
+            "proposalSchemaId": "chronicle.event",
+            "reconcilerVersion": "1.0.0",
+            "reconcilerId": "test.reconciler",
+            "taskId": task_id,
+            "runId": run_id,
+            "schemaVersion": 1
+        })
+    }
+
+    #[test]
+    fn saving_proposals_declares_dependency_edges_under_the_owning_run() {
+        use super::super::dependency_edges::find_edges_by_consumer;
+
+        let db = full_migrated_db();
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("run-1".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({ "domain": "chronicle" }),
+                spec_digest: "digest-1".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![CreateTaskSeed {
+                    task_id: Some("task-1".to_string()),
+                    task_kind: "plan_windows".to_string(),
+                    input_json: None,
+                    priority: None,
+                }],
+            },
+        )
+        .expect("create run");
+        seed_scene(&db, "scene-1");
+        seed_scene(&db, "scene-2");
+
+        // Two sibling Proposals in one Proposal Set, each reading a
+        // different Source.
+        let envelope_1 = scene_body_envelope(&db, "run-1", "task-1", "scene-1");
+        let envelope_2 = scene_body_envelope(&db, "run-1", "task-1", "scene-2");
+        save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: "run-1".to_string(),
+                project_id: "project-1".to_string(),
+                proposal_set_id: Some("set-1".to_string()),
+                set_kind: "chronicle.extract.review@1".to_string(),
+                summary_json: None,
+                proposals: vec![
+                    ProposalSeed {
+                        proposal_id: Some("proposal-1".to_string()),
+                        proposal_key: "key-1".to_string(),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": "A" }),
+                        reconciliation_envelope: Some(envelope_1),
+                    },
+                    ProposalSeed {
+                        proposal_id: Some("proposal-2".to_string()),
+                        proposal_key: "key-2".to_string(),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": "B" }),
+                        reconciliation_envelope: Some(envelope_2),
+                    },
+                ],
+            },
+        )
+        .expect("save proposal set");
+
+        let edges = db
+            .with_conn(|conn| {
+                find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
+            })
+            .expect("find edges by consumer");
+        assert_eq!(
+            edges.len(),
+            2,
+            "sibling Proposals' Edges must both survive under the same Run consumer"
+        );
+        let identities: Vec<&str> = edges
+            .iter()
+            .map(|edge| edge.source_object_identity.as_str())
+            .collect();
+        assert!(identities.contains(&"project:scene:scene-1"));
+        assert!(identities.contains(&"project:scene:scene-2"));
+        assert!(edges
+            .iter()
+            .all(|edge| edge.read_set_json.starts_with(r#"["v0@"#)));
+
+        // A legacy-unbound Proposal (no envelope) in the same Run must not
+        // fail or declare any Edge.
+        save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id: "run-1".to_string(),
+                project_id: "project-1".to_string(),
+                proposal_set_id: Some("set-2".to_string()),
+                set_kind: "chronicle.extract.review@1".to_string(),
+                summary_json: None,
+                proposals: vec![ProposalSeed {
+                    proposal_id: Some("proposal-3".to_string()),
+                    proposal_key: "key-3".to_string(),
+                    kind: "chronicle.event.create@1".to_string(),
+                    payload_json: json!({ "title": "C" }),
+                    reconciliation_envelope: None,
+                }],
+            },
+        )
+        .expect("save legacy-unbound proposal set");
+
+        let edges_after = db
+            .with_conn(|conn| {
+                find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
+            })
+            .expect("find edges by consumer after legacy-unbound proposal");
+        assert_eq!(
+            edges_after.len(),
+            2,
+            "a legacy-unbound Proposal must not add or remove the Run's existing Edges"
+        );
+    }
+
+    fn seed_epoch(db: &Database, project_id: &str) -> String {
+        db.with_conn(|conn| super::super::create_epoch_in_tx(conn, project_id, "initial", None))
+            .expect("create epoch")
+    }
+
+    #[test]
+    fn create_system_run_writes_kind_epoch_and_work_key() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+
+        let created = create_system_run(
+            &db,
+            "project-1",
+            "dependency-verify",
+            &epoch_id,
+            "verify-work-key",
+            &json!({ "graphContractDigest": "digest-graph-1" }),
+            "spec-digest-1",
+            SystemRunWorkKeyReuse::RunningOnly,
+            None,
+        )
+        .expect("create system run");
+        assert_eq!(created["status"], "running");
+        assert_eq!(created["reused"], false);
+        let run_id = created["runId"].as_str().expect("runId").to_string();
+
+        let (run_kind, semantic_epoch_id, work_key, spec_digest): (String, String, String, String) =
+            db.with_conn(|conn| {
+                conn.query_row(
+                    "SELECT run_kind, semantic_epoch_id, work_key, spec_digest
+                       FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read created run");
+        assert_eq!(run_kind, "dependency-verify");
+        assert_eq!(semantic_epoch_id, epoch_id);
+        assert_eq!(work_key, "verify-work-key");
+        assert_eq!(spec_digest, "spec-digest-1");
+    }
+
+    #[test]
+    fn create_system_run_running_only_reuses_running_but_not_completed() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "semantic-index-rebuild",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+            None,
+        )
+        .expect("create first run");
+        assert_eq!(first["reused"], false);
+
+        // A second request against the same work_key while the first is
+        // still 'running' must reuse it, not create a duplicate.
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "semantic-index-rebuild",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+            None,
+        )
+        .expect("create second run");
+        assert_eq!(second["reused"], true);
+        assert_eq!(second["runId"], first["runId"]);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'completed' WHERE id = ?1",
+                params![first["runId"].as_str().expect("runId")],
+            )?;
+            Ok(())
+        })
+        .expect("mark first run completed");
+
+        // RunningOnly must not reuse a completed Run: a fresh rebuild
+        // request after the prior one finished must be able to run again.
+        let third = create_system_run(
+            &db,
+            "project-1",
+            "semantic-index-rebuild",
+            &epoch_id,
+            "rebuild-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningOnly,
+            None,
+        )
+        .expect("create third run");
+        assert_eq!(third["reused"], false);
+        assert_ne!(third["runId"], first["runId"]);
+    }
+
+    #[test]
+    fn create_system_run_running_and_completed_reuses_a_completed_run() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "backfill",
+            &epoch_id,
+            "backfill-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningAndCompleted,
+            None,
+        )
+        .expect("create first run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'completed' WHERE id = ?1",
+                params![first["runId"].as_str().expect("runId")],
+            )?;
+            Ok(())
+        })
+        .expect("mark first run completed");
+
+        // dependency-backfill's automatic-once trigger firing again after
+        // the prior attempt already completed must not create a second Run.
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "backfill",
+            &epoch_id,
+            "backfill-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::RunningAndCompleted,
+            None,
+        )
+        .expect("create second run");
+        assert_eq!(second["reused"], true);
+        assert_eq!(second["runId"], first["runId"]);
+    }
+
+    #[test]
+    fn create_system_run_none_reuse_never_dedups() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        let spec = json!({});
+
+        let first = create_system_run(
+            &db,
+            "project-1",
+            "dependency-repair",
+            &epoch_id,
+            "repair-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::None,
+            None,
+        )
+        .expect("create first run");
+        let second = create_system_run(
+            &db,
+            "project-1",
+            "dependency-repair",
+            &epoch_id,
+            "repair-work-key",
+            &spec,
+            "d1",
+            SystemRunWorkKeyReuse::None,
+            None,
+        )
+        .expect("create second run");
+        assert_eq!(first["reused"], false);
+        assert_eq!(second["reused"], false);
+        assert_ne!(first["runId"], second["runId"]);
     }
 }

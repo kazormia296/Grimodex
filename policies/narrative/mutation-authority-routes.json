@@ -128,6 +128,23 @@
         "reconciler",
         "idle-scheduler"
       ]
+    },
+    {
+      "id": "attention-typed-writer",
+      "description": "Sets or clears a durable, non-epoch-bound Maintenance Attention disposition (policies/narrative/maintenance-attention-contract.json: storageClass durable-user-state, backflowPolicy forbid). Never touches Field Authority, the canonical Change Event, or the Change Feed. It does carry its own row-version OCC, request identity, and mandatory actor: staying out of the Change Feed says nothing about whether two windows may silently overwrite each other's decision, and before SCHEMA 25 they could.",
+      "requiredControls": [
+        "typed-writer",
+        "occ",
+        "stable-request-id",
+        "actor-context"
+      ],
+      "conditionalControls": [],
+      "allowedCallers": ["human-ui"],
+      "forbiddenCallers": [
+        "background-maintenance",
+        "reconciler",
+        "idle-scheduler"
+      ]
     }
   ],
   "auditOrigins": [

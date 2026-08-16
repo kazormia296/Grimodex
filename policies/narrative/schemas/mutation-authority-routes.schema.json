@@ -18,7 +18,7 @@
     "forbiddenCallersSemantics": { "const": "diagnostic-only" },
     "routes": {
       "type": "array",
-      "minItems": 6,
+      "minItems": 7,
       "items": {
         "type": "object",
         "required": [
@@ -36,7 +36,8 @@
               "interpreter-projection",
               "import-apply",
               "history-replay",
-              "restore-or-migration"
+              "restore-or-migration",
+              "attention-typed-writer"
             ]
           },
           "description": { "type": "string", "minLength": 1 },

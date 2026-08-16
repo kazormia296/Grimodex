@@ -45,10 +45,7 @@ impl Drop for RendererAuthorityContextGuard {
 /// to the current DB worker thread. The low-level Change Event append point
 /// uses this context as a final defense so domain writers that build a compact
 /// audit payload cannot accidentally drop the C1.5 authority evidence.
-pub fn with_renderer_authority_context<T>(
-    context: Value,
-    operation: impl FnOnce() -> T,
-) -> T {
+pub fn with_renderer_authority_context<T>(context: Value, operation: impl FnOnce() -> T) -> T {
     RENDERER_AUTHORITY_CONTEXT.with(|slot| {
         let previous = slot.replace(Some(context));
         let _guard = RendererAuthorityContextGuard { previous };
@@ -61,10 +58,7 @@ fn authority_evidence(context: &Value) -> Value {
         .get("authorityRoute")
         .cloned()
         .unwrap_or(Value::Null);
-    let caller = context
-        .get("caller")
-        .cloned()
-        .unwrap_or(Value::Null);
+    let caller = context.get("caller").cloned().unwrap_or(Value::Null);
     let origin = context.get("origin").cloned().unwrap_or(Value::Null);
     let controls = context
         .get("controls")
@@ -128,7 +122,10 @@ pub fn annotate_authority_event(event: &AppendChangeEvent) -> AppendChangeEvent 
         "authorityCaller".to_string(),
         context.get("caller").cloned().unwrap_or(Value::Null),
     );
-    object.insert("authorityEvidence".to_string(), authority_evidence(&context));
+    object.insert(
+        "authorityEvidence".to_string(),
+        authority_evidence(&context),
+    );
     AppendChangeEvent {
         payload: authority_payload.to_string(),
         ..event.clone()
@@ -218,7 +215,10 @@ pub fn append_change_events_in_tx(
     session_id: &str,
     events: &[AppendChangeEvent],
 ) -> anyhow::Result<AppendResult> {
-    let authority_events = events.iter().map(annotate_authority_event).collect::<Vec<_>>();
+    let authority_events = events
+        .iter()
+        .map(annotate_authority_event)
+        .collect::<Vec<_>>();
     // Idempotent resend handling. A committed-but-rejected flush is re-sent by
     // the webview, possibly *merged* with new events queued meanwhile
     // (`state.queue = batch.concat(state.queue)`). Skipping the whole batch on

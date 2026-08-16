@@ -213,7 +213,10 @@ fn object_head_lookup_is_index_backed_after_a_large_head_fixture() {
                       AND object_identity = ?2",
             )?
             .query_map(
-                [PROJECT_ONE, "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}"],
+                [
+                    PROJECT_ONE,
+                    "{\"kind\":\"scene\",\"sceneId\":\"scene-9999\"}",
+                ],
                 |row| row.get::<_, String>(3),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -327,7 +330,10 @@ fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
     let db = migrated_db();
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(SCHEMA_VERSION, 22);
+        // SCHEMA 22 introduced this contract; SCHEMA 23-27 (Gate C2) migrate
+        // further on top but do not touch it -- this guard exists so the
+        // next schema bump revisits this test too.
+        assert_eq!(SCHEMA_VERSION, 27);
         assert_eq!(version, SCHEMA_VERSION);
 
         for table in [

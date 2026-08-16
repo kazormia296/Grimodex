@@ -16,12 +16,11 @@ use grimodex_core::chronicle_time::{
     validate_canonical_chronicle_date_range, ChronicleDateRange, ChronicleTimestamp,
 };
 
+use crate::agent_writes::canonical_payload_with_authority_context;
 use crate::agent_writes::{
     apply_event_snapshot, chronicle_event_transition_input, collect_event_snapshot,
-    delete_event_cascade, validate_renderer_chronicle_context,
-    RendererCanonicalWriteContext,
+    delete_event_cascade, validate_renderer_chronicle_context, RendererCanonicalWriteContext,
 };
-use crate::agent_writes::canonical_payload_with_authority_context;
 use crate::canonical_feed_snapshots::canonical_scene_snapshot;
 use crate::change_events::{append_change_events_in_tx, AppendChangeEvent};
 use crate::idempotency::{
