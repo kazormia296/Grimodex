@@ -120,7 +120,12 @@ fn same_schema_opens_without_migration_snapshot() {
 
 #[test]
 fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
-    assert_eq!(SCHEMA_VERSION, 22, "Gate C1 owns the SCHEMA 21 -> 22 step");
+    assert_eq!(
+        SCHEMA_VERSION, 24,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23/24 \
+         (Gate C2) migrate further on top but do not touch this step's own \
+         fixtures or assertions"
+    );
     let ws = temp_workspace("schema-20-through-22");
     let db_path = ws.join("grimodex.db");
 
@@ -160,13 +165,13 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
             ..
         } => {
             assert_eq!(from_schema, 20);
-            assert_eq!(to_schema, 22);
+            assert_eq!(to_schema, 24);
             drop(opened);
         }
         other => panic!("expected Migrated for SCHEMA 20, got {other:?}"),
     }
 
-    assert_eq!(live_user_version(&ws), 22);
+    assert_eq!(live_user_version(&ws), 24);
     for table in [
         "narrative_change_transactions",
         "narrative_change_events",
@@ -193,7 +198,12 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
 
 #[test]
 fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
-    assert_eq!(SCHEMA_VERSION, 22, "Gate C1 owns the SCHEMA 21 -> 22 step");
+    assert_eq!(
+        SCHEMA_VERSION, 24,
+        "Gate C1 owns the SCHEMA 21 -> 22 step exercised below; SCHEMA 23/24 \
+         (Gate C2) migrate further on top but do not touch this step's own \
+         fixtures or assertions"
+    );
     let ws = temp_workspace("schema-21-to-22");
     let db_path = ws.join("grimodex.db");
 
@@ -298,7 +308,7 @@ fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
             ..
         } => {
             assert_eq!(from_schema, 21);
-            assert_eq!(to_schema, 22);
+            assert_eq!(to_schema, 24);
             drop(opened);
         }
         other => panic!("expected Migrated for SCHEMA 21, got {other:?}"),
