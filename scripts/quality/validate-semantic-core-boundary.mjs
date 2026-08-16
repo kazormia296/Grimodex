@@ -26,7 +26,7 @@ const REPO_ROOT = path.resolve(
 // authority and the concern matrix is unchanged. The dropped nullable
 // set_by is superseded by the NOT NULL actor_id, which narrows rather than
 // widens what may be written.
-export const EXPECTED_SCHEMA_VERSION = 25;
+export const EXPECTED_SCHEMA_VERSION = 26;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -104,7 +104,16 @@ const REQUIRED_ROUTE_CONTROLS = Object.freeze({
     "semantic-epoch-event",
     "full-rebuild-marker",
   ],
-  "attention-typed-writer": ["typed-writer"],
+  // Staying out of the Change Feed says nothing about whether two windows
+  // may silently overwrite each other's decision. SCHEMA 25 gave this route
+  // real concurrency control, and these entries stop it being narrowed back
+  // to a bare typed-writer without the gate noticing.
+  "attention-typed-writer": [
+    "typed-writer",
+    "occ",
+    "stable-request-id",
+    "actor-context",
+  ],
 });
 
 const REQUIRED_STATE_FIELDS = Object.freeze([

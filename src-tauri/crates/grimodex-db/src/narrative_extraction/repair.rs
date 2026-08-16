@@ -45,6 +45,8 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::digest_plan;
+use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+use super::repository::{create_system_run_in_tx, RunRequestIdentity, SystemRunWorkKeyReuse};
 use super::restore_rebuild::{
     duplicate_edge_ids_to_deactivate, rebuild_repair_dependency_edges_in_tx,
 };
@@ -54,6 +56,10 @@ use crate::backup_restore::{create_persistent_live_safety_artifact, LiveSafetyAr
 use crate::Database;
 
 const REPAIR_LEASE_TTL_SECONDS: i64 = 15 * 60;
+
+/// Scopes Repair's `requestId` so it cannot collide with a request id
+/// minted by any other surface.
+const REPAIR_IDEMPOTENCY_DOMAIN: &str = "narrative.dependency-repair";
 
 /// Identity a Repair lease claim is made under.
 pub(crate) struct RepairLeaseClaim {
@@ -279,6 +285,14 @@ fn safety_artifact_path_string(artifact: &LiveSafetyArtifact) -> String {
 /// An empty plan is a no-op that skips the lease/backup/execute machinery
 /// entirely (nothing to protect against) and returns
 /// `edges_deactivated: 0`.
+///
+/// `request_id`/`actor_id` are the policy's `stable-request-id` precondition
+/// and the audit identity for a destructive operation. Before step 1 a
+/// `dependency-repair` Run is created carrying both, and it is that Run's
+/// request identity -- not the work key, which this Run Kind deliberately
+/// declares `no-automatic-reuse-decision` -- that makes a retry of an
+/// already-approved plan replay instead of repairing twice.
+#[allow(clippy::too_many_arguments)]
 pub fn repair_narrative_dependency_declarations_for_project(
     db: &Database,
     workspace_path: &Path,
@@ -286,12 +300,22 @@ pub fn repair_narrative_dependency_declarations_for_project(
     plan: &RepairPlan,
     lease_owner: &str,
     explicit_confirmation: bool,
+    request_id: &str,
+    actor_id: &str,
 ) -> anyhow::Result<RepairOutcome> {
     anyhow::ensure!(
         explicit_confirmation,
         "NEX_REPAIR_CONFIRMATION_REQUIRED: dependency-repair requires explicit confirmation"
     );
     anyhow::ensure!(!lease_owner.trim().is_empty(), "leaseOwner is required");
+    anyhow::ensure!(
+        !request_id.trim().is_empty(),
+        "NEX_REPAIR_REQUEST_ID_REQUIRED: dependency-repair requires a stable requestId"
+    );
+    anyhow::ensure!(
+        !actor_id.trim().is_empty(),
+        "NEX_REPAIR_ACTOR_REQUIRED: dependency-repair requires an actorId"
+    );
 
     if plan.edge_ids_to_deactivate.is_empty() {
         return Ok(RepairOutcome {
@@ -305,6 +329,53 @@ pub fn repair_narrative_dependency_declarations_for_project(
     let expires_at = (now + chrono::Duration::seconds(REPAIR_LEASE_TTL_SECONDS))
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string();
+
+    // 0. The Run this repair executes under. Created before the lease so a
+    //    replayed request is recognised before anything is claimed or
+    //    written. The plan digest is the request payload: the same requestId
+    //    arriving with a *different* sealed plan is a caller reusing an id
+    //    for new work, and create_system_run_in_tx fails it closed rather
+    //    than replaying the old approval onto new edges.
+    let spec = json!({
+        "verifyRunId": plan.verify_run_id,
+        "repairPlanDigest": plan.digest,
+        "edgeIdsToDeactivate": plan.edge_ids_to_deactivate.len(),
+    });
+    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+    let run = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            create_system_run_in_tx(
+                conn,
+                project_id,
+                "dependency-repair",
+                &plan.semantic_epoch_id,
+                &plan.digest,
+                &spec,
+                &spec_digest,
+                // Work equivalence deliberately never auto-reuses for
+                // repair; request identity below is what makes a retry safe.
+                SystemRunWorkKeyReuse::None,
+                Some(&RunRequestIdentity {
+                    request_id,
+                    idempotency_domain: REPAIR_IDEMPOTENCY_DOMAIN,
+                    payload_digest: &plan.digest,
+                    actor_id,
+                }),
+            )
+        })
+    })?;
+    let run_id = run["runId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
+        .to_string();
+    if run["replayed"].as_bool().unwrap_or(false) {
+        // This exact request already ran. Replay its outcome rather than
+        // deactivating the same edges a second time.
+        return Ok(RepairOutcome {
+            edges_deactivated: 0,
+            backup_artifact_path: String::new(),
+        });
+    }
 
     // 1. Epoch match + lease claim.
     db.with_conn(|conn| {
@@ -365,17 +436,32 @@ pub fn repair_narrative_dependency_declarations_for_project(
         })
     });
 
+    // 4. Land the Run in a terminal state either way, so a repair leaves an
+    //    auditable record of who ran what under which request rather than a
+    //    Run stuck at `running`.
+    let finalize = |status| {
+        let _ = db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                transition_run_status_in_tx(conn, &run_id, status)
+            })
+        });
+    };
+
     match execute_result {
-        Ok(edges_deactivated) => Ok(RepairOutcome {
-            edges_deactivated,
-            backup_artifact_path,
-        }),
+        Ok(edges_deactivated) => {
+            finalize(NarrativeRunStatus::Completed);
+            Ok(RepairOutcome {
+                edges_deactivated,
+                backup_artifact_path,
+            })
+        }
         Err(error) => {
             let _ = db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     release_repair_lease_in_tx(conn, project_id)
                 })
             });
+            finalize(NarrativeRunStatus::Failed);
             Err(error)
         }
     }
@@ -561,11 +647,205 @@ mod tests {
             &plan,
             "test-owner",
             false,
+            "req-test-1",
+            "test-actor",
         )
         .expect_err("must fail without explicit confirmation");
         assert!(error
             .to_string()
             .starts_with("NEX_REPAIR_CONFIRMATION_REQUIRED"));
+    }
+
+    #[test]
+    fn repair_records_a_run_carrying_its_request_and_actor_identity() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .expect("seal plan");
+
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-audit-1",
+            "operator-1",
+        )
+        .expect("execute repair");
+
+        let (run_kind, status, request_id, domain, actor_id): (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT run_kind, status, request_id, idempotency_domain, actor_id
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1' AND run_kind = 'dependency-repair'",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("repair run exists");
+        assert_eq!(run_kind, "dependency-repair");
+        assert_eq!(status, "completed");
+        assert_eq!(request_id.as_deref(), Some("req-audit-1"));
+        assert_eq!(domain.as_deref(), Some(REPAIR_IDEMPOTENCY_DOMAIN));
+        assert_eq!(actor_id.as_deref(), Some("operator-1"));
+    }
+
+    #[test]
+    fn replaying_the_same_repair_request_does_not_repair_twice() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .expect("seal plan");
+
+        let first = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-replay-1",
+            "operator-1",
+        )
+        .expect("first repair");
+        assert_eq!(first.edges_deactivated, 1);
+
+        let edges_after_first = edge_count(&db);
+
+        // The same approved request arriving again -- a retry, not a second
+        // decision. It must not deactivate anything further.
+        let replay = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-replay-1",
+            "operator-1",
+        )
+        .expect("replay must succeed");
+        assert_eq!(replay.edges_deactivated, 0);
+        assert_eq!(edge_count(&db), edges_after_first);
+
+        let run_count: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1' AND run_kind = 'dependency-repair'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count repair runs");
+        assert_eq!(run_count, 1, "a replay must not create a second Run");
+    }
+
+    #[test]
+    fn reusing_a_repair_request_id_for_a_different_plan_fails_closed() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .expect("seal plan");
+
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-shared-1",
+            "operator-1",
+        )
+        .expect("first repair");
+
+        // Same requestId, different sealed plan: a caller reusing an id for
+        // new work, which must never replay the earlier approval.
+        let mut other_plan = plan.clone();
+        other_plan.digest = "sha256:a-different-plan".to_string();
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &other_plan,
+            "test-owner",
+            true,
+            "req-shared-1",
+            "operator-1",
+        )
+        .expect_err("a different plan under the same requestId must fail closed");
+        assert!(
+            error.to_string().contains("NEX_RUN_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn repair_requires_a_request_id_and_an_actor() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .expect("seal plan");
+
+        for (request_id, actor_id) in [("", "operator-1"), ("  ", "operator-1"), ("req-1", "")] {
+            let error = repair_narrative_dependency_declarations_for_project(
+                &db,
+                &workspace_path,
+                "project-1",
+                &plan,
+                "test-owner",
+                true,
+                request_id,
+                actor_id,
+            )
+            .expect_err("missing request identity must be rejected");
+            let message = error.to_string();
+            assert!(
+                message.contains("NEX_REPAIR_REQUEST_ID_REQUIRED")
+                    || message.contains("NEX_REPAIR_ACTOR_REQUIRED"),
+                "unexpected error: {message}"
+            );
+        }
+    }
+
+    fn edge_count(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("count edges")
     }
 
     #[test]
@@ -585,6 +865,8 @@ mod tests {
             &plan,
             "test-owner",
             true,
+            "req-test-2",
+            "test-actor",
         )
         .expect("execute repair");
         assert_eq!(outcome.edges_deactivated, 1);
@@ -640,6 +922,8 @@ mod tests {
             &plan,
             "test-owner",
             true,
+            "req-test-3",
+            "test-actor",
         )
         .expect_err("a plan sealed against a stale epoch must be rejected");
         assert!(error.to_string().starts_with("NEX_REPAIR_EPOCH_MISMATCH"));

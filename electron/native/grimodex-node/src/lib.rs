@@ -5305,6 +5305,8 @@ impl Backend {
                     &plan,
                     lease_owner,
                     true,
+                    &dto.request_id,
+                    &dto.actor_id,
                 )?;
             let applied = serde_json::json!({
                 "mode": "applied",

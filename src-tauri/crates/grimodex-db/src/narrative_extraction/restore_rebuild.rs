@@ -334,6 +334,9 @@ pub fn rebuild_narrative_derived_state_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
+                // No request identity: this Run is started by the system
+                // itself, not by an addressable caller request.
+                None,
             )?;
             let run_id = created["runId"]
                 .as_str()

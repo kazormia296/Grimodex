@@ -3472,6 +3472,14 @@ impl Database {
         // last-write-wins, and a retried set could not be told apart from a
         // second deliberate one.
         Self::migrate_narrative_maintenance_attention_v25(&conn)?;
+        // SCHEMA 26: a system Run records the *request* that asked for it,
+        // separately from the work_key that says what the work is. Two
+        // different concepts the policy already distinguishes
+        // (`sameWorkKeyReuse` vs `sameRequestIdReuse`) but the schema could
+        // not express, so a retried request and a second deliberate one
+        // looked identical. Nullable: Runs created before this, and
+        // interpretation Runs that have no request identity, keep NULL.
+        Self::migrate_narrative_run_request_identity_v26(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -4426,6 +4434,44 @@ impl Database {
             foreign_key_errors == 0,
             "SCHEMA 25 attention migration left foreign key violations"
         );
+        Ok(())
+    }
+
+    /// SCHEMA 26: request identity on a system Run, kept distinct from
+    /// `work_key`.
+    ///
+    /// `work_key` answers "is this the same work?" and drives
+    /// `sameWorkKeyReuse`. These answer "is this the same *request*?" and
+    /// drive `sameRequestIdReuse: idempotent-replay`. Collapsing them makes a
+    /// retried request indistinguishable from a second deliberate one, which
+    /// for `dependency-repair` means a destructive operation could run twice.
+    ///
+    /// Plain ADD COLUMN: all four are nullable, so no rebuild is needed and
+    /// existing Runs simply carry NULL.
+    fn migrate_narrative_run_request_identity_v26(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        for (column, declaration) in [
+            ("request_id", "TEXT"),
+            ("idempotency_domain", "TEXT"),
+            ("request_payload_digest", "TEXT"),
+            ("actor_id", "TEXT"),
+        ] {
+            Self::add_column_if_missing(conn, "narrative_extraction_runs", column, declaration)?;
+        }
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_narrative_runs_request_identity
+                ON narrative_extraction_runs(project_id, idempotency_domain, request_id)
+             WHERE request_id IS NOT NULL AND idempotency_domain IS NOT NULL;",
+        )?;
         Ok(())
     }
 

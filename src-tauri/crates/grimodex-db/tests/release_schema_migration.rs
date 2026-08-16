@@ -26,7 +26,7 @@ fn previous_release_shaped_database_migrates_and_preserves_rows() {
         "the published v2.0.10 fixture must remain the public migration floor"
     );
     assert_eq!(
-        SCHEMA_VERSION, 25,
+        SCHEMA_VERSION, 26,
         "Gate C1 migration target was SCHEMA 22; SCHEMA 23/24 (Gate C2) migrate \
          further on top -- this guard exists so the next schema bump revisits \
          this fixture too"

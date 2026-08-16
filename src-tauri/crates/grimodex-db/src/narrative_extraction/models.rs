@@ -402,4 +402,11 @@ pub struct RepairNarrativeDependencyDeclarationsPayload {
     pub plan_digest: Option<String>,
     #[serde(default)]
     pub lease_owner: Option<String>,
+    /// The policy's `stable-request-id` precondition. Together with the
+    /// sealed plan digest this makes a retry of an already-approved repair
+    /// replay instead of deactivating the same edges twice.
+    pub request_id: String,
+    /// Who approved this destructive operation. Recorded on the
+    /// `dependency-repair` Run as its audit identity.
+    pub actor_id: String,
 }

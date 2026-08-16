@@ -2225,6 +2225,14 @@ export const narrativeExtractionRuns = sqliteTable(
     workKey: text("work_key"),
     terminalReasonCode: text("terminal_reason_code"),
     supersededByRunId: text("superseded_by_run_id"),
+    // SCHEMA_VERSION 26: request identity, deliberately separate from
+    // workKey. workKey answers "is this the same work?"; these answer "is
+    // this the same request?" and drive sameRequestIdReuse:
+    // idempotent-replay. Nullable — interpretation Runs have no request.
+    requestId: text("request_id"),
+    idempotencyDomain: text("idempotency_domain"),
+    requestPayloadDigest: text("request_payload_digest"),
+    actorId: text("actor_id"),
   },
 );
 

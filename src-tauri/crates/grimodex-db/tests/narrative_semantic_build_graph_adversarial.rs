@@ -1218,13 +1218,15 @@ fn expired_snooze_resurfaces_consumer_in_inbox() {
             params![finding_key],
         )
         .expect("seed finding");
-        // Snooze it (Lane D set_attention_in_tx replica).
+        // Snooze it (Lane D set_attention_in_tx replica; SCHEMA 25 shape --
+        // actor_id/request_id/payload_digest/version replaced set_by).
         conn.execute(
             "INSERT INTO narrative_maintenance_attention
                 (project_id, finding_key, disposition, material_basis_digest, snoozed_until,
-                 set_at, set_by)
+                 set_at, actor_id, request_id, payload_digest, reason, version)
              VALUES ('project-1', ?1, 'snoozed', 'sha256:digest-a', '2026-09-01T00:00:00.000Z',
-                     '2026-08-15T00:30:00.000Z', 'user-1')",
+                     '2026-08-15T00:30:00.000Z', 'user-1', 'req-adversarial-1',
+                     'sha256:payload-a', NULL, 1)",
             params![finding_key],
         )
         .expect("seed attention");

@@ -230,6 +230,9 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningAndCompleted,
+                // No request identity: this Run is started by the system
+                // itself, not by an addressable caller request.
+                None,
             )?;
             let run_id = created["runId"]
                 .as_str()

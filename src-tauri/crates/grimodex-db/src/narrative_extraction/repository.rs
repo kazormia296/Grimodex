@@ -231,6 +231,7 @@ pub(crate) fn create_system_run(
     spec_json: &Value,
     spec_digest: &str,
     reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
 ) -> anyhow::Result<Value> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -243,6 +244,7 @@ pub(crate) fn create_system_run(
                 spec_json,
                 spec_digest,
                 reuse,
+                request,
             )
         })
     })
@@ -264,7 +266,32 @@ pub(crate) fn create_system_run_in_tx(
     spec_json: &Value,
     spec_digest: &str,
     reuse: SystemRunWorkKeyReuse,
+    request: Option<&RunRequestIdentity<'_>>,
 ) -> anyhow::Result<Value> {
+    // Request replay is resolved before work-key equivalence, because they
+    // answer different questions: "did this exact request already run?"
+    // versus "is some other Run already doing this work?". A retry of an
+    // approved `dependency-repair` must replay its own Run rather than be
+    // judged by a work-key policy that deliberately says
+    // `no-automatic-reuse-decision`.
+    if let Some(request) = request {
+        anyhow::ensure!(
+            !request.request_id.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: requestId must not be empty"
+        );
+        anyhow::ensure!(
+            !request.idempotency_domain.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: idempotencyDomain must not be empty"
+        );
+        anyhow::ensure!(
+            !request.actor_id.trim().is_empty(),
+            "NEX_RUN_REQUEST_INVALID: actorId must not be empty"
+        );
+        if let Some(replayed) = find_run_by_request_identity(conn, project_id, request)? {
+            return Ok(replayed);
+        }
+    }
+
     if let Some(reused) = find_reusable_system_run(conn, project_id, run_kind, work_key, &reuse)? {
         return Ok(reused);
     }
@@ -276,10 +303,11 @@ pub(crate) fn create_system_run_in_tx(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
              status, coverage_json, created_at, started_at, version,
-             run_kind, semantic_epoch_id, work_key)
+             run_kind, semantic_epoch_id, work_key,
+             request_id, idempotency_domain, request_payload_digest, actor_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6,
                  'running', ?7, datetime('now'), datetime('now'), 0,
-                 ?3, ?8, ?9)",
+                 ?3, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             run_id,
             project_id,
@@ -290,13 +318,73 @@ pub(crate) fn create_system_run_in_tx(
             coverage_json_text,
             semantic_epoch_id,
             work_key,
+            request.map(|request| request.request_id),
+            request.map(|request| request.idempotency_domain),
+            request.map(|request| request.payload_digest),
+            request.map(|request| request.actor_id),
         ],
     )?;
     Ok(json!({
         "runId": run_id,
         "status": "running",
         "reused": false,
+        "replayed": false,
     }))
+}
+
+/// Who asked for a system Run, and which request it was.
+///
+/// Deliberately separate from `work_key`: `work_key` is work equivalence
+/// (`sameWorkKeyReuse`), this is request identity
+/// (`sameRequestIdReuse: idempotent-replay`). `payload_digest` is what makes
+/// a replay distinguishable from a different request that happens to reuse
+/// an id.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RunRequestIdentity<'a> {
+    pub request_id: &'a str,
+    /// Scopes `request_id` so two unrelated surfaces cannot collide on one.
+    pub idempotency_domain: &'a str,
+    pub payload_digest: &'a str,
+    pub actor_id: &'a str,
+}
+
+/// An existing Run for exactly this request, if any. Fails closed when the
+/// same `(domain, requestId)` arrives carrying a different payload: that is
+/// a caller reusing an id for new work, not a retry, and silently treating
+/// it as a replay would drop the new request on the floor.
+fn find_run_by_request_identity(
+    conn: &Connection,
+    project_id: &str,
+    request: &RunRequestIdentity<'_>,
+) -> anyhow::Result<Option<Value>> {
+    let existing: Option<(String, String, String)> = conn
+        .query_row(
+            "SELECT id, status, COALESCE(request_payload_digest, '')
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND idempotency_domain = ?2
+                AND request_id = ?3",
+            params![project_id, request.idempotency_domain, request.request_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((run_id, status, payload_digest)) = existing else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        payload_digest == request.payload_digest,
+        "NEX_RUN_REQUEST_CONFLICT: requestId '{}' in domain '{}' already ran for project \
+         '{project_id}' with a different payload; reusing a requestId for different work is not \
+         an idempotent replay",
+        request.request_id,
+        request.idempotency_domain
+    );
+    Ok(Some(json!({
+        "runId": run_id,
+        "status": status,
+        "reused": true,
+        "replayed": true,
+    })))
 }
 
 fn find_reusable_system_run(
@@ -2106,6 +2194,7 @@ mod unit_tests {
             &json!({ "graphContractDigest": "digest-graph-1" }),
             "spec-digest-1",
             SystemRunWorkKeyReuse::RunningOnly,
+            None,
         )
         .expect("create system run");
         assert_eq!(created["status"], "running");
@@ -2144,6 +2233,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::RunningOnly,
+            None,
         )
         .expect("create first run");
         assert_eq!(first["reused"], false);
@@ -2159,6 +2249,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::RunningOnly,
+            None,
         )
         .expect("create second run");
         assert_eq!(second["reused"], true);
@@ -2184,6 +2275,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::RunningOnly,
+            None,
         )
         .expect("create third run");
         assert_eq!(third["reused"], false);
@@ -2205,6 +2297,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::RunningAndCompleted,
+            None,
         )
         .expect("create first run");
         db.with_conn(|conn| {
@@ -2227,6 +2320,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::RunningAndCompleted,
+            None,
         )
         .expect("create second run");
         assert_eq!(second["reused"], true);
@@ -2248,6 +2342,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::None,
+            None,
         )
         .expect("create first run");
         let second = create_system_run(
@@ -2259,6 +2354,7 @@ mod unit_tests {
             &spec,
             "d1",
             SystemRunWorkKeyReuse::None,
+            None,
         )
         .expect("create second run");
         assert_eq!(first["reused"], false);

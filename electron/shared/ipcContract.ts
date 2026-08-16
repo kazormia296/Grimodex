@@ -1251,6 +1251,15 @@ function requireRetryNarrativeLegacyBackfillPayload(
  * （排他 Repair lease の claim 者識別子）が必須になる。native 側の
  * 前提条件チェック（NEX_REPAIR_*）と重複するが、明らかに欠けている必須
  * フィールドはここで早期に拒否する。
+ *
+ * `requestId` / `actorId` は preview・apply どちらでも必須。
+ * run kind policy（policies/narrative/narrative-run-kind-policy.json の
+ * dependency-repair）が `requiredPreconditions: stable-request-id` と
+ * `sameRequestIdReuse: idempotent-replay` を宣言しているため、
+ * 同じ `requestId` + 同じ plan digest の再送は新規 Repair ではなく
+ * idempotent replay として扱われる（stable な値を renderer が採番する）。
+ * `actorId` はこの破壊的操作を誰が承認したかの記録で、省略を許すと
+ * explicit-confirmation の監査証跡が欠落する。
  */
 function requireRepairNarrativeDependencyDeclarationsPayload(
   args: CommandArgs,
@@ -1260,6 +1269,8 @@ function requireRepairNarrativeDependencyDeclarationsPayload(
   const allowedKeys = new Set([
     "projectId",
     "verifyRunId",
+    "requestId",
+    "actorId",
     "apply",
     "planDigest",
     "leaseOwner",
@@ -1273,6 +1284,8 @@ function requireRepairNarrativeDependencyDeclarationsPayload(
   }
   requireNonEmptyString(payload, "projectId", command);
   requireNonEmptyString(payload, "verifyRunId", command);
+  requireNonEmptyString(payload, "requestId", command);
+  requireNonEmptyString(payload, "actorId", command);
   const apply = optionalBoolean(payload, "apply", command) ?? false;
   optionalString(payload, "planDigest", command);
   optionalString(payload, "leaseOwner", command);

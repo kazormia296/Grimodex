@@ -88,6 +88,24 @@ const MAINTENANCE_ATTENTION_CLEAR_PAYLOAD = {
   expectedVersion: 3,
 };
 
+// Gate C2 dependency-repair の wire 契約。run kind policy が
+// requiredPreconditions: stable-request-id / sameRequestIdReuse:
+// idempotent-replay を宣言しているので、preview / apply どちらでも
+// requestId（再送の同一性）と actorId（承認者）が必須。
+const REPAIR_DEPENDENCY_PREVIEW_PAYLOAD = {
+  projectId: "project-1",
+  verifyRunId: "verify-1",
+  requestId: "req-repair-1",
+  actorId: "actor-1",
+};
+
+const REPAIR_DEPENDENCY_APPLY_PAYLOAD = {
+  ...REPAIR_DEPENDENCY_PREVIEW_PAYLOAD,
+  apply: true,
+  planDigest: "sha256:abc",
+  leaseOwner: "renderer-session-1",
+};
+
 // agent_writes 系の代表返り値（AgentWriteResult / ProseStageResult、camelCase）。
 const AGENT_WRITE_RESULT = Promise.resolve(
   '{"entityId":"e1","version":1,"changeEventUid":"ce1","undoJournalId":"uj1"}',
@@ -4840,7 +4858,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       });
     });
 
-    it("repair_narrative_dependency_declarations: apply 省略時は projectId/verifyRunId だけの preview payload を渡す", async () => {
+    it("repair_narrative_dependency_declarations: apply 省略時は requestId/actorId 付き preview payload を渡す", async () => {
       const repairNarrativeDependencyDeclarations = vi
         .fn()
         .mockResolvedValue(
@@ -4849,21 +4867,97 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       const { backend } = fakeBackend({
         repairNarrativeDependencyDeclarations,
       });
-      const payload = { projectId: "project-1", verifyRunId: "verify-1" };
       const env = await dispatchInvoke(
         "repair_narrative_dependency_declarations",
-        { payload },
+        { payload: REPAIR_DEPENDENCY_PREVIEW_PAYLOAD },
         { backend, shell: noShell },
       );
       expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledWith(
-        payload,
+        REPAIR_DEPENDENCY_PREVIEW_PAYLOAD,
       );
       expect(env).toMatchObject({ ok: true, value: { mode: "preview" } });
     });
 
+    it("repair_narrative_dependency_declarations は requestId/actorId を preview でも必須とする", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue('{"mode":"preview","plan":null}') as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const valid = REPAIR_DEPENDENCY_PREVIEW_PAYLOAD;
+      const invalidPayloads: unknown[] = [
+        null,
+        [],
+        "payload",
+        {},
+        omitKey(valid, "requestId"),
+        omitKey(valid, "actorId"),
+        omitKey(valid, "projectId"),
+        omitKey(valid, "verifyRunId"),
+        { ...valid, requestId: "" },
+        { ...valid, requestId: 1 },
+        { ...valid, requestId: null },
+        { ...valid, requestId: {} },
+        { ...valid, actorId: "" },
+        { ...valid, actorId: 42 },
+        { ...valid, actorId: null },
+        { ...valid, actorId: [] },
+        { ...valid, extra: true },
+      ];
+
+      for (const payload of invalidPayloads) {
+        const result = await dispatchInvoke(
+          "repair_narrative_dependency_declarations",
+          { payload },
+          { backend, shell: noShell },
+        );
+        expect(result.ok).toBe(false);
+      }
+      expect(repairNarrativeDependencyDeclarations).not.toHaveBeenCalled();
+
+      const missingRequestId = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: omitKey(valid, "requestId") },
+        { backend, shell: noShell },
+      );
+      expect(missingRequestId).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `requestId` for command `repair_narrative_dependency_declarations`: expected a string",
+      });
+
+      const emptyActorId = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: { ...valid, actorId: "" } },
+        { backend, shell: noShell },
+      );
+      expect(emptyActorId).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `actorId` for command `repair_narrative_dependency_declarations`: expected a non-empty string",
+      });
+
+      const unknownField = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: { ...valid, setBy: "actor-1" } },
+        { backend, shell: noShell },
+      );
+      expect(unknownField).toMatchObject({
+        ok: false,
+        error:
+          "invalid args `setBy` for command `repair_narrative_dependency_declarations`: unknown field",
+      });
+    });
+
     it("repair_narrative_dependency_declarations: apply=true には planDigest/leaseOwner を必須とする", async () => {
-      const { backend, calls } = fakeBackend();
-      const base = { projectId: "project-1", verifyRunId: "verify-1" };
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue('{"mode":"applied","outcome":null}') as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      const base = REPAIR_DEPENDENCY_PREVIEW_PAYLOAD;
       const missingBoth = await dispatchInvoke(
         "repair_narrative_dependency_declarations",
         { payload: { ...base, apply: true } },
@@ -4879,7 +4973,14 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         { backend, shell: noShell },
       );
       expect(missingLeaseOwner.ok).toBe(false);
-      expect(calls).toHaveLength(0);
+
+      const missingIdentity = await dispatchInvoke(
+        "repair_narrative_dependency_declarations",
+        { payload: omitKey(REPAIR_DEPENDENCY_APPLY_PAYLOAD, "actorId") },
+        { backend, shell: noShell },
+      );
+      expect(missingIdentity.ok).toBe(false);
+      expect(repairNarrativeDependencyDeclarations).not.toHaveBeenCalled();
     });
 
     it("repair_narrative_dependency_declarations: apply=true で planDigest/leaseOwner が揃っていれば実行する", async () => {
@@ -4891,22 +4992,39 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       const { backend } = fakeBackend({
         repairNarrativeDependencyDeclarations,
       });
-      const payload = {
-        projectId: "project-1",
-        verifyRunId: "verify-1",
-        apply: true,
-        planDigest: "sha256:abc",
-        leaseOwner: "renderer-session-1",
-      };
       const env = await dispatchInvoke(
         "repair_narrative_dependency_declarations",
-        { payload },
+        { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
         { backend, shell: noShell },
       );
       expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledWith(
-        payload,
+        REPAIR_DEPENDENCY_APPLY_PAYLOAD,
       );
       expect(env).toMatchObject({ ok: true, value: { mode: "applied" } });
+    });
+
+    it("repair_narrative_dependency_declarations: 同じ requestId の再送も native へそのまま渡す（idempotent replay は native 側の判定）", async () => {
+      const repairNarrativeDependencyDeclarations = vi
+        .fn()
+        .mockResolvedValue(
+          '{"mode":"applied","outcome":{"edgesDeactivated":1,"backupArtifactPath":"/tmp/backup.db"}}',
+        ) as never;
+      const { backend } = fakeBackend({
+        repairNarrativeDependencyDeclarations,
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const env = await dispatchInvoke(
+          "repair_narrative_dependency_declarations",
+          { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
+          { backend, shell: noShell },
+        );
+        expect(env).toMatchObject({ ok: true, value: { mode: "applied" } });
+      }
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenCalledTimes(2);
+      expect(repairNarrativeDependencyDeclarations).toHaveBeenNthCalledWith(
+        2,
+        REPAIR_DEPENDENCY_APPLY_PAYLOAD,
+      );
     });
 
     it("repair_narrative_dependency_declarations はドメインエラーマーカーをそのまま伝播する", async () => {
@@ -4921,15 +5039,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       });
       const env = await dispatchInvoke(
         "repair_narrative_dependency_declarations",
-        {
-          payload: {
-            projectId: "project-1",
-            verifyRunId: "verify-1",
-            apply: true,
-            planDigest: "sha256:abc",
-            leaseOwner: "renderer-session-1",
-          },
-        },
+        { payload: REPAIR_DEPENDENCY_APPLY_PAYLOAD },
         { backend, shell: noShell },
       );
       expect(env).toMatchObject({

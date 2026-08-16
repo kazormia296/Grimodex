@@ -573,7 +573,7 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// columns for Verify, and widens the Run `run_kind` CHECK to admit
 /// `dependency-verify`/`dependency-repair`.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 25
+    Ok(SCHEMA_VERSION == 26
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -590,7 +590,31 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v23_execution_state_check_constraints(conn)?
         && has_v23_change_cursor_reservation_columns(conn)?
         && has_v24_run_kind_policy_tables(conn)?
-        && has_v25_attention_occ_columns(conn)?)
+        && has_v25_attention_occ_columns(conn)?
+        && has_v26_run_request_identity_columns(conn)?)
+}
+
+/// SCHEMA 26: a system Run records the request that asked for it, kept
+/// separate from `work_key`'s work equivalence. Nullable by design —
+/// interpretation Runs and every Run created before this have no request
+/// identity — so this checks presence and type, not NOT NULL.
+fn has_v26_run_request_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_extraction_runs")? {
+        return Ok(false);
+    }
+    let columns = table_columns(conn, "narrative_extraction_runs")?;
+    Ok([
+        "request_id",
+        "idempotency_domain",
+        "request_payload_digest",
+        "actor_id",
+    ]
+    .iter()
+    .all(|name| {
+        columns
+            .iter()
+            .any(|column| column.name == *name && column.declared_type == "TEXT")
+    }))
 }
 
 /// SCHEMA 25: Maintenance Attention carries the OCC / request-identity /
