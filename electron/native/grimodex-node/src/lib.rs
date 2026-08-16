@@ -5108,8 +5108,19 @@ impl Backend {
     // toolchain caveat as the block above: not through `cargo check` or
     // `napi build`, index.d.ts not regenerated. ───────────────────────────
 
-    /// Read-only: `dependency-verify` diagnostic across the Durable
-    /// Dependency Graph and Rebuildable Derived State for one project.
+    /// `dependency-verify`: a read-only diagnostic across the Durable
+    /// Dependency Graph and Rebuildable Derived State for one project,
+    /// recorded under a real Run.
+    ///
+    /// The diagnostic itself writes nothing to the tables it reads; the
+    /// Run and its stored result exist so a later `dependency-repair` can
+    /// prove *which* Verify result its sealed plan came from (the policy's
+    /// `verify-first` precondition -- see `seal_repair_plan`). The response
+    /// therefore carries `runId`/`reportDigest` alongside the report, not
+    /// the bare report.
+    ///
+    /// Owns its own transactions internally, so this goes through the live
+    /// `Database` rather than `with_db_state`'s single-closure shape.
     #[napi]
     pub async fn verify_narrative_dependency_graph(
         &self,
@@ -5118,15 +5129,12 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let dto: VerifyNarrativeDependencyGraphPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                let report = db.with_conn(|conn| {
-                    narrative_extraction::verify_narrative_dependency_graph_for_project(
-                        conn,
-                        &dto.project_id,
-                    )
-                })?;
-                Ok(serde_json::to_string(&report)?)
-            })
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::run_dependency_verify_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            Ok(serde_json::to_string(&outcome).map_err(anyhow::Error::from)?)
         })
         .await
     }

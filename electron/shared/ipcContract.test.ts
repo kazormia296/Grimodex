@@ -4710,7 +4710,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       const verifyNarrativeDependencyGraph = vi
         .fn()
         .mockResolvedValue(
-          '{"totalEdges":2,"edgeIdsWithMissingSource":[],"duplicateEdgeKeys":[],"edgeIdsWithCrossProjectConsumer":[],"edgeIdsWithMalformedKeys":[],"edgeStateIdsOutsideCurrentEpoch":[],"findingObservationIdsOutsideCurrentEpoch":[]}',
+          '{"runId":"run-verify-1","semanticEpochId":"epoch-1","reportDigest":"sha256:report","report":{"totalEdges":2,"edgeIdsWithMissingSource":[],"duplicateEdgeKeys":[],"edgeIdsWithCrossProjectConsumer":[],"edgeIdsWithMalformedKeys":[],"edgeStateIdsOutsideCurrentEpoch":[],"findingObservationIdsOutsideCurrentEpoch":[],"duplicateEdgeIdsToDeactivate":[]}}',
         ) as never;
       const { backend } = fakeBackend({ verifyNarrativeDependencyGraph });
       const payload = { projectId: "project-1" };
@@ -4720,7 +4720,17 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         { backend, shell: noShell },
       );
       expect(verifyNarrativeDependencyGraph).toHaveBeenCalledWith(payload);
-      expect(env).toMatchObject({ ok: true, value: { totalEdges: 2 } });
+      // Verify now runs under a real Run so `dependency-repair` can prove
+      // which Verify result its sealed plan came from -- the report is
+      // nested under the Run identity rather than being the whole response.
+      expect(env).toMatchObject({
+        ok: true,
+        value: {
+          runId: "run-verify-1",
+          reportDigest: "sha256:report",
+          report: { totalEdges: 2 },
+        },
+      });
     });
 
     it("verify_narrative_dependency_graph は malformed payload と backend skew を明示拒否する", async () => {

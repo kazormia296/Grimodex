@@ -127,8 +127,9 @@ pub use repair::{
     RepairPlan,
 };
 pub use restore_rebuild::{
-    rebuild_narrative_derived_state_for_project, verify_narrative_dependency_graph_for_project,
-    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
+    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
+    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};

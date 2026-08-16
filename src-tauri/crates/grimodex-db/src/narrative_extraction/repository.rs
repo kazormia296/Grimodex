@@ -348,27 +348,46 @@ pub(crate) struct RunRequestIdentity<'a> {
     pub actor_id: &'a str,
 }
 
-/// An existing Run for exactly this request, if any. Fails closed when the
-/// same `(domain, requestId)` arrives carrying a different payload: that is
-/// a caller reusing an id for new work, not a retry, and silently treating
-/// it as a replay would drop the new request on the floor.
+/// An existing Run for exactly this request, if any.
+///
+/// Fails closed on two different kinds of reuse: the same
+/// `(domain, requestId)` carrying a different payload, and the same
+/// `(domain, requestId)` presented by a different actor. Both are a caller
+/// reusing an id rather than retrying, and replaying someone else's
+/// approved operation is exactly the confusion request identity exists to
+/// prevent.
+///
+/// Reports the Run's `status` and stored `outcome` verbatim. Callers must
+/// branch on that status — a replayed Run that is `failed`, `running`, or
+/// `cancelled` is emphatically not a success, and treating "this request
+/// was seen before" as "this request succeeded" would report a repair that
+/// never ran as done.
 fn find_run_by_request_identity(
     conn: &Connection,
     project_id: &str,
     request: &RunRequestIdentity<'_>,
 ) -> anyhow::Result<Option<Value>> {
-    let existing: Option<(String, String, String)> = conn
+    let existing: Option<(String, String, String, String, Option<String>)> = conn
         .query_row(
-            "SELECT id, status, COALESCE(request_payload_digest, '')
+            "SELECT id, status, COALESCE(request_payload_digest, ''), COALESCE(actor_id, ''),
+                    outcome_summary_json
                FROM narrative_extraction_runs
               WHERE project_id = ?1
                 AND idempotency_domain = ?2
                 AND request_id = ?3",
             params![project_id, request.idempotency_domain, request.request_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((run_id, status, payload_digest)) = existing else {
+    let Some((run_id, status, payload_digest, actor_id, outcome_json)) = existing else {
         return Ok(None);
     };
     anyhow::ensure!(
@@ -379,12 +398,39 @@ fn find_run_by_request_identity(
         request.request_id,
         request.idempotency_domain
     );
+    anyhow::ensure!(
+        actor_id == request.actor_id,
+        "NEX_RUN_REQUEST_CONFLICT: requestId '{}' in domain '{}' was issued by actor \
+         '{actor_id}' for project '{project_id}'; actor '{}' may not replay it",
+        request.request_id,
+        request.idempotency_domain,
+        request.actor_id
+    );
+    let outcome = outcome_json
+        .as_deref()
+        .and_then(|text| serde_json::from_str::<Value>(text).ok())
+        .unwrap_or(Value::Null);
     Ok(Some(json!({
         "runId": run_id,
         "status": status,
         "reused": true,
         "replayed": true,
+        "outcome": outcome,
     })))
+}
+
+/// Record a Run's terminal outcome so a later replay of the same request
+/// can reproduce the original response instead of inventing a new one.
+pub(crate) fn record_run_outcome_in_tx(
+    conn: &Connection,
+    run_id: &str,
+    outcome: &Value,
+) -> anyhow::Result<()> {
+    conn.execute(
+        "UPDATE narrative_extraction_runs SET outcome_summary_json = ?1 WHERE id = ?2",
+        params![serde_json::to_string(outcome)?, run_id],
+    )?;
+    Ok(())
 }
 
 fn find_reusable_system_run(

@@ -170,9 +170,50 @@ function findAutomaticCallSites(rustFiles, repoRoot, symbol) {
   return callSites;
 }
 
+/**
+ * `state` and the blocked-* fields must agree, for every Run Kind.
+ *
+ * This runs before the automatic-trigger call-graph check and applies to
+ * manual-only Run Kinds too. A `wired` entry that still carries a
+ * `blockedOn` is the contract saying "this is live" and "this is waiting on
+ * something" in the same breath — a reader has no way to tell which half is
+ * current, which is exactly the drift `implementationStatus` exists to make
+ * impossible.
+ */
+function validateStateConsistency(entry, status, errors) {
+  if (status.state === "wired") {
+    if (isNonEmptyString(status.blockedReason)) {
+      errors.push(
+        `${entry.runKind} declares implementationStatus.state 'wired' but still carries a blockedReason — a wired Run Kind is not blocked on anything; drop the field or set state to 'unwired-blocked'`,
+      );
+    }
+    if (Array.isArray(status.blockedOn) && status.blockedOn.length > 0) {
+      errors.push(
+        `${entry.runKind} declares implementationStatus.state 'wired' but still carries blockedOn (${status.blockedOn.join(", ")}) — resolve the entries and drop the field, or set state to 'unwired-blocked'`,
+      );
+    }
+    return;
+  }
+
+  if (status.state === "unwired-blocked") {
+    if (!isNonEmptyString(status.blockedReason)) {
+      errors.push(
+        `${entry.runKind} is 'unwired-blocked' but has no blockedReason explaining why the declared trigger is not live`,
+      );
+    }
+    if (!Array.isArray(status.blockedOn) || status.blockedOn.length === 0) {
+      errors.push(
+        `${entry.runKind} is 'unwired-blocked' but has no blockedOn naming what must land first`,
+      );
+    }
+  }
+}
+
 function validateImplementationStatus(entry, rustFiles, repoRoot, errors) {
   const status = entry.implementationStatus;
   if (!isObject(status)) return;
+
+  validateStateConsistency(entry, status, errors);
 
   const isAutomatic =
     typeof entry.trigger === "string" && entry.trigger.startsWith("automatic");
@@ -205,22 +246,10 @@ function validateImplementationStatus(entry, rustFiles, repoRoot, errors) {
     );
   }
 
-  if (status.state === "unwired-blocked") {
-    if (callSites.length > 0) {
-      errors.push(
-        `${entry.runKind} declares implementationStatus.state 'unwired-blocked', but '${status.triggerSymbol}' now has ${callSites.length} production call site(s) (${callSites.join(", ")}) — the trigger was wired without updating this contract`,
-      );
-    }
-    if (!isNonEmptyString(status.blockedReason)) {
-      errors.push(
-        `${entry.runKind} is 'unwired-blocked' but has no blockedReason explaining why the declared trigger is not live`,
-      );
-    }
-    if (!Array.isArray(status.blockedOn) || status.blockedOn.length === 0) {
-      errors.push(
-        `${entry.runKind} is 'unwired-blocked' but has no blockedOn naming what must land first`,
-      );
-    }
+  if (status.state === "unwired-blocked" && callSites.length > 0) {
+    errors.push(
+      `${entry.runKind} declares implementationStatus.state 'unwired-blocked', but '${status.triggerSymbol}' now has ${callSites.length} production call site(s) (${callSites.join(", ")}) — the trigger was wired without updating this contract`,
+    );
   }
 }
 

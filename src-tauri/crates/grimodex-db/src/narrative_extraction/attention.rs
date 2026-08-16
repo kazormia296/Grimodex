@@ -24,7 +24,15 @@ use serde_json::json;
 
 use super::commit::digest_plan;
 use super::task_leases::with_immediate_transaction;
+use crate::idempotency::{
+    insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
+};
 use crate::Database;
+
+/// Scopes Attention `requestId`s in the shared `idempotency_requests`
+/// ledger so they cannot collide with a request id minted by any other
+/// surface.
+const ATTENTION_IDEMPOTENCY_DOMAIN: &str = "narrative.maintenance-attention";
 
 /// Transaction-owning wrapper over [`set_attention_in_tx`], for callers
 /// outside this crate (the N-API boundary). The OCC read and the write it
@@ -116,7 +124,10 @@ pub struct AttentionRow {
     /// nullable `set_by` this table carried before SCHEMA 25.
     pub actor_id: String,
     /// Caller-supplied identity of the request that last wrote this row,
-    /// used with `payload_digest` for idempotent replay.
+    /// with `payload_digest` of the decision it carried. Provenance, not
+    /// the replay record — replay is resolved from the durable
+    /// `idempotency_requests` receipt, which survives a `clear` deleting
+    /// this row.
     pub request_id: String,
     pub payload_digest: String,
     pub reason: Option<String>,
@@ -171,6 +182,109 @@ fn attention_payload_digest(request: &SetAttentionRequest<'_>) -> String {
         "actorId": request.actor_id,
     });
     format!("sha256:{}", digest_plan(&canonical))
+}
+
+/// Fingerprint of one Attention *request*, as filed in the shared
+/// `idempotency_requests` ledger.
+///
+/// Covers the operation, the row it targets, who decided it, and — for a
+/// `set` — [`attention_payload_digest`] of the decision itself. So a
+/// `clear` cannot replay a `set` under the same `requestId`, and neither
+/// can a different actor: both change the fingerprint, and a changed
+/// fingerprint under a known `requestId` is `NEX_ATTENTION_REQUEST_CONFLICT`.
+///
+/// Excludes `set_at` and `expected_version` for the same reason
+/// [`attention_payload_digest`] does: a retry is naturally later and may
+/// still carry the OCC token it was first built with.
+fn attention_request_fingerprint(
+    operation: &str,
+    project_id: &str,
+    finding_key: &str,
+    actor_id: &str,
+    decision_digest: Option<&str>,
+) -> anyhow::Result<String> {
+    payload_fingerprint(
+        ATTENTION_IDEMPOTENCY_DOMAIN,
+        &json!({
+            "operation": operation,
+            "projectId": project_id,
+            "findingKey": finding_key,
+            "actorId": actor_id,
+            "decisionDigest": decision_digest,
+        }),
+    )
+}
+
+fn attention_receipt_request<'a>(
+    request_id: &'a str,
+    payload_hash: &'a str,
+) -> IdempotencyRequest<'a> {
+    IdempotencyRequest {
+        domain: ATTENTION_IDEMPOTENCY_DOMAIN,
+        request_id: Some(request_id),
+        payload_hash,
+        conflict_marker: "NEX_ATTENTION_REQUEST_CONFLICT",
+    }
+}
+
+/// Resolves a replay from the durable ledger rather than from the Attention
+/// row.
+///
+/// The row cannot be the replay record: `clear` deletes it, so a retry of a
+/// clear that already landed would find nothing and — depending on the OCC
+/// token it carried — either silently "succeed" against a row someone else
+/// has since written, or fail as a version conflict. The ledger entry
+/// survives the delete, so the retry replays the answer the original call
+/// gave, and the receipt remains as the audit record of who cleared what.
+fn replayed_attention_outcome(
+    conn: &Connection,
+    request: &IdempotencyRequest<'_>,
+) -> anyhow::Result<Option<AttentionWriteOutcome>> {
+    let Some(receipt) = load_idempotent_response(conn, request)? else {
+        return Ok(None);
+    };
+    let version = receipt
+        .get("version")
+        .and_then(serde_json::Value::as_i64)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_ATTENTION_RECEIPT_MALFORMED: the stored receipt for this requestId has no \
+                 version"
+            )
+        })?;
+    Ok(Some(AttentionWriteOutcome {
+        version,
+        replayed: true,
+    }))
+}
+
+/// Files the durable receipt for an accepted write, in the caller's
+/// transaction — so the receipt and the row it describes commit together or
+/// not at all.
+#[allow(clippy::too_many_arguments)]
+fn record_attention_receipt(
+    conn: &Connection,
+    request: &IdempotencyRequest<'_>,
+    operation: &str,
+    project_id: &str,
+    finding_key: &str,
+    actor_id: &str,
+    decision_digest: Option<&str>,
+    version: i64,
+) -> anyhow::Result<()> {
+    insert_idempotent_response(
+        conn,
+        request,
+        project_id,
+        &json!({
+            "operation": operation,
+            "projectId": project_id,
+            "findingKey": finding_key,
+            "actorId": actor_id,
+            "payloadDigest": decision_digest,
+            "version": version,
+        }),
+    )
 }
 
 fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRow> {
@@ -256,30 +370,24 @@ pub fn set_attention_in_tx(
     };
 
     let payload_digest = attention_payload_digest(&request);
-    let existing = get_attention(conn, request.project_id, request.finding_key)?;
+    let fingerprint = attention_request_fingerprint(
+        "set",
+        request.project_id,
+        request.finding_key,
+        request.actor_id,
+        Some(&payload_digest),
+    )?;
+    let receipt = attention_receipt_request(request.request_id, &fingerprint);
 
-    // Replay is checked before OCC on purpose: a retry of a request that
+    // Replay is resolved before OCC on purpose: a retry of a request that
     // already landed may carry the expectedVersion it was first built with,
     // which is now stale. Treating that as a conflict would make retries
     // impossible, which is the opposite of what request identity is for.
-    if let Some(row) = &existing {
-        if row.request_id == request.request_id {
-            anyhow::ensure!(
-                row.payload_digest == payload_digest,
-                "NEX_ATTENTION_REQUEST_CONFLICT: requestId '{}' was already applied to finding \
-                 '{}' in project '{}' with a different decision; reusing a requestId for a new \
-                 decision is not a replay",
-                request.request_id,
-                request.finding_key,
-                request.project_id
-            );
-            return Ok(AttentionWriteOutcome {
-                version: row.version,
-                replayed: true,
-            });
-        }
+    if let Some(outcome) = replayed_attention_outcome(conn, &receipt)? {
+        return Ok(outcome);
     }
 
+    let existing = get_attention(conn, request.project_id, request.finding_key)?;
     let current_version = existing.as_ref().map_or(0, |row| row.version);
     anyhow::ensure!(
         current_version == request.expected_version,
@@ -334,6 +442,17 @@ pub fn set_attention_in_tx(
         request.project_id
     );
 
+    record_attention_receipt(
+        conn,
+        &receipt,
+        "set",
+        request.project_id,
+        request.finding_key,
+        request.actor_id,
+        Some(&payload_digest),
+        next_version,
+    )?;
+
     Ok(AttentionWriteOutcome {
         version: next_version,
         replayed: false,
@@ -345,6 +464,16 @@ pub fn set_attention_in_tx(
 /// caller expected it to be absent (`expected_version == 0`); clearing a row
 /// that has moved on since the caller read it is a conflict, not a silent
 /// delete.
+///
+/// Leaves a durable receipt in `idempotency_requests` in this same
+/// transaction. Two reasons the row itself cannot serve that purpose:
+///
+/// - a retry of a clear that already landed finds no row, so without the
+///   receipt it has no way to tell "I already did this" from "someone else
+///   has since written a row here";
+/// - the delete destroys the only record of who cleared the finding and
+///   under what request. The receipt keeps that, which is the point of
+///   requiring an `actorId` on durable user state at all.
 ///
 /// `pub`: called directly from `grimodex-node`'s
 /// `narrative_maintenance_attention_clear` N-API binding (C2-T1).
@@ -365,6 +494,17 @@ pub fn clear_attention_in_tx(
         "NEX_ATTENTION_VERSION_INVALID: expectedVersion must not be negative"
     );
 
+    let fingerprint =
+        attention_request_fingerprint("clear", project_id, finding_key, actor_id, None)?;
+    let receipt = attention_receipt_request(request_id, &fingerprint);
+
+    // Before OCC, for the same reason as in `set_attention_in_tx`: a retry
+    // carries the token it was first built with, and after a successful
+    // clear that token no longer describes anything.
+    if let Some(outcome) = replayed_attention_outcome(conn, &receipt)? {
+        return Ok(outcome);
+    }
+
     let current_version =
         get_attention(conn, project_id, finding_key)?.map_or(0, |row| row.version);
     anyhow::ensure!(
@@ -374,24 +514,34 @@ pub fn clear_attention_in_tx(
          and retry"
     );
 
-    if current_version == 0 {
-        // Nothing to delete and the caller knew it: a replayed clear.
-        return Ok(AttentionWriteOutcome {
-            version: 0,
-            replayed: true,
-        });
+    if current_version > 0 {
+        let deleted = conn.execute(
+            "DELETE FROM narrative_maintenance_attention
+              WHERE project_id = ?1 AND finding_key = ?2 AND version = ?3",
+            params![project_id, finding_key, expected_version],
+        )?;
+        anyhow::ensure!(
+            deleted == 1,
+            "NEX_ATTENTION_VERSION_CONFLICT: finding '{finding_key}' in project '{project_id}' \
+             changed while this clear was in flight; re-read the row and retry"
+        );
     }
+    // `current_version == 0` is a clear of an absent row the caller
+    // correctly expected to be absent: nothing to delete, but still a
+    // request that happened and still gets a receipt, so its retry replays
+    // instead of racing whatever is written next.
 
-    let deleted = conn.execute(
-        "DELETE FROM narrative_maintenance_attention
-          WHERE project_id = ?1 AND finding_key = ?2 AND version = ?3",
-        params![project_id, finding_key, expected_version],
+    record_attention_receipt(
+        conn,
+        &receipt,
+        "clear",
+        project_id,
+        finding_key,
+        actor_id,
+        None,
+        0,
     )?;
-    anyhow::ensure!(
-        deleted == 1,
-        "NEX_ATTENTION_VERSION_CONFLICT: finding '{finding_key}' in project '{project_id}' \
-         changed while this clear was in flight; re-read the row and retry"
-    );
+
     Ok(AttentionWriteOutcome {
         version: 0,
         replayed: false,
@@ -487,6 +637,25 @@ mod tests {
             request_id,
             reason: None,
             expected_version,
+        }
+    }
+
+    /// A `dismissed` set against a named finding, for the receipt tests
+    /// (which care about the request identity, not the disposition).
+    fn dismiss_request<'a>(
+        finding_key: &'a str,
+        request_id: &'a str,
+        expected_version: i64,
+    ) -> SetAttentionRequest<'a> {
+        SetAttentionRequest {
+            finding_key,
+            ..request(
+                AttentionDisposition::Dismissed,
+                "digest-1",
+                None,
+                request_id,
+                expected_version,
+            )
         }
     }
 
@@ -820,15 +989,176 @@ mod tests {
     }
 
     #[test]
-    fn clearing_an_absent_row_the_caller_expected_to_be_absent_is_a_replay() {
+    fn clearing_an_absent_row_the_caller_expected_to_be_absent_succeeds_once() {
         let db = fixture();
-        let outcome = db
+        let first = db
             .with_conn(|conn| {
                 clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 0)
             })
             .expect("clearing an absent row is not an error");
-        assert!(outcome.replayed);
-        assert_eq!(outcome.version, 0);
+        // Nothing was deleted, but the request still happened: `replayed`
+        // means "I have seen this requestId before", not "there was nothing
+        // to do".
+        assert!(!first.replayed);
+        assert_eq!(first.version, 0);
+
+        let retry = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 0)
+            })
+            .expect("the retry replays");
+        assert!(retry.replayed);
+        assert_eq!(retry.version, 0);
+    }
+
+    // -- durable request receipts -------------------------------------------
+
+    #[test]
+    fn a_cleared_finding_still_replays_its_clear_request() {
+        let db = fixture();
+        db.with_conn(|conn| set_attention_in_tx(conn, dismiss_request("finding-a", "req-set", 0)))
+            .expect("set");
+        let cleared = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-clear", 1)
+            })
+            .expect("clear");
+        assert!(!cleared.replayed);
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("get")
+            .is_none());
+
+        // The row is gone, so the row cannot be the replay record. The
+        // receipt is, and it still carries the same stale expectedVersion
+        // the original call was built with.
+        let retry = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-clear", 1)
+            })
+            .expect("a retry of a landed clear replays instead of conflicting");
+        assert!(retry.replayed);
+        assert_eq!(retry.version, 0);
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("get")
+            .is_none());
+    }
+
+    #[test]
+    fn a_clear_receipt_records_who_cleared_what() {
+        let db = fixture();
+        db.with_conn(|conn| set_attention_in_tx(conn, dismiss_request("finding-a", "req-set", 0)))
+            .expect("set");
+        db.with_conn(|conn| {
+            clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-clear", 1)
+        })
+        .expect("clear");
+
+        // The delete destroys the row's own actor/request columns, so the
+        // receipt is the only surviving record of the decision.
+        let receipt = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT tombstone_json FROM idempotency_requests
+                      WHERE domain = ?1 AND request_id = 'req-clear'",
+                    params![ATTENTION_IDEMPOTENCY_DOMAIN],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("the clear left a receipt");
+        let receipt: serde_json::Value = serde_json::from_str(&receipt).expect("receipt is json");
+        assert_eq!(receipt["operation"].as_str(), Some("clear"));
+        assert_eq!(receipt["projectId"].as_str(), Some("proj-1"));
+        assert_eq!(receipt["findingKey"].as_str(), Some("finding-a"));
+        assert_eq!(receipt["actorId"].as_str(), Some("user-1"));
+    }
+
+    #[test]
+    fn reusing_a_clear_request_id_for_a_different_finding_fails_closed() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 0)
+        })
+        .expect("first clear");
+
+        let error = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-b", "user-1", "req-1", 0)
+            })
+            .expect_err("one requestId identifies one request, not one per finding");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_different_actor_may_not_replay_another_actors_clear() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 0)
+        })
+        .expect("first clear");
+
+        let error = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-2", "req-1", 0)
+            })
+            .expect_err("a different actor reusing a requestId is a conflict, not a replay");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn a_clear_may_not_replay_a_set_under_the_same_request_id() {
+        let db = fixture();
+        db.with_conn(|conn| set_attention_in_tx(conn, dismiss_request("finding-a", "req-1", 0)))
+            .expect("set");
+
+        let error = db
+            .with_conn(|conn| {
+                clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-1", 1)
+            })
+            .expect_err("set and clear are different operations, not a replay of each other");
+        assert!(
+            error.to_string().contains("NEX_ATTENTION_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+        assert!(
+            db.with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+                .expect("get")
+                .is_some(),
+            "the rejected clear must not have deleted anything"
+        );
+    }
+
+    #[test]
+    fn a_set_replays_from_the_receipt_even_after_the_row_was_cleared() {
+        let db = fixture();
+        db.with_conn(|conn| set_attention_in_tx(conn, dismiss_request("finding-a", "req-set", 0)))
+            .expect("set");
+        db.with_conn(|conn| {
+            clear_attention_in_tx(conn, "proj-1", "finding-a", "user-1", "req-clear", 1)
+        })
+        .expect("clear");
+
+        // A delayed retry of the original set must not resurrect the row the
+        // user has since cleared.
+        let replay = db
+            .with_conn(|conn| set_attention_in_tx(conn, dismiss_request("finding-a", "req-set", 0)))
+            .expect("the retry replays");
+        assert!(replay.replayed);
+        assert_eq!(replay.version, 1);
+        assert!(
+            db.with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+                .expect("get")
+                .is_none(),
+            "a replayed set must not resurrect a cleared row"
+        );
     }
 
     #[test]

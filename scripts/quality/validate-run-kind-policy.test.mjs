@@ -305,6 +305,62 @@ describe("validate-run-kind-policy", () => {
     assert.deepEqual(result.errors, []);
   });
 
+  // dependency-repair is manual-only, so it has no triggerSymbol and never
+  // reaches the call-graph check. Its state/blockedOn consistency still has
+  // to be checked, or a 'wired' Run Kind can keep a stale blockedOn forever.
+  it("rejects a manual-only run kind marked 'wired' that still carries blockedOn", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const repair = runKindPolicy.runKinds.find(
+      (entry) => entry.runKind === "dependency-repair",
+    );
+    repair.implementationStatus.blockedReason = "still waiting on something";
+    repair.implementationStatus.blockedOn = ["some-open-item"];
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-repair") &&
+          error.includes("'wired'") &&
+          error.includes("blockedOn"),
+      ),
+      `expected a wired/blockedOn contradiction error, got: ${JSON.stringify(result.errors)}`,
+    );
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-repair") &&
+          error.includes("blockedReason"),
+      ),
+      `expected a wired/blockedReason contradiction error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects a manual-only run kind marked 'unwired-blocked' with no blockedOn", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const repair = runKindPolicy.runKinds.find(
+      (entry) => entry.runKind === "dependency-repair",
+    );
+    repair.implementationStatus.state = "unwired-blocked";
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-repair") &&
+          error.includes("blockedReason"),
+      ),
+      `expected a missing-blockedReason error, got: ${JSON.stringify(result.errors)}`,
+    );
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-repair") && error.includes("blockedOn"),
+      ),
+      `expected a missing-blockedOn error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
   it("rejects a duplicate runKind entry", () => {
     const runKindPolicy = baseRunKindPolicy();
     runKindPolicy.runKinds.push({ ...runKindPolicy.runKinds[0] });

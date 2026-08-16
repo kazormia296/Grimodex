@@ -46,9 +46,12 @@ use serde_json::json;
 
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
-use super::repository::{create_system_run_in_tx, RunRequestIdentity, SystemRunWorkKeyReuse};
+use super::repository::{
+    create_system_run_in_tx, record_run_outcome_in_tx, RunRequestIdentity, SystemRunWorkKeyReuse,
+};
 use super::restore_rebuild::{
     duplicate_edge_ids_to_deactivate, rebuild_repair_dependency_edges_in_tx,
+    DependencyGraphVerifyReport, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::semantic_epoch::get_current_epoch;
 use super::task_leases::with_immediate_transaction;
@@ -185,6 +188,10 @@ pub(crate) fn release_repair_lease_in_tx(
 pub struct RepairPlan {
     pub verify_run_id: String,
     pub semantic_epoch_id: String,
+    /// Digest of the exact Verify report this plan was derived from,
+    /// sealed into [`RepairPlan::digest`]. Two plans naming the same Edge
+    /// ids but derived from different Verify results are different plans.
+    pub verify_report_digest: String,
     pub edge_ids_to_deactivate: Vec<String>,
     pub digest: String,
 }
@@ -197,14 +204,29 @@ impl RepairPlan {
     }
 }
 
-/// Seals a Repair plan for one project. Today only the
-/// `deactivate-duplicate-edge` category
-/// (`restore_rebuild::duplicate_edge_ids_to_deactivate`) is populated --
-/// see this module's doc comment on why the other five `allowedRepairs`
+/// Seals a Repair plan for one project, **from a stored, completed
+/// `dependency-verify` Run**. Today only the `deactivate-duplicate-edge`
+/// category (`restore_rebuild::duplicate_edge_ids_to_deactivate`, surfaced
+/// on the report as `duplicateEdgeIdsToDeactivate`) is populated -- see
+/// this module's doc comment on why the other five `allowedRepairs`
 /// categories cannot be proposed yet. An empty plan (nothing this Verify
 /// coverage can propose a repair for) is a valid, non-error outcome; the
 /// caller should not proceed to
 /// [`repair_narrative_dependency_declarations_for_project`] with one.
+///
+/// `verifyRunId` is a *reference*, not a label. Every property the
+/// policy's `verify-first` precondition depends on is checked here and
+/// fails closed, because a Repair that trusts an unchecked run id is a
+/// Repair with no verify-first precondition at all:
+///
+/// - the Run exists, belongs to `projectId`, and is a `dependency-verify`
+/// - it reached `completed` -- a `failed`/`running` Verify proves nothing
+/// - it ran under `semanticEpochId` -- a Verify from a prior generation
+///   describes a graph that no longer exists
+/// - it stored a Verify result under the *current* contract version, whose
+///   recomputed digest still matches the digest recorded alongside it
+/// - the live duplicate set still matches the one that Verify recorded, so
+///   the plan describes the graph as it is now and not as it was
 pub fn seal_repair_plan(
     conn: &Connection,
     project_id: &str,
@@ -218,12 +240,34 @@ pub fn seal_repair_plan(
         "semanticEpochId is required"
     );
 
-    let mut edge_ids_to_deactivate = duplicate_edge_ids_to_deactivate(conn, project_id)?;
+    let verify = load_sealable_verify_result(conn, project_id, verify_run_id, semantic_epoch_id)?;
+
+    // Derived from the Verify result, in the literal sense: this is the
+    // list that Verify recorded, not a fresh re-derivation that merely
+    // happens to be labelled with a Verify Run id.
+    let mut edge_ids_to_deactivate = verify.report.duplicate_edge_ids_to_deactivate.clone();
     edge_ids_to_deactivate.sort();
+    edge_ids_to_deactivate.dedup();
+
+    // ...but a stored result is a snapshot, and Repair deletes rows. If
+    // the graph moved since Verify observed it, the honest answer is
+    // "re-verify", not "apply a plan derived from a stale observation".
+    let mut live = duplicate_edge_ids_to_deactivate(conn, project_id)?;
+    live.sort();
+    live.dedup();
+    anyhow::ensure!(
+        live == edge_ids_to_deactivate,
+        "NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY: the Durable Graph's duplicate Edges no longer \
+         match Verify Run '{verify_run_id}' ({} recorded, {} live) -- run a fresh \
+         dependency-verify and seal from that result",
+        edge_ids_to_deactivate.len(),
+        live.len()
+    );
 
     let sealed = json!({
-        "planKind": "dependency-repair-v1",
+        "planKind": "dependency-repair-v2",
         "verifyRunId": verify_run_id,
+        "verifyReportDigest": verify.report_digest,
         "semanticEpochId": semantic_epoch_id,
         "edgeIdsToDeactivate": edge_ids_to_deactivate,
     });
@@ -232,8 +276,139 @@ pub fn seal_repair_plan(
     Ok(RepairPlan {
         verify_run_id: verify_run_id.to_string(),
         semantic_epoch_id: semantic_epoch_id.to_string(),
+        verify_report_digest: verify.report_digest,
         edge_ids_to_deactivate,
         digest,
+    })
+}
+
+/// The Verify result a Repair plan may be sealed from.
+struct SealableVerifyResult {
+    report_digest: String,
+    report: DependencyGraphVerifyReport,
+}
+
+/// Resolves `verify_run_id` into the Verify result it produced, or fails
+/// closed. See [`seal_repair_plan`]'s doc comment for the list of
+/// properties enforced and why each one matters; every rejection carries
+/// its own `NEX_REPAIR_VERIFY_*` code so a caller can tell "no such Run"
+/// from "that Run is still running" from "that Run is from a prior Epoch".
+fn load_sealable_verify_result(
+    conn: &Connection,
+    project_id: &str,
+    verify_run_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<SealableVerifyResult> {
+    /// The `narrative_extraction_runs` columns this check reads.
+    struct VerifyRunRow {
+        project_id: String,
+        run_kind: String,
+        status: String,
+        semantic_epoch_id: Option<String>,
+        outcome_summary_json: Option<String>,
+    }
+
+    let row = conn
+        .query_row(
+            "SELECT project_id, run_kind, status, semantic_epoch_id, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![verify_run_id],
+            |row| {
+                Ok(VerifyRunRow {
+                    project_id: row.get(0)?,
+                    run_kind: row.get(1)?,
+                    status: row.get(2)?,
+                    semantic_epoch_id: row.get(3)?,
+                    outcome_summary_json: row.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+
+    let Some(VerifyRunRow {
+        project_id: run_project_id,
+        run_kind,
+        status,
+        semantic_epoch_id: run_epoch_id,
+        outcome_summary_json: outcome_json,
+    }) = row
+    else {
+        anyhow::bail!(
+            "NEX_REPAIR_VERIFY_RUN_NOT_FOUND: no Run '{verify_run_id}' to seal a Repair plan from"
+        );
+    };
+    anyhow::ensure!(
+        run_project_id == project_id,
+        "NEX_REPAIR_VERIFY_RUN_PROJECT_MISMATCH: Run '{verify_run_id}' belongs to project \
+         '{run_project_id}', not '{project_id}'"
+    );
+    anyhow::ensure!(
+        run_kind == VERIFY_RUN_KIND,
+        "NEX_REPAIR_VERIFY_RUN_KIND_MISMATCH: Run '{verify_run_id}' is a '{run_kind}', not a \
+         '{VERIFY_RUN_KIND}'"
+    );
+    anyhow::ensure!(
+        status == "completed",
+        "NEX_REPAIR_VERIFY_RUN_NOT_COMPLETED: Verify Run '{verify_run_id}' is '{status}'; only a \
+         completed Verify can seal a Repair plan"
+    );
+    let run_epoch_id = run_epoch_id.unwrap_or_default();
+    anyhow::ensure!(
+        run_epoch_id == semantic_epoch_id,
+        "NEX_REPAIR_VERIFY_RUN_EPOCH_MISMATCH: Verify Run '{verify_run_id}' ran under Semantic \
+         Epoch '{run_epoch_id}', not the current '{semantic_epoch_id}'"
+    );
+
+    let outcome: serde_json::Value = outcome_json
+        .as_deref()
+        .filter(|json| !json.trim().is_empty())
+        .map(serde_json::from_str)
+        .transpose()?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_REPAIR_VERIFY_RESULT_MISSING: Verify Run '{verify_run_id}' recorded no result"
+            )
+        })?;
+
+    let contract_version = outcome
+        .get("verifyContractVersion")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    anyhow::ensure!(
+        contract_version == VERIFY_CONTRACT_VERSION,
+        "NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH: Verify Run '{verify_run_id}' recorded a \
+         version-'{contract_version}' result; this build seals only version \
+         '{VERIFY_CONTRACT_VERSION}'"
+    );
+
+    let report_value = outcome.get("report").ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_REPAIR_VERIFY_RESULT_MISSING: Verify Run '{verify_run_id}' recorded no report"
+        )
+    })?;
+    let recorded_digest = outcome
+        .get("reportDigest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    let recomputed_digest = format!("sha256:{}", digest_plan(report_value));
+    anyhow::ensure!(
+        recorded_digest == recomputed_digest,
+        "NEX_REPAIR_VERIFY_RESULT_DIGEST_MISMATCH: Verify Run '{verify_run_id}' recorded digest \
+         '{recorded_digest}' but its stored report digests to '{recomputed_digest}'"
+    );
+
+    let report: DependencyGraphVerifyReport = serde_json::from_value(report_value.clone())
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_REPAIR_VERIFY_RESULT_MISSING: Verify Run '{verify_run_id}' recorded a report \
+                 this build cannot read: {error}"
+            )
+        })?;
+
+    Ok(SealableVerifyResult {
+        report_digest: recomputed_digest,
+        report,
     })
 }
 
@@ -369,14 +544,130 @@ pub fn repair_narrative_dependency_declarations_for_project(
         .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
         .to_string();
     if run["replayed"].as_bool().unwrap_or(false) {
-        // This exact request already ran. Replay its outcome rather than
-        // deactivating the same edges a second time.
-        return Ok(RepairOutcome {
-            edges_deactivated: 0,
-            backup_artifact_path: String::new(),
-        });
+        // "This request was seen before" is not "this request succeeded".
+        // Only a completed Run replays as success, and it replays the
+        // outcome it actually produced.
+        return replay_repair_outcome(
+            &run_id,
+            run["status"].as_str().unwrap_or(""),
+            &run["outcome"],
+        );
     }
 
+    // Everything past Run creation must land the Run in a terminal state,
+    // including the epoch/lease/backup preconditions -- otherwise a failed
+    // attempt leaves a `running` Run that a later replay would have to
+    // guess about.
+    let result = execute_repair_under_run(
+        db,
+        workspace_path,
+        project_id,
+        plan,
+        lease_owner,
+        &now_text,
+        &expires_at,
+        &run_id,
+    );
+    match &result {
+        Ok(outcome) => {
+            let recorded = json!({
+                "edgesDeactivated": outcome.edges_deactivated,
+                "backupArtifactPath": outcome.backup_artifact_path,
+            });
+            finalize_repair_run(db, &run_id, NarrativeRunStatus::Completed, Some(&recorded));
+        }
+        Err(error) => {
+            let recorded = json!({ "failure": error.to_string() });
+            finalize_repair_run(db, &run_id, NarrativeRunStatus::Failed, Some(&recorded));
+        }
+    }
+    result
+}
+
+/// Reproduce the response a previously-seen request already produced.
+///
+/// Deliberately exhaustive over the Run status vocabulary: a replay must
+/// never report work as done that did not happen, and a status this
+/// function does not recognise is a reason to fail closed rather than
+/// assume success.
+fn replay_repair_outcome(
+    run_id: &str,
+    status: &str,
+    outcome: &serde_json::Value,
+) -> anyhow::Result<RepairOutcome> {
+    match status {
+        "completed" => Ok(RepairOutcome {
+            edges_deactivated: outcome
+                .get("edgesDeactivated")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize,
+            backup_artifact_path: outcome
+                .get("backupArtifactPath")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        }),
+        "failed" => {
+            let failure = outcome
+                .get("failure")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("the original attempt failed without a recorded reason");
+            anyhow::bail!(
+                "NEX_REPAIR_REQUEST_FAILED: this request already ran as Run '{run_id}' and \
+                 failed: {failure}. Seal a fresh plan and issue a new requestId to retry."
+            )
+        }
+        "pending" | "running" => anyhow::bail!(
+            "NEX_REPAIR_REQUEST_IN_PROGRESS: this request is already running as Run '{run_id}'; \
+             wait for it to finish rather than starting a second repair"
+        ),
+        "cancelled" | "superseded" => anyhow::bail!(
+            "NEX_REPAIR_REQUEST_TERMINAL: this request's Run '{run_id}' is '{status}' and will \
+             not produce a result; issue a new requestId"
+        ),
+        other => anyhow::bail!(
+            "NEX_REPAIR_REQUEST_UNKNOWN_STATUS: Run '{run_id}' has unrecognized status \
+             '{other}'; refusing to treat it as a successful replay"
+        ),
+    }
+}
+
+/// Land a Repair Run in a terminal state and store the outcome a replay
+/// will reproduce. Failures here are logged rather than propagated: they
+/// must not mask the real repair result, but they must not be silent
+/// either, since a Run stuck `running` blocks every later replay.
+fn finalize_repair_run(
+    db: &Database,
+    run_id: &str,
+    status: NarrativeRunStatus,
+    outcome: Option<&serde_json::Value>,
+) {
+    let result = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            if let Some(outcome) = outcome {
+                record_run_outcome_in_tx(conn, run_id, outcome)?;
+            }
+            transition_run_status_in_tx(conn, run_id, status)
+        })
+    });
+    if let Err(error) = result {
+        tracing::error!(
+            "dependency-repair: failed to finalize run '{run_id}' as {status:?}: {error}"
+        );
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn execute_repair_under_run(
+    db: &Database,
+    workspace_path: &Path,
+    project_id: &str,
+    plan: &RepairPlan,
+    lease_owner: &str,
+    now_text: &str,
+    expires_at: &str,
+    _run_id: &str,
+) -> anyhow::Result<RepairOutcome> {
     // 1. Epoch match + lease claim.
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -402,8 +693,8 @@ pub fn repair_narrative_dependency_declarations_for_project(
                     repair_plan_digest: plan.digest.clone(),
                 },
                 &current_epoch_id,
-                &now_text,
-                &expires_at,
+                now_text,
+                expires_at,
             )
         })
     })?;
@@ -436,32 +727,17 @@ pub fn repair_narrative_dependency_declarations_for_project(
         })
     });
 
-    // 4. Land the Run in a terminal state either way, so a repair leaves an
-    //    auditable record of who ran what under which request rather than a
-    //    Run stuck at `running`.
-    let finalize = |status| {
-        let _ = db.with_conn(|conn| {
-            with_immediate_transaction(conn, |conn| {
-                transition_run_status_in_tx(conn, &run_id, status)
-            })
-        });
-    };
-
     match execute_result {
-        Ok(edges_deactivated) => {
-            finalize(NarrativeRunStatus::Completed);
-            Ok(RepairOutcome {
-                edges_deactivated,
-                backup_artifact_path,
-            })
-        }
+        Ok(edges_deactivated) => Ok(RepairOutcome {
+            edges_deactivated,
+            backup_artifact_path,
+        }),
         Err(error) => {
             let _ = db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     release_repair_lease_in_tx(conn, project_id)
                 })
             });
-            finalize(NarrativeRunStatus::Failed);
             Err(error)
         }
     }
@@ -473,6 +749,9 @@ mod tests {
     use super::*;
     use crate::narrative_extraction::dependency_edges::{
         record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+    };
+    use crate::narrative_extraction::restore_rebuild::{
+        run_dependency_verify_for_project, verify_narrative_dependency_graph_for_project,
     };
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use std::path::PathBuf;
@@ -505,6 +784,52 @@ mod tests {
     fn seed_epoch(db: &Database, project_id: &str) -> String {
         db.with_conn(|conn| create_epoch_in_tx(conn, project_id, "initial", None))
             .expect("create epoch")
+    }
+
+    /// Runs a real `dependency-verify` and returns its Run id. Sealing a
+    /// plan needs one: `seal_repair_plan` reads its candidates out of a
+    /// completed Verify Run's stored result, so a made-up run id is not a
+    /// shortcut a test can take either.
+    ///
+    /// Call this *after* seeding whatever the Verify is supposed to
+    /// observe -- the report is a snapshot, and sealing against a graph
+    /// that moved since is exactly what `seal_repair_plan` rejects.
+    fn seed_verify_run(db: &Database, project_id: &str) -> String {
+        run_dependency_verify_for_project(db, project_id)
+            .expect("run a dependency-verify")
+            .run_id
+    }
+
+    /// Seeds a Run of an arbitrary kind/status directly, for the cases
+    /// where `seal_repair_plan` has to reject the Run it is handed.
+    fn seed_raw_run(
+        db: &Database,
+        run_id: &str,
+        project_id: &str,
+        run_kind: &str,
+        status: &str,
+        epoch_id: &str,
+        outcome: Option<&serde_json::Value>,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, created_at, run_kind, semantic_epoch_id, outcome_summary_json)
+                 VALUES (?1, ?2, 'surface', '{}', '{}', 'sha256:spec', ?3,
+                         '2026-08-15T00:00:00.000Z', ?4, ?5, ?6)",
+                params![
+                    run_id,
+                    project_id,
+                    status,
+                    run_kind,
+                    epoch_id,
+                    outcome.map(serde_json::Value::to_string),
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed a raw run");
     }
 
     fn seed_duplicate_edges(db: &Database) -> (String, String) {
@@ -594,8 +919,9 @@ mod tests {
         let epoch_id = seed_epoch(&db, "project-1");
         let (old_id, new_id) = seed_duplicate_edges(&db);
 
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id.clone()]);
         assert_eq!(plan.change_count(), 1);
@@ -621,11 +947,239 @@ mod tests {
         })
         .expect("seed a single healthy edge");
 
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert!(plan.edge_ids_to_deactivate.is_empty());
         assert_eq!(plan.change_count(), 0);
+    }
+
+    // -- seal_repair_plan: the verify-first precondition ---------------------
+    //
+    // `verifyRunId` used to be a free string, so every one of these cases
+    // sealed a plan happily. Each now has to fail closed with its own code.
+
+    #[test]
+    fn sealing_against_a_verify_run_that_does_not_exist_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "no-such-run", &epoch_id))
+            .expect_err("a nonexistent Verify Run must not seal a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RUN_NOT_FOUND"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_against_a_failed_or_running_verify_run_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+
+        for status in ["failed", "running", "pending", "cancelled"] {
+            let run_id = format!("verify-{status}");
+            seed_raw_run(
+                &db,
+                &run_id,
+                "project-1",
+                VERIFY_RUN_KIND,
+                status,
+                &epoch_id,
+                None,
+            );
+            let error = db
+                .with_conn(|conn| seal_repair_plan(conn, "project-1", &run_id, &epoch_id))
+                .expect_err("a Verify Run that did not complete must not seal a plan");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_REPAIR_VERIFY_RUN_NOT_COMPLETED"),
+                "unexpected error for status '{status}': {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn sealing_against_another_projects_verify_run_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Other')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed the other project");
+        let other_epoch_id = seed_epoch(&db, "project-2");
+        let other_run_id = seed_verify_run(&db, "project-2");
+        // The other project's Verify really did complete -- the only thing
+        // wrong with it is whose graph it describes.
+        assert_ne!(other_epoch_id, epoch_id);
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &other_run_id, &epoch_id))
+            .expect_err("another project's Verify Run must not seal this project's plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RUN_PROJECT_MISMATCH"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_against_a_prior_epochs_verify_run_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let stale_run_id = seed_verify_run(&db, "project-1");
+        // Rotate the generation out from under the completed Verify.
+        let current_epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "migration", None))
+            .expect("rotate epoch");
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &stale_run_id, &current_epoch_id))
+            .expect_err("a Verify from a prior Semantic Epoch must not seal a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RUN_EPOCH_MISMATCH"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_against_a_run_that_is_not_a_dependency_verify_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        // A completed Run under the right project and Epoch, carrying a
+        // perfectly well-formed Verify result -- of the wrong Run Kind.
+        // `semantic-index-rebuild` is what `dependency-rebuild-derived`
+        // actually stores (the policy's `existingRunKindColumnValue`).
+        let borrowed = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("produce a report to borrow");
+        let report_value = serde_json::to_value(&borrowed).expect("serialize report");
+        seed_raw_run(
+            &db,
+            "not-a-verify",
+            "project-1",
+            "semantic-index-rebuild",
+            "completed",
+            &epoch_id,
+            Some(&json!({
+                "verifyContractVersion": VERIFY_CONTRACT_VERSION,
+                "semanticEpochId": epoch_id,
+                "reportDigest": format!("sha256:{}", digest_plan(&report_value)),
+                "report": report_value,
+            })),
+        );
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "not-a-verify", &epoch_id))
+            .expect_err("only a dependency-verify Run may seal a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RUN_KIND_MISMATCH"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_a_repair_target_the_verify_result_never_saw_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        // Verify observes a clean graph...
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        // ...and only afterwards does the duplicate appear. The plan this
+        // Verify can justify is empty; deactivating an Edge it never
+        // examined would be a repair with no verify-first precondition.
+        seed_duplicate_edges(&db);
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect_err("a target outside the Verify result must not be sealed into a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn sealing_against_a_tampered_verify_result_fails_closed() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        let (old_id, _new_id) = seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        // Rewrite the stored report without touching its recorded digest:
+        // the sealed plan must not be derivable from a result that no
+        // longer matches the digest Verify signed it with.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET outcome_summary_json =
+                          json_set(outcome_summary_json, '$.report.totalEdges', 999)
+                  WHERE id = ?1",
+                params![verify_run_id],
+            )?;
+            Ok(())
+        })
+        .expect("tamper with the stored report");
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect_err("a report that no longer matches its digest must not seal a plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RESULT_DIGEST_MISMATCH"),
+            "unexpected error: {error}"
+        );
+        // And the untampered path still works, so the assertion above is
+        // about the tampering and not about the fixture.
+        let fresh_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &fresh_run_id, &epoch_id))
+            .expect("seal from an untampered Verify result");
+        assert_eq!(plan.edge_ids_to_deactivate, vec![old_id]);
+        assert!(plan.verify_report_digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn the_verify_report_digest_is_sealed_into_the_plan_digest() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let first_run_id = seed_verify_run(&db, "project-1");
+        let second_run_id = seed_verify_run(&db, "project-1");
+        assert_ne!(first_run_id, second_run_id);
+
+        let first = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &first_run_id, &epoch_id))
+            .expect("seal from the first Verify");
+        let second = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &second_run_id, &epoch_id))
+            .expect("seal from the second Verify");
+
+        // Same graph, same candidates, same report digest -- but a plan is
+        // bound to the Verify Run it was sealed from, so the digests differ.
+        assert_eq!(first.edge_ids_to_deactivate, second.edge_ids_to_deactivate);
+        assert_eq!(first.verify_report_digest, second.verify_report_digest);
+        assert_ne!(first.digest, second.digest);
     }
 
     #[test]
@@ -636,6 +1190,7 @@ mod tests {
         let plan = RepairPlan {
             verify_run_id: "verify-run-1".to_string(),
             semantic_epoch_id: epoch_id,
+            verify_report_digest: "sha256:test-report".to_string(),
             edge_ids_to_deactivate: vec![old_id],
             digest: "sha256:test".to_string(),
         };
@@ -661,8 +1216,9 @@ mod tests {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -710,13 +1266,212 @@ mod tests {
         assert_eq!(actor_id.as_deref(), Some("operator-1"));
     }
 
+    /// The hazard this whole status-aware replay path exists for: an
+    /// attempt that never repaired anything must not come back as success
+    /// just because the request id was seen before.
+    #[test]
+    fn replaying_a_request_whose_run_failed_does_not_report_success() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+
+        // Rotate the Epoch so the sealed plan is stale: the repair fails at
+        // the epoch precondition, before anything is deactivated.
+        db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "restore", None))
+            .expect("rotate epoch");
+
+        let first = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-failed-1",
+            "operator-1",
+        )
+        .expect_err("stale epoch must fail");
+        assert!(
+            first.to_string().contains("NEX_REPAIR_EPOCH_MISMATCH"),
+            "unexpected error: {first}"
+        );
+
+        // The Run must be terminal, not stuck `running`.
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1' AND run_kind = 'dependency-repair'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("repair run exists");
+        assert_eq!(status, "failed");
+
+        // Re-sending the same request must not be reported as a success.
+        let replay = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-failed-1",
+            "operator-1",
+        )
+        .expect_err("replaying a failed request must not succeed");
+        assert!(
+            replay.to_string().contains("NEX_REPAIR_REQUEST_FAILED"),
+            "unexpected error: {replay}"
+        );
+
+        // And nothing was deactivated by either call.
+        assert_eq!(edge_count(&db), 2);
+    }
+
+    #[test]
+    fn a_different_actor_may_not_replay_another_actors_repair_request() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-actor-1",
+            "operator-1",
+        )
+        .expect("first repair");
+
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-actor-1",
+            "operator-2",
+        )
+        .expect_err("another actor must not replay this request");
+        assert!(
+            error.to_string().contains("NEX_RUN_REQUEST_CONFLICT"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn replaying_a_still_running_request_is_reported_as_in_progress() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-running-1",
+            "operator-1",
+        )
+        .expect("first repair");
+
+        // Simulate a process that died mid-repair: the Run never reached a
+        // terminal state.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'running'
+                  WHERE project_id = 'project-1' AND run_kind = 'dependency-repair'",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("force running");
+
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-running-1",
+            "operator-1",
+        )
+        .expect_err("a running request must not replay as success");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_REQUEST_IN_PROGRESS"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn replaying_a_completed_request_reproduces_the_original_outcome() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+
+        let first = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-outcome-1",
+            "operator-1",
+        )
+        .expect("first repair");
+
+        let replay = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "test-owner",
+            true,
+            "req-outcome-1",
+            "operator-1",
+        )
+        .expect("replay must succeed");
+
+        // A replay reproduces the original response, not a fresh empty one.
+        assert_eq!(replay.edges_deactivated, first.edges_deactivated);
+        assert_eq!(replay.backup_artifact_path, first.backup_artifact_path);
+    }
+
     #[test]
     fn replaying_the_same_repair_request_does_not_repair_twice() {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         let first = repair_narrative_dependency_declarations_for_project(
@@ -747,7 +1502,9 @@ mod tests {
             "operator-1",
         )
         .expect("replay must succeed");
-        assert_eq!(replay.edges_deactivated, 0);
+        // A replay reproduces the original response rather than reporting a
+        // second, empty repair -- but it must not touch any further edges.
+        assert_eq!(replay.edges_deactivated, first.edges_deactivated);
         assert_eq!(edge_count(&db), edges_after_first);
 
         let run_count: i64 = db
@@ -769,8 +1526,9 @@ mod tests {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         repair_narrative_dependency_declarations_for_project(
@@ -811,8 +1569,9 @@ mod tests {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
 
         for (request_id, actor_id) in [("", "operator-1"), ("  ", "operator-1"), ("req-1", "")] {
@@ -853,8 +1612,9 @@ mod tests {
         let (workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");
         let (old_id, new_id) = seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
         let plan = db
-            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-run-1", &epoch_id))
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
             .expect("seal plan");
         assert_eq!(plan.edge_ids_to_deactivate, vec![old_id.clone()]);
 
@@ -908,6 +1668,7 @@ mod tests {
         let plan = RepairPlan {
             verify_run_id: "verify-run-1".to_string(),
             semantic_epoch_id: epoch_id,
+            verify_report_digest: "sha256:test-report".to_string(),
             edge_ids_to_deactivate: vec![old_id],
             digest: "sha256:test".to_string(),
         };

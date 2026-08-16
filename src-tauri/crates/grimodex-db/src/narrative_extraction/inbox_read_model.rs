@@ -307,6 +307,10 @@ mod tests {
     /// so repeated sets on one finding still upsert the way they did before
     /// SCHEMA 25, and derives a fresh requestId per write so a second write
     /// is a new decision rather than a replay.
+    ///
+    /// The id is scoped by finding *and* version: a requestId identifies one
+    /// request across the whole Attention domain, so two findings sharing
+    /// one is a conflict, not two independent writes.
     #[allow(clippy::too_many_arguments)]
     fn set_attention_for_test(
         conn: &Connection,
@@ -320,7 +324,7 @@ mod tests {
     ) -> anyhow::Result<AttentionWriteOutcome> {
         let expected_version =
             get_attention(conn, project_id, finding_key)?.map_or(0, |row| row.version);
-        let request_id = format!("req-test-{expected_version}");
+        let request_id = format!("req-test-{project_id}-{finding_key}-{expected_version}");
         set_attention_in_tx(
             conn,
             SetAttentionRequest {

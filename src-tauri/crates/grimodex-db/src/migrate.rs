@@ -4315,8 +4315,13 @@ impl Database {
 
     /// SCHEMA 25: give `narrative_maintenance_attention` the controls its
     /// ADR 006 route requires — `version` (OCC), `request_id` +
-    /// `payload_digest` (idempotent replay), a mandatory `actor_id`, and an
-    /// optional `reason`.
+    /// `payload_digest` (the provenance of the write that last touched the
+    /// row), a mandatory `actor_id`, and an optional `reason`.
+    ///
+    /// Replay itself is resolved from the shared `idempotency_requests`
+    /// ledger, not from these columns: `clear` deletes the row, so a row
+    /// that is gone cannot answer "have I already applied this requestId?".
+    /// See `attention.rs`'s `clear_attention_in_tx`.
     ///
     /// `actor_id` replaces the nullable `set_by`: an Attention row is durable
     /// user state, so "who decided this" is not optional. Pre-existing rows

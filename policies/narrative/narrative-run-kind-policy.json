@@ -117,7 +117,7 @@
       "adminCommands": ["verifyNarrativeDependencyGraph"],
       "implementationStatus": {
         "state": "unwired-blocked",
-        "triggerSymbol": "verify_narrative_dependency_graph_for_project",
+        "triggerSymbol": "run_dependency_verify_for_project",
         "productionEntryPoints": ["verifyNarrativeDependencyGraph"],
         "blockedReason": "The Verify checks themselves are implemented and tested, but nothing subscribes them to the declared triggerEvents: no production caller fires Verify on backfill completion, Semantic Epoch rotation, integrity repair, or contract-digest change. Only the manual Admin IPC starts a Verify Run today.",
         "blockedOn": ["c2-t2-trigger-event-subscription"]
@@ -221,9 +221,7 @@
       "adminCommands": ["repairNarrativeDependencyDeclarations"],
       "implementationStatus": {
         "state": "wired",
-        "productionEntryPoints": ["repairNarrativeDependencyDeclarations"],
-        "blockedReason": "Human-triggered by contract, so the Admin IPC is the complete entry point; nothing automatic is owed. Its stable-request-id / idempotent-replay preconditions are a separate open item, tracked outside implementationStatus.",
-        "blockedOn": ["c2-t2-repair-request-idempotency-and-actor-identity"]
+        "productionEntryPoints": ["repairNarrativeDependencyDeclarations"]
       }
     }
   ],

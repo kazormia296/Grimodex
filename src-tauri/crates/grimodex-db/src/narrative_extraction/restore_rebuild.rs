@@ -8,7 +8,7 @@
 //! resolver (`source_revision.rs`).
 
 use rusqlite::{params, params_from_iter, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::dependency_edges::{find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND};
@@ -16,7 +16,7 @@ use super::digest_plan;
 use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
-use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
@@ -527,7 +527,7 @@ pub(crate) fn rebuild_verify_dependency_edges(
 /// (`narrative-run-kind-policy.json`'s `verifiesDurableGraph`/
 /// `verifiesRebuildableState`); see [`verify_narrative_dependency_graph_for_project`]'s
 /// doc comment for exactly which, and which 7 remain unimplemented.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencyGraphVerifyReport {
     pub total_edges: usize,
@@ -567,6 +567,18 @@ pub struct DependencyGraphVerifyReport {
     /// staleness shape as `edge_state_ids_outside_current_epoch`, for the
     /// Finding Observation history instead of the Edge State snapshot.
     pub finding_observation_ids_outside_current_epoch: Vec<String>,
+    /// The concrete `dependency-repair` candidates this Verify found, for
+    /// its one implemented repair category (`deactivate-duplicate-edge`):
+    /// exactly what [`duplicate_edge_ids_to_deactivate`] resolved
+    /// `duplicate_edge_keys` into.
+    ///
+    /// `duplicate_edge_keys` above only *counts* duplicate groups, which
+    /// is enough to diagnose but not enough to seal a plan from -- and
+    /// "the Repair plan is derived from the Verify result" is only true if
+    /// the Verify result actually names the rows. `seal_repair_plan` reads
+    /// its plan out of this field on a stored, completed Verify Run, and
+    /// refuses to seal from a live re-derivation.
+    pub duplicate_edge_ids_to_deactivate: Vec<String>,
 }
 
 impl DependencyGraphVerifyReport {
@@ -583,6 +595,7 @@ impl DependencyGraphVerifyReport {
             && self
                 .finding_observation_ids_outside_current_epoch
                 .is_empty()
+            && self.duplicate_edge_ids_to_deactivate.is_empty()
     }
 }
 
@@ -616,6 +629,110 @@ impl DependencyGraphVerifyReport {
 /// `consumer-freshness-dependency-set-digest` (same reason as
 /// `dependency-set-digest`), `cursor-and-feed-head-consistency`,
 /// `semantic-index-generation-correspondence`.
+/// Runs a `dependency-verify` under a real Run and persists its report, so
+/// a later Repair can prove which diagnostic result it was sealed from.
+///
+/// Before this existed, `verifyRunId` was a free string: Repair accepted any
+/// non-empty value and re-derived its candidates from live Edges, so a
+/// "sealed plan derived from a Verify result" was neither sealed to, nor
+/// derived from, anything. The Run's `outcome_summary_json` now holds the
+/// report plus its digest, and `seal_repair_plan` refuses to work from
+/// anything else.
+pub fn run_dependency_verify_for_project(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<VerifyRunOutcome> {
+    require_non_empty(project_id, "projectId")?;
+    let epoch_id = db
+        .with_conn(|conn| get_current_epoch(conn, project_id))?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_VERIFY_NO_EPOCH: project '{project_id}' has no Semantic Epoch")
+        })?;
+
+    let spec = json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION });
+    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+    let created = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            create_system_run_in_tx(
+                conn,
+                project_id,
+                VERIFY_RUN_KIND,
+                &epoch_id,
+                &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningOnly,
+                None,
+            )
+        })
+    })?;
+    let run_id = created["runId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
+        .to_string();
+
+    let report =
+        db.with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, project_id));
+    match report {
+        Ok(report) => {
+            let report_value = serde_json::to_value(&report)?;
+            let report_digest = format!("sha256:{}", digest_plan(&report_value));
+            let outcome = json!({
+                "verifyContractVersion": VERIFY_CONTRACT_VERSION,
+                "semanticEpochId": epoch_id,
+                "reportDigest": report_digest,
+                "report": report_value,
+            });
+            db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    record_run_outcome_in_tx(conn, &run_id, &outcome)?;
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)
+                })
+            })?;
+            Ok(VerifyRunOutcome {
+                run_id,
+                semantic_epoch_id: epoch_id,
+                report_digest,
+                report,
+            })
+        }
+        Err(error) => {
+            let _ = db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    record_run_outcome_in_tx(
+                        conn,
+                        &run_id,
+                        &json!({ "failure": error.to_string() }),
+                    )?;
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)
+                })
+            });
+            Err(error)
+        }
+    }
+}
+
+/// Bumped whenever the shape of `DependencyGraphVerifyReport` or the set of
+/// checks behind it changes in a way that makes an older stored report
+/// unsafe to seal a Repair plan from.
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "1";
+
+/// `narrative_extraction_runs.run_kind` value a Verify Run is stored
+/// under. Shared with `repair.rs` so the writer and the reader that
+/// validates it cannot drift apart.
+pub(crate) const VERIFY_RUN_KIND: &str = "dependency-verify";
+
+/// A completed `dependency-verify` Run and the report it produced.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyRunOutcome {
+    pub run_id: String,
+    pub semantic_epoch_id: String,
+    pub report_digest: String,
+    pub report: DependencyGraphVerifyReport,
+}
+
 pub fn verify_narrative_dependency_graph_for_project(
     conn: &Connection,
     project_id: &str,
@@ -648,6 +765,13 @@ pub fn verify_narrative_dependency_graph_for_project(
     }
 
     report.duplicate_edge_keys = duplicate_edge_keys(conn, project_id)?;
+    report.duplicate_edge_ids_to_deactivate = {
+        let mut ids = duplicate_edge_ids_to_deactivate(conn, project_id)?;
+        // Sealed into a plan digest downstream, so the order has to be a
+        // property of the data, not of the query planner.
+        ids.sort();
+        ids
+    };
     report.edge_ids_with_cross_project_consumer =
         cross_project_run_consumer_edge_ids(conn, project_id)?;
 
@@ -1490,6 +1614,72 @@ mod tests {
             .expect("verify project");
         assert_eq!(report.total_edges, 1);
         assert!(report.is_clean());
+    }
+
+    #[test]
+    fn a_verify_run_records_its_report_under_a_completed_run() {
+        let db = test_db();
+        seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        let epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+            .expect("mint an epoch");
+
+        let outcome =
+            run_dependency_verify_for_project(&db, "project-1").expect("run dependency-verify");
+        assert_eq!(outcome.semantic_epoch_id, epoch_id);
+        assert_eq!(outcome.report.total_edges, 1);
+
+        let (run_kind, status, run_epoch_id, stored) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT run_kind, status, semantic_epoch_id, outcome_summary_json
+                       FROM narrative_extraction_runs WHERE id = ?1",
+                    params![outcome.run_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, Option<String>>(2)?,
+                            row.get::<_, Option<String>>(3)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("read back the Verify Run");
+        assert_eq!(run_kind, VERIFY_RUN_KIND);
+        assert_eq!(status, "completed");
+        assert_eq!(run_epoch_id.as_deref(), Some(epoch_id.as_str()));
+
+        // The stored result is what `seal_repair_plan` reads, so it has to
+        // carry the report itself plus the digest that binds it.
+        let stored: serde_json::Value =
+            serde_json::from_str(&stored.expect("outcome recorded")).expect("outcome is json");
+        assert_eq!(
+            stored["verifyContractVersion"].as_str(),
+            Some(VERIFY_CONTRACT_VERSION)
+        );
+        assert_eq!(
+            stored["reportDigest"].as_str(),
+            Some(outcome.report_digest.as_str())
+        );
+        assert_eq!(
+            format!("sha256:{}", digest_plan(&stored["report"])),
+            outcome.report_digest
+        );
+    }
+
+    #[test]
+    fn a_verify_run_needs_a_semantic_epoch() {
+        let db = test_db();
+        seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+
+        let error = run_dependency_verify_for_project(&db, "project-1")
+            .expect_err("a project with no Semantic Epoch cannot run a Verify");
+        assert!(
+            error.to_string().contains("NEX_VERIFY_NO_EPOCH"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
