@@ -6,9 +6,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::dependency_edges::{
-    record_dependency_edge_in_tx, source_object_identity_for, RUN_CONSUMER_KIND,
-};
+use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -972,6 +970,18 @@ fn insert_source_basis_rows(
 /// has no field-path-level read-set below the whole-Source granularity
 /// `sourceBasis` already validates, so this is the most specific true claim
 /// available rather than a fabricated field list.
+///
+/// `row.source_key` is used directly as the Edge's `source_object_identity`
+/// -- it is *not* run back through [`source_object_identity_for`]. By the
+/// time this runs, `insert_proposal_seed` has already called
+/// `validate_reconciliation_envelope` (which requires every `sourceBasis[].
+/// sourceKey` to equal some `readSet[].inputRef`) and
+/// `validate_envelope_source_tokens` (whose `resolve_source_revision` call
+/// strips each source kind's own identity prefix, e.g. `project:scene:`,
+/// off that same `inputRef`). So `row.source_key` already *is* the
+/// fully-qualified identity `source_object_identity_for` would build --
+/// re-deriving it here would prepend the prefix a second time and produce
+/// an Edge no later resolver could ever match back to its real Source.
 fn record_run_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -980,14 +990,13 @@ fn record_run_dependency_edges_in_tx(
     created_at: &str,
 ) -> anyhow::Result<()> {
     for row in rows {
-        let source_object_identity = source_object_identity_for(&row.source_kind, &row.source_key)?;
         let read_set_json = serde_json::to_string(&[row.revision_token.as_str()])?;
         record_dependency_edge_in_tx(
             conn,
             project_id,
             RUN_CONSUMER_KIND,
             run_id,
-            &source_object_identity,
+            &row.source_key,
             &read_set_json,
             None,
             created_at,
@@ -1928,19 +1937,18 @@ mod unit_tests {
                 .map_err(Into::into)
             })
             .expect("scene source revision");
-        // Two different fields need two different shapes for the same
-        // Source: `readSet[].inputRef` is resolved by
-        // `resolve_source_revision`, which strips a `project:scene:`
-        // prefix, while `sourceBasis[].sourceKey` becomes
-        // `SourceBasisRow.source_key` and is fed verbatim into
-        // `source_object_identity_for`, which *adds* that same prefix --
-        // passing the already-prefixed form there would double it.
-        let input_ref = format!("project:scene:{scene_id}");
-        let source_basis_key = scene_id.to_string();
+        // `sourceBasis[].sourceKey` must equal this same Source's
+        // `readSet[].inputRef` (`validate_reconciliation_envelope`'s
+        // NEX_ENVELOPE_SOURCE_BASIS_NOT_READ check), and `resolve_scene_body`
+        // requires that shared value to already carry the `project:scene:`
+        // prefix -- `record_run_dependency_edges_in_tx` uses it verbatim as
+        // the Edge's `source_object_identity`, so one prefixed value serves
+        // both fields.
+        let source_key = format!("project:scene:{scene_id}");
         let revision_token = format!("v{version}@{updated_at}");
         let read_set = json!([{
             "kind": "snapshot-document",
-            "inputRef": input_ref,
+            "inputRef": source_key.clone(),
             "sourceKind": "scene-body",
             "revisionToken": revision_token.clone()
         }]);
@@ -1951,7 +1959,7 @@ mod unit_tests {
             "evidenceSet": [],
             "sourceBasis": [{
                 "revisionToken": revision_token,
-                "sourceKey": source_basis_key,
+                "sourceKey": source_key,
                 "sourceKind": "scene-body"
             }],
             "proposalSchemaVersion": "1",
