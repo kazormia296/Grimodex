@@ -3014,6 +3014,11 @@ export const narrativeDependencyEdgeStates = sqliteTable(
       .notNull()
       .references(() => narrativeSemanticEpochs.id),
     evaluatedAt: text("evaluated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): the Source revision
+    // token/digest this edge was last evaluated against, so Verify can
+    // detect drift without a full Rebuild-Derived-State.
+    observedSourceRevisionToken: text("observed_source_revision_token"),
+    observedSourceDigest: text("observed_source_digest"),
   },
   (table) => [
     index("idx_narrative_dependency_edge_states_project").on(
@@ -3038,6 +3043,10 @@ export const narrativeConsumerFreshness = sqliteTable(
       .references(() => narrativeSemanticEpochs.id),
     lastEvaluatedRunId: text("last_evaluated_run_id"),
     updatedAt: text("updated_at").notNull(),
+    // SCHEMA_VERSION 24 (Gate C2 Run Kind Policy): digest of the Consumer's
+    // current dependency set, so Verify can detect a dependency-set change
+    // Evaluate hasn't reconciled yet.
+    dependencySetDigest: text("dependency_set_digest"),
   },
   (table) => [
     primaryKey({
@@ -3112,6 +3121,49 @@ export const narrativeMaintenanceAttention = sqliteTable(
     setBy: text("set_by"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.findingKey] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy). A Semantic Index may own only
+// the five fields fixed in semantic-core-authorities.json's
+// semanticIndexAllowedFields; indexKey distinguishes multiple indexes a
+// project may build (e.g. embeddings vs. a future secondary index) under one
+// row shape.
+export const narrativeSemanticIndexMetadata = sqliteTable(
+  "narrative_semantic_index_metadata",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    indexKey: text("index_key").notNull(),
+    generation: integer("generation").notNull(),
+    builtAt: text("built_at").notNull(),
+    sourceDigest: text("source_digest").notNull(),
+    dependencySetDigest: text("dependency_set_digest").notNull(),
+    dirtyCacheFlag: integer("dirty_cache_flag").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.indexKey] })],
+);
+
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy, Repair). Durable claim covering
+// the human-approval interval between a Verify-derived sealed repair plan
+// being shown to a human and its approved execution; not a general workspace
+// write lock. One active claim per project by construction.
+export const narrativeMaintenanceRepairLeases = sqliteTable(
+  "narrative_maintenance_repair_leases",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    leaseOwner: text("lease_owner").notNull(),
+    verifyRunId: text("verify_run_id").notNull(),
+    repairPlanDigest: text("repair_plan_digest").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    claimedAt: text("claimed_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId] })],
 );
 
 export const narrativeChangeSets = sqliteTable(

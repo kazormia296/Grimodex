@@ -10,7 +10,14 @@ const REPO_ROOT = path.resolve(
   "../..",
 );
 
-export const EXPECTED_SCHEMA_VERSION = 23;
+// SCHEMA_VERSION 24 (Gate C2 Run Kind Policy) reviewed: the new
+// narrative_semantic_index_metadata table's columns match
+// semantic-core-authorities.json's existing "search-generation" concern
+// and semanticIndexAllowedFields verbatim; narrative_maintenance_repair_leases
+// is operational lock state (like task_leases/workspace_lease), not semantic
+// content, so it stays outside this authority matrix by the same convention.
+// Neither warranted a concern-matrix change.
+export const EXPECTED_SCHEMA_VERSION = 24;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

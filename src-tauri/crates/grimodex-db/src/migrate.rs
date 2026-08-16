@@ -3337,6 +3337,39 @@ impl Database {
                 set_by                 TEXT,
                 PRIMARY KEY(project_id, finding_key)
             );
+            -- SCHEMA 24 (Gate C2 Lane K/N Run Kind Policy). A Semantic Index
+            -- may own only the five fields fixed in
+            -- semantic-core-authorities.json's semanticIndexAllowedFields;
+            -- index_key distinguishes multiple indexes a project may build
+            -- (e.g. embeddings vs. a future secondary index) under one row
+            -- shape.
+            CREATE TABLE IF NOT EXISTS narrative_semantic_index_metadata (
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                index_key              TEXT NOT NULL CHECK(length(index_key) > 0),
+                generation              INTEGER NOT NULL CHECK(generation >= 0),
+                built_at                TEXT NOT NULL,
+                source_digest           TEXT NOT NULL CHECK(length(source_digest) > 0),
+                dependency_set_digest   TEXT NOT NULL CHECK(length(dependency_set_digest) > 0),
+                dirty_cache_flag        INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)),
+                PRIMARY KEY(project_id, index_key)
+            );
+            -- SCHEMA 24 (Gate C2 Lane N Repair). Durable claim covering the
+            -- human-approval interval between a Verify-derived sealed repair
+            -- plan being shown to a human and its approved execution; not a
+            -- general workspace write lock (SQLite's own BEGIN IMMEDIATE
+            -- already serializes the DML itself). One active claim per
+            -- project by construction (PRIMARY KEY(project_id)); a stale
+            -- claim past expires_at may be reclaimed by a fresh one.
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_repair_leases (
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                lease_owner             TEXT NOT NULL CHECK(length(lease_owner) > 0),
+                verify_run_id           TEXT NOT NULL CHECK(length(verify_run_id) > 0),
+                repair_plan_digest      TEXT NOT NULL CHECK(length(repair_plan_digest) > 0),
+                semantic_epoch_id       TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                claimed_at              TEXT NOT NULL,
+                expires_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_narrative_semantic_epochs_project
                 ON narrative_semantic_epochs(project_id, epoch_number);
             CREATE INDEX IF NOT EXISTS idx_narrative_dependency_edges_source
@@ -3384,6 +3417,40 @@ impl Database {
             "TEXT REFERENCES narrative_extraction_runs(id)",
         )?;
 
+        // SCHEMA 24 (Gate C2 Lane N Verify/Rebuild): the last Source
+        // revision token/digest a Dependency Edge was evaluated against.
+        // Mutation-time incremental evaluation gets this from the Change
+        // Feed event that triggered it; a full Rebuild has no such event to
+        // source it from, so the evaluator's own last-known baseline must be
+        // durable. NULL for an Edge that has never been evaluated yet —
+        // `evaluator::evaluate_edge`'s own first-observation branch already
+        // treats a missing stored baseline as Stale/RebuildRequired rather
+        // than defaulting to fresh.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_dependency_edge_states",
+            "observed_source_revision_token",
+            "TEXT",
+        )?;
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_dependency_edge_states",
+            "observed_source_digest",
+            "TEXT",
+        )?;
+        // SCHEMA 24 (Gate C2 Lane N Verify): a digest of the Consumer's
+        // current dependency set (Lane M's compute_dependency_set_digest),
+        // stamped at the same time as evidence_freshness/build_action so
+        // Verify can detect drift between what the Consumer was last
+        // evaluated against and its Dependency Edges as they exist now.
+        // NULL for rows written before this column existed.
+        Self::add_column_if_missing(
+            &conn,
+            "narrative_consumer_freshness",
+            "dependency_set_digest",
+            "TEXT",
+        )?;
+
         // Run/Task/Attempt each own a separate status vocabulary and CHECK
         // constraint; adding one requires the rebuild pattern since SQLite
         // cannot ALTER TABLE ADD a multi-value CHECK to a populated table.
@@ -3392,6 +3459,12 @@ impl Database {
         // drives the Freshness evaluator Run; existing pre-C2 consumers keep
         // using only acknowledged_through_sequence/lease.
         Self::migrate_narrative_change_cursors_v23(&conn)?;
+        // SCHEMA 24 (Gate C2 Lane K/N Run Kind Policy,
+        // narrative-run-kind-policy.json): run_kind gains
+        // 'dependency-verify'/'dependency-repair'. dependency-backfill and
+        // dependency-rebuild-derived reuse the existing 'backfill'/
+        // 'semantic-index-rebuild' values and need no CHECK change.
+        Self::migrate_run_kind_v24(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -4063,6 +4136,165 @@ impl Database {
         anyhow::ensure!(
             foreign_key_errors == 0,
             "SCHEMA 23 cursor reservation migration left foreign key violations"
+        );
+        Ok(())
+    }
+
+    /// SCHEMA_VERSION 24 (`policies/narrative/narrative-run-kind-policy.json`):
+    /// `narrative_extraction_runs.run_kind` gains `'dependency-verify'` and
+    /// `'dependency-repair'`. `dependency-backfill`/`dependency-rebuild-derived`
+    /// reuse the existing `'backfill'`/`'semantic-index-rebuild'` values and
+    /// need no CHECK change. SQLite cannot `ALTER TABLE ADD` a wider
+    /// multi-value `CHECK` to a populated table, so this rebuilds
+    /// `narrative_extraction_runs` alone (Task/Attempt are untouched — their
+    /// status vocabularies do not change at SCHEMA 24) using the same
+    /// rebuild-and-verify pattern `migrate_narrative_extraction_status_v23`
+    /// established.
+    fn migrate_run_kind_v24(conn: &Connection) -> anyhow::Result<()> {
+        let runs_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_extraction_runs'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !runs_exists {
+            return Ok(());
+        }
+        let runs_sql = conn.query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        let compact_runs_sql = Self::compact(&runs_sql);
+        let schema_ready = compact_runs_sql.contains(
+            "check(run_kindin('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill','dependency-verify','dependency-repair'))",
+        );
+        if schema_ready {
+            return Ok(());
+        }
+
+        // Fail closed on any run_kind value the new CHECK does not allow,
+        // rather than silently coercing it — a workspace that already has a
+        // run_kind this migration does not recognize means an assumption
+        // about the closed vocabulary was wrong, not something to paper
+        // over.
+        let invalid_run_kinds: Vec<String> = conn
+            .prepare(
+                "SELECT DISTINCT run_kind FROM narrative_extraction_runs
+                  WHERE run_kind NOT IN (
+                    'interpretation','freshness-evaluation','semantic-index-rebuild',
+                    'manual-rebuild','backfill','dependency-verify','dependency-repair'
+                  )",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        anyhow::ensure!(
+            invalid_run_kinds.is_empty(),
+            "SCHEMA 24 run_kind migration found narrative_extraction_runs rows with an \
+             unrecognized run_kind: {invalid_run_kinds:?}"
+        );
+
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "SCHEMA 24 run_kind migration requires autocommit"
+        );
+        let row_count_before: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+
+        let foreign_keys_enabled: bool =
+            conn.pragma_query_value(None, "foreign_keys", |row| row.get(0))?;
+        conn.pragma_update(None, "foreign_keys", false)?;
+        let migration_result = (|| -> anyhow::Result<()> {
+            conn.execute_batch("BEGIN IMMEDIATE")?;
+            let rebuild_result = (|| -> anyhow::Result<()> {
+                conn.execute_batch(
+                    "DROP TABLE IF EXISTS narrative_extraction_runs_v24;
+                     CREATE TABLE narrative_extraction_runs_v24 (
+                        id TEXT PRIMARY KEY,
+                        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                        surface_path_id TEXT NOT NULL,
+                        scope_json TEXT NOT NULL,
+                        spec_json TEXT NOT NULL,
+                        spec_digest TEXT NOT NULL,
+                        snapshot_digest TEXT,
+                        catalog_digest TEXT,
+                        registry_digest TEXT,
+                        status TEXT NOT NULL
+                            CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                        coverage_json TEXT NOT NULL DEFAULT '{}',
+                        outcome_summary_json TEXT,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        version INTEGER NOT NULL DEFAULT 0,
+                        run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                            CHECK(run_kind IN (
+                                'interpretation','freshness-evaluation','semantic-index-rebuild',
+                                'manual-rebuild','backfill','dependency-verify','dependency-repair'
+                            )),
+                        consumer_id TEXT,
+                        semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                        work_key TEXT,
+                        terminal_reason_code TEXT
+                            CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                        superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+                     );
+                     INSERT INTO narrative_extraction_runs_v24
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                         outcome_summary_json, created_at, started_at, completed_at, version,
+                         run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                         superseded_by_run_id)
+                     SELECT id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                            snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                            outcome_summary_json, created_at, started_at, completed_at, version,
+                            run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                            superseded_by_run_id
+                       FROM narrative_extraction_runs;
+                     DROP TABLE narrative_extraction_runs;
+                     ALTER TABLE narrative_extraction_runs_v24 RENAME TO narrative_extraction_runs;",
+                )?;
+                Ok(())
+            })();
+            match rebuild_result {
+                Ok(()) => grimodex_core::commit_or_rollback(conn),
+                Err(error) => {
+                    let _ = conn.execute_batch("ROLLBACK");
+                    Err(error)
+                }
+            }
+        })();
+        let restore_foreign_keys = conn.pragma_update(None, "foreign_keys", foreign_keys_enabled);
+        if let Err(error) = migration_result {
+            restore_foreign_keys?;
+            return Err(error);
+        }
+        restore_foreign_keys?;
+
+        let row_count_after: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            row_count_after == row_count_before,
+            "SCHEMA 24 run_kind migration changed row count ({row_count_before} -> {row_count_after})"
+        );
+        let foreign_key_errors: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM pragma_foreign_key_check
+              WHERE \"table\" = 'narrative_extraction_runs'",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            foreign_key_errors == 0,
+            "SCHEMA 24 run_kind migration left foreign key violations"
         );
         Ok(())
     }
@@ -7918,5 +8150,155 @@ mod tests {
 
         Database::migrate_narrative_change_cursors_v23(&conn)
             .expect("second SCHEMA 23 cursor reservation migration must be a no-op");
+    }
+
+    fn seed_pre_v24_run_kind_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_semantic_epochs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0),
+                reason TEXT NOT NULL,
+                triggered_by_change_event_uid TEXT,
+                created_at TEXT NOT NULL,
+                UNIQUE(project_id, epoch_number)
+             );
+             INSERT INTO narrative_semantic_epochs (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-1', 'proj-1', 0, 'initial', 'now');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                snapshot_digest TEXT,
+                catalog_digest TEXT,
+                registry_digest TEXT,
+                status TEXT NOT NULL
+                    CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')),
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                outcome_summary_json TEXT,
+                created_at TEXT NOT NULL,
+                started_at TEXT,
+                completed_at TEXT,
+                version INTEGER NOT NULL DEFAULT 0,
+                run_kind TEXT NOT NULL DEFAULT 'interpretation'
+                    CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill')),
+                consumer_id TEXT,
+                semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id),
+                work_key TEXT,
+                terminal_reason_code TEXT
+                    CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'),
+                superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id)
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES
+                ('run-1', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-1', 'completed', 'now', 'interpretation'),
+                ('run-2', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-2', 'completed', 'now', 'backfill');",
+        )
+        .expect("seed pre-SCHEMA-24 run_kind table");
+    }
+
+    #[test]
+    fn migrate_run_kind_v24_widens_check_preserves_rows_and_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v24_run_kind_table(&conn);
+
+        Database::migrate_run_kind_v24(&conn).expect("SCHEMA 24 run_kind migration");
+
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT id, run_kind FROM narrative_extraction_runs ORDER BY id")
+            .expect("prepare row read")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query rows")
+            .collect::<Result<_, _>>()
+            .expect("collect rows");
+        assert_eq!(
+            rows,
+            vec![
+                ("run-1".to_owned(), "interpretation".to_owned()),
+                ("run-2".to_owned(), "backfill".to_owned()),
+            ]
+        );
+
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-3', 'proj-1', 'x', '{}', '{}', 'd3', 'completed', 'now', 'dependency-verify')",
+            [],
+        )
+        .expect("dependency-verify run_kind must now be accepted");
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-4', 'proj-1', 'x', '{}', '{}', 'd4', 'completed', 'now', 'dependency-repair')",
+            [],
+        )
+        .expect("dependency-repair run_kind must now be accepted");
+
+        let foreign_key_errors: i64 = conn
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("run foreign_key_check");
+        assert_eq!(foreign_key_errors, 0);
+
+        // Idempotent: a second run against the now-current shape is a no-op.
+        Database::migrate_run_kind_v24(&conn)
+            .expect("second SCHEMA 24 run_kind migration must be a no-op");
+    }
+
+    #[test]
+    fn migrate_run_kind_v24_rejects_unrecognized_run_kind() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        // The realistic post-SCHEMA-23 shape already CHECKs run_kind against
+        // the 5-value set, so a genuinely bogus value can never reach this
+        // migration through normal SQL. Seed the one shape that legitimately
+        // can carry one: an unconstrained column, as SQLite would have it
+        // mid-migration (before the CHECK-bearing rebuild lands) or on a
+        // hand-recovered database. This exercises the fail-closed guard
+        // itself, not a state reachable in an untouched production upgrade.
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY);
+             INSERT INTO projects VALUES ('proj-1');
+             CREATE TABLE narrative_extraction_runs (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                surface_path_id TEXT NOT NULL,
+                scope_json TEXT NOT NULL,
+                spec_json TEXT NOT NULL,
+                spec_digest TEXT NOT NULL,
+                status TEXT NOT NULL,
+                coverage_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                version INTEGER NOT NULL DEFAULT 0,
+                run_kind TEXT NOT NULL DEFAULT 'interpretation'
+             );
+             INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest, status, created_at, run_kind)
+             VALUES ('run-1', 'proj-1', 'chronicle.extract', '{}', '{}', 'digest-1', 'completed', 'now', 'bogus-kind');",
+        )
+        .expect("seed unconstrained run_kind table with a bogus value");
+
+        let error = Database::migrate_run_kind_v24(&conn)
+            .expect_err("unrecognized run_kind must fail closed, not silently coerce");
+        assert!(
+            error.to_string().contains("unrecognized run_kind"),
+            "unexpected error: {error:#}"
+        );
+
+        // Failing closed must not have left a partial rebuild behind.
+        let run_kind: String = conn
+            .query_row(
+                "SELECT run_kind FROM narrative_extraction_runs WHERE id = 'run-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("original row must remain readable");
+        assert_eq!(run_kind, "bogus-kind");
     }
 }

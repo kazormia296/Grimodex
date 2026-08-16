@@ -494,6 +494,67 @@ multi-value `CHECK` to a populated table, the same constraint C2-01 hit
 for the status columns), so this remains a substantial, not-yet-started
 implementation task.
 
+### Implementation progress
+
+**SCHEMA_VERSION 23→24 landed** (`grimodex-core/src/lib.rs`,
+`grimodex-db/src/migrate.rs`, `grimodex-core/src/workspace_schema.rs`,
+`src/db/schema.ts`):
+
+- Two new tables — `narrative_semantic_index_metadata` (Semantic Index
+  generation/digest/dirty-cache bookkeeping, `PRIMARY KEY(project_id,
+  index_key)`) and `narrative_maintenance_repair_leases` (the Repair
+  exclusive-claim row: `lease_owner`, `verify_run_id`,
+  `repair_plan_digest`, `semantic_epoch_id`, `claimed_at`, `expires_at`,
+  `PRIMARY KEY(project_id)` enforcing one active claim per project).
+- Two new nullable baseline columns for Verify —
+  `narrative_dependency_edge_states.observed_source_revision_token`/
+  `observed_source_digest` and
+  `narrative_consumer_freshness.dependency_set_digest`.
+- `narrative_extraction_runs.run_kind`'s `CHECK` widened from 5 to 7
+  values (adds `dependency-verify`/`dependency-repair`) via
+  `migrate_run_kind_v24`, the same DROP+CREATE+INSERT+RENAME rebuild
+  pattern as C2-01's status migration (SQLite cannot widen a populated
+  table's multi-value `CHECK` with `ALTER TABLE ADD`). Fails closed on any
+  existing row whose `run_kind` the new `CHECK` would not accept, rather
+  than silently coercing it. Idempotent via a compacted-SQL substring
+  match on the target `CHECK` clause.
+- `has_current_schema_checkpoint_invariants` now gates on
+  `SCHEMA_VERSION == 24` and a new `has_v24_run_kind_policy_tables` check
+  covering all of the above, so a partially-migrated database cannot look
+  current.
+
+Verification: DDL (both new tables, both new columns, and the
+`run_kind` CHECK rebuild) was replayed end-to-end against a realistic
+v23-shaped seeded SQLite database via Python's bundled `sqlite3` —
+row-count preservation, old-value preservation, new-value acceptance,
+bad-value rejection, new-column nullability, new-table `CHECK`
+enforcement (`generation >= 0`, `dirty_cache_flag IN (0,1)`, one lease per
+project), and zero `pragma_foreign_key_check` errors, all confirmed. Rust
+`#[cfg(test)]` unit tests were added mirroring this same coverage
+(`migrate_run_kind_v24_widens_check_preserves_rows_and_is_idempotent`,
+`migrate_run_kind_v24_rejects_unrecognized_run_kind`) plus a
+byte-for-byte cross-check that the `workspace_schema.rs` invariant
+substrings match real `sqlite_master.sql` output — both still need a real
+`cargo test -p grimodex-db -p grimodex-core` run once a working toolchain
+is available (see the toolchain note below; unchanged from C2-01/Wave
+1/2). `src/db/generated/schema-contract.json` remains stale at
+`schemaVersion: 22` — it predates even the C2-01 SCHEMA 23 bump and was
+never regenerated in this environment; left as-is per the existing
+`pnpm generate:db-contract` note above rather than hand-edited.
+
+Still not implemented: `CreateRunPayload`/`create_run` accepting
+`run_kind`/`work_key`/`semantic_epoch_id` as inputs, the Backfill
+Dependency Graph transform (`legacy_backfill.rs` reading
+`narrative_projection_dependencies`/`narrative_projection_freshness` and
+writing `narrative_dependency_edges` — today only Epoch/Contribution
+seeding exists), the post-open bootstrap trigger for automatic-once
+Backfill, the evaluate→publish wiring gap (nothing yet constructs an
+`EdgeComparisonInput` from real DB state to connect Lane F's
+`evaluator.rs` to Lane J's `publish_runtime.rs`), the ~10 still-missing
+Verify checks in `restore_rebuild.rs`, the `dependency-rebuild-derived`
+orchestrator, the Repair lease/backup/sealed-plan/execution flow, and the
+five new IPC/N-API operations.
+
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
 `contributionTargetStates`/`maintenanceOwnershipStates`), M

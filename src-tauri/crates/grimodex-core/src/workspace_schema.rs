@@ -567,9 +567,13 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// Contribution / Finding Observation / Attention / Semantic Epoch tables),
 /// per-entity Run/Task/Attempt status CHECK constraints, and Change Feed
 /// consumer cursor reservation columns, while preserving the version 22
-/// Foundation schema and every Gate B invariant through v20.
+/// Foundation schema and every Gate B invariant through v20. Version 24 adds
+/// the Gate C2 Run Kind Policy's Semantic Index metadata and Repair lease
+/// tables, Dependency Edge State / Consumer Freshness baseline-digest
+/// columns for Verify, and widens the Run `run_kind` CHECK to admit
+/// `dependency-verify`/`dependency-repair`.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 23
+    Ok(SCHEMA_VERSION == 24
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -584,7 +588,8 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_change_feed_object_heads(conn)?
         && has_v23_semantic_build_graph_tables(conn)?
         && has_v23_execution_state_check_constraints(conn)?
-        && has_v23_change_cursor_reservation_columns(conn)?)
+        && has_v23_change_cursor_reservation_columns(conn)?
+        && has_v24_run_kind_policy_tables(conn)?)
 }
 
 fn has_v16_scene_event_incarnation_column(conn: &Connection) -> anyhow::Result<bool> {
@@ -1155,6 +1160,76 @@ fn has_v23_change_cursor_reservation_columns(conn: &Connection) -> anyhow::Resul
     ) && cursors_sql.contains(
         "check(reserved_through_sequenceisnullorreserved_through_sequence>=acknowledged_through_sequence)",
     ))
+}
+
+fn has_v24_run_kind_policy_tables(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_semantic_index_metadata",
+        "narrative_maintenance_repair_leases",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+    if !table_exists(conn, "narrative_dependency_edge_states")?
+        || !table_exists(conn, "narrative_consumer_freshness")?
+        || !table_exists(conn, "narrative_extraction_runs")?
+    {
+        return Ok(false);
+    }
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+
+    let index_metadata = table_columns(conn, "narrative_semantic_index_metadata")?;
+    let repair_leases = table_columns(conn, "narrative_maintenance_repair_leases")?;
+    let edge_states = table_columns(conn, "narrative_dependency_edge_states")?;
+    let freshness = table_columns(conn, "narrative_consumer_freshness")?;
+
+    let index_metadata_ok = has_column(&index_metadata, "project_id", "TEXT", true)
+        && has_column(&index_metadata, "index_key", "TEXT", true)
+        && has_column(&index_metadata, "generation", "INTEGER", true)
+        && has_column(&index_metadata, "built_at", "TEXT", true)
+        && has_column(&index_metadata, "source_digest", "TEXT", true)
+        && has_column(&index_metadata, "dependency_set_digest", "TEXT", true)
+        && has_column(&index_metadata, "dirty_cache_flag", "INTEGER", true);
+
+    let repair_leases_ok = has_column(&repair_leases, "project_id", "TEXT", true)
+        && has_column(&repair_leases, "lease_owner", "TEXT", true)
+        && has_column(&repair_leases, "verify_run_id", "TEXT", true)
+        && has_column(&repair_leases, "repair_plan_digest", "TEXT", true)
+        && has_column(&repair_leases, "semantic_epoch_id", "TEXT", true)
+        && has_column(&repair_leases, "claimed_at", "TEXT", true)
+        && has_column(&repair_leases, "expires_at", "TEXT", true);
+
+    let baseline_columns_ok =
+        has_column(
+            &edge_states,
+            "observed_source_revision_token",
+            "TEXT",
+            false,
+        ) && has_column(&edge_states, "observed_source_digest", "TEXT", false)
+            && has_column(&freshness, "dependency_set_digest", "TEXT", false);
+
+    if !(index_metadata_ok && repair_leases_ok && baseline_columns_ok) {
+        return Ok(false);
+    }
+
+    let index_metadata_sql = compact_sql(&table_sql(conn, "narrative_semantic_index_metadata")?);
+    let repair_leases_sql = compact_sql(&table_sql(conn, "narrative_maintenance_repair_leases")?);
+    let runs_sql = compact_sql(&table_sql(conn, "narrative_extraction_runs")?);
+
+    Ok(index_metadata_sql.contains("check(generation>=0)")
+        && index_metadata_sql.contains("check(dirty_cache_flagin(0,1))")
+        && repair_leases_sql.contains("primarykey(project_id)")
+        && runs_sql.contains(
+            "check(run_kindin('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill','dependency-verify','dependency-repair'))",
+        ))
 }
 
 fn has_occ_integer_column(columns: &[ColumnShape], name: &str) -> bool {

@@ -194,19 +194,41 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
-  it("rejects when the two run_kind CHECK constraints in migrate.rs disagree", () => {
+  it("accepts a narrower historical run_kind CHECK that is a subset of the current one", () => {
+    const root = writeFixtureRoot({
+      migrateRsOptions: {
+        checkLines: [
+          // A historical ADD COLUMN/rebuild statement legitimately keeps
+          // an older, narrower value set verbatim so replaying migration
+          // history against an old workspace still reproduces that exact
+          // intermediate schema shape.
+          "CHECK(run_kind IN ('interpretation','backfill'))",
+          RUN_KIND_CHECK_LINE,
+        ],
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      !result.errors.some((error) => error.includes("CHECK(run_kind IN")),
+      `unexpected CHECK-related errors: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects a run_kind CHECK constraint occurrence with a value absent from the widest one", () => {
     const root = writeFixtureRoot({
       migrateRsOptions: {
         checkLines: [
           RUN_KIND_CHECK_LINE,
-          "CHECK(run_kind IN ('interpretation','backfill'))",
+          "CHECK(run_kind IN ('interpretation','totally-unrelated-value'))",
         ],
       },
     });
     const result = validateRunKindPolicy({ repoRoot: root });
     assert.ok(
       result.errors.some((error) =>
-        error.includes("declares two different 'run_kind' CHECK constraints"),
+        error.includes(
+          "contains a value absent from the widest occurrence found",
+        ),
       ),
     );
   });

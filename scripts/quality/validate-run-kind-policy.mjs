@@ -104,17 +104,29 @@ function extractSqlRunKindValues(repoRoot, errors) {
         [...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]),
       ),
   );
-  const [first, ...rest] = sets;
-  for (const [index, set] of rest.entries()) {
-    const same =
-      set.size === first.size && [...first].every((value) => set.has(value));
-    if (!same) {
+  // migrate.rs necessarily accumulates one 'CHECK(run_kind IN (...))'
+  // string per schema version that ever widened it — each earlier
+  // ADD COLUMN / rebuild statement must keep its original narrower value
+  // set verbatim so replaying migration history against an old workspace
+  // still reproduces the exact intermediate schema shape it had at that
+  // version. The canonical "what does the CHECK accept today" answer is
+  // therefore the widest set present, and every other occurrence must be
+  // a subset of it (Gate C2 only ever adds run_kind values, never removes
+  // one) rather than identical to it.
+  let canonical = sets[0];
+  for (const set of sets) {
+    if (set.size > canonical.size) canonical = set;
+  }
+  for (const [index, set] of sets.entries()) {
+    const isSubset = [...set].every((value) => canonical.has(value));
+    if (!isSubset) {
       errors.push(
-        `migrate.rs declares two different 'run_kind' CHECK constraints (occurrence 1 and occurrence ${index + 2}); they must stay in lockstep`,
+        `migrate.rs occurrence ${index + 1} of 'CHECK(run_kind IN (...))' contains a value absent from the widest ` +
+          `occurrence found (${[...canonical].join(", ")}); a narrower historical CHECK must stay a subset of the current one`,
       );
     }
   }
-  return first;
+  return canonical;
 }
 
 function validateRunKinds(policy, sqlRunKindValues, errors) {
