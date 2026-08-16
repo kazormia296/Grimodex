@@ -385,7 +385,7 @@ landed alongside Lane A above; its verify/rebuild pair and Lane K's
 `legacy_backfill.rs` now have a ratified Run Kind Policy (see below), but
 Run creation/scheduling for all four is still to be implemented.
 
-## Lane K/N Run Kind Policy (design ratified, implementation pending)
+## Lane K/N Run Kind Policy (design ratified, core implementation landed)
 
 `policies/narrative/narrative-run-kind-policy.json` (schema:
 `schemas/narrative-run-kind-policy.schema.json`, validator:
@@ -819,7 +819,92 @@ plus seven new Rust `#[cfg(test)]` unit tests against a real, file-backed
 requirement, full execute-and-release, epoch-mismatch rejection, and the
 lease CAS behavior end-to-end.
 
-Still not implemented: the five new IPC/N-API operations.
+**The five new IPC/N-API operations landed**
+(`verifyNarrativeDependencyGraph`/`rebuildNarrativeDerivedState`/
+`getNarrativeBackfillStatus`/`retryNarrativeLegacyBackfill`/
+`repairNarrativeDependencyDeclarations`), closing out the Run Kind
+Policy implementation end to end — every function landed across this
+policy's commits is now reachable from the renderer.
+
+Wired via `/add-electron-command`, mirroring the freshest precedent
+(C2-T1's Attention/Inbox commands) exactly: all five declared `optional`
+on `NapiBackendLike` so a stale `.node` build fails closed with
+`IPC_BACKEND_UNAVAILABLE` rather than a raw `TypeError`; each has a
+`requireXxxPayload` validator in `ipcContract.ts` rejecting unknown
+fields and missing required ones before the native call; each
+`#[napi]` fn in `lib.rs` deserializes via `from_wire` into a typed DTO
+and calls straight into the shared crate. Required promoting several
+Wave 1/2/Run-Kind-Policy functions and types from `pub(crate)` to `pub`
+(with matching `pub use` re-exports added in `narrative_extraction`'s
+`mod.rs`, alongside the pre-existing `pub(crate)` ones so nothing
+already relying on crate-internal-only visibility changed) so
+`grimodex-node` — a separate crate — could reach them:
+`verify_narrative_dependency_graph_for_project`/
+`DependencyGraphVerifyReport`,
+`rebuild_narrative_derived_state_for_project`/
+`RebuildDerivedStateOutcome`/`RebuildDerivedStateSummary`,
+`bootstrap_legacy_dependency_backfill_for_project`/
+`get_backfill_status_for_project`/`BackfillStatus`/`BackfillSummary`/
+`LegacyBackfillBootstrapOutcome`, `seal_repair_plan`/
+`repair_narrative_dependency_declarations_for_project`/`RepairPlan`/
+`RepairOutcome`, and `get_current_epoch`/`CurrentEpoch` (needed to
+resolve the current Semantic Epoch before sealing a Repair plan).
+`DependencyGraphVerifyReport`/`RepairPlan`/`RepairOutcome`/
+`BackfillStatus` gained `#[derive(Serialize)]` (`camelCase`) so they
+round-trip to the wire directly; `RebuildDerivedStateOutcome`/
+`LegacyBackfillBootstrapOutcome` (enums with differently-shaped
+variants) are converted to JSON by hand in `lib.rs` instead.
+
+`repairNarrativeDependencyDeclarations` folds the preview/apply
+two-step into one command rather than two separate IPC names (no
+`dryRun` precedent existed in this codebase to follow instead):
+`apply: false` (the default) seals and returns a plan preview;
+`apply: true` requires `planDigest` (must match the digest a preview
+call just returned — binds the confirmation to the exact plan a human
+saw, rejected as `NEX_REPAIR_PLAN_DIGEST_MISMATCH` if the Durable Graph
+changed in between) and `leaseOwner`, both validated as required by the
+TypeScript validator once `apply` is `true`, then re-checked as typed
+`NEX_REPAIR_*` errors on the Rust side too (defense in depth, not
+trust-the-frontend). The workspace path Repair's automatic backup needs
+is never accepted from the renderer — re-derived server-side via
+`active_workspace_path(&state.ws)`, matching this codebase's existing
+`restore_backup`/`get_active_workspace_path` convention (a
+renderer-supplied path is used elsewhere in this codebase only as an
+optimistic-concurrency guard, never trusted as the real filesystem
+target).
+
+**Also fixed while wiring this**: `NAPI_COMMANDS`' own sorted-keys
+coverage test (`ipcContract.test.ts`) was already failing on this
+checkout before this commit — the three C2-T1 Attention/Inbox command
+names were registered in `NAPI_COMMANDS` but never added to that test's
+literal array. Confirmed by running the test before touching anything;
+fixed alongside adding this change's own five names, rather than left
+to compound further.
+
+Verified: `pnpm exec tsc -p electron/tsconfig.json --noEmit` and the
+root `npx tsc --noEmit` both clean; `pnpm test:electron --run` — all
+1035 tests across 46 files pass, including 11 new tests for these five
+commands (happy path plus malformed-payload/backend-unavailable/
+method-unavailable/domain-error-propagation coverage, mirroring the
+`narrative_runtime_policy_set` test block) and the two fixed coverage-
+list entries; all narrative quality validators still pass; `rustfmt`
+clean on every touched Rust file. Same toolchain caveat as every Rust
+change this session: `cargo check`/`napi build` cannot run in this
+sandbox, so `index.d.ts` was not regenerated and the compiled `.node`
+addon does not yet contain these five methods (or the three C2-T1 ones
+before them) — inspection plus the TypeScript-side contract tests above
+is the best available verification until a working toolchain runs
+`napi build`.
+
+This closes every task the ratified Run Kind Policy
+(`narrative-run-kind-policy.json`) originally scoped as
+not-yet-implemented. Remaining, explicitly out of scope for this pass
+and documented at each landing commit above: 7 of the 13
+`dependency-verify` checks, five of the six `dependency-repair`
+`allowedRepairs` categories (both blocked on Verify checks this crate
+does not implement yet), and the crash-recovery gap for a Run stuck
+`running` after a terminated process (a Lane B / execution-state-model
+concern spanning every Run Kind, not specific to any one of these).
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

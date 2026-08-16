@@ -41,6 +41,7 @@
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::json;
 
 use super::digest_plan;
@@ -173,8 +174,9 @@ pub(crate) fn release_repair_lease_in_tx(
 /// underlying data changes between sealing and execution, re-sealing
 /// would produce a different digest, and [`claim_repair_lease_in_tx`]
 /// would reject an execution attempt made against the stale one).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepairPlan {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairPlan {
     pub verify_run_id: String,
     pub semantic_epoch_id: String,
     pub edge_ids_to_deactivate: Vec<String>,
@@ -197,7 +199,7 @@ impl RepairPlan {
 /// coverage can propose a repair for) is a valid, non-error outcome; the
 /// caller should not proceed to
 /// [`repair_narrative_dependency_declarations_for_project`] with one.
-pub(crate) fn seal_repair_plan(
+pub fn seal_repair_plan(
     conn: &Connection,
     project_id: &str,
     verify_run_id: &str,
@@ -231,8 +233,9 @@ pub(crate) fn seal_repair_plan(
 
 /// Outcome of one [`repair_narrative_dependency_declarations_for_project`]
 /// call.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RepairOutcome {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairOutcome {
     pub edges_deactivated: usize,
     /// Filesystem path of the automatic backup taken before this repair
     /// executed. Empty when the plan was empty and no repair (and
@@ -276,7 +279,7 @@ fn safety_artifact_path_string(artifact: &LiveSafetyArtifact) -> String {
 /// An empty plan is a no-op that skips the lease/backup/execute machinery
 /// entirely (nothing to protect against) and returns
 /// `edges_deactivated: 0`.
-pub(crate) fn repair_narrative_dependency_declarations_for_project(
+pub fn repair_narrative_dependency_declarations_for_project(
     db: &Database,
     workspace_path: &Path,
     project_id: &str,

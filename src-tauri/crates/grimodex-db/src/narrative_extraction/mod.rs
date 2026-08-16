@@ -101,7 +101,7 @@ pub(crate) use inbox_read_model::{list_consumer_freshness, ConsumerFreshnessRow}
 // (electron/native/grimodex-node/src/lib.rs).
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
 #[allow(unused_imports)]
-pub(crate) use legacy_backfill::{backfill_project_semantic_build_graph_in_tx, BackfillSummary};
+pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
     publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,
@@ -111,8 +111,32 @@ pub(crate) use restore_rebuild::{
     rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
     rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
 };
+
+// Gate C2 Run Kind Policy: the five named operations replacing the old
+// two-value `rebuildNarrativeDependencyIndex(mode: verify|repair)`
+// (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`).
+// `pub` (not `pub(crate)`): called directly from
+// `electron/native/grimodex-node/src/lib.rs`, a different crate.
+pub use legacy_backfill::{
+    bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
+    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome,
+};
+pub use repair::{
+    repair_narrative_dependency_declarations_for_project, seal_repair_plan, RepairOutcome,
+    RepairPlan,
+};
+pub use restore_rebuild::{
+    rebuild_narrative_derived_state_for_project, verify_narrative_dependency_graph_for_project,
+    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
+};
 #[allow(unused_imports)]
-pub(crate) use semantic_epoch::{create_epoch_in_tx, get_current_epoch, list_epochs, CurrentEpoch};
+pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
+// `pub`: `get_current_epoch`/`CurrentEpoch` resolve the Semantic Epoch a
+// sealed Repair plan is bound to, needed from
+// `electron/native/grimodex-node/src/lib.rs`'s
+// `repair_narrative_dependency_declarations` before calling
+// `seal_repair_plan`.
+pub use semantic_epoch::{get_current_epoch, CurrentEpoch};
 #[allow(unused_imports)]
 pub(crate) use semantic_index_diagnostics::{
     compute_dependency_set_digest, is_semantic_index_dirty,
@@ -138,10 +162,13 @@ pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
     ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
     EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    HumanFieldLockPayload, ListResumableRunsPayload, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    PrepareCommitPayload, ProposalSeed, ReconciliationEnvelopeInheritance, ReviseAndDecidePayload,
-    RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    GetNarrativeBackfillStatusPayload, HumanFieldLockPayload, ListResumableRunsPayload,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
+    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
 pub use temporal_operations::TemporalScenePatchPayload;

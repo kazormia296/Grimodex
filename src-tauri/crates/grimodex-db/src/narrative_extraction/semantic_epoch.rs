@@ -20,7 +20,7 @@ const VALID_REASONS: [&str; 5] = [
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CurrentEpoch {
+pub struct CurrentEpoch {
     pub id: String,
     pub epoch_number: i64,
     pub reason: String,
@@ -73,7 +73,7 @@ pub(crate) fn create_epoch_in_tx(
 }
 
 /// The most recently minted Semantic Epoch for `project_id`, if any.
-pub(crate) fn get_current_epoch(
+pub fn get_current_epoch(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<Option<CurrentEpoch>> {

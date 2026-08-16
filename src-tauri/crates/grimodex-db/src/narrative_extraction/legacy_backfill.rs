@@ -69,7 +69,8 @@
 //! rows. `contributions_created`/`edges_created` in the returned summary
 //! both report 0 on that second run.
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use serde_json::json;
 
 use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
@@ -99,7 +100,7 @@ const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill";
 const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "1";
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
-pub(crate) enum LegacyBackfillBootstrapOutcome {
+pub enum LegacyBackfillBootstrapOutcome {
     /// A Backfill Run for this project already existed
     /// (`pending`/`running`/`completed`); this call did nothing further.
     AlreadyRun { run_id: String },
@@ -118,7 +119,7 @@ const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct BackfillSummary {
+pub struct BackfillSummary {
     /// Whether this call minted the project's `initial` Semantic Epoch.
     /// `false` means the project already had at least one epoch.
     pub epoch_created: bool,
@@ -198,7 +199,7 @@ struct LegacyProjectionDependency {
 /// terminated process is a Lane B / execution-state-model concern
 /// spanning every Run Kind, not something specific to Backfill worth
 /// solving narrowly here.
-pub(crate) fn bootstrap_legacy_dependency_backfill_for_project(
+pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<LegacyBackfillBootstrapOutcome> {
@@ -261,6 +262,46 @@ pub(crate) fn bootstrap_legacy_dependency_backfill_for_project(
         Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
         Err(error) => Err(error),
     }
+}
+
+/// Status of the most recent Backfill Run for one project, if any --
+/// `getNarrativeBackfillStatus`'s underlying read
+/// (`narrative-run-kind-policy.json`'s `adminCommands`). Read-only: issues
+/// only a `SELECT`, never creates a Run
+/// (contrast [`bootstrap_legacy_dependency_backfill_for_project`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackfillStatus {
+    pub run_id: String,
+    pub status: String,
+    pub created_at: String,
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+}
+
+pub fn get_backfill_status_for_project(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Option<BackfillStatus>> {
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    conn.query_row(
+        "SELECT id, status, created_at, started_at, completed_at
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = 'backfill' AND work_key = ?2
+          ORDER BY created_at DESC LIMIT 1",
+        params![project_id, LEGACY_BACKFILL_WORK_KEY],
+        |row| {
+            Ok(BackfillStatus {
+                run_id: row.get(0)?,
+                status: row.get(1)?,
+                created_at: row.get(2)?,
+                started_at: row.get(3)?,
+                completed_at: row.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Backfill one project's Semantic Build Graph foundation from its

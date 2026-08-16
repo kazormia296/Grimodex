@@ -8,6 +8,7 @@
 //! resolver (`source_revision.rs`).
 
 use rusqlite::{params, params_from_iter, Connection};
+use serde::Serialize;
 use serde_json::json;
 
 use super::dependency_edges::{find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND};
@@ -241,7 +242,7 @@ pub(crate) fn evaluate_edge_from_db(
 const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
 
 /// Outcome of one [`rebuild_narrative_derived_state_for_project`] call.
-pub(crate) enum RebuildDerivedStateOutcome {
+pub enum RebuildDerivedStateOutcome {
     /// A Rebuild-Derived Run for this project was already `running`; this
     /// call did nothing further (`sameWorkKeyReuse: "reuse-running-only"`).
     AlreadyRunning { run_id: String },
@@ -255,7 +256,7 @@ pub(crate) enum RebuildDerivedStateOutcome {
 /// Counts from one completed `rebuild_narrative_derived_state_for_project`
 /// pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct RebuildDerivedStateSummary {
+pub struct RebuildDerivedStateSummary {
     pub consumers_evaluated: usize,
     pub edges_evaluated: usize,
 }
@@ -299,7 +300,7 @@ pub(crate) struct RebuildDerivedStateSummary {
 ///      Edges), not an error.
 ///   3. Finalize the Run's status to `completed`/`failed`, always
 ///      attempted even on phase 2 failure.
-pub(crate) fn rebuild_narrative_derived_state_for_project(
+pub fn rebuild_narrative_derived_state_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<RebuildDerivedStateOutcome> {
@@ -515,8 +516,9 @@ pub(crate) fn rebuild_verify_dependency_edges(
 /// (`narrative-run-kind-policy.json`'s `verifiesDurableGraph`/
 /// `verifiesRebuildableState`); see [`verify_narrative_dependency_graph_for_project`]'s
 /// doc comment for exactly which, and which 7 remain unimplemented.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct DependencyGraphVerifyReport {
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DependencyGraphVerifyReport {
     pub total_edges: usize,
     /// Edge whose Source no longer resolves, or whose
     /// `source_object_identity` matches no recognized `source_kind`
@@ -603,7 +605,7 @@ impl DependencyGraphVerifyReport {
 /// `consumer-freshness-dependency-set-digest` (same reason as
 /// `dependency-set-digest`), `cursor-and-feed-head-consistency`,
 /// `semantic-index-generation-correspondence`.
-pub(crate) fn verify_narrative_dependency_graph_for_project(
+pub fn verify_narrative_dependency_graph_for_project(
     conn: &Connection,
     project_id: &str,
 ) -> anyhow::Result<DependencyGraphVerifyReport> {

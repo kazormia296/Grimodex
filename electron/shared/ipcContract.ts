@@ -780,6 +780,13 @@ export interface NapiBackendLike {
   narrativeMaintenanceAttentionSet?(payload: unknown): Promise<string>;
   narrativeMaintenanceAttentionClear?(payload: unknown): Promise<string>;
   narrativeMaintenanceInboxList?(payload: unknown): Promise<string>;
+  // Gate C2 Run Kind Policy: the five named operations replacing the old
+  // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
+  verifyNarrativeDependencyGraph?(payload: unknown): Promise<string>;
+  rebuildNarrativeDerivedState?(payload: unknown): Promise<string>;
+  getNarrativeBackfillStatus?(payload: unknown): Promise<string>;
+  retryNarrativeLegacyBackfill?(payload: unknown): Promise<string>;
+  repairNarrativeDependencyDeclarations?(payload: unknown): Promise<string>;
   // post_effect pure-db 7 コマンド
   listPostEffectRuns(
     projectId: string,
@@ -1144,6 +1151,117 @@ function requireNarrativeMaintenanceInboxListPayload(
     }
   }
   requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+// Gate C2 Run Kind Policy: the five named operations replacing the old
+// two-value rebuildNarrativeDependencyIndex(mode: verify|repair).
+
+function requireVerifyNarrativeDependencyGraphPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "verify_narrative_dependency_graph";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireRebuildNarrativeDerivedStatePayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "rebuild_narrative_derived_state";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireGetNarrativeBackfillStatusPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "get_narrative_backfill_status";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+function requireRetryNarrativeLegacyBackfillPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "retry_narrative_legacy_backfill";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set(["projectId"]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  return payload;
+}
+
+/**
+ * `apply: false`（省略時デフォルト）は sealed repair plan のプレビューのみ。
+ * `apply: true` で実行する場合は `planDigest`（直前の preview 呼び出しが
+ * 返した digest と一致必須 — Durable Graph が変化していれば native 側で
+ * NEX_REPAIR_PLAN_DIGEST_MISMATCH として拒否される）と `leaseOwner`
+ * （排他 Repair lease の claim 者識別子）が必須になる。native 側の
+ * 前提条件チェック（NEX_REPAIR_*）と重複するが、明らかに欠けている必須
+ * フィールドはここで早期に拒否する。
+ */
+function requireRepairNarrativeDependencyDeclarationsPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "repair_narrative_dependency_declarations";
+  const payload = requireRecord(args, "payload", command);
+  const allowedKeys = new Set([
+    "projectId",
+    "verifyRunId",
+    "apply",
+    "planDigest",
+    "leaseOwner",
+  ]);
+  for (const key of Object.keys(payload)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  requireNonEmptyString(payload, "projectId", command);
+  requireNonEmptyString(payload, "verifyRunId", command);
+  const apply = optionalBoolean(payload, "apply", command) ?? false;
+  optionalString(payload, "planDigest", command);
+  optionalString(payload, "leaseOwner", command);
+  if (apply) {
+    requireNonEmptyString(payload, "planDigest", command);
+    requireNonEmptyString(payload, "leaseOwner", command);
+  }
   return payload;
 }
 
@@ -7646,6 +7764,59 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeMaintenanceInboxList,
           "narrativeMaintenanceInboxList",
         )(requireNarrativeMaintenanceInboxListPayload(a)),
+      ),
+  },
+  // Gate C2 Run Kind Policy: the five named operations replacing the old
+  // two-value rebuildNarrativeDependencyIndex(mode: verify|repair)
+  // (policies/narrative/narrative-run-kind-policy.json's apiSplit).
+  verify_narrative_dependency_graph: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.verifyNarrativeDependencyGraph,
+          "verifyNarrativeDependencyGraph",
+        )(requireVerifyNarrativeDependencyGraphPayload(a)),
+      ),
+  },
+  rebuild_narrative_derived_state: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.rebuildNarrativeDerivedState,
+          "rebuildNarrativeDerivedState",
+        )(requireRebuildNarrativeDerivedStatePayload(a)),
+      ),
+  },
+  get_narrative_backfill_status: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.getNarrativeBackfillStatus,
+          "getNarrativeBackfillStatus",
+        )(requireGetNarrativeBackfillStatusPayload(a)),
+      ),
+  },
+  retry_narrative_legacy_backfill: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.retryNarrativeLegacyBackfill,
+          "retryNarrativeLegacyBackfill",
+        )(requireRetryNarrativeLegacyBackfillPayload(a)),
+      ),
+  },
+  repair_narrative_dependency_declarations: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.repairNarrativeDependencyDeclarations,
+          "repairNarrativeDependencyDeclarations",
+        )(requireRepairNarrativeDependencyDeclarationsPayload(a)),
       ),
   },
   // post_effect pure-db 7 コマンド（Phase 3 バッチ1）。effectType / status は

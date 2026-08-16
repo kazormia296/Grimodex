@@ -340,3 +340,53 @@ pub struct NarrativeMaintenanceAttentionClearPayload {
 pub struct NarrativeMaintenanceInboxListPayload {
     pub project_id: String,
 }
+
+// ─────────────────────── Gate C2 Run Kind Policy IPC ───────────────────
+// Wire payloads for the five named operations
+// (`policies/narrative/narrative-run-kind-policy.json`'s `apiSplit`)
+// replacing the old two-value `rebuildNarrativeDependencyIndex(mode:
+// verify|repair)` shape.
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyNarrativeDependencyGraphPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RebuildNarrativeDerivedStatePayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetNarrativeBackfillStatusPayload {
+    pub project_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RetryNarrativeLegacyBackfillPayload {
+    pub project_id: String,
+}
+
+/// `apply: false` (default) seals and returns a repair plan preview
+/// without executing it -- the policy's `change-count-preview`
+/// precondition. `apply: true` executes: `plan_digest` must match the
+/// digest a preview call just returned (binds the confirmation to the
+/// exact plan the human saw, not a blind re-seal that could differ if
+/// the Durable Graph changed in between) and `lease_owner` identifies
+/// the caller claiming the exclusive Repair lease.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepairNarrativeDependencyDeclarationsPayload {
+    pub project_id: String,
+    pub verify_run_id: String,
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    #[serde(default)]
+    pub lease_owner: Option<String>,
+}

@@ -60,9 +60,12 @@ use grimodex_db::lint_terms::{
 };
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
-    self, AttentionDisposition, ListResumableRunsPayload,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, RunRefPayload, TemporalScenePatchPayload,
+    self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
+    ListResumableRunsPayload, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -5098,16 +5101,219 @@ impl Backend {
         .await
     }
 
-    // ─────────────────────── Gate C2-T1 Transport Assembly (Wave 1/2 core
-    // Rust modules promoted from pub(crate) to pub; see narrative_extraction
-    // mod.rs). set_attention_in_tx / clear_attention_in_tx / build_maintenance_inbox
-    // are each a single statement or read-only, so unlike publish_runtime's
-    // multi-table writer none of them requires an explicit caller-held
-    // transaction — db.with_conn's implicit autocommit is sufficient. NOTE:
-    // this project's cargo/napi toolchain is unavailable in the environment
-    // this was written in (see policies/narrative/README.md's Gate C2
-    // section); these three functions have not been through `cargo check`
-    // or `napi build` and index.d.ts has not been regenerated. ─────────────
+    // ─────────────────────── Gate C2 Run Kind Policy: the five named
+    // operations replacing the old two-value
+    // rebuildNarrativeDependencyIndex(mode: verify|repair)
+    // (policies/narrative/narrative-run-kind-policy.json's apiSplit). Same
+    // toolchain caveat as the block above: not through `cargo check` or
+    // `napi build`, index.d.ts not regenerated. ───────────────────────────
+
+    /// Read-only: `dependency-verify` diagnostic across the Durable
+    /// Dependency Graph and Rebuildable Derived State for one project.
+    #[napi]
+    pub async fn verify_narrative_dependency_graph(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: VerifyNarrativeDependencyGraphPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let report = db.with_conn(|conn| {
+                    narrative_extraction::verify_narrative_dependency_graph_for_project(
+                        conn,
+                        &dto.project_id,
+                    )
+                })?;
+                Ok(serde_json::to_string(&report)?)
+            })
+        })
+        .await
+    }
+
+    /// `dependency-rebuild-derived`: discards and recomputes every
+    /// Rebuildable Derived State row from the Durable Graph and current
+    /// Source state, for every Consumer in the project. Owns its own
+    /// transaction(s) internally (see the shared crate's own doc
+    /// comment), so this calls it directly against the live `Database`
+    /// rather than through `with_db_state`'s single-closure shape.
+    #[napi]
+    pub async fn rebuild_narrative_derived_state(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RebuildNarrativeDerivedStatePayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::rebuild_narrative_derived_state_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            let wire = match outcome {
+                RebuildDerivedStateOutcome::AlreadyRunning { run_id } => serde_json::json!({
+                    "outcome": "alreadyRunning",
+                    "runId": run_id,
+                }),
+                RebuildDerivedStateOutcome::Ran { run_id, summary } => serde_json::json!({
+                    "outcome": "ran",
+                    "runId": run_id,
+                    "consumersEvaluated": summary.consumers_evaluated,
+                    "edgesEvaluated": summary.edges_evaluated,
+                }),
+            };
+            Ok(serde_json::to_string(&wire)?)
+        })
+        .await
+    }
+
+    /// Read-only: status of the most recent Legacy Dependency Backfill Run
+    /// for one project, if any.
+    #[napi]
+    pub async fn get_narrative_backfill_status(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: GetNarrativeBackfillStatusPayload = from_wire("payload", payload)?;
+            with_db_state(&state.ws, |db| {
+                let status = db.with_conn(|conn| {
+                    narrative_extraction::get_backfill_status_for_project(conn, &dto.project_id)
+                })?;
+                Ok(serde_json::to_string(&status)?)
+            })
+        })
+        .await
+    }
+
+    /// Manual retry for Legacy Dependency Backfill
+    /// (`dependency-backfill`'s `manualRetryRole:
+    /// failure-recovery-only`) -- the automatic post-open bootstrap
+    /// trigger already retries on the next Workspace open when a prior
+    /// attempt failed (a `failed` Run is not reused); this triggers that
+    /// same retry immediately, without waiting for a reopen. A no-op
+    /// (`outcome: "alreadyRun"`) when the project already has a
+    /// `pending`/`running`/`completed` Backfill Run -- there is nothing
+    /// to retry.
+    #[napi]
+    pub async fn retry_narrative_legacy_backfill(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RetryNarrativeLegacyBackfillPayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let outcome = narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+                authority.db(),
+                &dto.project_id,
+            )?;
+            let wire = match outcome {
+                LegacyBackfillBootstrapOutcome::AlreadyRun { run_id } => serde_json::json!({
+                    "outcome": "alreadyRun",
+                    "runId": run_id,
+                }),
+                LegacyBackfillBootstrapOutcome::Ran { run_id, summary } => serde_json::json!({
+                    "outcome": "ran",
+                    "runId": run_id,
+                    "epochCreated": summary.epoch_created,
+                    "contributionsCreated": summary.contributions_created,
+                    "edgesCreated": summary.edges_created,
+                    "applicationsWithoutRunId": summary.applications_without_run_id,
+                }),
+            };
+            Ok(serde_json::to_string(&wire)?)
+        })
+        .await
+    }
+
+    /// `dependency-repair`, manual-only. `apply: false` (the default)
+    /// seals a repair plan against the project's *current* Semantic
+    /// Epoch and returns it as a preview -- the policy's
+    /// `change-count-preview` precondition -- without executing
+    /// anything. `apply: true` executes: `planDigest` must match the
+    /// digest a preview call just returned (binds the confirmation to
+    /// the exact plan a human saw, not a blind re-seal that could differ
+    /// if the Durable Graph changed in between) and `leaseOwner` claims
+    /// the exclusive Repair lease. Every precondition failure
+    /// (`NEX_REPAIR_*`) is a typed, `?`-propagated error from the shared
+    /// crate or an explicit one constructed here -- never a silent
+    /// fallback.
+    #[napi]
+    pub async fn repair_narrative_dependency_declarations(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let dto: RepairNarrativeDependencyDeclarationsPayload = from_wire("payload", payload)?;
+            let authority = active_database(&state.ws)?;
+            let db = authority.db();
+
+            let current_epoch_id = db
+                .with_conn(|conn| narrative_extraction::get_current_epoch(conn, &dto.project_id))?
+                .ok_or_else(|| {
+                    AppError::Anyhow(anyhow::anyhow!(
+                        "NEX_REPAIR_NO_EPOCH: project '{}' has no Semantic Epoch",
+                        dto.project_id
+                    ))
+                })?
+                .id;
+
+            let plan = db.with_conn(|conn| {
+                narrative_extraction::seal_repair_plan(
+                    conn,
+                    &dto.project_id,
+                    &dto.verify_run_id,
+                    &current_epoch_id,
+                )
+            })?;
+
+            if !dto.apply {
+                let preview = serde_json::json!({
+                    "mode": "preview",
+                    "plan": plan,
+                });
+                return Ok(serde_json::to_string(&preview)?);
+            }
+
+            let Some(plan_digest) = dto.plan_digest.as_deref() else {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_REPAIR_PLAN_DIGEST_REQUIRED: planDigest is required when apply is true"
+                )));
+            };
+            if plan_digest != plan.digest.as_str() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_REPAIR_PLAN_DIGEST_MISMATCH: the supplied planDigest does not match \
+                     the freshly-sealed plan -- the Durable Graph may have changed since the \
+                     preview; request a fresh preview before retrying"
+                )));
+            }
+            let Some(lease_owner) = dto.lease_owner.as_deref() else {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_REPAIR_LEASE_OWNER_REQUIRED: leaseOwner is required when apply is true"
+                )));
+            };
+
+            let workspace_path = active_workspace_path(&state.ws)?;
+            let outcome =
+                narrative_extraction::repair_narrative_dependency_declarations_for_project(
+                    db,
+                    &workspace_path,
+                    &dto.project_id,
+                    &plan,
+                    lease_owner,
+                    true,
+                )?;
+            let applied = serde_json::json!({
+                "mode": "applied",
+                "outcome": outcome,
+            });
+            Ok(serde_json::to_string(&applied)?)
+        })
+        .await
+    }
 
     /// Set (upsert) a Maintenance Attention disposition. Never touches the
     /// Change Feed: `narrative_maintenance_attention` is durable,
