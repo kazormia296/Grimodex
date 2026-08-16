@@ -1928,11 +1928,19 @@ mod unit_tests {
                 .map_err(Into::into)
             })
             .expect("scene source revision");
-        let source_key = format!("project:scene:{scene_id}");
+        // Two different fields need two different shapes for the same
+        // Source: `readSet[].inputRef` is resolved by
+        // `resolve_source_revision`, which strips a `project:scene:`
+        // prefix, while `sourceBasis[].sourceKey` becomes
+        // `SourceBasisRow.source_key` and is fed verbatim into
+        // `source_object_identity_for`, which *adds* that same prefix --
+        // passing the already-prefixed form there would double it.
+        let input_ref = format!("project:scene:{scene_id}");
+        let source_basis_key = scene_id.to_string();
         let revision_token = format!("v{version}@{updated_at}");
         let read_set = json!([{
             "kind": "snapshot-document",
-            "inputRef": source_key.clone(),
+            "inputRef": input_ref,
             "sourceKind": "scene-body",
             "revisionToken": revision_token.clone()
         }]);
@@ -1943,7 +1951,7 @@ mod unit_tests {
             "evidenceSet": [],
             "sourceBasis": [{
                 "revisionToken": revision_token,
-                "sourceKey": source_key,
+                "sourceKey": source_basis_key,
                 "sourceKind": "scene-body"
             }],
             "proposalSchemaVersion": "1",
