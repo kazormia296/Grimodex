@@ -11,12 +11,24 @@
  * every `existingRunKindColumnValue` it claims actually appears in the
  * real `narrative_extraction_runs.run_kind` CHECK constraint in
  * `migrate.rs` — so this policy document cannot silently drift from the
- * SQL it describes. It does not assert that Backfill/Verify/Rebuild/Repair
- * Run creation, the bootstrap trigger, or the five named API operations
- * are implemented yet; that is C2-T2/C2-Z follow-on work.
+ * SQL it describes.
+ *
+ * It also cross-checks each Run Kind's `implementationStatus` against the
+ * real Rust call graph, in both directions: a Run Kind that declares an
+ * automatic trigger as `wired` must have a production caller for its
+ * `triggerSymbol`, and one that declares `unwired-blocked` must have none.
+ * That check exists because this contract previously declared
+ * `dependency-backfill` as `automatic-once-after-schema-upgrade` while the
+ * post-open trigger had been removed from the runtime, and the validator
+ * passed anyway. A machine-readable contract describing a future state as
+ * if it were live is worse than no contract, so the drift now fails the
+ * gate whichever side moves.
+ *
+ * It still does not assert that the named API operations behave correctly,
+ * only that the trigger wiring the contract claims matches reality.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
@@ -26,9 +38,18 @@ const REPO_ROOT = path.resolve(
   "../..",
 );
 
-const MIGRATE_RS_PATH =
-  "src-tauri/crates/grimodex-db/src/migrate.rs";
+const MIGRATE_RS_PATH = "src-tauri/crates/grimodex-db/src/migrate.rs";
 const RUN_KIND_CHECK_PATTERN = /CHECK\(run_kind IN \(([^)]*)\)\)/g;
+
+// Rust sources scanned for automatic trigger call sites.
+const RUST_SOURCE_ROOTS = [
+  "src-tauri/crates",
+  "electron/native/grimodex-node/src",
+];
+
+// Calls from the N-API boundary are the *manual* Admin IPC surface by
+// construction, so they never count as an automatic trigger.
+const MANUAL_IPC_FILE = "electron/native/grimodex-node/src/lib.rs";
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -51,6 +72,155 @@ function readJson(repoRoot, relativePath, errors, label) {
       `${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
     return null;
+  }
+}
+
+function collectRustFiles(repoRoot) {
+  const files = [];
+  const walk = (absolute) => {
+    let entries;
+    try {
+      entries = readdirSync(absolute, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const child = path.join(absolute, entry.name);
+      if (entry.isDirectory()) {
+        // `target/` is build output, not source anyone wires a trigger in.
+        if (entry.name === "target" || entry.name === "node_modules") continue;
+        walk(child);
+      } else if (entry.isFile() && entry.name.endsWith(".rs")) {
+        files.push(child);
+      }
+    }
+  };
+  for (const root of RUST_SOURCE_ROOTS) {
+    const absolute = path.join(repoRoot, root);
+    if (existsSync(absolute) && statSync(absolute).isDirectory())
+      walk(absolute);
+  }
+  return files;
+}
+
+/**
+ * Line numbers (1-based) of `source` that are production code — outside any
+ * top-level `#[cfg(test)]` item.
+ *
+ * Deliberately not "everything before the first `#[cfg(test)]`": `open.rs`
+ * has an inline test module partway down and then continues with more
+ * production code, including the workspace-maintenance worker where a
+ * Backfill trigger would be wired. Cutting at the first occurrence silently
+ * skipped exactly the region this check exists to watch.
+ *
+ * Top-level items close with a `}` in column 0, which is what ends the skip.
+ */
+function productionLineNumbers(source) {
+  const lines = source.split("\n");
+  const kept = [];
+  let inTopLevelTestItem = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (inTopLevelTestItem) {
+      if (line === "}") inTopLevelTestItem = false;
+      continue;
+    }
+    // Only column-0 attributes start a top-level test item; an indented one
+    // belongs to a nested item whose enclosing code is still production.
+    if (line.startsWith("#[cfg(test)]")) {
+      inTopLevelTestItem = true;
+      continue;
+    }
+    kept.push(index + 1);
+  }
+  return kept;
+}
+
+/**
+ * Production (non-test, non-comment, non-definition) call sites of `symbol`,
+ * excluding the manual Admin IPC boundary.
+ */
+function findAutomaticCallSites(rustFiles, repoRoot, symbol) {
+  const callSites = [];
+  const callPattern = new RegExp(`\\b${symbol}\\s*\\(`, "u");
+  const definitionPattern = new RegExp(`\\bfn\\s+${symbol}\\b`, "u");
+  for (const absolute of rustFiles) {
+    const relative = path
+      .relative(repoRoot, absolute)
+      .split(path.sep)
+      .join("/");
+    if (relative === MANUAL_IPC_FILE) continue;
+    let source;
+    try {
+      source = readFileSync(absolute, "utf8");
+    } catch {
+      continue;
+    }
+    if (!source.includes(symbol)) continue;
+    const lines = source.split("\n");
+    for (const lineNumber of productionLineNumbers(source)) {
+      const line = lines[lineNumber - 1];
+      const trimmed = line.trim();
+      if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
+      if (definitionPattern.test(line)) continue;
+      if (!callPattern.test(line)) continue;
+      callSites.push(`${relative}:${lineNumber}`);
+    }
+  }
+  return callSites;
+}
+
+function validateImplementationStatus(entry, rustFiles, repoRoot, errors) {
+  const status = entry.implementationStatus;
+  if (!isObject(status)) return;
+
+  const isAutomatic =
+    typeof entry.trigger === "string" && entry.trigger.startsWith("automatic");
+
+  if (!isAutomatic) {
+    if (isNonEmptyString(status.triggerSymbol)) {
+      errors.push(
+        `${entry.runKind} declares implementationStatus.triggerSymbol but its trigger is '${entry.trigger}'; only automatic-* Run Kinds have an automatic trigger to wire`,
+      );
+    }
+    return;
+  }
+
+  if (!isNonEmptyString(status.triggerSymbol)) {
+    errors.push(
+      `${entry.runKind} declares trigger '${entry.trigger}' but implementationStatus has no triggerSymbol, so the wiring cannot be checked`,
+    );
+    return;
+  }
+
+  const callSites = findAutomaticCallSites(
+    rustFiles,
+    repoRoot,
+    status.triggerSymbol,
+  );
+
+  if (status.state === "wired" && callSites.length === 0) {
+    errors.push(
+      `${entry.runKind} declares implementationStatus.state 'wired', but no production caller of '${status.triggerSymbol}' exists outside ${MANUAL_IPC_FILE} and test modules — the automatic trigger this contract promises is not actually wired`,
+    );
+  }
+
+  if (status.state === "unwired-blocked") {
+    if (callSites.length > 0) {
+      errors.push(
+        `${entry.runKind} declares implementationStatus.state 'unwired-blocked', but '${status.triggerSymbol}' now has ${callSites.length} production call site(s) (${callSites.join(", ")}) — the trigger was wired without updating this contract`,
+      );
+    }
+    if (!isNonEmptyString(status.blockedReason)) {
+      errors.push(
+        `${entry.runKind} is 'unwired-blocked' but has no blockedReason explaining why the declared trigger is not live`,
+      );
+    }
+    if (!Array.isArray(status.blockedOn) || status.blockedOn.length === 0) {
+      errors.push(
+        `${entry.runKind} is 'unwired-blocked' but has no blockedOn naming what must land first`,
+      );
+    }
   }
 }
 
@@ -100,9 +270,7 @@ function extractSqlRunKindValues(repoRoot, errors) {
   }
   const sets = matches.map(
     (match) =>
-      new Set(
-        [...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1]),
-      ),
+      new Set([...match[1].matchAll(/'([^']+)'/g)].map((entry) => entry[1])),
   );
   // migrate.rs necessarily accumulates one 'CHECK(run_kind IN (...))'
   // string per schema version that ever widened it — each earlier
@@ -129,8 +297,9 @@ function extractSqlRunKindValues(repoRoot, errors) {
   return canonical;
 }
 
-function validateRunKinds(policy, sqlRunKindValues, errors) {
+function validateRunKinds(policy, sqlRunKindValues, errors, repoRoot) {
   if (!isObject(policy) || !Array.isArray(policy.runKinds)) return;
+  const rustFiles = repoRoot ? collectRustFiles(repoRoot) : [];
   const seen = new Set();
   for (const entry of policy.runKinds) {
     if (!isObject(entry) || !isNonEmptyString(entry.runKind)) continue;
@@ -138,6 +307,10 @@ function validateRunKinds(policy, sqlRunKindValues, errors) {
       errors.push(`duplicate runKind: ${entry.runKind}`);
     }
     seen.add(entry.runKind);
+
+    if (repoRoot) {
+      validateImplementationStatus(entry, rustFiles, repoRoot, errors);
+    }
 
     if (entry.existingRunKindColumnValue !== null) {
       if (
@@ -235,7 +408,9 @@ function validateRunKinds(policy, sqlRunKindValues, errors) {
   ];
   for (const runKind of required) {
     if (!seen.has(runKind)) {
-      errors.push(`narrative-run-kind-policy.json is missing runKind: ${runKind}`);
+      errors.push(
+        `narrative-run-kind-policy.json is missing runKind: ${runKind}`,
+      );
     }
   }
 }
@@ -266,7 +441,7 @@ export function validateRunKindPolicy({ repoRoot = REPO_ROOT } = {}) {
   );
   const sqlRunKindValues = extractSqlRunKindValues(repoRoot, errors);
 
-  validateRunKinds(policy, sqlRunKindValues, errors);
+  validateRunKinds(policy, sqlRunKindValues, errors, repoRoot);
   validateApiSplitCoversAdminCommands(policy, errors);
 
   return { errors };

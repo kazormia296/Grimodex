@@ -21,14 +21,17 @@ function writeJson(root, relativePath, value) {
 const RUN_KIND_CHECK_LINE =
   "CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill'))";
 
-function writeFakeMigrateRs(root, { checkLines = [RUN_KIND_CHECK_LINE, RUN_KIND_CHECK_LINE] } = {}) {
-  const target = path.join(
-    root,
-    "src-tauri/crates/grimodex-db/src/migrate.rs",
-  );
+function writeFakeMigrateRs(
+  root,
+  { checkLines = [RUN_KIND_CHECK_LINE, RUN_KIND_CHECK_LINE] } = {},
+) {
+  const target = path.join(root, "src-tauri/crates/grimodex-db/src/migrate.rs");
   mkdirSync(path.dirname(target), { recursive: true });
   const body = checkLines
-    .map((line, index) => `// occurrence ${index}\nrun_kind TEXT NOT NULL ${line},`)
+    .map(
+      (line, index) =>
+        `// occurrence ${index}\nrun_kind TEXT NOT NULL ${line},`,
+    )
     .join("\n");
   writeFileSync(target, `${body}\n`);
 }
@@ -51,7 +54,17 @@ function baseRunKindPolicy(overrides = {}) {
         periodic: false,
         manualRetry: true,
         writes: "durable-graph",
-        adminCommands: ["retryNarrativeLegacyBackfill", "getNarrativeBackfillStatus"],
+        adminCommands: [
+          "retryNarrativeLegacyBackfill",
+          "getNarrativeBackfillStatus",
+        ],
+        implementationStatus: {
+          state: "unwired-blocked",
+          triggerSymbol: "fixture_backfill_trigger_symbol_that_is_never_called",
+          productionEntryPoints: ["retryNarrativeLegacyBackfill"],
+          blockedReason: "test",
+          blockedOn: ["test"],
+        },
       },
       {
         runKind: "dependency-verify",
@@ -67,6 +80,13 @@ function baseRunKindPolicy(overrides = {}) {
         writes: "diagnostics-only",
         forbidSideEffectRepair: true,
         adminCommands: ["verifyNarrativeDependencyGraph"],
+        implementationStatus: {
+          state: "unwired-blocked",
+          triggerSymbol: "fixture_verify_trigger_symbol_that_is_never_called",
+          productionEntryPoints: ["verifyNarrativeDependencyGraph"],
+          blockedReason: "test",
+          blockedOn: ["test"],
+        },
       },
       {
         runKind: "dependency-rebuild-derived",
@@ -82,6 +102,13 @@ function baseRunKindPolicy(overrides = {}) {
         writes: "rebuildable-state-only",
         forbiddenWrites: ["codex"],
         adminCommands: ["rebuildNarrativeDerivedState"],
+        implementationStatus: {
+          state: "unwired-blocked",
+          triggerSymbol: "fixture_rebuild_trigger_symbol_that_is_never_called",
+          productionEntryPoints: ["rebuildNarrativeDerivedState"],
+          blockedReason: "test",
+          blockedOn: ["test"],
+        },
       },
       {
         runKind: "dependency-repair",
@@ -99,6 +126,10 @@ function baseRunKindPolicy(overrides = {}) {
         forbiddenRepairs: ["modify-a-domain-field"],
         unrecoverableDisposition: ["unknown"],
         adminCommands: ["repairNarrativeDependencyDeclarations"],
+        implementationStatus: {
+          state: "wired",
+          productionEntryPoints: ["repairNarrativeDependencyDeclarations"],
+        },
       },
     ],
     apiSplit: {
@@ -115,7 +146,10 @@ function baseRunKindPolicy(overrides = {}) {
     cutover: {
       gate: "C2-Z",
       requiredForCanonicalCutover: ["legacy-backfill-completed"],
-      beforeCutover: { freshnessAuthority: "legacy", genericGraphRole: "shadow" },
+      beforeCutover: {
+        freshnessAuthority: "legacy",
+        genericGraphRole: "shadow",
+      },
       afterCutover: { freshnessAuthority: "generic-consumer-freshness" },
       editingNeverBlockedByCutoverReadiness: true,
       uiDegradationWhenNotReady: ["semantic-index-is-being-prepared"],
@@ -127,6 +161,7 @@ function baseRunKindPolicy(overrides = {}) {
 function writeFixtureRoot({
   runKindPolicy = baseRunKindPolicy(),
   migrateRsOptions = {},
+  extraRustFiles = {},
 } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "run-kind-policy-"));
   cpSync(
@@ -134,9 +169,28 @@ function writeFixtureRoot({
     path.join(root, "policies/narrative/schemas"),
     { recursive: true },
   );
-  writeJson(root, "policies/narrative/narrative-run-kind-policy.json", runKindPolicy);
+  writeJson(
+    root,
+    "policies/narrative/narrative-run-kind-policy.json",
+    runKindPolicy,
+  );
   writeFakeMigrateRs(root, migrateRsOptions);
+  for (const [relativePath, contents] of Object.entries(extraRustFiles)) {
+    const absolute = path.join(root, relativePath);
+    mkdirSync(path.dirname(absolute), { recursive: true });
+    writeFileSync(absolute, contents);
+  }
   return root;
+}
+
+const BACKFILL_SYMBOL = "fixture_backfill_trigger_symbol_that_is_never_called";
+
+function setBackfillStatus(runKindPolicy, patch) {
+  const backfill = runKindPolicy.runKinds.find(
+    (entry) => entry.runKind === "dependency-backfill",
+  );
+  Object.assign(backfill.implementationStatus, patch);
+  return runKindPolicy;
 }
 
 describe("validate-run-kind-policy", () => {
@@ -163,6 +217,92 @@ describe("validate-run-kind-policy", () => {
         error.includes("is missing runKind: dependency-repair"),
       ),
     );
+  });
+
+  it("rejects an automatic run kind claiming 'wired' with no production caller", () => {
+    const runKindPolicy = setBackfillStatus(baseRunKindPolicy(), {
+      state: "wired",
+    });
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-backfill") &&
+          error.includes("'wired'") &&
+          error.includes("not actually wired"),
+      ),
+      `expected a wired-but-uncalled error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects an automatic run kind still marked 'unwired-blocked' after being wired", () => {
+    const root = writeFixtureRoot({
+      extraRustFiles: {
+        "src-tauri/crates/grimodex-db/src/open.rs": [
+          "fn spawn_workspace_maintenance() {",
+          `    ${BACKFILL_SYMBOL}(&database);`,
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-backfill") &&
+          error.includes("'unwired-blocked'") &&
+          error.includes("open.rs:2"),
+      ),
+      `expected an unwired-but-called error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  // Regression: the first version of this check cut each file at its first
+  // `#[cfg(test)]`, so a call placed after an inline test module -- which is
+  // exactly how open.rs is laid out -- was invisible and the gate passed.
+  it("still sees a production call placed after an inline test module", () => {
+    const root = writeFixtureRoot({
+      extraRustFiles: {
+        "src-tauri/crates/grimodex-db/src/open.rs": [
+          "fn earlier_production_code() {}",
+          "",
+          "#[cfg(test)]",
+          "mod tests {",
+          "    fn helper() {}",
+          "}",
+          "",
+          "fn spawn_workspace_maintenance() {",
+          `    ${BACKFILL_SYMBOL}(&database);`,
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-backfill") && error.includes("open.rs:9"),
+      ),
+      `expected the post-test-module call to be found, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("does not count a call from the manual Admin IPC boundary as an automatic trigger", () => {
+    const root = writeFixtureRoot({
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": [
+          "pub async fn retry_narrative_legacy_backfill() {",
+          `    ${BACKFILL_SYMBOL}(&database);`,
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.deepEqual(result.errors, []);
   });
 
   it("rejects a duplicate runKind entry", () => {
@@ -318,7 +458,10 @@ describe("validate-run-kind-policy", () => {
 
   it("rejects narrative-run-kind-policy.json when it fails schema validation", () => {
     const root = writeFixtureRoot({
-      runKindPolicy: { schemaVersion: 1, contract: "narrative-run-kind-policy" },
+      runKindPolicy: {
+        schemaVersion: 1,
+        contract: "narrative-run-kind-policy",
+      },
     });
     const result = validateRunKindPolicy({ repoRoot: root });
     assert.ok(

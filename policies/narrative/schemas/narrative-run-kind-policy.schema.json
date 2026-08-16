@@ -2,7 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grimodex.dev/schema/narrative/narrative-run-kind-policy-v1.json",
   "type": "object",
-  "required": ["schemaVersion", "contract", "principle", "runKinds", "apiSplit", "cutover"],
+  "required": [
+    "schemaVersion",
+    "contract",
+    "principle",
+    "runKinds",
+    "apiSplit",
+    "cutover"
+  ],
   "properties": {
     "schemaVersion": { "const": 1 },
     "contract": { "const": "narrative-run-kind-policy" },
@@ -87,7 +94,8 @@
         "periodic",
         "manualRetry",
         "writes",
-        "adminCommands"
+        "adminCommands",
+        "implementationStatus"
       ],
       "properties": {
         "runKind": {
@@ -138,7 +146,11 @@
         "manualRetryRole": { "type": "string", "minLength": 1 },
         "manualRetryNote": { "type": "string", "minLength": 1 },
         "writes": {
-          "enum": ["durable-graph", "rebuildable-state-only", "diagnostics-only"]
+          "enum": [
+            "durable-graph",
+            "rebuildable-state-only",
+            "diagnostics-only"
+          ]
         },
         "writesAllowed": {
           "type": "array",
@@ -162,7 +174,12 @@
         },
         "duringBackfillProductBehavior": {
           "type": "object",
-          "required": ["editingBlocked", "freshnessReadAuthority", "genericGraphRole", "onFailure"],
+          "required": [
+            "editingBlocked",
+            "freshnessReadAuthority",
+            "genericGraphRole",
+            "onFailure"
+          ],
           "properties": {
             "editingBlocked": { "const": false },
             "freshnessReadAuthority": { "const": "legacy" },
@@ -187,7 +204,10 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
-        "manualOnlyFailureCode": { "type": "string", "pattern": "^NEX_[A-Z0-9_]+$" },
+        "manualOnlyFailureCode": {
+          "type": "string",
+          "pattern": "^NEX_[A-Z0-9_]+$"
+        },
         "verifiesDurableGraph": {
           "type": "array",
           "minItems": 1,
@@ -235,6 +255,34 @@
           "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "implementationStatus": {
+          "type": "object",
+          "description": "Whether this Run Kind's declared trigger is actually wired in the shipping runtime. Declared per Run Kind so the contract cannot silently describe a future state as if it were live; validate-run-kind-policy.mjs cross-checks it against the real Rust call graph in both directions.",
+          "required": ["state", "productionEntryPoints"],
+          "properties": {
+            "state": { "enum": ["wired", "unwired-blocked"] },
+            "triggerSymbol": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Rust function an automatic trigger must call for this Run Kind to count as wired. Required when trigger is automatic-*."
+            },
+            "productionEntryPoints": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 },
+              "description": "How this Run Kind can actually be started today."
+            },
+            "blockedReason": { "type": "string", "minLength": 1 },
+            "blockedOn": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

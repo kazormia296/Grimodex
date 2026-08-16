@@ -30,7 +30,12 @@
         "editingBlocked": false,
         "freshnessReadAuthority": "legacy",
         "genericGraphRole": "shadow-building",
-        "onFailure": ["workspace-still-opens", "body-still-editable", "legacy-freshness-path-preserved", "only-c2z-cutover-is-blocked"]
+        "onFailure": [
+          "workspace-still-opens",
+          "body-still-editable",
+          "legacy-freshness-path-preserved",
+          "only-c2z-cutover-is-blocked"
+        ]
       },
       "autoRetryableFailureClasses": [
         "sqlite-busy",
@@ -48,7 +53,20 @@
         "backfill-algorithm-invariant-violation"
       ],
       "manualOnlyFailureCode": "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
-      "adminCommands": ["retryNarrativeLegacyBackfill", "getNarrativeBackfillStatus"]
+      "adminCommands": [
+        "retryNarrativeLegacyBackfill",
+        "getNarrativeBackfillStatus"
+      ],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "narrative_extraction_bootstrap_legacy_backfill",
+        "productionEntryPoints": ["retryNarrativeLegacyBackfill"],
+        "blockedReason": "The post-open bootstrap was wired and then removed: running it on the detached workspace-maintenance connection made every Workspace open a second writer, and a commit from a second connection fails the foreground's in-flight deferred transaction with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot retry. Because migrate seeds default-project, this fired on every open, including brand-new workspaces.",
+        "blockedOn": [
+          "run-the-backfill-on-the-live-workspace-authority-connection",
+          "or-make-domain-writes-deferred-transactions-immediate"
+        ]
+      }
     },
     {
       "runKind": "dependency-verify",
@@ -72,7 +90,12 @@
       "periodic": false,
       "manualRetry": true,
       "writes": "diagnostics-only",
-      "writesAllowed": ["run-status", "typed-diagnostic", "finding-observation", "verify-report-digest"],
+      "writesAllowed": [
+        "run-status",
+        "typed-diagnostic",
+        "finding-observation",
+        "verify-report-digest"
+      ],
       "verifiesDurableGraph": [
         "producer-and-generation-consistency",
         "active-edge-duplicates",
@@ -91,7 +114,14 @@
         "semantic-index-generation-correspondence"
       ],
       "forbidSideEffectRepair": true,
-      "adminCommands": ["verifyNarrativeDependencyGraph"]
+      "adminCommands": ["verifyNarrativeDependencyGraph"],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "verify_narrative_dependency_graph_for_project",
+        "productionEntryPoints": ["verifyNarrativeDependencyGraph"],
+        "blockedReason": "The Verify checks themselves are implemented and tested, but nothing subscribes them to the declared triggerEvents: no production caller fires Verify on backfill completion, Semantic Epoch rotation, integrity repair, or contract-digest change. Only the manual Admin IPC starts a Verify Run today.",
+        "blockedOn": ["c2-t2-trigger-event-subscription"]
+      }
     },
     {
       "runKind": "dependency-rebuild-derived",
@@ -133,7 +163,14 @@
         "attention",
         "domain-undo-journal"
       ],
-      "adminCommands": ["rebuildNarrativeDerivedState"]
+      "adminCommands": ["rebuildNarrativeDerivedState"],
+      "implementationStatus": {
+        "state": "unwired-blocked",
+        "triggerSymbol": "rebuild_narrative_derived_state_for_project",
+        "productionEntryPoints": ["rebuildNarrativeDerivedState"],
+        "blockedReason": "The orchestrator is implemented and tested, but nothing detects the declared conditions and starts it: no production caller fires Rebuild-Derived on Semantic Epoch rotation, a missing derived row, a contract-version or dependency-set-digest mismatch, or a Verify report asking for it. Only the manual Admin IPC starts a Rebuild-Derived Run today.",
+        "blockedOn": ["c2-t2-derived-state-invalidation-detection"]
+      }
     },
     {
       "runKind": "dependency-repair",
@@ -176,8 +213,18 @@
         "guess-an-evidence-range",
         "re-adjudicate-semantic-truth"
       ],
-      "unrecoverableDisposition": ["detached", "unknown", "manual-review-required"],
-      "adminCommands": ["repairNarrativeDependencyDeclarations"]
+      "unrecoverableDisposition": [
+        "detached",
+        "unknown",
+        "manual-review-required"
+      ],
+      "adminCommands": ["repairNarrativeDependencyDeclarations"],
+      "implementationStatus": {
+        "state": "wired",
+        "productionEntryPoints": ["repairNarrativeDependencyDeclarations"],
+        "blockedReason": "Human-triggered by contract, so the Admin IPC is the complete entry point; nothing automatic is owed. Its stable-request-id / idempotent-replay preconditions are a separate open item, tracked outside implementationStatus.",
+        "blockedOn": ["c2-t2-repair-request-idempotency-and-actor-identity"]
+      }
     }
   ],
   "apiSplit": {
