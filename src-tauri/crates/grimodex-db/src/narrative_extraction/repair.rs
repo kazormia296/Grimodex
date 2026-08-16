@@ -146,34 +146,65 @@ pub(crate) fn claim_repair_lease_in_tx(
         "semanticEpochId is required"
     );
 
-    let existing: Option<(String, String, String, String)> = conn
+    /// The identity columns of an existing lease, plus whether it is live.
+    struct ExistingLease {
+        lease_owner: String,
+        verify_run_id: String,
+        repair_plan_digest: String,
+        semantic_epoch_id: String,
+        active_run_id: Option<String>,
+        expired: bool,
+    }
+
+    let existing = conn
         .query_row(
-            "SELECT lease_owner, verify_run_id, repair_plan_digest, expires_at
+            "SELECT lease_owner, verify_run_id, repair_plan_digest, semantic_epoch_id,
+                    active_run_id, julianday(expires_at) < julianday('now')
                FROM narrative_maintenance_repair_leases WHERE project_id = ?1",
             params![project_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok(ExistingLease {
+                    lease_owner: row.get(0)?,
+                    verify_run_id: row.get(1)?,
+                    repair_plan_digest: row.get(2)?,
+                    semantic_epoch_id: row.get(3)?,
+                    active_run_id: row.get(4)?,
+                    expired: row.get(5)?,
+                })
+            },
         )
         .optional()?;
 
-    if let Some((existing_owner, existing_verify_run_id, existing_digest, existing_expires_at)) =
-        &existing
-    {
-        let is_expired: bool = conn.query_row(
-            "SELECT julianday(?1) < julianday('now')",
-            params![existing_expires_at],
-            |row| row.get(0),
-        )?;
-        let is_same_claim = existing_owner == &claim.lease_owner
-            && existing_verify_run_id == &claim.verify_run_id
-            && existing_digest == &claim.repair_plan_digest;
+    if let Some(existing) = &existing {
+        // "Same claim" means *every* identity column matches, `active_run_id`
+        // included. Two Runs can legitimately share an owner, a Verify Run
+        // and a plan digest -- this Run Kind declares
+        // `no-automatic-reuse-decision`, so a second approval of the same
+        // plan under a new requestId really does create a second Run. If
+        // `active_run_id` were left out of this comparison, that second Run
+        // would be treated as a re-entrant claim, overwrite the first Run's
+        // entitlement, and make the first Run lose its own lease at the
+        // post-backup CAS. `semantic_epoch_id` is compared for the same
+        // reason: a lease from a prior generation is not this one.
+        let is_same_claim = existing.lease_owner == claim.lease_owner
+            && existing.verify_run_id == claim.verify_run_id
+            && existing.repair_plan_digest == claim.repair_plan_digest
+            && existing.semantic_epoch_id == semantic_epoch_id
+            && existing.active_run_id.as_deref() == Some(claim.active_run_id.as_str());
         anyhow::ensure!(
-            is_expired || is_same_claim,
+            existing.expired || is_same_claim,
             "NEX_REPAIR_LEASE_HELD: project '{project_id}' already has an active Repair lease \
-             held by '{existing_owner}' for a different plan"
+             held by '{}' (Run '{}') -- this claim is Run '{}', which is a different execution",
+            existing.lease_owner,
+            existing.active_run_id.as_deref().unwrap_or("<none>"),
+            claim.active_run_id
         );
     }
 
-    conn.execute(
+    // Defence in depth: the same rule again inside the write, so the read
+    // above cannot be raced. A live lease is only overwritten when every
+    // identity column matches; otherwise the UPSERT matches nothing.
+    let claimed = conn.execute(
         "INSERT INTO narrative_maintenance_repair_leases
             (project_id, lease_owner, verify_run_id, repair_plan_digest, semantic_epoch_id,
              claimed_at, expires_at, active_run_id)
@@ -185,7 +216,17 @@ pub(crate) fn claim_repair_lease_in_tx(
              semantic_epoch_id = excluded.semantic_epoch_id,
              claimed_at = excluded.claimed_at,
              expires_at = excluded.expires_at,
-             active_run_id = excluded.active_run_id",
+             active_run_id = excluded.active_run_id
+          WHERE julianday(narrative_maintenance_repair_leases.expires_at)
+                    < julianday('now')
+             OR (narrative_maintenance_repair_leases.lease_owner = excluded.lease_owner
+                 AND narrative_maintenance_repair_leases.verify_run_id = excluded.verify_run_id
+                 AND narrative_maintenance_repair_leases.repair_plan_digest
+                         = excluded.repair_plan_digest
+                 AND narrative_maintenance_repair_leases.semantic_epoch_id
+                         = excluded.semantic_epoch_id
+                 AND narrative_maintenance_repair_leases.active_run_id
+                         = excluded.active_run_id)",
         params![
             project_id,
             claim.lease_owner,
@@ -197,6 +238,12 @@ pub(crate) fn claim_repair_lease_in_tx(
             claim.active_run_id,
         ],
     )?;
+    anyhow::ensure!(
+        claimed == 1,
+        "NEX_REPAIR_LEASE_HELD: project '{project_id}' already has an active Repair lease held \
+         by another execution; Run '{}' did not acquire it",
+        claim.active_run_id
+    );
     Ok(())
 }
 
@@ -715,7 +762,27 @@ pub fn repair_narrative_dependency_declarations_for_request(
         // to resume. Resuming needs the approved plan, and the only
         // trustworthy way to get one is to re-derive it and require that it
         // digests to what this request was approved for.
-        let plan = seal_plan_matching_digest(db, project_id, verify_run_id, expected_plan_digest)?;
+        //
+        // If that re-derivation fails, the Run cannot be resumed *ever* --
+        // the Epoch rotated, or the graph moved past the approved plan. It
+        // must not be left `running`, or every future retry returns the
+        // same pre-resume error and the Run stays forever in flight,
+        // blocking the C2-Z `no-active-backfill-or-repair-run` check.
+        let plan =
+            match seal_plan_matching_digest(db, project_id, verify_run_id, expected_plan_digest) {
+                Ok(plan) => plan,
+                Err(seal_error) => {
+                    return terminalize_unresumable_run(
+                        db,
+                        project_id,
+                        &run_id,
+                        request_id,
+                        expected_plan_digest,
+                        actor_id,
+                        seal_error,
+                    );
+                }
+            };
         if plan.is_empty() {
             return Ok(RepairOutcome {
                 edges_deactivated: 0,
@@ -748,6 +815,72 @@ pub fn repair_narrative_dependency_declarations_for_request(
         request_id,
         actor_id,
     )
+}
+
+/// Lands a Run that can never be resumed, without ever reporting work it
+/// did not do.
+///
+/// Reached when a `running` Run's approved plan cannot be re-derived. Two
+/// things have to happen in order:
+///
+/// 1. Re-read the request. Sealing is not instantaneous, and a concurrent
+///    attempt on the same Run may have completed while it ran -- in which
+///    case the honest answer is that Run's recorded outcome, not a failure.
+/// 2. Otherwise terminalize. `superseded` when the project's Semantic Epoch
+///    has moved past the Run's (a new generation replaced the work rather
+///    than the work going wrong); `failed` when the Epoch still matches and
+///    it is the graph or the Verify result that drifted.
+///
+/// The original sealing error is what the caller sees either way: it is the
+/// reason the resume was refused.
+#[allow(clippy::too_many_arguments)]
+fn terminalize_unresumable_run(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    expected_plan_digest: &str,
+    actor_id: &str,
+    seal_error: anyhow::Error,
+) -> anyhow::Result<RepairOutcome> {
+    let current = db.with_conn(|conn| {
+        find_run_by_request_identity(
+            conn,
+            project_id,
+            &RunRequestIdentity {
+                request_id,
+                idempotency_domain: REPAIR_IDEMPOTENCY_DOMAIN,
+                payload_digest: expected_plan_digest,
+                actor_id,
+            },
+        )
+    })?;
+    if let Some(current) = &current {
+        let status = current["status"].as_str().unwrap_or("");
+        if !matches!(status, "pending" | "running") {
+            return replay_repair_outcome(run_id, status, &current["outcome"]);
+        }
+    }
+
+    let epoch_moved = db.with_conn(|conn| {
+        let run_epoch: Option<String> = conn
+            .query_row(
+                "SELECT semantic_epoch_id FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let current_epoch = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
+        Ok(run_epoch != current_epoch)
+    })?;
+    let status = if epoch_moved {
+        NarrativeRunStatus::Superseded
+    } else {
+        NarrativeRunStatus::Failed
+    };
+
+    Err(terminalize_repair_run(db, run_id, status, seal_error))
 }
 
 /// Seals a plan from `verify_run_id` and refuses to return it unless it is
@@ -1097,22 +1230,62 @@ fn finalize_repair_run(
     })
 }
 
-/// Terminalize a Run as `failed` after a precondition or execution error,
-/// and report whichever failure the caller most needs to see.
+/// Terminalize a Run after a precondition or execution error, and report
+/// whichever failure the caller most needs to see.
 ///
 /// The original error wins: it is the reason the repair did not happen. A
 /// finalization failure on top of it is appended rather than dropped,
 /// because a Run left `running` changes what a later retry is allowed to
 /// assume.
-fn fail_repair_run(db: &Database, run_id: &str, error: anyhow::Error) -> anyhow::Error {
+fn terminalize_repair_run(
+    db: &Database,
+    run_id: &str,
+    status: NarrativeRunStatus,
+    error: anyhow::Error,
+) -> anyhow::Error {
     let recorded = json!({ "failure": error.to_string() });
-    match finalize_repair_run(db, run_id, NarrativeRunStatus::Failed, Some(&recorded)) {
+    match finalize_repair_run(db, run_id, status, Some(&recorded)) {
         Ok(()) => error,
         Err(finalize_error) => error.context(format!(
-            "NEX_REPAIR_RUN_NOT_TERMINALIZED: Run '{run_id}' could not be marked failed \
-             ({finalize_error}); it will stay 'running' until recovered"
+            "NEX_REPAIR_RUN_NOT_TERMINALIZED: Run '{run_id}' could not be marked '{}' \
+             ({finalize_error}); it will stay 'running' until recovered",
+            status.as_str()
         )),
     }
+}
+
+/// Errors that mean "another execution holds the lease", as opposed to
+/// "this attempt is wrong".
+fn is_lease_contention(error: &anyhow::Error) -> bool {
+    let text = error.to_string();
+    text.contains("NEX_REPAIR_LEASE_HELD") || text.contains("NEX_REPAIR_LEASE_LOST")
+}
+
+/// Whether the project's live Repair lease is held *for this Run*.
+///
+/// This is what separates "someone else's repair is in the way, so this Run
+/// cannot proceed" from "another attempt is executing this very Run right
+/// now". Only the first is this Run's failure.
+///
+/// Two attempts can share one Run without either being a crash recovery: a
+/// caller that sends the same `requestId` twice concurrently has one call
+/// create the Run and the other replay into it, and whichever reaches the
+/// lease second loses the race. Keying the distinction on the lease's
+/// `active_run_id` rather than on which call created the Run covers that
+/// case as well as the crash-resume one.
+fn lease_is_held_for_run(db: &Database, project_id: &str, run_id: &str) -> bool {
+    db.with_conn(|conn| {
+        let held: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_repair_leases
+              WHERE project_id = ?1
+                AND active_run_id = ?2
+                AND julianday(expires_at) > julianday('now')",
+            params![project_id, run_id],
+            |row| row.get(0),
+        )?;
+        Ok(held == 1)
+    })
+    .unwrap_or(false)
 }
 
 /// Runs one already-approved sealed plan under an existing Run and lands
@@ -1160,6 +1333,19 @@ fn execute_repair_under_run(
         run_id,
     ) {
         Ok(outcome) => Ok(outcome),
+        Err(error)
+            if is_lease_contention(&error) && lease_is_held_for_run(db, project_id, run_id) =>
+        {
+            // Two attempts on this same Run raced and the other one won, so
+            // it is repairing under this Run right now. Failing the Run here
+            // would terminalize one that is about to succeed. Report it as
+            // in flight and leave it alone.
+            Err(error.context(format!(
+                "NEX_REPAIR_REQUEST_IN_PROGRESS: Run '{run_id}' is already being executed by \
+                 another attempt that holds the Repair lease; wait for it rather than starting \
+                 a third"
+            )))
+        }
         Err(error) => {
             // The mutation did not commit, so the lease this attempt may
             // have claimed is the only thing left to undo. Release it
@@ -1184,7 +1370,12 @@ fn execute_repair_under_run(
                     )
                 })
             });
-            Err(fail_repair_run(db, run_id, error))
+            Err(terminalize_repair_run(
+                db,
+                run_id,
+                NarrativeRunStatus::Failed,
+                error,
+            ))
         }
     }
 }
@@ -2821,6 +3012,390 @@ mod tests {
         );
     }
 
+    /// A `running` Run whose plan can no longer be re-derived must not stay
+    /// `running` forever. Before this, every retry returned the same
+    /// pre-resume error and the Run was never terminalized — leaving it
+    /// counted as in-flight by the C2-Z `no-active-backfill-or-repair-run`
+    /// check.
+    #[test]
+    fn a_crashed_run_whose_plan_can_no_longer_be_derived_is_terminalized() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let plan_digest = plan.digest().to_string();
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-stuck", "actor-a");
+
+        // A different request repairs the same duplicates first.
+        repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "owner-b",
+            true,
+            "req-b",
+            "actor-b",
+        )
+        .expect("the other request repairs");
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "owner-a",
+            true,
+            "req-stuck",
+            "actor-a",
+        )
+        .expect_err("an unresumable plan cannot succeed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_PLAN_NOT_DERIVED_FROM_VERIFY"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &crashed_run_id),
+            "failed",
+            "the Epoch did not move, so the graph drifted: failed"
+        );
+
+        // And a further retry replays that terminal answer instead of
+        // re-deriving the same pre-resume error forever.
+        let again = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "owner-a",
+            true,
+            "req-stuck",
+            "actor-a",
+        )
+        .expect_err("a terminal Run replays its failure");
+        assert!(
+            again.to_string().contains("NEX_REPAIR_REQUEST_FAILED"),
+            "unexpected error: {again}"
+        );
+    }
+
+    #[test]
+    fn a_crashed_run_left_behind_by_an_epoch_rotation_is_superseded() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let plan_digest = plan.digest().to_string();
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-rotated", "actor-a");
+
+        // A restore rotates the generation out from under the crashed Run.
+        db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "migration", None))
+            .expect("rotate epoch");
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            &plan_digest,
+            "owner-a",
+            true,
+            "req-rotated",
+            "actor-a",
+        )
+        .expect_err("a plan from a prior Epoch cannot be resumed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_RUN_EPOCH_MISMATCH")
+                || error
+                    .to_string()
+                    .contains("NEX_REPAIR_PLAN_DIGEST_MISMATCH"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &crashed_run_id),
+            "superseded",
+            "a new generation replaced the work rather than the work going wrong"
+        );
+    }
+
+    /// The reviewer's concurrency note: two retries of one crashed request
+    /// share a Run, so losing the lease race must not fail that shared Run.
+    #[test]
+    fn a_concurrent_resume_of_the_same_run_reports_in_progress_without_failing_it() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let crashed_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-race", "actor-a");
+
+        // Stand in for "the other retry got there first": a live lease held
+        // under this same Run by a different owner process.
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &RepairLeaseClaim {
+                        lease_owner: "owner-first".to_string(),
+                        verify_run_id: verify_run_id.clone(),
+                        repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: crashed_run_id.clone(),
+                    },
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("the first retry holds the lease");
+
+        let error = repair_narrative_dependency_declarations_for_request(
+            &db,
+            &workspace_path,
+            "project-1",
+            &verify_run_id,
+            plan.digest(),
+            "owner-second",
+            true,
+            "req-race",
+            "actor-a",
+        )
+        .expect_err("the second retry must not proceed");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_REQUEST_IN_PROGRESS"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &crashed_run_id),
+            "running",
+            "the shared Run must not be failed by the losing retry"
+        );
+    }
+
+    /// Two concurrent calls carrying the *same* requestId share one Run:
+    /// one creates it, the other replays into it. Whichever reaches the
+    /// lease second must not mark that shared Run failed.
+    ///
+    /// This is the same hazard as a concurrent crash-resume, but it arrives
+    /// through the *initial* path rather than the resume one — which is why
+    /// the exemption keys on the lease's `active_run_id` rather than on
+    /// which call created the Run.
+    #[test]
+    fn a_second_attempt_on_a_shared_run_does_not_fail_it() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+
+        // The first call creates the Run and takes the lease under it. Build
+        // that state directly: a `running` Run for this request, plus a live
+        // lease bound to it held by the *other* attempt's owner.
+        let shared_run_id =
+            seed_crashed_repair_run(&db, "project-1", &plan, "req-shared-run", "actor-a");
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &RepairLeaseClaim {
+                        lease_owner: "owner-first".to_string(),
+                        verify_run_id: verify_run_id.clone(),
+                        repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: shared_run_id.clone(),
+                    },
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("the winning attempt holds the lease under the shared Run");
+
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "owner-second",
+            true,
+            "req-shared-run",
+            "actor-a",
+        )
+        .expect_err("the losing attempt must not proceed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_REQUEST_IN_PROGRESS"),
+            "unexpected error: {error}"
+        );
+        assert_eq!(
+            run_status(&db, &shared_run_id),
+            "running",
+            "the shared Run must survive the losing attempt"
+        );
+    }
+
+    /// The converse: a lease held for a *different* Run really does mean
+    /// this Run cannot proceed, so it must be failed rather than reported
+    /// as in flight.
+    #[test]
+    fn a_lease_held_for_a_different_run_fails_this_one() {
+        let (workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &RepairLeaseClaim {
+                        lease_owner: "owner-other".to_string(),
+                        verify_run_id: verify_run_id.clone(),
+                        repair_plan_digest: plan.digest().to_string(),
+                        active_run_id: "some-other-run".to_string(),
+                    },
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("an unrelated Run holds the lease");
+
+        let error = repair_narrative_dependency_declarations_for_project(
+            &db,
+            &workspace_path,
+            "project-1",
+            &plan,
+            "owner-mine",
+            true,
+            "req-blocked",
+            "actor-a",
+        )
+        .expect_err("another Run's lease blocks this one");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_LEASE_HELD"),
+            "unexpected error: {error}"
+        );
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs
+                      WHERE request_id = 'req-blocked'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("the blocked Run exists");
+        assert_eq!(
+            status, "failed",
+            "a Run blocked by someone else's lease is this Run's failure"
+        );
+    }
+
+    /// `active_run_id` is part of the lease's identity from the moment it is
+    /// claimed, not only at the post-backup CAS. Two Runs can share owner,
+    /// Verify Run and plan digest — this Run Kind never auto-reuses work —
+    /// so without it the second would silently steal the first's
+    /// entitlement.
+    #[test]
+    fn a_second_run_may_not_take_over_a_live_lease_for_the_same_plan() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        seed_duplicate_edges(&db);
+        let verify_run_id = seed_verify_run(&db, "project-1");
+        let plan = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", &verify_run_id, &epoch_id))
+            .expect("seal plan");
+        let base = RepairLeaseClaim {
+            lease_owner: "process-1".to_string(),
+            verify_run_id: verify_run_id.clone(),
+            repair_plan_digest: plan.digest().to_string(),
+            active_run_id: "run-a".to_string(),
+        };
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &base,
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("Run A claims the lease");
+
+        // Same owner, same Verify Run, same plan digest -- different Run.
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    claim_repair_lease_in_tx(
+                        conn,
+                        "project-1",
+                        &RepairLeaseClaim {
+                            lease_owner: base.lease_owner.clone(),
+                            verify_run_id: base.verify_run_id.clone(),
+                            repair_plan_digest: base.repair_plan_digest.clone(),
+                            active_run_id: "run-b".to_string(),
+                        },
+                        &epoch_id,
+                        "2026-08-15T00:00:00.000Z",
+                        "2099-01-01T00:00:00.000Z",
+                    )
+                })
+            })
+            .expect_err("a different Run is not a re-entrant claim");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_LEASE_HELD"),
+            "unexpected error: {error}"
+        );
+
+        let active_run_id: Option<String> = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT active_run_id FROM narrative_maintenance_repair_leases
+                      WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read the lease");
+        assert_eq!(
+            active_run_id.as_deref(),
+            Some("run-a"),
+            "Run A's entitlement must survive Run B's attempt"
+        );
+    }
+
     #[test]
     fn the_request_first_entry_point_rejects_a_digest_the_caller_was_not_shown() {
         let (workspace_path, db) = test_workspace("case");
@@ -3127,6 +3702,92 @@ mod tests {
             })
         })
         .expect("re-claiming the identical plan must succeed");
+    }
+
+    /// The other direction of the claim predicate: the *same* execution
+    /// re-claiming its own live lease must succeed. The resume path relies
+    /// on it, and a predicate that only ever rejected would break resume
+    /// silently rather than loudly.
+    #[test]
+    fn a_run_may_reclaim_its_own_live_lease() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        let claim = RepairLeaseClaim {
+            lease_owner: "owner-a".to_string(),
+            verify_run_id: "verify-run-1".to_string(),
+            repair_plan_digest: "sha256:plan-a".to_string(),
+            active_run_id: "run-a".to_string(),
+        };
+        for label in ["first claim", "re-entrant claim by the same Run"] {
+            db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    claim_repair_lease_in_tx(
+                        conn,
+                        "project-1",
+                        &claim,
+                        &epoch_id,
+                        "2026-08-15T00:00:00.000Z",
+                        "2099-01-01T00:00:00.000Z",
+                    )
+                })
+            })
+            .unwrap_or_else(|error| panic!("{label} must succeed: {error}"));
+        }
+
+        // ...and the CAS the mutation transaction performs agrees.
+        db.with_conn(|conn| {
+            assert_repair_lease_still_held_in_tx(conn, "project-1", &claim, &epoch_id)
+        })
+        .expect("the re-claimed lease is still held by this Run");
+    }
+
+    /// A lease from a prior generation is not this one, even if every other
+    /// column matches.
+    #[test]
+    fn a_lease_from_a_prior_epoch_is_not_the_same_claim() {
+        let (_workspace_path, db) = test_workspace("case");
+        let epoch_id = seed_epoch(&db, "project-1");
+        let claim = RepairLeaseClaim {
+            lease_owner: "owner-a".to_string(),
+            verify_run_id: "verify-run-1".to_string(),
+            repair_plan_digest: "sha256:plan-a".to_string(),
+            active_run_id: "run-a".to_string(),
+        };
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                claim_repair_lease_in_tx(
+                    conn,
+                    "project-1",
+                    &claim,
+                    &epoch_id,
+                    "2026-08-15T00:00:00.000Z",
+                    "2099-01-01T00:00:00.000Z",
+                )
+            })
+        })
+        .expect("claim under the first epoch");
+
+        let rotated = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "migration", None))
+            .expect("rotate epoch");
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    claim_repair_lease_in_tx(
+                        conn,
+                        "project-1",
+                        &claim,
+                        &rotated,
+                        "2026-08-15T00:00:00.000Z",
+                        "2099-01-01T00:00:00.000Z",
+                    )
+                })
+            })
+            .expect_err("a live lease from a prior Epoch must not be silently adopted");
+        assert!(
+            error.to_string().contains("NEX_REPAIR_LEASE_HELD"),
+            "unexpected error: {error}"
+        );
     }
 
     #[test]
