@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 22,
+  "schemaVersion": 24,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6096,6 +6096,83 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE map_stickies ( id TEXT PRIMARY KEY, board_id TEXT NOT NULL REFERENCES map_boards(id) ON DELETE CASCADE, title TEXT, body TEXT NOT NULL DEFAULT '{\"type\":\"doc\",\"content\":[]}', preview_text TEXT, palette_id TEXT NOT NULL DEFAULT 'post-it-playful', color_slot INTEGER NOT NULL DEFAULT 0 CHECK(color_slot >= 0), ai_branch_id TEXT REFERENCES map_ai_branches(id) ON DELETE SET NULL, -- AI由来フラグ。ai_branch_id は「現在の所属 branch」(採用で NULL 化)、 -- こちらは「AI が生成した付箋か」という出自で採用後も保持する。 ai_derived INTEGER NOT NULL DEFAULT 0, source_chat_message_id TEXT REFERENCES chat_messages(id) ON DELETE SET NULL, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')) )"
     },
+    "narrative_application_contributions": {
+      "kind": "table",
+      "columns": {
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "application_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_object_identity": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "field_path": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_state": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "application_id",
+            "target_object_identity",
+            "field_path"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, application_id TEXT NOT NULL CHECK(length(application_id) > 0), target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0), field_path TEXT NOT NULL CHECK(length(field_path) > 0), target_state TEXT NOT NULL CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, application_id, target_object_identity, field_path) )"
+    },
     "narrative_apply_commits": {
       "kind": "table",
       "columns": {
@@ -6308,12 +6385,12 @@
     "narrative_change_cursors": {
       "kind": "table",
       "columns": {
-        "acknowledged_through_sequence": {
-          "ordinal": 2,
-          "declaredType": "INTEGER",
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
           "notNull": true,
-          "default": "0",
-          "primaryKey": 0
+          "default": null,
+          "primaryKey": 1
         },
         "consumer_id": {
           "ordinal": 1,
@@ -6322,8 +6399,15 @@
           "default": null,
           "primaryKey": 2
         },
-        "last_error": {
-          "ordinal": 5,
+        "acknowledged_through_sequence": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "0",
+          "primaryKey": 0
+        },
+        "lease_owner": {
+          "ordinal": 3,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -6336,19 +6420,12 @@
           "default": null,
           "primaryKey": 0
         },
-        "lease_owner": {
-          "ordinal": 3,
+        "last_error": {
+          "ordinal": 5,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
           "primaryKey": 0
-        },
-        "project_id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 1
         },
         "updated_at": {
           "ordinal": 6,
@@ -6356,11 +6433,52 @@
           "notNull": true,
           "default": null,
           "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reserved_through_sequence": {
+          "ordinal": 8,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "active_run_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
         {
           "id": 0,
+          "sequence": 0,
+          "table": "narrative_extraction_runs",
+          "from": "active_run_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
           "sequence": 0,
           "table": "projects",
           "from": "project_id",
@@ -6371,7 +6489,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_change_cursors ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_id TEXT NOT NULL CHECK(length(consumer_id) > 0), acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged_through_sequence >= 0), lease_owner TEXT, lease_expires_at TEXT, last_error TEXT, updated_at TEXT NOT NULL, PRIMARY KEY(project_id, consumer_id) )"
+      "createSql": "CREATE TABLE narrative_change_cursors ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_id TEXT NOT NULL CHECK(length(consumer_id) > 0), acknowledged_through_sequence INTEGER NOT NULL DEFAULT 0 CHECK(acknowledged_through_sequence >= 0), lease_owner TEXT, lease_expires_at TEXT, last_error TEXT, updated_at TEXT NOT NULL, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), reserved_through_sequence INTEGER, active_run_id TEXT REFERENCES narrative_extraction_runs(id), PRIMARY KEY(project_id, consumer_id), CHECK( (active_run_id IS NULL AND reserved_through_sequence IS NULL) OR (active_run_id IS NOT NULL AND reserved_through_sequence IS NOT NULL AND semantic_epoch_id IS NOT NULL) ), CHECK( reserved_through_sequence IS NULL OR reserved_through_sequence >= acknowledged_through_sequence ) )"
     },
     "narrative_change_events": {
       "kind": "table",
@@ -6989,6 +7107,284 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_commit_journals ( id TEXT PRIMARY KEY, commit_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, before_json TEXT, after_json TEXT, created_at TEXT NOT NULL )"
     },
+    "narrative_consumer_freshness": {
+      "kind": "table",
+      "columns": {
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "consumer_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "consumer_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "evidence_freshness": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "build_action": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "last_evaluated_run_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_set_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_consumer_freshness ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), evidence_freshness TEXT NOT NULL CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), build_action TEXT NOT NULL CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), last_evaluated_run_id TEXT, updated_at TEXT NOT NULL, dependency_set_digest TEXT, PRIMARY KEY(project_id, consumer_kind, consumer_key) )"
+    },
+    "narrative_dependency_edge_states": {
+      "kind": "table",
+      "columns": {
+        "edge_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_freshness": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason_code": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "build_action": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evaluated_at_epoch_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evaluated_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_source_revision_token": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_source_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_dependency_edges",
+          "from": "edge_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "evaluated_at_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_dependency_edge_states ( edge_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, evidence_freshness TEXT NOT NULL CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), reason_code TEXT CHECK(reason_code IS NULL OR reason_code IN ( 'source-revision-changed','source-missing','evidence-overlap','context-overlap', 'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift', 'normalizer-incompatible','component-incompatible','target-modified' )), build_action TEXT NOT NULL CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')), evaluated_at_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), evaluated_at TEXT NOT NULL, observed_source_revision_token TEXT, observed_source_digest TEXT, PRIMARY KEY(edge_id), FOREIGN KEY(edge_id) REFERENCES narrative_dependency_edges(id) ON DELETE CASCADE )"
+    },
+    "narrative_dependency_edges": {
+      "kind": "table",
+      "columns": {
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_identity": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "read_set_json": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'[]'",
+          "primaryKey": 0
+        },
+        "generated_by_transaction_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "consumer_kind",
+            "consumer_key",
+            "source_object_identity"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_dependency_edges ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0), read_set_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'), generated_by_transaction_id TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity) )"
+    },
     "narrative_extraction_artifacts": {
       "kind": "table",
       "columns": {
@@ -7070,9 +7466,37 @@
     "narrative_extraction_attempts": {
       "kind": "table",
       "columns": {
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 1
+        },
+        "task_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "attempt_number": {
           "ordinal": 2,
           "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
@@ -7091,13 +7515,6 @@
           "default": null,
           "primaryKey": 0
         },
-        "id": {
-          "ordinal": 0,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 1
-        },
         "output_json": {
           "ordinal": 7,
           "declaredType": "TEXT",
@@ -7105,63 +7522,42 @@
           "default": null,
           "primaryKey": 0
         },
-        "started_at": {
-          "ordinal": 4,
+        "failure_code": {
+          "ordinal": 8,
           "declaredType": "TEXT",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
-        "status": {
-          "ordinal": 3,
+        "retry_disposition": {
+          "ordinal": 9,
           "declaredType": "TEXT",
-          "notNull": true,
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
-        "task_id": {
-          "ordinal": 1,
+        "policy_version": {
+          "ordinal": 10,
           "declaredType": "TEXT",
-          "notNull": true,
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "next_attempt_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         }
       },
       "foreignKeys": [],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_extraction_attempts ( id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, status TEXT NOT NULL, started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT, output_json TEXT )"
+      "createSql": "CREATE TABLE narrative_extraction_attempts ( id TEXT PRIMARY KEY, task_id TEXT NOT NULL, attempt_number INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('running','completed','failed')), started_at TEXT NOT NULL, completed_at TEXT, error_message TEXT, output_json TEXT, failure_code TEXT CHECK(failure_code IS NULL OR failure_code GLOB 'NEX_*'), retry_disposition TEXT CHECK(retry_disposition IS NULL OR retry_disposition IN ('retryable','terminal','superseded','manual')), policy_version TEXT, next_attempt_at TEXT, CHECK((next_attempt_at IS NULL) OR (retry_disposition IS NOT NULL AND retry_disposition = 'retryable')) )"
     },
     "narrative_extraction_runs": {
       "kind": "table",
       "columns": {
-        "catalog_digest": {
-          "ordinal": 7,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "completed_at": {
-          "ordinal": 14,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "coverage_json": {
-          "ordinal": 10,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": "'{}'",
-          "primaryKey": 0
-        },
-        "created_at": {
-          "ordinal": 12,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
         "id": {
           "ordinal": 0,
           "declaredType": "TEXT",
@@ -7169,64 +7565,8 @@
           "default": null,
           "primaryKey": 1
         },
-        "outcome_summary_json": {
-          "ordinal": 11,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
         "project_id": {
           "ordinal": 1,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "registry_digest": {
-          "ordinal": 8,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "scope_json": {
-          "ordinal": 3,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "snapshot_digest": {
-          "ordinal": 6,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "spec_digest": {
-          "ordinal": 5,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "spec_json": {
-          "ordinal": 4,
-          "declaredType": "TEXT",
-          "notNull": true,
-          "default": null,
-          "primaryKey": 0
-        },
-        "started_at": {
-          "ordinal": 13,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
-        "status": {
-          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -7239,17 +7579,163 @@
           "default": null,
           "primaryKey": 0
         },
+        "scope_json": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_json": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "spec_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "snapshot_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "catalog_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "registry_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "status": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "coverage_json": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'{}'",
+          "primaryKey": 0
+        },
+        "outcome_summary_json": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "started_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "completed_at": {
+          "ordinal": 14,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "version": {
           "ordinal": 15,
           "declaredType": "INTEGER",
           "notNull": true,
           "default": "0",
           "primaryKey": 0
+        },
+        "run_kind": {
+          "ordinal": 16,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'interpretation'",
+          "primaryKey": 0
+        },
+        "consumer_id": {
+          "ordinal": 17,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 18,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "work_key": {
+          "ordinal": 19,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_reason_code": {
+          "ordinal": 20,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "superseded_by_run_id": {
+          "ordinal": 21,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
         }
       },
       "foreignKeys": [
         {
           "id": 0,
+          "sequence": 0,
+          "table": "narrative_extraction_runs",
+          "from": "superseded_by_run_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 2,
           "sequence": 0,
           "table": "projects",
           "from": "project_id",
@@ -7260,7 +7746,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_extraction_runs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL, coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0 )"
+      "createSql": "CREATE TABLE narrative_extraction_runs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')), coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0, run_kind TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ( 'interpretation','freshness-evaluation','semantic-index-rebuild', 'manual-rebuild','backfill','dependency-verify','dependency-repair' )), consumer_id TEXT, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), work_key TEXT, terminal_reason_code TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'), superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id) )"
     },
     "narrative_extraction_task_edges": {
       "kind": "table",
@@ -7495,6 +7981,251 @@
       "foreignKeys": [],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_field_authority ( project_id TEXT NOT NULL, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL, field_path TEXT NOT NULL, owner_kind TEXT NOT NULL CHECK(owner_kind IN ('human','ai','system','unknown')), explicit_lock INTEGER NOT NULL DEFAULT 0 CHECK(explicit_lock IN (0,1)), version INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, PRIMARY KEY(project_id, entity_kind, entity_id, field_path) )"
+    },
+    "narrative_maintenance_attention": {
+      "kind": "table",
+      "columns": {
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "finding_key": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "disposition": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "material_basis_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "snoozed_until": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "set_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "set_by": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_attention ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), disposition TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), snoozed_until TEXT, set_at TEXT NOT NULL, set_by TEXT, PRIMARY KEY(project_id, finding_key) )"
+    },
+    "narrative_maintenance_finding_observations": {
+      "kind": "table",
+      "columns": {
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "edge_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finding_key": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason_code": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "evidence_freshness_snapshot": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "material_basis_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_at": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_finding_observations ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), edge_id TEXT, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), reason_code TEXT NOT NULL CHECK(reason_code IN ( 'source-revision-changed','source-missing','evidence-overlap','context-overlap', 'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift', 'normalizer-incompatible','component-incompatible','target-modified' )), evidence_freshness_snapshot TEXT NOT NULL CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), observed_at TEXT NOT NULL, PRIMARY KEY(id) )"
+    },
+    "narrative_maintenance_repair_leases": {
+      "kind": "table",
+      "columns": {
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "lease_owner": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "verify_run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "repair_plan_digest": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "claimed_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "expires_at": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_repair_leases ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, lease_owner TEXT NOT NULL CHECK(length(lease_owner) > 0), verify_run_id TEXT NOT NULL CHECK(length(verify_run_id) > 0), repair_plan_digest TEXT NOT NULL CHECK(length(repair_plan_digest) > 0), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), claimed_at TEXT NOT NULL, expires_at TEXT NOT NULL, PRIMARY KEY(project_id) )"
     },
     "narrative_projection_dependencies": {
       "kind": "table",
@@ -8082,6 +8813,142 @@
       "foreignKeys": [],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_runtime_policy ( singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1), runtime_mode TEXT NOT NULL DEFAULT 'review-only' CHECK (runtime_mode IN ('disabled','review-only','manual-apply','automatic')), maintenance_enabled INTEGER NOT NULL DEFAULT 0 CHECK (maintenance_enabled IN (0, 1)), generic_import_enabled INTEGER NOT NULL DEFAULT 0 CHECK (generic_import_enabled IN (0, 1)), background_ai_enabled INTEGER NOT NULL DEFAULT 0 CHECK (background_ai_enabled IN (0, 1)), version INTEGER NOT NULL DEFAULT 1 )"
+    },
+    "narrative_semantic_epochs": {
+      "kind": "table",
+      "columns": {
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "epoch_number": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "reason": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "triggered_by_change_event_uid": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "epoch_number"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_semantic_epochs ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0), reason TEXT NOT NULL CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')), triggered_by_change_event_uid TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, epoch_number) )"
+    },
+    "narrative_semantic_index_metadata": {
+      "kind": "table",
+      "columns": {
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "index_key": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "generation": {
+          "ordinal": 2,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "built_at": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_digest": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_set_digest": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dirty_cache_flag": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_semantic_index_metadata ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, index_key TEXT NOT NULL CHECK(length(index_key) > 0), generation INTEGER NOT NULL CHECK(generation >= 0), built_at TEXT NOT NULL, source_digest TEXT NOT NULL CHECK(length(source_digest) > 0), dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) > 0), dirty_cache_flag INTEGER NOT NULL CHECK(dirty_cache_flag IN (0, 1)), PRIMARY KEY(project_id, index_key) )"
     },
     "narrative_temporal_constraints": {
       "kind": "table",
@@ -13183,6 +14050,22 @@
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
     },
+    "idx_narrative_application_contributions_target": {
+      "table": "narrative_application_contributions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_object_identity"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_contributions_target ON narrative_application_contributions(project_id, target_object_identity)"
+    },
     "idx_narrative_change_cursors_project": {
       "table": "narrative_change_cursors",
       "unique": false,
@@ -13287,6 +14170,74 @@
       ],
       "createSql": "CREATE UNIQUE INDEX idx_narrative_compensation_target ON narrative_proposal_applications(compensates_application_id) WHERE application_kind = 'compensation' AND compensates_application_id IS NOT NULL"
     },
+    "idx_narrative_consumer_freshness_epoch": {
+      "table": "narrative_consumer_freshness",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "semantic_epoch_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_consumer_freshness_epoch ON narrative_consumer_freshness(project_id, semantic_epoch_id)"
+    },
+    "idx_narrative_dependency_edge_states_project": {
+      "table": "narrative_dependency_edge_states",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "evidence_freshness"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_edge_states_project ON narrative_dependency_edge_states(project_id, evidence_freshness)"
+    },
+    "idx_narrative_dependency_edges_consumer": {
+      "table": "narrative_dependency_edges",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "consumer_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "consumer_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_edges_consumer ON narrative_dependency_edges(project_id, consumer_kind, consumer_key)"
+    },
+    "idx_narrative_dependency_edges_source": {
+      "table": "narrative_dependency_edges",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "source_object_identity"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_edges_source ON narrative_dependency_edges(project_id, source_object_identity)"
+    },
     "idx_narrative_field_authority_entity": {
       "table": "narrative_field_authority",
       "unique": false,
@@ -13307,6 +14258,26 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_field_authority_entity ON narrative_field_authority(project_id, entity_kind, entity_id)"
     },
+    "idx_narrative_finding_observations_key": {
+      "table": "narrative_maintenance_finding_observations",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "finding_key"
+        },
+        {
+          "ordinal": 2,
+          "column": "semantic_epoch_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_finding_observations_key ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id)"
+    },
     "idx_narrative_projection_dependencies_source": {
       "table": "narrative_projection_dependencies",
       "unique": false,
@@ -13322,6 +14293,22 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_projection_dependencies_source ON narrative_projection_dependencies(source_kind, source_key)"
+    },
+    "idx_narrative_semantic_epochs_project": {
+      "table": "narrative_semantic_epochs",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "epoch_number"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_semantic_epochs_project ON narrative_semantic_epochs(project_id, epoch_number)"
     },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",
