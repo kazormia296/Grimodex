@@ -662,10 +662,49 @@ also SourceMissing), covering every branch of `evaluate_edge` this
 builder can currently reach, run through a real `db.migrate()`-shaped
 database with a real `tree_nodes` scene row.
 
+**The `dependency-rebuild-derived` orchestrator landed**
+(`restore_rebuild.rs`'s `rebuild_narrative_derived_state_for_project`):
+discards and recomputes every Rebuildable Derived State row this crate
+owns today (`narrative_dependency_edge_states`,
+`narrative_consumer_freshness`,
+`narrative_maintenance_finding_observations`) from the Durable Graph and
+current Source state, for every Consumer in the project — never touching
+Domain state or the Durable Dependency declarations
+(`narrative_dependency_edges`, `narrative_application_contributions`),
+which it only ever reads through `evaluate_edge_from_db`. Same 3-phase
+shape as the Backfill bootstrap trigger (reuse-check+create / do the
+work / finalize status), for the same reason. Phase 1 creates the Run
+(`create_system_run_in_tx`, `run_kind = "semantic-index-rebuild"`, the
+existing reused column value, `SystemRunWorkKeyReuse::RunningOnly`
+matching the ratified policy exactly) under the project's *existing*
+current Semantic Epoch — unlike Backfill, this does not mint one:
+Rebuild-Derived recomputes state *from* a Durable Graph expected to
+already exist under a real Epoch, so a project with none yet fails
+closed (`NEX_REBUILD_DERIVED_NO_EPOCH`) rather than silently minting
+one. Phase 2 evaluates and publishes every distinct
+`(consumer_kind, consumer_key)` this project's Edges declare, one
+transaction per Consumer, so one Consumer's publish failure does not
+roll back every other Consumer already rebuilt in this pass.
+
+`publish_runtime.rs`'s `publish_freshness_evaluation_in_tx` was split
+into a new `publish_freshness_evaluation_edges_only_in_tx` core (steps
+a-c: write Edge States, write the Consumer's rolled-up Freshness, record
+Finding Observations) plus the original function as a thin wrapper
+adding steps d-e (complete the Run, acknowledge the Change Feed cursor
+reservation) — those two steps belong to the live cursor-triggered
+Freshness-evaluation flow only; Rebuild-Derived has no single cursor
+reservation to acknowledge and evaluates many Consumers under one Run,
+not one Consumer completing that Run as a side effect.
+
+Verified: four new Rust `#[cfg(test)]` unit tests (fails closed with no
+epoch, a zero-edge project completes as a true no-op pass, two Consumers
+with different Freshness outcomes both get evaluated and published
+correctly in one Run, and the `RunningOnly` reuse policy — reused while
+genuinely `running`, not reused once `completed`).
+
 Still not implemented: the ~10 still-missing Verify checks in
-`restore_rebuild.rs`, the `dependency-rebuild-derived` orchestrator, the
-Repair lease/backup/sealed-plan/execution flow, and the five new IPC/N-API
-operations.
+`restore_rebuild.rs`, the Repair lease/backup/sealed-plan/execution flow,
+and the five new IPC/N-API operations.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

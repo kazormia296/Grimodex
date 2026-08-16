@@ -7,12 +7,18 @@
 //! Edge storage (`dependency_edges.rs`), and Lane E's Source revision
 //! resolver (`source_revision.rs`).
 
-use rusqlite::{params_from_iter, Connection};
+use rusqlite::{params, params_from_iter, Connection};
+use serde_json::json;
 
 use super::dependency_edges::{find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND};
+use super::digest_plan;
 use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
-use super::semantic_epoch::create_epoch_in_tx;
-use super::source_revision::resolve_current_source_state;
+use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
+use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
+use super::task_leases::with_immediate_transaction;
+use crate::Database;
 
 fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!value.trim().is_empty(), "{name} is required");
@@ -220,6 +226,206 @@ pub(crate) fn evaluate_edge_from_db(
 ) -> anyhow::Result<EdgeObservation> {
     let input = build_edge_comparison_input(conn, project_id, run_id, edge)?;
     Ok(evaluate_edge(&input))
+}
+
+// ---------------------------------------------------------------------
+// 1b. dependency-rebuild-derived orchestrator (Run Kind Policy)
+// ---------------------------------------------------------------------
+
+/// Work key every project's Rebuild-Derived Run is created under.
+/// `sameWorkKeyReuse: "reuse-running-only"` (Run Kind Policy) needs only
+/// enough identity to stop two concurrent rebuilds of the same project
+/// racing each other -- unlike Backfill, a completed Run under this key is
+/// deliberately *not* reused, so a fresh trigger event can always start a
+/// new rebuild.
+const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
+
+/// Outcome of one [`rebuild_narrative_derived_state_for_project`] call.
+pub(crate) enum RebuildDerivedStateOutcome {
+    /// A Rebuild-Derived Run for this project was already `running`; this
+    /// call did nothing further (`sameWorkKeyReuse: "reuse-running-only"`).
+    AlreadyRunning { run_id: String },
+    /// This call created a fresh Run and evaluated every Edge under it.
+    Ran {
+        run_id: String,
+        summary: RebuildDerivedStateSummary,
+    },
+}
+
+/// Counts from one completed `rebuild_narrative_derived_state_for_project`
+/// pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct RebuildDerivedStateSummary {
+    pub consumers_evaluated: usize,
+    pub edges_evaluated: usize,
+}
+
+/// `dependency-rebuild-derived` (Run Kind Policy): discards and recomputes
+/// every Rebuildable Derived State row this crate owns today
+/// (`narrative_dependency_edge_states`, `narrative_consumer_freshness`,
+/// `narrative_maintenance_finding_observations`) from the Durable Graph
+/// and current Source state, for every Consumer in the project. Never
+/// touches Domain state or the Durable Dependency declarations
+/// (`narrative_dependency_edges`, `narrative_application_contributions`)
+/// -- those are only ever read here, through
+/// [`evaluate_edge_from_db`]/[`build_edge_comparison_input`].
+///
+/// Composes Lane A (`semantic_epoch`), G (`dependency_edges`), this
+/// module's own `evaluate_edge_from_db` (E/F), and J
+/// (`publish_runtime::publish_freshness_evaluation_edges_only_in_tx`).
+///
+/// Owns its own transaction(s) -- callers must not already be inside one.
+/// Same 3-phase shape as
+/// `legacy_backfill::bootstrap_legacy_dependency_backfill_for_project`,
+/// for the same reason (a work-phase failure must not erase the Run
+/// record explaining it):
+///
+///   1. Reuse-check + Run creation (`create_system_run_in_tx`,
+///      `SystemRunWorkKeyReuse::RunningOnly`) under the project's
+///      *existing* current Semantic Epoch -- unlike Backfill, this does
+///      not mint one: Rebuild-Derived recomputes state *from* a Durable
+///      Graph that is expected to already exist under a real Epoch: a
+///      project with no Epoch yet has nothing for this to rebuild from,
+///      so this fails closed (`NEX_REBUILD_DERIVED_NO_EPOCH`) rather than
+///      silently minting one for a project that has never had Producer
+///      activity.
+///   2. For every distinct `(consumer_kind, consumer_key)` this project's
+///      Edges declare, evaluate every one of that Consumer's Edges
+///      (`evaluate_edge_from_db`) and publish the batch
+///      (`publish_freshness_evaluation_edges_only_in_tx`), in its own
+///      transaction per Consumer -- so one Consumer's publish failure
+///      does not roll back every other Consumer already rebuilt in this
+///      pass. A project with zero Edges is a no-op pass (0 Consumers, 0
+///      Edges), not an error.
+///   3. Finalize the Run's status to `completed`/`failed`, always
+///      attempted even on phase 2 failure.
+pub(crate) fn rebuild_narrative_derived_state_for_project(
+    db: &Database,
+    project_id: &str,
+) -> anyhow::Result<RebuildDerivedStateOutcome> {
+    let now = grimodex_core::now_rfc3339_millis();
+
+    let (run_id, semantic_epoch_id, already_running) = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let epoch_id = get_current_epoch(conn, project_id)?
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_REBUILD_DERIVED_NO_EPOCH: project '{project_id}' has no Semantic \
+                         Epoch yet; there is no Durable Graph under one for this to rebuild from"
+                    )
+                })?
+                .id;
+            let spec = json!({});
+            let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            let created = create_system_run_in_tx(
+                conn,
+                project_id,
+                "semantic-index-rebuild",
+                &epoch_id,
+                REBUILD_DERIVED_WORK_KEY,
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningOnly,
+            )?;
+            let run_id = created["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
+                .to_string();
+            let already_running = created["reused"].as_bool().unwrap_or(false);
+            Ok((run_id, epoch_id, already_running))
+        })
+    })?;
+
+    if already_running {
+        return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
+    }
+
+    let work_result =
+        rebuild_derived_state_edges_in_project(db, project_id, &run_id, &semantic_epoch_id, &now);
+
+    let finalize_status = if work_result.is_ok() {
+        NarrativeRunStatus::Completed
+    } else {
+        NarrativeRunStatus::Failed
+    };
+    let finalize_result = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            transition_run_status_in_tx(conn, &run_id, finalize_status)
+        })
+    });
+    if let Err(finalize_error) = finalize_result {
+        tracing::error!(
+            "dependency-rebuild-derived: failed to finalize run '{run_id}' status: {finalize_error}"
+        );
+    }
+
+    match work_result {
+        Ok(summary) => Ok(RebuildDerivedStateOutcome::Ran { run_id, summary }),
+        Err(error) => Err(error),
+    }
+}
+
+/// Every distinct Consumer this project's Durable Dependency Edges
+/// declare. Read-only.
+fn list_distinct_consumers(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT consumer_kind, consumer_key
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+          ORDER BY consumer_kind ASC, consumer_key ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Phase 2 of [`rebuild_narrative_derived_state_for_project`]: evaluate and
+/// publish every Consumer's Edges, one transaction per Consumer.
+fn rebuild_derived_state_edges_in_project(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<RebuildDerivedStateSummary> {
+    let consumers = db.with_conn(|conn| list_distinct_consumers(conn, project_id))?;
+    let mut summary = RebuildDerivedStateSummary::default();
+    for (consumer_kind, consumer_key) in consumers {
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                let edges =
+                    find_edges_by_consumer(conn, project_id, &consumer_kind, &consumer_key)?;
+                if edges.is_empty() {
+                    return Ok(());
+                }
+                let mut edges_and_observations = Vec::with_capacity(edges.len());
+                for edge in &edges {
+                    let observation = evaluate_edge_from_db(conn, project_id, run_id, edge)?;
+                    edges_and_observations.push((edge.id.clone(), observation));
+                }
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    project_id,
+                    run_id,
+                    &consumer_kind,
+                    &consumer_key,
+                    &edges_and_observations,
+                    semantic_epoch_id,
+                    now,
+                )?;
+                summary.consumers_evaluated += 1;
+                summary.edges_evaluated += edges_and_observations.len();
+                Ok(())
+            })
+        })?;
+    }
+    Ok(summary)
 }
 
 /// `true` when `edge`'s Source is broken: either its `source_object_identity`
@@ -778,5 +984,167 @@ mod tests {
             .with_conn(|conn| evaluate_edge_from_db(conn, "project-1", "run-1", &edge))
             .expect("evaluate edge");
         assert_eq!(observation.freshness, EvidenceFreshness::SourceMissing);
+    }
+
+    // -- rebuild_narrative_derived_state_for_project ------------------------
+
+    fn seed_epoch_for_rebuild(db: &Database, project_id: &str) -> String {
+        db.with_conn(|conn| create_epoch_in_tx(conn, project_id, "initial", None))
+            .expect("create epoch")
+    }
+
+    #[test]
+    fn rebuild_derived_state_fails_closed_with_no_epoch() {
+        let db = test_db();
+        let error = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect_err("a project with no epoch must fail closed");
+        assert!(error
+            .to_string()
+            .starts_with("NEX_REBUILD_DERIVED_NO_EPOCH"));
+    }
+
+    #[test]
+    fn rebuild_derived_state_is_a_no_op_pass_with_zero_edges() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild with no edges");
+        let (run_id, summary) = match outcome {
+            RebuildDerivedStateOutcome::Ran { run_id, summary } => (run_id, summary),
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first call must create a fresh run")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read run status");
+        assert_eq!(status, "completed");
+    }
+
+    #[test]
+    fn rebuild_derived_state_evaluates_and_publishes_every_consumer() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+        let current_token = current_scene_revision_token(&db, "scene-live");
+
+        // Consumer run-1: one Fresh edge (stored token matches current).
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-live",
+                &format!(r#"["{current_token}"]"#),
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )
+        })
+        .expect("record fresh edge for run-1");
+
+        // Consumer run-2: one Stale edge (outdated stored token).
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-2",
+                "project:scene:scene-live",
+                r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )
+        })
+        .expect("record stale edge for run-2");
+
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild with two consumers");
+        let summary = match outcome {
+            RebuildDerivedStateOutcome::Ran { summary, .. } => summary,
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first call must create a fresh run")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 2);
+        assert_eq!(summary.edges_evaluated, 2);
+
+        let (freshness_1, freshness_2): (String, String) = db
+            .with_conn(|conn| {
+                let f1 = conn.query_row(
+                    "SELECT evidence_freshness FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1' AND consumer_kind = ?1 AND consumer_key = 'run-1'",
+                    params![RUN_CONSUMER_KIND],
+                    |row| row.get(0),
+                )?;
+                let f2 = conn.query_row(
+                    "SELECT evidence_freshness FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1' AND consumer_kind = ?1 AND consumer_key = 'run-2'",
+                    params![RUN_CONSUMER_KIND],
+                    |row| row.get(0),
+                )?;
+                Ok((f1, f2))
+            })
+            .expect("read consumer freshness rows");
+        assert_eq!(freshness_1, "fresh");
+        assert_eq!(freshness_2, "stale");
+    }
+
+    #[test]
+    fn rebuild_derived_state_reuses_a_still_running_run_but_not_a_completed_one() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+
+        let first = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("first rebuild call");
+        let first_run_id = match first {
+            RebuildDerivedStateOutcome::Ran { run_id, .. } => run_id,
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first call must create a fresh run")
+            }
+        };
+
+        // The first call already finalized to 'completed'; RunningOnly must
+        // not reuse it, so a second call creates a distinct new run.
+        let second = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("second rebuild call");
+        let second_run_id = match second {
+            RebuildDerivedStateOutcome::Ran { run_id, .. } => run_id,
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("a completed run must not be reused by RunningOnly")
+            }
+        };
+        assert_ne!(second_run_id, first_run_id);
+
+        // A genuinely still-'running' row (simulating an in-flight
+        // concurrent call) IS reused.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?1",
+                params![second_run_id],
+            )?;
+            Ok(())
+        })
+        .expect("simulate an in-flight run");
+        let third = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("third rebuild call");
+        match third {
+            RebuildDerivedStateOutcome::AlreadyRunning { run_id } => {
+                assert_eq!(run_id, second_run_id)
+            }
+            RebuildDerivedStateOutcome::Ran { .. } => {
+                panic!("a still-running run must be reused")
+            }
+        }
     }
 }

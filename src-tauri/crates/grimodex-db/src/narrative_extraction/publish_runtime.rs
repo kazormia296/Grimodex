@@ -362,13 +362,54 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
     through_sequence: i64,
     now: &str,
 ) -> anyhow::Result<()> {
+    anyhow::ensure!(!consumer_id.trim().is_empty(), "consumerId is required");
+
+    publish_freshness_evaluation_edges_only_in_tx(
+        conn,
+        project_id,
+        run_id,
+        consumer_kind,
+        consumer_key,
+        edges_and_observations,
+        semantic_epoch_id,
+        now,
+    )?;
+
+    // d. Complete the Run.
+    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
+
+    // e. Release the Change Feed cursor reservation this Run held.
+    acknowledge_cursor_in_tx(conn, project_id, consumer_id, through_sequence)?;
+
+    Ok(())
+}
+
+/// Steps (a)-(c) of [`publish_freshness_evaluation_in_tx`]'s doc comment,
+/// factored out so a caller that has no Change Feed cursor reservation to
+/// acknowledge and no single `run_id` it should mark `Completed` as a side
+/// effect of publishing (`dependency-rebuild-derived`'s orchestrator,
+/// evaluating every Edge across every Consumer in one Run rather than one
+/// cursor-triggered Consumer) can reuse the per-Edge/per-Consumer publish
+/// logic without also inheriting the live cursor-based flow's (d)/(e)
+/// steps. `publish_freshness_evaluation_in_tx` above is now a thin wrapper
+/// adding those two steps for that flow.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         !conn.is_autocommit(),
         "Narrative Publish Runtime requires a caller-owned transaction"
     );
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
     anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
-    anyhow::ensure!(!consumer_id.trim().is_empty(), "consumerId is required");
     anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
     anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
     anyhow::ensure!(
@@ -438,12 +479,6 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
             now,
         )?;
     }
-
-    // d. Complete the Run.
-    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
-
-    // e. Release the Change Feed cursor reservation this Run held.
-    acknowledge_cursor_in_tx(conn, project_id, consumer_id, through_sequence)?;
 
     Ok(())
 }
