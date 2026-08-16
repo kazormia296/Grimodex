@@ -396,32 +396,32 @@ fn verify_publish_reservation_in_tx(
 /// across every Edge that Run evaluated, as a single integrated write
 /// inside the caller's own transaction. In fixed order:
 ///
-/// 0. [`verify_publish_reservation_in_tx`] -- fail-closed CAS precondition:
+/// a. [`verify_publish_reservation_in_tx`] -- fail-closed CAS precondition:
 ///    the Run must still be `running`, its own Semantic Epoch must still be
 ///    `project_id`'s current one, and the cursor's reservation must still
 ///    be exactly this Run's, at that Epoch, through `through_sequence`. A
 ///    Run that lost the race against a Semantic Epoch rotation (or a
 ///    second Run reserving the same range) is rejected here, before step
-///    (a) writes anything.
-/// a. [`write_edge_state_in_tx`] for every `(edge_id, observation)` pair.
-/// b. [`write_consumer_freshness_in_tx`] exactly once, with the single
+///    (b) writes anything.
+/// b. [`write_edge_state_in_tx`] for every `(edge_id, observation)` pair.
+/// c. [`write_consumer_freshness_in_tx`] exactly once, with the single
 ///    worst Freshness across all of `edges_and_observations`
 ///    (`freshness_severity_rank`) as the Consumer's rolled-up current
 ///    value.
-/// c. [`record_finding_observation_in_tx`] for every Edge whose
+/// d. [`record_finding_observation_in_tx`] for every Edge whose
 ///    `observation.reason_code` is `Some` -- `evaluator::evaluate_edge`'s
 ///    own doc comment: "a Finding row is only worth recording when there
 ///    is something to explain", so a Fresh Edge with `reason_code: None`
 ///    produces no Finding.
-/// d. [`transition_run_status_in_tx`] to `Completed`.
-/// e. [`acknowledge_cursor_reservation_in_tx`] through `through_sequence`,
+/// e. [`transition_run_status_in_tx`] to `Completed`.
+/// f. [`acknowledge_cursor_reservation_in_tx`] through `through_sequence`,
 ///    releasing the Change Feed cursor reservation this Run held -- itself
 ///    re-checking the same reservation identity in its own `UPDATE ...
-///    WHERE`, so a race landing between step 0's check and this step still
-///    fails closed rather than silently no-op-ing.
+///    WHERE`, so a race landing between step (a)'s check and this step
+///    still fails closed rather than silently no-op-ing.
 ///
 /// Requires `edges_and_observations` to be non-empty: with zero Edges
-/// there is no basis to pick a worst Freshness for step (b), and a Run
+/// there is no basis to pick a worst Freshness for step (c), and a Run
 /// that evaluated nothing has nothing to Publish -- the caller should not
 /// invoke this function at all in that case, rather than let it invent a
 /// value.
@@ -429,7 +429,7 @@ fn verify_publish_reservation_in_tx(
 /// Like every other `_in_tx` helper in this crate, this does not open or
 /// close the transaction itself -- but unlike most of them (mirroring
 /// `cursor_reservation.rs`'s own mutating functions), it requires one to
-/// already be open: running the five steps above under autocommit would
+/// already be open: running the six steps above under autocommit would
 /// let each individually commit, so a mid-sequence failure could leave
 /// durable state committed with no matching Run completion or cursor
 /// advance.
@@ -458,7 +458,7 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
     );
     anyhow::ensure!(!consumer_id.trim().is_empty(), "consumerId is required");
 
-    // 0. Fail-closed CAS precondition -- before any write happens.
+    // a. Fail-closed CAS precondition -- before any write happens.
     verify_publish_reservation_in_tx(
         conn,
         project_id,
@@ -468,6 +468,7 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
         through_sequence,
     )?;
 
+    // b-d. Edge State / Consumer Freshness / Finding Observation writes.
     publish_freshness_evaluation_edges_only_in_tx(
         conn,
         project_id,
@@ -479,10 +480,10 @@ pub(crate) fn publish_freshness_evaluation_in_tx(
         now,
     )?;
 
-    // d. Complete the Run.
+    // e. Complete the Run.
     transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
 
-    // e. Release the Change Feed cursor reservation this Run held -- the
+    // f. Release the Change Feed cursor reservation this Run held -- the
     //    same reservation identity checked again, at write time.
     acknowledge_cursor_reservation_in_tx(
         conn,
