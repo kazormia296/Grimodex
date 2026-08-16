@@ -3741,9 +3741,10 @@ mod tests {
                       WHERE project_id = 'p1'
                       ORDER BY epoch_number ASC",
                 )?;
-                statement
+                let rows = statement
                     .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-                    .collect::<Result<Vec<_>, _>>()?
+                    .collect::<Result<Vec<_>, _>>()?;
+                rows
             };
             assert_eq!(
                 epochs.len(),

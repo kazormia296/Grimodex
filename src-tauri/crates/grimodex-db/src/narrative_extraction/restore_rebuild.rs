@@ -18,6 +18,7 @@ use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
+use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -242,6 +243,7 @@ pub(crate) fn evaluate_edge_from_db(
 const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
 
 /// Outcome of one [`rebuild_narrative_derived_state_for_project`] call.
+#[derive(Debug)]
 pub enum RebuildDerivedStateOutcome {
     /// A Rebuild-Derived Run for this project was already `running`; this
     /// call did nothing further (`sameWorkKeyReuse: "reuse-running-only"`).
