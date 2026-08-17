@@ -77,7 +77,7 @@ use serde_json::json;
 
 use super::application_contributions::{
     contribution_target_identity_for_application, record_contribution_in_tx,
-    ContributionProvenance, ContributionTargetState,
+    ContributionProvenance, ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
 use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
@@ -381,6 +381,17 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             &application.applied_entity_kind,
             &application.applied_entity_id,
         )?;
+        // `Unchanged` means "not yet evaluated", which is the right starting
+        // point for a target that exists. A target that could not be resolved
+        // at all is different: the object is gone, so the field this
+        // Application wrote cannot still match what it applied, and recording
+        // `unchanged` would assert something known to be false. `Missing` is
+        // that state.
+        let target_state = if target_object_identity.starts_with(UNRESOLVED_TARGET_PREFIX) {
+            ContributionTargetState::Missing
+        } else {
+            ContributionTargetState::Unchanged
+        };
         record_contribution_in_tx(
             conn,
             project_id,
@@ -397,7 +408,7 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             },
             &target_object_identity,
             LEGACY_BACKFILL_FIELD_PATH,
-            ContributionTargetState::Unchanged,
+            target_state,
             now,
         )?;
 
@@ -1130,6 +1141,11 @@ mod tests {
             assert_eq!(
                 contributions[0].target_object_identity,
                 "unresolved:codex-detail-value:value-gone"
+            );
+            assert_eq!(
+                contributions[0].target_state,
+                ContributionTargetState::Missing,
+                "an unresolvable target cannot still match what was applied"
             );
             Ok(())
         })

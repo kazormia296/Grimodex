@@ -397,8 +397,14 @@ fn backfill_project_replica(conn: &Connection, project_id: &str, now: &str) -> (
         .collect::<Result<Vec<_>, _>>()
         .expect("collect legacy applications");
 
-    for (application_id, commit_id, proposal_id, revision_id, applied_entity_kind, applied_entity_id) in
-        applications
+    for (
+        application_id,
+        commit_id,
+        proposal_id,
+        revision_id,
+        applied_entity_kind,
+        applied_entity_id,
+    ) in applications
     {
         // Mirrors `application_contributions::contribution_target_identity`:
         // the writer-row `applied_entity_kind` is translated to the ratified
