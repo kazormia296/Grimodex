@@ -6107,7 +6107,7 @@
           "primaryKey": 0
         },
         "baseline_sequence": {
-          "ordinal": 12,
+          "ordinal": 11,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
@@ -6120,15 +6120,8 @@
           "default": null,
           "primaryKey": 0
         },
-        "committed_value_digest": {
-          "ordinal": 11,
-          "declaredType": "TEXT",
-          "notNull": false,
-          "default": null,
-          "primaryKey": 0
-        },
         "created_at": {
-          "ordinal": 15,
+          "ordinal": 14,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6198,14 +6191,14 @@
           "primaryKey": 0
         },
         "target_state_sequence": {
-          "ordinal": 13,
+          "ordinal": 12,
           "declaredType": "INTEGER",
           "notNull": false,
           "default": null,
           "primaryKey": 0
         },
         "target_state_updated_at": {
-          "ordinal": 14,
+          "ordinal": 13,
           "declaredType": "TEXT",
           "notNull": false,
           "default": null,
@@ -6234,7 +6227,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, application_id TEXT NOT NULL CHECK(length(application_id) > 0), commit_id TEXT NOT NULL CHECK(length(commit_id) > 0), proposal_id TEXT NOT NULL CHECK(length(proposal_id) > 0), revision_id TEXT NOT NULL CHECK(length(revision_id) > 0), operation_id TEXT CHECK(operation_id IS NULL OR length(operation_id) > 0), target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0), field_path TEXT NOT NULL CHECK(length(field_path) > 0), target_state TEXT NOT NULL CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')), maintenance_ownership TEXT NOT NULL DEFAULT 'maintained' CHECK(maintenance_ownership IN ('maintained','user-owned','detached')), committed_value_digest TEXT CHECK(committed_value_digest IS NULL OR committed_value_digest LIKE 'sha256:%'), baseline_sequence INTEGER CHECK(baseline_sequence IS NULL OR baseline_sequence > 0), target_state_sequence INTEGER CHECK(target_state_sequence IS NULL OR target_state_sequence > 0), target_state_updated_at TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, application_id, target_object_identity, field_path) )"
+      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, application_id TEXT NOT NULL CHECK(length(application_id) > 0), commit_id TEXT NOT NULL CHECK(length(commit_id) > 0), proposal_id TEXT NOT NULL CHECK(length(proposal_id) > 0), revision_id TEXT NOT NULL CHECK(length(revision_id) > 0), operation_id TEXT CHECK(operation_id IS NULL OR length(operation_id) > 0), target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0), field_path TEXT NOT NULL CHECK(length(field_path) > 0), target_state TEXT NOT NULL CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')), maintenance_ownership TEXT NOT NULL DEFAULT 'maintained' CHECK(maintenance_ownership IN ('maintained','user-owned','detached')), baseline_sequence INTEGER CHECK(baseline_sequence IS NULL OR baseline_sequence > 0), target_state_sequence INTEGER CHECK(target_state_sequence IS NULL OR target_state_sequence > 0), target_state_updated_at TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, application_id, target_object_identity, field_path) )"
     },
     "narrative_apply_commits": {
       "kind": "table",

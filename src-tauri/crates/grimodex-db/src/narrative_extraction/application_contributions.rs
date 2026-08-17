@@ -29,8 +29,7 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::change_feed::{digest_value, narrative_object_key};
-use crate::canonical_feed_snapshots::canonical_snapshot_for_object_key;
+use super::change_feed::narrative_object_key;
 
 /// Builds the canonical `kind:id` string a Contribution's
 /// `target_object_identity` is keyed by, from the writer-row `entity_kind`
@@ -185,9 +184,8 @@ pub(crate) fn contribution_target_identity_for_application(
 /// through [`contribution_target_identity_for_application`], the same path the
 /// Legacy Backfill takes, so the two writers agree by construction. This is
 /// kept because it is the only written-down statement of how the Field
-/// Authority vocabulary corresponds to Object Addressing, which
-/// `writer_kind_for_authority_kind` still relies on for digests, and its test
-/// pins that correspondence across every kind `affected_fields` can report.
+/// Authority vocabulary corresponds to Object Addressing, and its test pins
+/// that correspondence across every kind `affected_fields` can report.
 #[allow(dead_code)]
 pub(crate) fn contribution_target_identity_for_authority_kind(
     authority_kind: &str,
@@ -196,8 +194,8 @@ pub(crate) fn contribution_target_identity_for_authority_kind(
     contribution_target_identity(writer_kind_for_authority_kind(authority_kind)?, entity_id)
 }
 
-/// The writer-row spelling of a Field Authority kind, so both the identity
-/// and the canonical snapshot are derived from one table rather than two.
+/// The writer-row spelling of a Field Authority kind, so the identity is
+/// derived from one table rather than restated per call site.
 fn writer_kind_for_authority_kind(authority_kind: &str) -> anyhow::Result<&'static str> {
     Ok(match authority_kind {
         "event" => "event",
@@ -217,66 +215,6 @@ fn writer_kind_for_authority_kind(authority_kind: &str) -> anyhow::Result<&'stat
             "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for Field Authority kind '{other}'"
         ),
     })
-}
-
-/// Digest of the value this Application wrote at `field_path`, or `None`
-/// when the value cannot be read out of a canonical snapshot.
-///
-/// This is what lets a later pass decide `modified` from *the value actually
-/// differing*, rather than from a field having been named. That distinction
-/// matters because the coarse signals lie in the safe-looking direction:
-/// `record_human_field_write` is handed a declarative field list (a
-/// `relation.create` marks seven paths human-owned in one go), and the Change
-/// Feed's `changed_paths` collapses to a single `"/"` on create and delete.
-/// Deciding `modified` from those alone would be false positives almost
-/// everywhere.
-///
-/// `None` is returned, never a fabricated digest, when:
-///
-/// * the field lives outside its object's canonical snapshot -- the
-///   aggregate paths (`/participants`, `/evidenceSceneLinks`, `/setups`,
-///   `/payoffs`, `/detailOverrides`, ...) are rows in other tables, and
-///   `legacy_value_present` only ever asks whether they exist;
-/// * the object kind has no snapshot arm; or
-/// * the object itself is gone.
-///
-/// Callers must read `None` as "cannot compare", not as "unchanged".
-pub(crate) fn committed_value_digest_for_field(
-    conn: &Connection,
-    project_id: &str,
-    authority_kind: &str,
-    entity_id: &str,
-    field_path: &str,
-) -> anyhow::Result<Option<String>> {
-    let object_key =
-        narrative_object_key(writer_kind_for_authority_kind(authority_kind)?, entity_id);
-    // A digest is advisory: `None` already means "cannot compare", and no
-    // Apply may fail because one could not be taken. `canonical_snapshot_for_object_key`
-    // reports an absent object as `Err`, not `Ok(None)` -- its `Option` is
-    // vestigial (`result.map(Some)`) -- and the collectors disagree on the
-    // shape, some raising `QueryReturnedNoRows` and some a plain "not found".
-    // Classifying that reliably is not possible from here, and guessing wrong
-    // would abort a commit over metadata, so any failure to read the object
-    // becomes "cannot compare".
-    let snapshot = match canonical_snapshot_for_object_key(conn, project_id, &object_key) {
-        Ok(Some(snapshot)) => snapshot,
-        Ok(None) => return Ok(None),
-        Err(error) => {
-            tracing::debug!(
-                target: "narrative.contribution",
-                %error,
-                authority_kind,
-                entity_id,
-                field_path,
-                "no canonical snapshot for a Contribution target; recording no digest"
-            );
-            return Ok(None);
-        }
-    };
-    let Some(value) = snapshot.pointer(field_path) else {
-        return Ok(None);
-    };
-    digest_value(value).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -382,10 +320,6 @@ pub(crate) struct ContributionProvenance<'a> {
 pub(crate) struct ContributionField<'a> {
     pub target_object_identity: &'a str,
     pub field_path: &'a str,
-    /// `None` means the value could not be read out of a canonical snapshot,
-    /// which a later pass must treat as "cannot compare" rather than
-    /// "unchanged". See [`committed_value_digest_for_field`].
-    pub committed_value_digest: Option<&'a str>,
     pub target_state: ContributionTargetState,
 }
 
@@ -399,7 +333,6 @@ pub(crate) fn record_contribution_in_tx(
     let ContributionField {
         target_object_identity,
         field_path,
-        committed_value_digest,
         target_state,
     } = *field;
     let ContributionProvenance {
@@ -455,8 +388,8 @@ pub(crate) fn record_contribution_in_tx(
         "INSERT INTO narrative_application_contributions
             (id, project_id, application_id, commit_id, proposal_id, revision_id,
              operation_id, baseline_sequence, target_object_identity, field_path,
-             committed_value_digest, target_state, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             target_state, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
              commit_id = excluded.commit_id,
@@ -464,7 +397,6 @@ pub(crate) fn record_contribution_in_tx(
              revision_id = excluded.revision_id,
              operation_id = excluded.operation_id,
              baseline_sequence = excluded.baseline_sequence,
-             committed_value_digest = excluded.committed_value_digest,
              created_at = excluded.created_at
          RETURNING id",
         params![
@@ -478,7 +410,6 @@ pub(crate) fn record_contribution_in_tx(
             baseline_sequence,
             target_object_identity,
             field_path,
-            committed_value_digest,
             target_state.as_str(),
             created_at,
         ],
@@ -499,10 +430,8 @@ pub(crate) fn record_contribution_in_tx(
 ///
 /// Deriving it also makes Undo and Redo genuinely inverse for free. Undo
 /// cannot lose a prior `missing` or `modified` by overwriting it, and Redo
-/// cannot fabricate `unchanged` over a row whose `committed_value_digest` is
-/// NULL -- the contract on [`committed_value_digest_for_field`] says NULL
-/// means "cannot compare", and asserting `unchanged` there would be exactly
-/// the claim it forbids. Neither statement exists to get wrong.
+/// cannot fabricate `unchanged` over a field it is in no position to compare.
+/// Neither statement exists to get wrong.
 ///
 /// Precedence: `not-applicable` outranks the commit's lifecycle, because an
 /// operation that wrote nothing has nothing to undo -- calling it `undone`
@@ -657,7 +586,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "/title",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Unchanged,
                 },
                 "2026-08-15T00:00:00.000Z",
@@ -847,7 +775,6 @@ mod tests {
             &ContributionField {
                 target_object_identity: "scene:s1",
                 field_path: "body",
-                committed_value_digest: None,
                 target_state: state,
             },
             "2026-08-15T00:00:00.000Z",
@@ -948,7 +875,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "body",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Modified,
                 },
                 "2026-08-15T00:00:00.000Z",
@@ -990,7 +916,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "body",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Modified,
                 },
                 "2026-08-15T00:00:00.000Z",
@@ -1004,7 +929,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "body",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Undone,
                 },
                 "2026-08-15T01:00:00.000Z",
@@ -1035,7 +959,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "body",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Modified,
                 },
                 "2026-08-15T00:00:00.000Z",
@@ -1048,7 +971,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "title",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Unchanged,
                 },
                 "2026-08-15T00:00:00.000Z",
@@ -1079,7 +1001,6 @@ mod tests {
                 &ContributionField {
                     target_object_identity: "scene:s1",
                     field_path: "body",
-                    committed_value_digest: None,
                     target_state: ContributionTargetState::Modified,
                 },
                 "2026-08-15T00:00:00.000Z",

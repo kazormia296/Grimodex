@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::application_contributions::{
-    committed_value_digest_for_field, contribution_target_identity_for_application,
-    record_contribution_in_tx, ContributionField, ContributionProvenance, ContributionTargetState,
+    contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
+    ContributionProvenance, ContributionTargetState,
 };
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
@@ -1636,18 +1636,6 @@ pub fn narrative_extraction_apply_commit(
                     ContributionTargetState::Unchanged
                 };
                 for field in affected_fields(operation, &commit_map)? {
-                    // Read after the write, so this is the value as applied.
-                    // `None` where the field has no canonical snapshot
-                    // representation -- the aggregate paths live in other
-                    // tables -- and a later pass must read that as "cannot
-                    // compare", not as "unchanged".
-                    let committed_value_digest = committed_value_digest_for_field(
-                        conn,
-                        &payload.project_id,
-                        &field.entity_kind,
-                        &field.entity_id,
-                        &field.field_path,
-                    )?;
                     record_contribution_in_tx(
                         conn,
                         &payload.project_id,
@@ -1655,7 +1643,6 @@ pub fn narrative_extraction_apply_commit(
                         &ContributionField {
                             target_object_identity: &target_object_identity,
                             field_path: &field.field_path,
-                            committed_value_digest: committed_value_digest.as_deref(),
                             target_state,
                         },
                         &now,

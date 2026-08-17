@@ -1126,7 +1126,6 @@ fn has_v23_semantic_build_graph_tables(conn: &Connection) -> anyhow::Result<bool
         && has_column(&contributions, "revision_id", "TEXT", true)
         && has_column(&contributions, "operation_id", "TEXT", false)
         && has_column(&contributions, "maintenance_ownership", "TEXT", true)
-        && has_column(&contributions, "committed_value_digest", "TEXT", false)
         && has_column(&contributions, "baseline_sequence", "INTEGER", false)
         && has_column(&contributions, "target_state_sequence", "INTEGER", false)
         && has_column(&contributions, "target_state_updated_at", "TEXT", false);

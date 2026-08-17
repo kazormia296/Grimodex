@@ -414,11 +414,6 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             &ContributionField {
                 target_object_identity: &target_object_identity,
                 field_path: LEGACY_BACKFILL_FIELD_PATH,
-                // `/legacy-application` is a sentinel for "whole entity,
-                // field granularity unknown", so there is no field whose
-                // value could be digested. None means "cannot compare",
-                // which is the truth here.
-                committed_value_digest: None,
                 target_state,
             },
             now,

@@ -3106,7 +3106,6 @@ export const narrativeApplicationContributions = sqliteTable(
     maintenanceOwnership: text("maintenance_ownership")
       .notNull()
       .default("maintained"),
-    committedValueDigest: text("committed_value_digest"),
     baselineSequence: integer("baseline_sequence"),
     targetStateSequence: integer("target_state_sequence"),
     targetStateUpdatedAt: text("target_state_updated_at"),

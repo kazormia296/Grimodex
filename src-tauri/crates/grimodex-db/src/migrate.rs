@@ -3322,8 +3322,6 @@ impl Database {
                     CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
                 maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
                     CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
-                committed_value_digest TEXT
-                    CHECK(committed_value_digest IS NULL OR committed_value_digest LIKE 'sha256:%'),
                 baseline_sequence      INTEGER
                     CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
                 target_state_sequence  INTEGER
@@ -5099,10 +5097,6 @@ impl Database {
     ///   Schema pins the three values with a `const` and which
     ///   `validate-semantic-core-boundary.mjs` cross-checks, so the CHECK
     ///   must list exactly those.
-    /// * `committed_value_digest` -- the normalized value this Application
-    ///   wrote, so a later pass can tell an untouched field from one a human
-    ///   edited over without re-reading the Proposal. NULL where no canonical
-    ///   snapshot exposes the value (aggregate fields, legacy sentinels).
     /// * `baseline_sequence` -- the canonical `change_events.sequence` this
     ///   Application's own write landed on: the self-stale guard's lower
     ///   bound, so an Application is never marked `modified` by its own
@@ -5110,6 +5104,43 @@ impl Database {
     /// * `target_state_sequence` / `target_state_updated_at` -- what last
     ///   moved `target_state`, making at-least-once Change Feed delivery
     ///   idempotent here.
+    ///
+    /// There is deliberately no per-field `committed_value_digest`. An earlier
+    /// revision of SCHEMA 29 carried one, on the assumption that
+    /// `affected_fields`'s field paths are JSON pointers into the canonical
+    /// snapshot. They are not -- they are Field Authority *coordinates*, and
+    /// they diverge from the snapshot shape three different ways:
+    ///
+    /// * nesting -- a `chronicle-event`'s scalars live under `/eventData`,
+    ///   so `/title` resolves against nothing;
+    /// * casing -- `canonical_plot_thread_snapshot` selects the row verbatim,
+    ///   so its key is `sort_order` while the coordinate is `/sortOrder`;
+    /// * absence -- a temporal constraint's `/nodes` has no counterpart in
+    ///   `collect_constraint_snapshot`'s `json_object` at all.
+    ///
+    /// Whole families of kinds therefore digested to NULL, and a NULL could
+    /// not be told apart from the legitimate "this field has no canonical
+    /// representation". (Other kinds did digest cleanly -- a codex entry
+    /// create resolved every one of its paths -- which is what let the gap go
+    /// unnoticed.)
+    ///
+    /// It is left out rather than repaired because nothing needs it. A
+    /// superseding Application is visible in this table, and a human edit is
+    /// visible in the Change Feed's `origin` and `changed_paths` -- at object
+    /// grain, since `changed_paths` collapses to `"/"` on create and delete
+    /// and the event digests cover the whole snapshot, which is enough for
+    /// every consumer that exists today.
+    ///
+    /// It is also recoverable. `narrative_commit_journals.after_json` keeps
+    /// each Application's full entity snapshot, so a nullable
+    /// `ALTER TABLE ADD COLUMN` plus a backfill from the journal reintroduces
+    /// the column without a rebuild. Two caveats for whoever does that:
+    /// `ColumnContract` compares by `ordinal`, so the fresh DDL has to append
+    /// the column in the same position `ADD COLUMN` puts it, or
+    /// `validate_migrated_schema` rejects the import; and a Redo rewrites
+    /// `after_json` in place, so the journal holds the latest replay rather
+    /// than the original apply. Reintroducing it also means fixing the
+    /// coordinate-to-pointer projection above, which is the actual work.
     ///
     /// A rebuild rather than a stack of `ADD COLUMN`s, because `commit_id`,
     /// `proposal_id` and `revision_id` are NOT NULL with no defensible
@@ -5125,9 +5156,8 @@ impl Database {
     ///
     /// Deliberately *not* reconstructed, because neither can be identified
     /// rather than guessed: `operation_id` (`narrative_apply_operations` has
-    /// no unique key this table could join on), `committed_value_digest` (a
-    /// past Application's value is indistinguishable from the current one),
-    /// and `baseline_sequence` (no single canonical event corresponds to it).
+    /// no unique key this table could join on) and `baseline_sequence` (no
+    /// single canonical event corresponds to it).
     /// They stay NULL, which is the honest answer. `maintenance_ownership`
     /// starts at `maintained` for every row; deriving it from Field Authority
     /// is its own step, not this one.
@@ -5181,8 +5211,6 @@ impl Database {
                     CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
                 maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
                     CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
-                committed_value_digest TEXT
-                    CHECK(committed_value_digest IS NULL OR committed_value_digest LIKE 'sha256:%'),
                 baseline_sequence      INTEGER
                     CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
                 target_state_sequence  INTEGER
@@ -5195,13 +5223,13 @@ impl Database {
              INSERT INTO narrative_application_contributions_v29 (
                 id, project_id, application_id, commit_id, proposal_id, revision_id,
                 operation_id, target_object_identity, field_path, target_state,
-                maintenance_ownership, committed_value_digest, baseline_sequence,
+                maintenance_ownership, baseline_sequence,
                 target_state_sequence, target_state_updated_at, created_at
              )
              SELECT c.id, c.project_id, c.application_id,
                     a.commit_id, a.proposal_id, a.revision_id,
                     NULL, c.target_object_identity, c.field_path, c.target_state,
-                    'maintained', NULL, NULL, NULL, NULL, c.created_at
+                    'maintained', NULL, NULL, NULL, c.created_at
                FROM narrative_application_contributions c
                JOIN narrative_proposal_applications a ON a.id = c.application_id;
              DROP TABLE narrative_application_contributions;
