@@ -596,9 +596,12 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v25_attention_occ_columns(conn)?
         && has_v26_run_request_identity_columns(conn)?
         && has_v27_repair_lease_run_binding(conn)?
-        // SCHEMA 28 is data-only, so without this the repair is skippable:
-        // see `has_no_repairable_c2_identities`.
-        && has_no_repairable_c2_identities(conn)?)
+        // SCHEMA 28 carries a data migration, so without this both of
+        // `migrate_impl`'s fast paths skip it: see
+        // `has_c2_identity_data_migration_marker`. This supersedes the
+        // row-shape probe this branch briefly carried -- see that function
+        // for why current rows cannot answer the question.
+        && has_c2_identity_data_migration_marker(conn)?)
 }
 
 /// SCHEMA 27: a Repair lease names the Run entitled to apply it, so the
@@ -1340,191 +1343,43 @@ fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
         .any(|column| column.name == name && column.declared_type == "TEXT" && column.not_null)
 }
 
-/// Source identity prefixes as of SCHEMA 28, longest first. Mirrors
-/// `dependency_edges.rs`'s list; a test in `migrate.rs` pins all three copies
-/// (writer, migration, this probe) together. Public only so that test can
-/// reach across the crate boundary.
-pub const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
-    "project:codex-catalog:",
-    "project:scene:",
-    "projection:",
-    "snapshot:",
-    "artifact:",
-    "capture:",
-    "evidence:",
-];
-
-/// The Dependency Edge Consumer kind whose `consumer_key` is a Run id.
-/// Mirrors `dependency_edges.rs`'s `RUN_CONSUMER_KIND`; pinned to it by the
-/// same test. Public only so that test can reach across the crate boundary.
-pub const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
-
-/// Every table the bare-identity probe's declaration union reads. The probe
-/// is skipped unless all of them exist: a partial set could only ever find
-/// fewer declarations than the migration does, and disagreeing with the
-/// migration in that direction is what makes the checkpoint loop.
-const DECLARATION_TABLES: &[&str] = &[
-    "narrative_revision_source_basis",
-    "narrative_proposal_revisions",
-    "narrative_proposals",
-    "narrative_proposal_sets",
-    "narrative_projection_dependencies",
-    "narrative_proposal_applications",
-    "narrative_apply_commits",
-];
-
-/// Contribution identity prefixes SCHEMA 28 rewrites. Mirrors the left column
-/// of the migration's own frozen table, plus `codex-detail-value:`, which the
-/// migration rewrites through the detail-value -> Entry projection rather than
-/// through that table. The same test pins the two together. Public only so
-/// that test can reach across the crate boundary.
-pub const LEGACY_CONTRIBUTION_PREFIXES: &[&str] = &[
-    "codex_entry:",
-    "codex_relation:",
-    "codex_phase:",
-    "codex_entry_phase:",
-    "codex_detail_definition:",
-    "codex_detail_value:",
-    "codex-detail-value:",
-    "codex_semantic_binding:",
-    "codex-detail-semantic-binding:",
-    "plot_thread:",
-    "plot_thread_marker:",
-    "plot_thread_branch:",
-    "foreshadow_setup:",
-    "foreshadow_payoff:",
-    "temporal_node:",
-    "temporal_constraint:",
-    "temporal_projection:",
-    "temporal_event_chronicle:",
-    "temporal_scene_chronicle:",
-    "temporal_scene_story_order:",
-    "event:",
-];
-
-/// Whether SCHEMA 28's data repair has nothing left to do.
+/// Whether this workspace has seen the current revision of the SCHEMA 28 C2
+/// identity data migration.
 ///
-/// SCHEMA 28 changes no table, column or constraint, so on physical evidence
-/// alone a complete SCHEMA 27 database already satisfies every checkpoint --
-/// and both of `migrate_impl`'s fast paths would then skip the repair
-/// entirely. The 27 path would stamp `user_version = 28` through
-/// `try_finalize_previous_schema_without_wait` without running any
-/// migration, and the 28 path returns immediately, so a workspace that
-/// reached the marker without the repair could never be fixed again.
+/// SCHEMA 28's repair is a data migration, so on physical evidence alone a
+/// complete SCHEMA 27 database already satisfies every other clause here --
+/// and both of `migrate_impl`'s fast paths would then skip it. This is what
+/// makes the repair's completion part of the checkpoint.
 ///
-/// Making the repair's *outcome* part of the checkpoint closes both, because
-/// both consult this function. It is read-only, so a healthy workspace still
-/// takes the non-blocking open path; only one that genuinely still holds
-/// repairable rows falls through to the full migration.
+/// It reads a durable marker rather than inspecting today's rows, because
+/// the two questions differ. "Are any repairable identities left?" cannot
+/// separate a workspace the migration never touched from one an earlier
+/// SCHEMA 28 build already rewrote *without* invalidating the Freshness that
+/// had been decided against the identities it replaced. Both look clean; only
+/// one is. The evidence that distinguishes them is what that build did, which
+/// exists nowhere unless it was written down.
 ///
-/// The bare-identity clause matches the migration's own repairability test,
-/// not merely "unprefixed": an Edge whose Source kind cannot be recovered is
-/// left alone by the migration, so reporting it here would demand a full
-/// migration on every single open and never converge.
-fn has_no_repairable_c2_identities(conn: &Connection) -> anyhow::Result<bool> {
-    if table_exists(conn, "narrative_dependency_edges")? {
-        for prefix in SOURCE_IDENTITY_PREFIXES {
-            let doubled = format!("{prefix}{prefix}");
-            let found: bool = conn.query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM narrative_dependency_edges
-                     WHERE substr(source_object_identity, 1, length(?1)) = ?1
-                 )",
-                [&doubled],
-                |row| row.get(0),
-            )?;
-            if found {
-                return Ok(false);
-            }
-        }
-
-        // A bare identity is only outstanding when the migration would
-        // actually rewrite it, which is narrower than "unprefixed": the
-        // Source kind has to be recoverable from the Run's own declarations,
-        // and every one of them has to agree the Source is a projection.
-        // Reporting anything the migration then declines to touch would
-        // demand a full migration on every single open and never converge,
-        // so this mirrors `canonicalize_bare_projection_identity` exactly.
-        if DECLARATION_TABLES
-            .iter()
-            .try_fold(true, |all, table| -> anyhow::Result<bool> {
-                Ok(all && table_exists(conn, table)?)
-            })?
-        {
-            // Both operands are compile-time constants with no quoting of
-            // their own; nothing here is caller-supplied.
-            let unprefixed = SOURCE_IDENTITY_PREFIXES
-                .iter()
-                .map(|prefix| {
-                    format!(
-                        "AND substr(e.source_object_identity, 1, {}) <> '{prefix}'",
-                        prefix.len()
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n                        ");
-            let declared = format!(
-                "SELECT 1 FROM declaration x
-                          WHERE x.project_id = e.project_id
-                            AND x.source_key = e.source_object_identity
-                            AND (e.consumer_kind <> '{RUN_CONSUMER_KIND}'
-                                 OR x.run_id = e.consumer_key)"
-            );
-            let found: bool = conn.query_row(
-                &format!(
-                    "WITH declaration(project_id, run_id, source_key, source_kind) AS (
-                         SELECT s.project_id, s.run_id, b.source_key, b.source_kind
-                           FROM narrative_revision_source_basis b
-                           JOIN narrative_proposal_revisions r ON r.id = b.revision_id
-                           JOIN narrative_proposals p ON p.id = r.proposal_id
-                           JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-                         UNION ALL
-                         SELECT c.project_id, c.run_id, d.source_key, d.source_kind
-                           FROM narrative_projection_dependencies d
-                           JOIN narrative_proposal_applications a ON a.id = d.application_id
-                           JOIN narrative_apply_commits c ON c.id = a.commit_id
-                     )
-                     SELECT EXISTS(
-                         SELECT 1 FROM narrative_dependency_edges e
-                          WHERE 1 = 1
-                        {unprefixed}
-                            AND EXISTS(
-                                {declared}
-                                    AND x.source_kind IN ('domain-projection', 'projection')
-                                )
-                            AND NOT EXISTS(
-                                {declared}
-                                    AND x.source_kind NOT IN ('domain-projection', 'projection')
-                                )
-                     )"
-                ),
-                [],
-                |row| row.get(0),
-            )?;
-            if found {
-                return Ok(false);
-            }
-        }
+/// The marker carries a contract version so the migration can gain a side
+/// effect inside one `SCHEMA_VERSION` and still re-run on workspaces that
+/// only saw the earlier revision.
+fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
     }
-
-    if table_exists(conn, "narrative_application_contributions")? {
-        for prefix in LEGACY_CONTRIBUTION_PREFIXES {
-            let found: bool = conn.query_row(
-                "SELECT EXISTS(
-                    SELECT 1 FROM narrative_application_contributions
-                     WHERE substr(target_object_identity, 1, length(?1)) = ?1
-                 )",
-                [prefix],
-                |row| row.get(0),
-            )?;
-            if found {
-                return Ok(false);
-            }
-        }
-    }
-
-    Ok(true)
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_IDENTITY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(applied.is_some_and(|version| version >= C2_IDENTITY_CONTRACT_VERSION))
 }
+
+/// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
+pub const C2_IDENTITY_MIGRATION_ID: &str = "narrative-c2-identity-v28";
+/// See [`C2_IDENTITY_MIGRATION_ID`].
+pub const C2_IDENTITY_CONTRACT_VERSION: i64 = 2;
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
     conn.query_row(

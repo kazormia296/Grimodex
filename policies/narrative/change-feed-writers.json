@@ -847,7 +847,8 @@
         "narrative.revision-envelope",
         "narrative.freshness",
         "narrative.field-authority",
-        "narrative.maintenance-feed"
+        "narrative.maintenance-feed",
+        "schema.migration"
       ],
       "scope": "migration",
       "requiredIdentities": [],

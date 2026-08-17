@@ -122,11 +122,18 @@ pub(crate) const UNRESOLVED_TARGET_PREFIX: &str = "unresolved:";
 /// `codex-detail-value:<valueId>` versus `codex-entry:<entryId>` -- which no
 /// name mapping can reconcile, because the ids differ too.
 ///
-/// Every other kind was checked for the same hazard and matches: the scene
-/// and event metadata patches and the story-order materialize all record the
-/// scene/event id they annotate (`temporal_operations.rs`), and the semantic
-/// binding upsert records the same `binding_id` `affected_fields` uses
-/// (`semantic_bindings.rs`).
+/// The scene and event metadata patches and the story-order materialize were
+/// checked for the same hazard and match: they all record the scene/event id
+/// they annotate (`temporal_operations.rs`), as does the semantic binding
+/// upsert with its `binding_id` (`semantic_bindings.rs`).
+///
+/// `temporal.constraint.create` does **not** match, and is not fixed here.
+/// `affected_fields` reports `authority_entity_id()`, a Field Authority
+/// coordinate that falls back to the payload fingerprint, while
+/// `apply_constraint_create_in_tx` mints a fresh UUID for the row -- so the
+/// Apply path addresses an object that does not exist. Addressing
+/// Contributions by the Application row's `applied_entity_id` is the fix; see
+/// `the_two_writers_disagree_on_the_constraint_id_itself`.
 ///
 /// A detail-value row that no longer exists cannot be projected. That yields
 /// an explicit [`UNRESOLVED_TARGET_PREFIX`] identity rather than a guess.
@@ -640,7 +647,8 @@ mod tests {
         ("codex-phase", "codex_phase"),
         ("codex-detail-semantic-binding", "codex_semantic_binding"),
         ("temporal-node", "temporal_node"),
-        ("temporal-constraint", "temporal_constraint"),
+        // `temporal-constraint` is deliberately absent: see
+        // `the_two_writers_disagree_on_the_constraint_id_itself`.
         ("temporal-projection", "temporal_projection"),
         ("plot-thread", "plot_thread"),
         ("plot-marker", "plot_thread_marker"),
@@ -652,8 +660,16 @@ mod tests {
     /// Field Authority spelling and `legacy_backfill.rs` the writer-row
     /// spelling, so a live Contribution and a backfilled one describing the
     /// same object were two strings that never joined.
+    ///
+    /// **Scope: spelling only.** Both sides are handed the same id on
+    /// purpose, so this proves the two vocabularies normalize to one *kind*.
+    /// It says nothing about whether the two writers arrive at the same *id*
+    /// for a given operation -- that is a property of the callers, and
+    /// `temporal.constraint.create` does not have it. Reading this as
+    /// "the two writers agree on one identity" is what let that gap survive a
+    /// review; the id side is pinned separately, below.
     #[test]
-    fn both_writer_paths_agree_on_one_identity_per_object() {
+    fn both_writer_vocabularies_normalize_to_one_kind_spelling() {
         for (authority_kind, writer_kind) in AUTHORITY_AND_WRITER_KINDS {
             let from_apply = contribution_target_identity_for_authority_kind(authority_kind, "x1")
                 .unwrap_or_else(|error| panic!("{authority_kind} must map: {error}"));
@@ -661,9 +677,42 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{writer_kind} must map: {error}"));
             assert_eq!(
                 from_apply, from_backfill,
-                "Apply and Backfill disagree for {authority_kind}/{writer_kind}"
+                "the two vocabularies spell {authority_kind}/{writer_kind} differently"
             );
         }
+    }
+
+    /// `temporal.constraint.create` is the kind the spelling test above
+    /// cannot cover, and this pins why so the gap cannot be quietly closed by
+    /// renaming something.
+    ///
+    /// `affected_fields` reports `authority_entity_id()`
+    /// (`temporal_constraints.rs`), which falls back to the payload
+    /// fingerprint -- then a referenced node id, then the literal
+    /// `"constraint"` -- when no `constraintId` is supplied.
+    /// `apply_constraint_create_in_tx` mints a fresh UUID in exactly that
+    /// case. The two ids therefore *cannot* coincide, so translating the kind
+    /// leaves the Apply path addressing an object that does not exist.
+    ///
+    /// The runtime fix belongs with the Apply path (address Contributions by
+    /// the Application row's `applied_entity_id`), not with this mapping.
+    /// Until that lands, this test is the standing record that the C2-T2
+    /// precondition is unmet for this kind.
+    #[test]
+    fn the_two_writers_disagree_on_the_constraint_id_itself() {
+        let from_ledger_coordinate =
+            contribution_target_identity_for_authority_kind("temporal-constraint", "fingerprint-1")
+                .expect("temporal-constraint maps");
+        let from_applied_row = contribution_target_identity("temporal_constraint", "uuid-1")
+            .expect("temporal_constraint maps");
+
+        assert_eq!(from_ledger_coordinate, "temporal-constraint:fingerprint-1");
+        assert_eq!(from_applied_row, "temporal-constraint:uuid-1");
+        assert_ne!(
+            from_ledger_coordinate, from_applied_row,
+            "if these ever match, the id-level gap has been closed and \
+             temporal-constraint can rejoin AUTHORITY_AND_WRITER_KINDS"
+        );
     }
 
     /// The one kind whose two vocabularies genuinely differ, and the whole

@@ -3243,6 +3243,15 @@ impl Database {
         // `docs/adr/006-narrative-mutation-authority-routes.md`'s
         // `semantic-epoch-event` control.
         conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_data_migrations (
+                migration_id     TEXT NOT NULL,
+                contract_version INTEGER NOT NULL CHECK(contract_version > 0),
+                applied_at       TEXT NOT NULL,
+                PRIMARY KEY(migration_id)
+            );",
+        )?;
+
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (
                 id                             TEXT NOT NULL,
                 project_id                     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -3520,11 +3529,42 @@ impl Database {
         // the v2 transform never executes on a workspace that already ran v1.
         Self::migrate_narrative_dependency_edge_identity_v28(&conn)?;
 
-        // SCHEMA 29: Application Contributions carry their provenance, the
-        // value baseline a later pass compares against, and the Maintenance
-        // ownership axis. A rebuild, because the provenance columns are NOT
-        // NULL and have to be read off each Contribution's Application row.
-        Self::migrate_narrative_application_contributions_v29(&conn)?;
+        // SCHEMA 29's rebuild and SCHEMA 28's completion marker both write
+        // `narrative_application_contributions`, and `migrate_impl` otherwise
+        // runs in autocommit -- so without this savepoint a failure between
+        // them is durable. Two distinct hazards live in that window:
+        //
+        //   * the marker step opens with three unconditional DELETEs of C2
+        //     derived state, while the rebuild fails closed on an orphaned
+        //     Contribution. Marker-first would pay the whole discard and then
+        //     refuse to open, leaving Consumer Freshness -- the durable
+        //     Freshness authority -- empty on a workspace nothing can rebuild
+        //     until the orphan is repaired by hand.
+        //   * the rebuild's own DROP+RENAME is a batch. Interrupted between
+        //     them, the table is simply gone; the next open recreates it empty
+        //     from `CREATE TABLE IF NOT EXISTS`, the rebuild's own guard sees
+        //     the v29 columns and returns, and the checkpoint passes -- losing
+        //     every Contribution attribution row while reporting health.
+        //
+        // Making the pair atomic answers both, and makes their relative order
+        // a matter of taste rather than of data. They are ordered rebuild-first
+        // anyway, so the only step that can refuse runs before the only step
+        // that destroys.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_29")?;
+        let c2_result = (|| -> anyhow::Result<()> {
+            Self::migrate_narrative_application_contributions_v29(&conn)?;
+            Self::finish_narrative_c2_identity_data_migration_v28(&conn)?;
+            Ok(())
+        })();
+        match c2_result {
+            Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_29")?,
+            Err(error) => {
+                conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_29; RELEASE narrative_c2_schema_29",
+                )?;
+                return Err(error);
+            }
+        }
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -4651,6 +4691,128 @@ impl Database {
     /// nothing the survivor lacks. Its Edge State row is deleted explicitly
     /// rather than left to the FK's `ON DELETE CASCADE`, which does nothing
     /// unless `PRAGMA foreign_keys` happens to be on.
+    /// The C2 identity data migration's id in `schema_data_migrations`.
+    pub(crate) const C2_IDENTITY_MIGRATION_ID: &'static str = "narrative-c2-identity-v28";
+
+    /// Which revision of that migration's side effects a workspace has seen.
+    ///
+    /// Bump this whenever the migration gains a side effect, even within one
+    /// `SCHEMA_VERSION`. That is the whole point: revision 1 rewrote
+    /// identities but left Freshness decided on the old ones in place on the
+    /// non-collision path, and no amount of looking at today's rows can tell
+    /// a workspace that stopped there from one that never needed the repair.
+    pub(crate) const C2_IDENTITY_CONTRACT_VERSION: i64 = 2;
+
+    /// Closes out the SCHEMA 28 identity repair: discard the C2 derived state
+    /// wholesale, correct Contributions left pointing at an unresolvable
+    /// target, and record that this contract revision has been applied.
+    ///
+    /// **Why a durable marker rather than inspecting the rows.** The earlier
+    /// check asked "are any repairable identities left?", which conflates two
+    /// different workspaces: one the migration never touched, and one an
+    /// earlier SCHEMA 28 build already rewrote. Those are indistinguishable
+    /// from the current rows, because the distinguishing evidence -- what
+    /// *else* that build did -- was never written down. A workspace migrated
+    /// by revision 1 has canonical Edge identities *and* Consumer Freshness
+    /// that was decided against the identities they replaced, and the identity
+    /// probe calls it healthy.
+    ///
+    /// **Why the discard is unconditional rather than targeted.** Revision 1's
+    /// invalidation only covered Consumers whose identity that same pass
+    /// changed. Re-running it now finds nothing to change, so a targeted pass
+    /// would clear nothing. There is no record of which Consumers the earlier
+    /// pass touched, so the conservative reading is the only sound one: put
+    /// every C2 derived state back to absent, which is exactly the "not yet
+    /// evaluated" state Rebuild-Derived exists to fill. C2 is still shadow
+    /// infrastructure with no production reader, so the cost is recomputation,
+    /// while the alternative is serving a stale `source-missing` as truth.
+    ///
+    /// `narrative_consumer_freshness` is the durable Freshness authority, not
+    /// a cache, which is precisely why it cannot be left to sort itself out.
+    fn finish_narrative_c2_identity_data_migration_v28(conn: &Connection) -> anyhow::Result<()> {
+        if Self::has_c2_identity_data_migration_marker(conn)? {
+            return Ok(());
+        }
+
+        // Rebuildable derived state. Absent *is* the initial state, so
+        // deleting is a reset, not data loss.
+        for table in [
+            "narrative_dependency_edge_states",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+        ] {
+            if Self::table_exists_for_v28(conn, table)? {
+                conn.execute(&format!("DELETE FROM {table}"), [])
+                    .with_context(|| format!("clearing C2 derived state in '{table}'"))?;
+            }
+        }
+
+        // An earlier revision marked these `unresolved:` but left the state
+        // the Apply had written. `unchanged` asserts the field still matches
+        // what was applied to an object that cannot be found, which is a
+        // claim this migration is in a position to withdraw.
+        if Self::table_exists_for_v28(conn, "narrative_application_contributions")? {
+            conn.execute(
+                "UPDATE narrative_application_contributions
+                    SET target_state = 'missing'
+                  WHERE substr(target_object_identity, 1, ?1) = ?2
+                    AND target_state <> 'missing'",
+                params![
+                    Self::UNRESOLVED_TARGET_PREFIX_V28.len() as i64,
+                    Self::UNRESOLVED_TARGET_PREFIX_V28
+                ],
+            )
+            .context("correcting unresolved Contribution target states")?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_IDENTITY_MIGRATION_ID,
+                Self::C2_IDENTITY_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )
+        .context("recording the C2 identity data migration marker")?;
+        Ok(())
+    }
+
+    /// Whether this workspace has seen the current revision of the C2
+    /// identity data migration's side effects.
+    pub(crate) fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+        if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
+            return Ok(false);
+        }
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Self::C2_IDENTITY_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(applied.is_some_and(|version| version >= Self::C2_IDENTITY_CONTRACT_VERSION))
+    }
+
+    /// The `unresolved:` prefix as of SCHEMA 28, frozen for the same reason
+    /// the identity prefix tables are. A test pins it to the live constant.
+    const UNRESOLVED_TARGET_PREFIX_V28: &'static str = "unresolved:";
+
+    fn table_exists_for_v28(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            params![table],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
     fn migrate_narrative_dependency_edge_identity_v28(conn: &Connection) -> anyhow::Result<()> {
         if !conn.query_row(
             "SELECT EXISTS(
@@ -9762,6 +9924,12 @@ mod tests {
                          'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z')",
                 [],
             )?;
+            // An older build reached this marker without the data migration,
+            // which is exactly the state that has no completion record.
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
             conn.pragma_update(None, "user_version", stamp_version)?;
             Ok(())
         })
@@ -9777,6 +9945,127 @@ mod tests {
             )?)
         })
         .expect("read edge identity")
+    }
+
+    /// The state an earlier SCHEMA 28 build could actually leave behind:
+    /// identities already canonical, but Freshness still holding the verdict
+    /// it reached against the identities they replaced. Nothing in today's
+    /// rows distinguishes this from a healthy workspace, which is why the
+    /// completion marker exists.
+    #[test]
+    fn a_partially_migrated_workspace_has_its_derived_state_discarded() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                         'project:scene:scene-1', '[]', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'proj-1', 0, 'initial', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES ('edge-1', 'proj-1', 'source-missing', 'rebuild-required',
+                         'epoch-1', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing',
+                         'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed a partially migrated workspace");
+
+        db.migrate().expect("migrate");
+
+        assert_eq!(
+            edge_identity(&db),
+            "project:scene:scene-1",
+            "the identity was already canonical and must be left alone"
+        );
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            0,
+            "Freshness decided against the replaced identity must not survive"
+        );
+        assert_eq!(edge_state_rows(&db), 0, "Edge State is rebuildable");
+        assert!(
+            Database::has_c2_identity_data_migration_marker(&db.lock_conn().expect("lock"))
+                .expect("marker"),
+            "the migration must record that it ran"
+        );
+
+        // Second open: the marker is what stops this repeating.
+        db.migrate().expect("second open");
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "a marked workspace must satisfy the checkpoint"
+        );
+    }
+
+    /// An earlier revision marked a Contribution's target unresolvable but
+    /// left the state the Apply had written, which asserts the field still
+    /// matches what was applied to an object that cannot be found.
+    #[test]
+    fn a_partially_migrated_workspace_corrects_unresolved_contribution_states() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                     target_object_identity, field_path, target_state, created_at)
+                 VALUES ('c1', 'proj-1', 'app-1', 'commit-1', 'proposal-1', 'revision-1',
+                         'unresolved:codex-detail-value:value-gone', '/legacy-application',
+                         'unchanged', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed an unresolved Contribution");
+
+        db.migrate().expect("migrate");
+
+        let state: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT target_state FROM narrative_application_contributions WHERE id = 'c1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read target state");
+        assert_eq!(state, "missing");
+    }
+
+    fn edge_state_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count edge states")
     }
 
     fn consumer_freshness_rows(db: &Database) -> i64 {
@@ -9951,46 +10240,37 @@ mod tests {
             "SCHEMA 28's frozen prefix list drifted from dependency_edges.rs"
         );
 
-        let mut probe = grimodex_core::workspace_schema::SOURCE_IDENTITY_PREFIXES.to_vec();
-        probe.sort_unstable();
-        assert_eq!(
-            probe, frozen,
-            "the schema checkpoint's prefix probe drifted from the migration it gates"
-        );
-
         assert_eq!(
             Database::RUN_CONSUMER_KIND_V28,
             crate::narrative_extraction::RUN_CONSUMER_KIND,
             "SCHEMA 28 scopes its Source lookup by this Consumer kind"
         );
+    }
+
+    /// The checkpoint reads the marker the migration writes, from a different
+    /// crate. If the two ever name different migrations, or drift on the
+    /// contract version, the checkpoint silently stops gating the repair --
+    /// which is the exact failure this marker was introduced to end.
+    #[test]
+    fn the_checkpoint_and_the_migration_name_the_same_marker() {
         assert_eq!(
-            grimodex_core::workspace_schema::RUN_CONSUMER_KIND,
-            Database::RUN_CONSUMER_KIND_V28,
-            "the checkpoint must scope declarations the same way the migration does"
+            grimodex_core::workspace_schema::C2_IDENTITY_MIGRATION_ID,
+            Database::C2_IDENTITY_MIGRATION_ID
+        );
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_IDENTITY_CONTRACT_VERSION,
+            Database::C2_IDENTITY_CONTRACT_VERSION
         );
     }
 
-    /// The checkpoint decides whether the Contribution repair still has work,
-    /// so its prefix list has to be exactly the set the repair acts on. Too
-    /// few and a workspace silently keeps legacy rows; too many and every
-    /// open replays the migration forever.
+    /// The migration's frozen copy of the unresolved marker has to keep
+    /// matching the writer's, or the one-time correction misses the rows the
+    /// writer produced.
     #[test]
-    fn the_checkpoint_contribution_probe_covers_exactly_what_the_migration_rewrites() {
-        let mut expected: Vec<&str> = Database::LEGACY_TARGET_IDENTITY_PREFIXES_V28
-            .iter()
-            .map(|(legacy, _)| *legacy)
-            .collect();
-        // Rewritten by the detail-value -> Entry projection instead of by the
-        // prefix table, so it is repairable without appearing above.
-        expected.push("codex-detail-value:");
-        expected.sort_unstable();
-
-        let mut probe = grimodex_core::workspace_schema::LEGACY_CONTRIBUTION_PREFIXES.to_vec();
-        probe.sort_unstable();
-
+    fn the_frozen_unresolved_prefix_still_matches_the_writer() {
         assert_eq!(
-            probe, expected,
-            "the schema checkpoint's Contribution probe drifted from the SCHEMA 28 rewrite"
+            Database::UNRESOLVED_TARGET_PREFIX_V28,
+            crate::narrative_extraction::application_contributions::UNRESOLVED_TARGET_PREFIX
         );
     }
 

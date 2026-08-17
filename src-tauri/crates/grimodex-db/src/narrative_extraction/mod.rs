@@ -1,6 +1,6 @@
 //! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
-mod application_contributions;
+pub(crate) mod application_contributions;
 mod attention;
 pub mod change_feed;
 mod chronicle_operations;

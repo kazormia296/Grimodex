@@ -1307,6 +1307,83 @@ mod tests {
         assert!(update_error.to_string().contains("PROTECTED_WRITER_SQL"));
     }
 
+    /// `schema_data_migrations` decides whether a data migration re-runs, so
+    /// it is migration authority, not diagnostics. Left unprotected, generic
+    /// SQL could raise `contract_version` to fake a migration that never ran,
+    /// or delete the row to force every open to discard C2 derived state.
+    /// Only a trusted migration may write it.
+    #[test]
+    fn generic_sql_cannot_forge_the_data_migration_marker() {
+        let db = test_db();
+        db.execute(
+            "CREATE TABLE schema_data_migrations (
+                migration_id     TEXT PRIMARY KEY,
+                contract_version INTEGER NOT NULL,
+                applied_at       TEXT NOT NULL
+             )",
+            &[],
+            "run",
+        )
+        .expect("trusted migration may create the marker table");
+        db.execute(
+            "INSERT INTO schema_data_migrations
+                (migration_id, contract_version, applied_at)
+             VALUES ('narrative-c2-identity-v28', 2, '2026-08-17T00:00:00.000Z')",
+            &[],
+            "run",
+        )
+        .expect("trusted migration may record its own completion");
+
+        for (label, sql) in [
+            (
+                "insert",
+                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                 VALUES ('forged', 999, '2026-08-17T00:00:00.000Z')",
+            ),
+            (
+                "update",
+                "UPDATE schema_data_migrations SET contract_version = 999
+                  WHERE migration_id = 'narrative-c2-identity-v28'",
+            ),
+            (
+                "delete",
+                "DELETE FROM schema_data_migrations
+                  WHERE migration_id = 'narrative-c2-identity-v28'",
+            ),
+        ] {
+            let renderer = db
+                .execute_renderer(sql, &[], "run")
+                .expect_err("renderer must not reach migration authority");
+            assert!(
+                renderer.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "renderer {label} was not denied: {renderer}"
+            );
+
+            let mcp = db
+                .execute_untrusted(SqlOrigin::McpGeneric, sql, &[], "run")
+                .expect_err("MCP generic must not reach migration authority");
+            assert!(
+                mcp.to_string().contains(PROTECTED_WRITER_SQL_ERROR),
+                "MCP generic {label} was not denied: {mcp}"
+            );
+        }
+
+        let (version, count) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT contract_version FROM schema_data_migrations
+                          WHERE migration_id = 'narrative-c2-identity-v28'),
+                        (SELECT COUNT(*) FROM schema_data_migrations)",
+                    [],
+                    |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+                )?)
+            })
+            .expect("read the marker back");
+        assert_eq!(version, 2, "the marker must survive every denied write");
+        assert_eq!(count, 1, "no forged marker row may exist");
+    }
+
     #[test]
     fn renderer_rejects_protected_shared_columns_and_structural_writes() {
         let db = test_db();

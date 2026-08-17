@@ -96,6 +96,13 @@ const WRITER_TO_MODULES = {
   "narrative.maintenance-attention": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
   ],
+  // schema_data_migrations records which data migrations have completed, and
+  // the schema checkpoint reads it to decide whether a migration re-runs.
+  // That makes it migration authority rather than diagnostics: a forged
+  // contract_version would skip a migration that never ran, and a deleted
+  // row would force every open to discard C2 derived state. Only the
+  // migration engine writes it.
+  "schema.migration": ["src-tauri/crates/grimodex-db/src/migrate.rs"],
   "chronicle.event": [
     "src-tauri/crates/grimodex-db/src/agent_writes.rs",
     "src-tauri/crates/grimodex-db/src/chronicle.rs",
