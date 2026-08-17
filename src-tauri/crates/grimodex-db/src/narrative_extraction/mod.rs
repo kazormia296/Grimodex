@@ -8,6 +8,7 @@ mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod contribution_target_state;
 mod cursor_reservation;
 mod dependency_edges;
 mod detail_operations;

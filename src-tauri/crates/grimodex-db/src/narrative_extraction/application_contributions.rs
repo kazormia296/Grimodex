@@ -504,6 +504,91 @@ const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
         ELSE contribution.target_state
     END";
 
+/// Hands the Contributions on a hand-written field over to the user.
+///
+/// `maintenance_ownership` is the axis this table is named for, and it is the
+/// one place a *person* speaks: `maintained` says maintenance may keep
+/// proposing and applying to this field, `user-owned` says the author has
+/// taken it and maintenance may only propose. (`detached` is the Repair Run's
+/// "could not reconstruct this" verdict -- `unrecoverableDisposition` in the
+/// Run Kind Policy -- and is not written here.)
+///
+/// Derived from the Field Authority ledger rather than from the Change Feed,
+/// and that is not interchangeable. Step 7's projection deliberately treats
+/// every write with no Application lineage as evidence, which *includes*
+/// in-app agent and MCP writes carrying `origin = ai-apply`. Deriving
+/// ownership there would let an AI edit hand the field to the user. Here the
+/// human gate holds by construction: `record_human_field_write` is reached
+/// only from the manual writers, and `agent_writes.rs` gates it behind
+/// `surface == "manual"`.
+///
+/// One direction only. ADR 005 permits a later Interpretation to propose
+/// against a human-authored field but forbids it to *implicitly reclaim*
+/// maintenance ownership, so nothing automatic ever writes `user-owned` back
+/// to `maintained`; that takes an explicit act, through the same decision
+/// authority that grants an override. This is also why the column stays out
+/// of `record_contribution_in_tx`'s `DO UPDATE`: re-recording a field must not
+/// quietly reset who owns it.
+///
+/// Called from inside `record_human_field_write` rather than from its ten call
+/// sites, so a manual writer cannot be added later and silently skip it.
+pub(crate) fn mark_fields_user_owned_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    field_paths: &[&str],
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    // The Field Authority ledger speaks its own kind vocabulary, and this is
+    // the boundary that translates it -- the reason
+    // `contribution_target_identity_for_authority_kind` was kept.
+    let Ok(target_object_identity) =
+        contribution_target_identity_for_authority_kind(entity_kind, entity_id)
+    else {
+        // A kind with no ratified object mapping (today: a temporal
+        // constraint, whose Field Authority coordinate is a fingerprint the
+        // applied row never had) cannot be pointed at a Contribution. Handing
+        // ownership to the wrong object is worse than leaving it maintained.
+        return Ok(());
+    };
+    for field_path in field_paths {
+        conn.execute(
+            "UPDATE narrative_application_contributions
+                SET maintenance_ownership = 'user-owned',
+                    target_state_updated_at = ?4
+              WHERE project_id = ?1
+                AND target_object_identity = ?2
+                AND field_path = ?3
+                AND maintenance_ownership = 'maintained'",
+            params![project_id, target_object_identity, field_path, updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+/// Brings the stored half of `target_state` up to date before reading it.
+///
+/// `modified` and `missing` come from the Change Feed, and a projection of a
+/// log is only as current as its last run. Pumping it here rather than leaving
+/// it to a background task is what makes these readers return a consistent
+/// answer: same process, same SQLite connection, same transaction as the read
+/// that follows.
+///
+/// The cursor is what keeps that cheap. A pump with nothing new to account for
+/// reads one row and stops.
+fn pump_out_of_band_edits(conn: &Connection, project_id: &str) -> anyhow::Result<()> {
+    // Autocommit means no caller-owned transaction to join, and the projection
+    // must not open one behind a reader's back. Reading slightly stale
+    // `modified` is recoverable -- the next pump inside a transaction fixes
+    // it -- while a nested write here would not be.
+    if conn.is_autocommit() {
+        return Ok(());
+    }
+    super::contribution_target_state::project_out_of_band_edits_in_tx(conn, project_id)?;
+    Ok(())
+}
+
 /// All Applications that contributed to a target object, across every field
 /// they touched. Answers "which Proposals wrote which fields on this scene
 /// (or other target)?".
@@ -513,6 +598,7 @@ pub(crate) fn list_contributions_for_target(
     project_id: &str,
     target_object_identity: &str,
 ) -> anyhow::Result<Vec<ApplicationContribution>> {
+    pump_out_of_band_edits(conn, project_id)?;
     let mut statement = conn.prepare(&format!(
         "SELECT contribution.id, contribution.project_id, contribution.application_id,
                 contribution.target_object_identity, contribution.field_path,
@@ -541,6 +627,7 @@ pub(crate) fn list_contributions_for_application(
     project_id: &str,
     application_id: &str,
 ) -> anyhow::Result<Vec<ApplicationContribution>> {
+    pump_out_of_band_edits(conn, project_id)?;
     let mut statement = conn.prepare(&format!(
         "SELECT contribution.id, contribution.project_id, contribution.application_id,
                 contribution.target_object_identity, contribution.field_path,
@@ -1171,6 +1258,238 @@ mod tests {
             assert_eq!(
                 current, 1,
                 "a totally tied chain must still name one owner, got {states:?}"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    fn ownership_of(conn: &Connection, project_id: &str, field_path: &str) -> String {
+        conn.query_row(
+            "SELECT maintenance_ownership FROM narrative_application_contributions
+              WHERE project_id = ?1 AND field_path = ?2",
+            params![project_id, field_path],
+            |row| row.get(0),
+        )
+        .expect("read maintenance ownership")
+    }
+
+    /// The axis this table is named for. A hand-written field belongs to its
+    /// author, and maintenance may only propose against it from then on.
+    #[test]
+    fn a_hand_written_field_hands_its_contribution_to_the_user() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/name",
+                    target_state: ContributionTargetState::Unchanged,
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("record contribution");
+            assert_eq!(ownership_of(conn, "p1", "/name"), "maintained");
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("record human field write");
+
+            assert_eq!(ownership_of(conn, "p1", "/name"), "user-owned");
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// ADR 005 lets a later Interpretation propose against a human-authored
+    /// field but forbids it to reclaim ownership implicitly. Re-recording the
+    /// Contribution is exactly that attempt, and it must not land.
+    #[test]
+    fn re_recording_a_contribution_does_not_reclaim_ownership() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            let field = ContributionField {
+                target_object_identity: "codex-entry:e1",
+                field_path: "/name",
+                target_state: ContributionTargetState::Unchanged,
+            };
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &field,
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("record contribution");
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("record human field write");
+
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &field,
+                "2026-08-17T00:00:00.000Z",
+            )
+            .expect("re-record contribution");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/name"),
+                "user-owned",
+                "a later Application must not take the field back"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// `detached` is the Repair Run's verdict that this Contribution's link to
+    /// its target could not be reconstructed -- `unrecoverableDisposition` in
+    /// the Run Kind Policy. Nobody maintains it, and a hand edit elsewhere does
+    /// not make it the user's either. Only `maintained` is a state this
+    /// transition may leave, which is what the guard on the UPDATE says.
+    #[test]
+    fn a_detached_contribution_is_not_handed_to_the_user() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/name",
+                    target_state: ContributionTargetState::Unchanged,
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("record contribution");
+            conn.execute(
+                "UPDATE narrative_application_contributions
+                    SET maintenance_ownership = 'detached'",
+                [],
+            )
+            .expect("mark detached");
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("record human field write");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/name"),
+                "detached",
+                "an unreconstructible link does not become user-owned"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// Only the named field changes hands. A human editing the title does not
+    /// hand over the summary.
+    #[test]
+    fn ownership_moves_only_for_the_field_that_was_written() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            for field_path in ["/name", "/summary"] {
+                record_contribution_in_tx(
+                    conn,
+                    "p1",
+                    &test_provenance("app-1"),
+                    &ContributionField {
+                        target_object_identity: "codex-entry:e1",
+                        field_path,
+                        target_state: ContributionTargetState::Unchanged,
+                    },
+                    "2026-08-15T00:00:00.000Z",
+                )
+                .expect("record contribution");
+            }
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("record human field write");
+
+            assert_eq!(ownership_of(conn, "p1", "/name"), "user-owned");
+            assert_eq!(ownership_of(conn, "p1", "/summary"), "maintained");
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// A Field Authority coordinate with no ratified object mapping cannot be
+    /// pointed at a Contribution. Handing ownership to the wrong object is
+    /// worse than leaving it maintained, so the write is skipped rather than
+    /// guessed -- and it must not fail the human's edit either.
+    #[test]
+    fn an_unmappable_authority_kind_is_skipped_not_guessed() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/name",
+                    target_state: ContributionTargetState::Unchanged,
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("record contribution");
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "not-a-ratified-kind",
+                "x1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("an unmappable kind must not fail the human write");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/name"),
+                "maintained",
+                "ownership must not land on an object the kind does not address"
             );
             Ok(())
         })

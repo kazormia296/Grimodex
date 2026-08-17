@@ -743,29 +743,7 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("objectKey.kind is required"))?;
-    let required_identity = match kind {
-        "project" => "projectId",
-        "scene" => "sceneId",
-        "chronicle-event" => "eventId",
-        "codex-entry" => "entryId",
-        "codex-relation" => "relationId",
-        "codex-phase" => "phaseId",
-        "codex-detail-definition" => "definitionId",
-        "codex-detail-value" => "valueId",
-        "plot-thread" => "threadId",
-        "plot-marker" => "markerId",
-        "plot-branch" => "branchId",
-        "foreshadow" => "foreshadowId",
-        "foreshadow-setup" => "setupId",
-        "foreshadow-payoff" => "payoffId",
-        "temporal-node" => "nodeId",
-        "temporal-constraint" => "constraintId",
-        "temporal-projection" => "projectionId",
-        "calendar" => "calendarRef",
-        "import-source" => "sourceSetId",
-        "component" => "componentId",
-        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
-    };
+    let required_identity = object_key_identity_field(kind)?;
     require_non_empty(
         key.get(required_identity)
             .and_then(Value::as_str)
@@ -2253,6 +2231,73 @@ fn mutation_kind(op_kind: &str, direction: NarrativeChangeCauseKind) -> &'static
         (NarrativeChangeCauseKind::Redo, "delete") => "delete",
         _ => "update",
     }
+}
+
+/// The field on an Object Addressing key that carries the object's id, for
+/// each ratified `kind`.
+///
+/// One table, three readers. `validate_event` uses it to reject a key that
+/// omits its own id, `object_key_identity` to normalize a key into the string
+/// the Change Feed's object heads are keyed by, and
+/// `contribution_target_identity_from_object_key` to turn a Feed event back
+/// into the `kind:id` form the Contribution ledger stores. Written out once at
+/// each of those sites, the three would disagree the first time a kind is
+/// added -- and each would fail differently: a key accepted but unaddressable,
+/// a head keyed under a shape nothing else produces, a Feed event that matches
+/// no Contribution.
+///
+/// `import-source` needs a second field (`objectKey`) for its full normalized
+/// form; that stays with `object_key_identity`, since the id is what every
+/// caller here is asking for.
+pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static str> {
+    Ok(match kind {
+        "project" => "projectId",
+        "scene" => "sceneId",
+        "chronicle-event" => "eventId",
+        "codex-entry" => "entryId",
+        "codex-relation" => "relationId",
+        "codex-phase" => "phaseId",
+        "codex-detail-definition" => "definitionId",
+        "codex-detail-value" => "valueId",
+        "plot-thread" => "threadId",
+        "plot-marker" => "markerId",
+        "plot-branch" => "branchId",
+        "foreshadow" => "foreshadowId",
+        "foreshadow-setup" => "setupId",
+        "foreshadow-payoff" => "payoffId",
+        "temporal-node" => "nodeId",
+        "temporal-constraint" => "constraintId",
+        "temporal-projection" => "projectionId",
+        "calendar" => "calendarRef",
+        "import-source" => "sourceSetId",
+        "component" => "componentId",
+        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
+    })
+}
+
+/// The `kind:id` a Feed event's object key addresses, in the spelling the
+/// Contribution ledger stores.
+///
+/// The two representations exist for different jobs -- the Feed carries a
+/// structured key it validates field by field, the ledger a short string it
+/// indexes and greps -- so the boundary between them gets one named function
+/// rather than a join condition spelled out at each call site. This is the
+/// direction Step 7 needs: a Feed event arrives and has to find the
+/// Contributions it bears on.
+pub(crate) fn contribution_target_identity_from_object_key(
+    object_key: &Value,
+) -> anyhow::Result<String> {
+    let kind = object_key
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no kind"))?;
+    let field = object_key_identity_field(kind)?;
+    let id = object_key
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no {field}"))?;
+    Ok(format!("{kind}:{id}"))
 }
 
 /// Whether a commit-journal `opKind` describes an operation that wrote

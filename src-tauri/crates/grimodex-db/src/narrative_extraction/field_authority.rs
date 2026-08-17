@@ -105,6 +105,14 @@ pub(crate) fn record_human_field_write(
             params![project_id, entity_kind, entity_id, field_path, updated_at],
         )?;
     }
+    super::application_contributions::mark_fields_user_owned_in_tx(
+        conn,
+        project_id,
+        entity_kind,
+        entity_id,
+        field_paths,
+        updated_at,
+    )?;
     Ok(())
 }
 
