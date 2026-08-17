@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::application_contributions::{
     contribution_target_identity_for_authority_kind, record_contribution_in_tx,
-    ContributionTargetState,
+    ContributionProvenance, ContributionTargetState,
 };
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
@@ -936,6 +936,10 @@ pub fn narrative_extraction_apply_commit(
             let mut created = Vec::new();
             let mut after_snapshots = Vec::new();
             let mut application_ids = Vec::with_capacity(payload.applications.len());
+            // Kept so each Contribution can name the operation that produced
+            // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
+            // the same way `application_ids` is.
+            let mut operation_ids = Vec::with_capacity(payload.operations.len());
 
             for (index, op) in payload.operations.iter().enumerate() {
                 ensure_operation_kind(&op.kind)?;
@@ -1369,13 +1373,15 @@ pub fn narrative_extraction_apply_commit(
                     other => anyhow::bail!("unsupported commit operation kind: {other}"),
                 };
 
+                let operation_id = Uuid::new_v4().to_string();
+                operation_ids.push(operation_id.clone());
                 conn.execute(
                     "INSERT INTO narrative_apply_operations
                         (id, commit_id, operation_index, operation_kind, payload_json,
                          result_entity_kind, result_entity_id, status, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'applied', ?8)",
                     params![
-                        Uuid::new_v4().to_string(),
+                        operation_id,
                         commit_id,
                         index as i64,
                         op.kind,
@@ -1503,7 +1509,19 @@ pub fn narrative_extraction_apply_commit(
             // Application applied; a later process (Undo/Redo, a
             // superseding Application, a hand edit) is what would ever
             // transition it away from `Unchanged`, not this commit itself.
-            for (operation, application_id) in payload.operations.iter().zip(&application_ids) {
+            for (index, (operation, application_id)) in
+                payload.operations.iter().zip(&application_ids).enumerate()
+            {
+                let application = payload.applications.get(index).ok_or_else(|| {
+                    anyhow::anyhow!("operation[{index}] has no matching application")
+                })?;
+                let provenance = ContributionProvenance {
+                    application_id,
+                    commit_id: &commit_id,
+                    proposal_id: &application.proposal_id,
+                    revision_id: &application.revision_id,
+                    operation_id: operation_ids.get(index).map(String::as_str),
+                };
                 for field in affected_fields(operation, &commit_map)? {
                     // `affected_fields` speaks the Field Authority ledger's
                     // kind vocabulary, which is not the ratified Object
@@ -1519,7 +1537,7 @@ pub fn narrative_extraction_apply_commit(
                     record_contribution_in_tx(
                         conn,
                         &payload.project_id,
-                        application_id,
+                        &provenance,
                         &target_object_identity,
                         &field.field_path,
                         ContributionTargetState::Unchanged,

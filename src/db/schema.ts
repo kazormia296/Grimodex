@@ -3075,15 +3075,53 @@ export const narrativeApplicationContributions = sqliteTable(
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     applicationId: text("application_id").notNull(),
+    // SCHEMA_VERSION 29: provenance. operationId is nullable because a
+    // pre-Gate-C2 Application has no narrative_apply_operations row.
+    commitId: text("commit_id").notNull(),
+    proposalId: text("proposal_id").notNull(),
+    revisionId: text("revision_id").notNull(),
+    operationId: text("operation_id"),
     targetObjectIdentity: text("target_object_identity").notNull(),
     fieldPath: text("field_path").notNull(),
     targetState: text("target_state").notNull(),
+    // SCHEMA_VERSION 29. The vocabulary is the ratified
+    // maintenanceOwnershipStates in
+    // policies/narrative/semantic-state-vocabulary.json.
+    maintenanceOwnership: text("maintenance_ownership")
+      .notNull()
+      .default("maintained"),
+    committedValueDigest: text("committed_value_digest"),
+    baselineSequence: integer("baseline_sequence"),
+    targetStateSequence: integer("target_state_sequence"),
+    targetStateUpdatedAt: text("target_state_updated_at"),
     createdAt: text("created_at").notNull(),
   },
   (table) => [
     index("idx_narrative_application_contributions_target").on(
       table.projectId,
       table.targetObjectIdentity,
+    ),
+    index("idx_narrative_application_contributions_field").on(
+      table.projectId,
+      table.targetObjectIdentity,
+      table.fieldPath,
+    ),
+    index("idx_narrative_application_contributions_application").on(
+      table.projectId,
+      table.applicationId,
+    ),
+    index("idx_narrative_application_contributions_commit").on(
+      table.projectId,
+      table.commitId,
+    ),
+    // Declared here as well as in migrate.rs: the physical table has carried
+    // this UNIQUE since SCHEMA 23, but Drizzle did not know about it, so the
+    // contract comparison could not see a drift in it.
+    uniqueIndex("narrative_application_contributions_unique_field").on(
+      table.projectId,
+      table.applicationId,
+      table.targetObjectIdentity,
+      table.fieldPath,
     ),
   ],
 );

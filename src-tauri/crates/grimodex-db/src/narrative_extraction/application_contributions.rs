@@ -256,15 +256,42 @@ pub(crate) struct ApplicationContribution {
 /// the existing row rather than creating a duplicate. Returns the row id —
 /// the freshly minted id on first insert, or the pre-existing row's id when
 /// the upsert matched an existing key.
+/// Which Application produced a Contribution, and where that Application
+/// came from (SCHEMA 29).
+///
+/// Grouped rather than passed as five more parameters because these five
+/// always travel together and are always read together: a Contribution
+/// without its Commit/Proposal/Revision cannot be traced back to the write
+/// that made it.
+///
+/// `operation_id` is `None` for a Legacy Backfill row. A pre-Gate-C2
+/// Application has no `narrative_apply_operations` row, and that table has no
+/// unique key this one could join on retroactively, so `None` means "not
+/// identifiable" rather than "none".
+pub(crate) struct ContributionProvenance<'a> {
+    pub application_id: &'a str,
+    pub commit_id: &'a str,
+    pub proposal_id: &'a str,
+    pub revision_id: &'a str,
+    pub operation_id: Option<&'a str>,
+}
+
 pub(crate) fn record_contribution_in_tx(
     conn: &Connection,
     project_id: &str,
-    application_id: &str,
+    provenance: &ContributionProvenance<'_>,
     target_object_identity: &str,
     field_path: &str,
     target_state: ContributionTargetState,
     created_at: &str,
 ) -> anyhow::Result<String> {
+    let ContributionProvenance {
+        application_id,
+        commit_id,
+        proposal_id,
+        revision_id,
+        operation_id,
+    } = *provenance;
     anyhow::ensure!(
         !project_id.is_empty(),
         "NEX_CONTRIBUTION_PROJECT_INVALID: projectId is required"
@@ -272,6 +299,14 @@ pub(crate) fn record_contribution_in_tx(
     anyhow::ensure!(
         !application_id.is_empty(),
         "NEX_CONTRIBUTION_APPLICATION_INVALID: applicationId is required"
+    );
+    anyhow::ensure!(
+        !commit_id.is_empty() && !proposal_id.is_empty() && !revision_id.is_empty(),
+        "NEX_CONTRIBUTION_PROVENANCE_INVALID: commitId, proposalId and revisionId are required"
+    );
+    anyhow::ensure!(
+        operation_id.is_none_or(|id| !id.is_empty()),
+        "NEX_CONTRIBUTION_PROVENANCE_INVALID: operationId must be absent or non-empty"
     );
     anyhow::ensure!(
         !target_object_identity.is_empty(),
@@ -287,19 +322,34 @@ pub(crate) fn record_contribution_in_tx(
     );
 
     let id = Uuid::new_v4().to_string();
+    // Provenance is set on insert and refreshed on conflict: re-recording the
+    // same (project, application, target, field) means the same Application
+    // wrote that field again, so the Commit/Proposal/Revision it came from is
+    // the newer one. `maintenance_ownership` is deliberately absent from the
+    // DO UPDATE -- it is a durable disposition that a re-record must not
+    // silently reset, the same reason Attention rows are not touched by
+    // Run publish.
     conn.query_row(
         "INSERT INTO narrative_application_contributions
-            (id, project_id, application_id, target_object_identity, field_path,
-             target_state, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            (id, project_id, application_id, commit_id, proposal_id, revision_id,
+             operation_id, target_object_identity, field_path, target_state, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
+             commit_id = excluded.commit_id,
+             proposal_id = excluded.proposal_id,
+             revision_id = excluded.revision_id,
+             operation_id = excluded.operation_id,
              created_at = excluded.created_at
          RETURNING id",
         params![
             id,
             project_id,
             application_id,
+            commit_id,
+            proposal_id,
+            revision_id,
+            operation_id,
             target_object_identity,
             field_path,
             target_state.as_str(),
@@ -409,6 +459,19 @@ mod tests {
         .expect("seed project");
     }
 
+    /// The provenance every Contribution now carries. These tests are about
+    /// the row's own behaviour, not about where the Application came from, so
+    /// one fixed Commit/Proposal/Revision keeps them focused.
+    fn test_provenance(application_id: &str) -> ContributionProvenance<'_> {
+        ContributionProvenance {
+            application_id,
+            commit_id: "commit-1",
+            proposal_id: "proposal-1",
+            revision_id: "revision-1",
+            operation_id: None,
+        }
+    }
+
     /// Every kind `field_authority.rs`'s `affected_fields` can report, paired
     /// with the `applied_entity_kind` the same object is written under by
     /// `commit.rs`'s operation match. The Apply path reaches
@@ -514,7 +577,7 @@ mod tests {
             let id = record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "body",
                 ContributionTargetState::Modified,
@@ -553,7 +616,7 @@ mod tests {
             let first_id = record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "body",
                 ContributionTargetState::Modified,
@@ -564,7 +627,7 @@ mod tests {
             let second_id = record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "body",
                 ContributionTargetState::Undone,
@@ -592,7 +655,7 @@ mod tests {
             record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "body",
                 ContributionTargetState::Modified,
@@ -602,7 +665,7 @@ mod tests {
             record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "title",
                 ContributionTargetState::Unchanged,
@@ -630,7 +693,7 @@ mod tests {
             record_contribution_in_tx(
                 conn,
                 "p1",
-                "app-1",
+                &test_provenance("app-1"),
                 "scene:s1",
                 "body",
                 ContributionTargetState::Modified,

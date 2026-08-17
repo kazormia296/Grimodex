@@ -41,14 +41,16 @@
 //!      it is counted separately in the summary rather than silently
 //!      dropped.
 //!
-//! `target_object_identity` is built directly from the Application's own
-//! `applied_entity_kind`/`applied_entity_id` columns (`"{kind}:{id}"`)
-//! rather than the canonical `object_key_identity` JSON shape
-//! (`canonical_feed_snapshots.rs`): the two vocabularies already diverge
-//! (`event` vs. `chronicle-event`, `codex_entry` vs. `codex-entry`, ...) and
-//! reconciling them is a Freshness-evaluator concern, not a backfill
-//! concern -- this module only needs a stable, collision-free key derived
-//! from data the Application row already owns. `field_path` uses
+//! `target_object_identity` goes through
+//! `contribution_target_identity_for_application`, so a backfilled row and a
+//! live Apply row describing the same object share one identity. This module
+//! used to build `"{kind}:{id}"` straight from `applied_entity_kind`,
+//! deferring the vocabulary difference (`event` vs `chronicle-event`,
+//! `codex_entry` vs `codex-entry`) to "a Freshness-evaluator concern". That
+//! was wrong: the two writers were producing strings that could never join,
+//! and `codex.detail.value.set` was worse than a spelling difference -- it
+//! named the detail-value row where the live path names the owning Codex
+//! Entry, so even the ids differed. `field_path` uses
 //! `LEGACY_BACKFILL_FIELD_PATH`, a sentinel marking "whole entity,
 //! field-level detail unknown": these Applications predate per-field
 //! Contribution tracking, so there is no real field path to recover.
@@ -75,7 +77,7 @@ use serde_json::json;
 
 use super::application_contributions::{
     contribution_target_identity_for_application, record_contribution_in_tx,
-    ContributionTargetState,
+    ContributionProvenance, ContributionTargetState,
 };
 use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
@@ -162,6 +164,9 @@ pub struct BackfillSummary {
 
 struct LegacyApplication {
     id: String,
+    commit_id: String,
+    proposal_id: String,
+    revision_id: String,
     applied_entity_kind: String,
     applied_entity_id: String,
     run_id: Option<String>,
@@ -379,7 +384,17 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
         record_contribution_in_tx(
             conn,
             project_id,
-            &application.id,
+            // `operation_id` is None, not missing data to fill in later: a
+            // pre-Gate-C2 Application has no `narrative_apply_operations`
+            // row, and that table carries no unique key this one could join
+            // on to identify one retroactively.
+            &ContributionProvenance {
+                application_id: &application.id,
+                commit_id: &application.commit_id,
+                proposal_id: &application.proposal_id,
+                revision_id: &application.revision_id,
+                operation_id: None,
+            },
             &target_object_identity,
             LEGACY_BACKFILL_FIELD_PATH,
             ContributionTargetState::Unchanged,
@@ -518,7 +533,8 @@ fn load_legacy_applications(
     project_id: &str,
 ) -> anyhow::Result<Vec<LegacyApplication>> {
     let mut statement = conn.prepare(
-        "SELECT a.id, a.applied_entity_kind, a.applied_entity_id, c.run_id
+        "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id,
+                a.applied_entity_kind, a.applied_entity_id, c.run_id
            FROM narrative_proposal_applications a
            INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
           WHERE c.project_id = ?1
@@ -528,9 +544,12 @@ fn load_legacy_applications(
         .query_map(params![project_id], |row| {
             Ok(LegacyApplication {
                 id: row.get(0)?,
-                applied_entity_kind: row.get(1)?,
-                applied_entity_id: row.get(2)?,
-                run_id: row.get(3)?,
+                commit_id: row.get(1)?,
+                proposal_id: row.get(2)?,
+                revision_id: row.get(3)?,
+                applied_entity_kind: row.get(4)?,
+                applied_entity_id: row.get(5)?,
+                run_id: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
