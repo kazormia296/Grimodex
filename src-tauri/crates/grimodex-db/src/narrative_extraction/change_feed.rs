@@ -2255,6 +2255,24 @@ fn mutation_kind(op_kind: &str, direction: NarrativeChangeCauseKind) -> &'static
     }
 }
 
+/// Whether a commit-journal `opKind` describes an operation that wrote
+/// nothing.
+///
+/// `temporal.node.ensure` is a true no-op when the semantic node already
+/// exists: `apply_node_ensure_in_tx` returns `created: false` and the row is
+/// left byte-for-byte alone. The journal still records the entity, because
+/// Undo/Redo needs it for OCC, but nothing downstream may treat it as a
+/// mutation.
+///
+/// Shared rather than restated at each site: `events_from_journal_entities`
+/// must not invent a freshness mutation for one, `undo.rs` must not try to
+/// roll one back, and `commit.rs` must not record a Contribution claiming a
+/// field currently holds what this Application wrote. Three independent
+/// copies of one string literal is how those three quietly disagree.
+pub(crate) fn journal_op_kind_wrote_nothing(op_kind: &str) -> bool {
+    op_kind == "ensure-existing"
+}
+
 /// Convert the existing immutable commit-journal entity snapshots into typed
 /// freshness events. This does not mutate persistence and never applies a fix.
 pub fn events_from_journal_entities(
@@ -2275,11 +2293,7 @@ pub fn events_from_journal_entities(
             .get("opKind")
             .and_then(Value::as_str)
             .unwrap_or("create");
-        // `temporal.node.ensure` can be a true no-op when the semantic
-        // node already exists. Keep that row in the immutable commit
-        // journal for Undo/Redo OCC, but do not invent a freshness
-        // mutation for it.
-        if op_kind == "ensure-existing" {
+        if journal_op_kind_wrote_nothing(op_kind) {
             continue;
         }
         let before_snapshot = entity.get("beforeSnapshot");

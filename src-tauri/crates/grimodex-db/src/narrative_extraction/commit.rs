@@ -13,7 +13,8 @@ use super::application_contributions::{
 };
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
-    AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
+    journal_op_kind_wrote_nothing, AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
+    NarrativeChangeOrigin,
 };
 use super::chronicle_operations::{
     apply_chronicle_event_create, ensure_event_id_available, ensure_order_neighbor,
@@ -940,6 +941,10 @@ pub fn narrative_extraction_apply_commit(
             // it (SCHEMA 29). 1:1 with `payload.operations` by construction,
             // the same way `application_ids` is.
             let mut operation_ids = Vec::with_capacity(payload.operations.len());
+            // Same 1:1 indexing. Carried to the Contribution loop below so it
+            // can tell an operation that wrote something from one that did
+            // not; see `journal_op_kind_wrote_nothing`.
+            let mut operation_op_kinds: Vec<&str> = Vec::with_capacity(payload.operations.len());
 
             for (index, op) in payload.operations.iter().enumerate() {
                 ensure_operation_kind(&op.kind)?;
@@ -1375,6 +1380,7 @@ pub fn narrative_extraction_apply_commit(
 
                 let operation_id = Uuid::new_v4().to_string();
                 operation_ids.push(operation_id.clone());
+                operation_op_kinds.push(op_kind);
                 conn.execute(
                     "INSERT INTO narrative_apply_operations
                         (id, commit_id, operation_index, operation_kind, payload_json,
@@ -1610,6 +1616,25 @@ pub fn narrative_extraction_apply_commit(
                     &applied_entity_kind,
                     &applied_entity_id,
                 )?;
+                // An operation that wrote nothing still gets its Contribution
+                // rows -- "this Application depended on this object" is a real
+                // fact the reverse lookup needs -- but `Unchanged` would
+                // assert the field currently holds what *this* Application
+                // wrote, and this one wrote nothing. `NotApplicable` is the
+                // ratified value for exactly that.
+                //
+                // Deciding it here, at write time, is what keeps Undo simple:
+                // an Undo that rolls nothing back for these operations
+                // (`undo.rs`'s `op_kind != "ensure-existing"` guard) never has
+                // to re-derive which rows it may speak for.
+                let wrote_nothing = operation_op_kinds
+                    .get(index)
+                    .is_some_and(|kind| journal_op_kind_wrote_nothing(kind));
+                let target_state = if wrote_nothing {
+                    ContributionTargetState::NotApplicable
+                } else {
+                    ContributionTargetState::Unchanged
+                };
                 for field in affected_fields(operation, &commit_map)? {
                     // Read after the write, so this is the value as applied.
                     // `None` where the field has no canonical snapshot
@@ -1631,7 +1656,7 @@ pub fn narrative_extraction_apply_commit(
                             target_object_identity: &target_object_identity,
                             field_path: &field.field_path,
                             committed_value_digest: committed_value_digest.as_deref(),
-                            target_state: ContributionTargetState::Unchanged,
+                            target_state,
                         },
                         &now,
                     )?;

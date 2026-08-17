@@ -487,6 +487,39 @@ pub(crate) fn record_contribution_in_tx(
     .map_err(Into::into)
 }
 
+/// The stored `target_state` projected onto the state a reader must act on.
+///
+/// `undone` is deliberately **not** stored. It describes the Application's
+/// lifecycle, and that already lives -- durably, transactionally, and in one
+/// place -- in `narrative_apply_commits.status`. Writing it into
+/// `target_state` as well would put one fact in two columns, and the pair can
+/// only stay honest until the first path updates one without the other. The
+/// stored column keeps the other axis: how the *field* compares to what the
+/// Application wrote.
+///
+/// Deriving it also makes Undo and Redo genuinely inverse for free. Undo
+/// cannot lose a prior `missing` or `modified` by overwriting it, and Redo
+/// cannot fabricate `unchanged` over a row whose `committed_value_digest` is
+/// NULL -- the contract on [`committed_value_digest_for_field`] says NULL
+/// means "cannot compare", and asserting `unchanged` there would be exactly
+/// the claim it forbids. Neither statement exists to get wrong.
+///
+/// Precedence: `not-applicable` outranks the commit's lifecycle, because an
+/// operation that wrote nothing has nothing to undo -- calling it `undone`
+/// would claim a rollback that never happened. Everything else yields to
+/// `undone` while the owning commit is undone, and re-emerges unchanged when
+/// it is redone.
+///
+/// `LEFT JOIN`, not `JOIN`: a missing commit row must not silently drop the
+/// Contribution from the answer. `commit_id` is NOT NULL and SCHEMA 29's
+/// rebuild fails closed on orphans, so this should be unreachable -- but a
+/// reader losing rows is a worse failure than one reporting a stored state.
+const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
+        WHEN contribution.target_state = 'not-applicable' THEN 'not-applicable'
+        WHEN apply_commit.status = 'undone' THEN 'undone'
+        ELSE contribution.target_state
+    END";
+
 /// All Applications that contributed to a target object, across every field
 /// they touched. Answers "which Proposals wrote which fields on this scene
 /// (or other target)?".
@@ -496,13 +529,17 @@ pub(crate) fn list_contributions_for_target(
     project_id: &str,
     target_object_identity: &str,
 ) -> anyhow::Result<Vec<ApplicationContribution>> {
-    let mut statement = conn.prepare(
-        "SELECT id, project_id, application_id, target_object_identity, field_path,
-                target_state, created_at
-           FROM narrative_application_contributions
-          WHERE project_id = ?1 AND target_object_identity = ?2
-          ORDER BY field_path ASC, application_id ASC",
-    )?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT contribution.id, contribution.project_id, contribution.application_id,
+                contribution.target_object_identity, contribution.field_path,
+                {EFFECTIVE_TARGET_STATE_SQL}, contribution.created_at
+           FROM narrative_application_contributions contribution
+           LEFT JOIN narrative_apply_commits apply_commit
+             ON apply_commit.id = contribution.commit_id
+          WHERE contribution.project_id = ?1
+            AND contribution.target_object_identity = ?2
+          ORDER BY contribution.field_path ASC, contribution.application_id ASC"
+    ))?;
     let rows = statement
         .query_map(
             params![project_id, target_object_identity],
@@ -520,13 +557,16 @@ pub(crate) fn list_contributions_for_application(
     project_id: &str,
     application_id: &str,
 ) -> anyhow::Result<Vec<ApplicationContribution>> {
-    let mut statement = conn.prepare(
-        "SELECT id, project_id, application_id, target_object_identity, field_path,
-                target_state, created_at
-           FROM narrative_application_contributions
-          WHERE project_id = ?1 AND application_id = ?2
-          ORDER BY target_object_identity ASC, field_path ASC",
-    )?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT contribution.id, contribution.project_id, contribution.application_id,
+                contribution.target_object_identity, contribution.field_path,
+                {EFFECTIVE_TARGET_STATE_SQL}, contribution.created_at
+           FROM narrative_application_contributions contribution
+           LEFT JOIN narrative_apply_commits apply_commit
+             ON apply_commit.id = contribution.commit_id
+          WHERE contribution.project_id = ?1 AND contribution.application_id = ?2
+          ORDER BY contribution.target_object_identity ASC, contribution.field_path ASC"
+    ))?;
     let rows = statement
         .query_map(params![project_id, application_id], map_contribution_row)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -771,6 +811,129 @@ mod tests {
         let db = Database::new(Path::new(":memory:")).expect("open database");
         db.migrate().expect("migrate database");
         db
+    }
+
+    /// The Application lifecycle side of the pair. `test_provenance` names
+    /// `commit-1`, so seeding that id is what makes the derivation observable.
+    fn seed_commit(conn: &Connection, project_id: &str, status: &str) {
+        conn.execute(
+            "INSERT INTO narrative_apply_commits
+                (id, project_id, request_id, plan_digest, status, created_at)
+             VALUES ('commit-1', ?1, 'req-1', 'digest-1', ?2, '2026-08-15T00:00:00.000Z')
+             ON CONFLICT(id) DO UPDATE SET status = excluded.status",
+            params![project_id, status],
+        )
+        .expect("seed apply commit");
+    }
+
+    fn only_state(conn: &Connection, project_id: &str) -> ContributionTargetState {
+        let rows = list_contributions_for_target(conn, project_id, "scene:s1")
+            .expect("list contributions for target");
+        assert_eq!(rows.len(), 1, "fixture should hold exactly one row");
+        let by_application = list_contributions_for_application(conn, project_id, "app-1")
+            .expect("list contributions for application");
+        assert_eq!(
+            by_application[0].target_state, rows[0].target_state,
+            "both readers must agree on the effective state"
+        );
+        rows[0].target_state
+    }
+
+    fn record_state(conn: &Connection, project_id: &str, state: ContributionTargetState) {
+        record_contribution_in_tx(
+            conn,
+            project_id,
+            &test_provenance("app-1"),
+            &ContributionField {
+                target_object_identity: "scene:s1",
+                field_path: "body",
+                committed_value_digest: None,
+                target_state: state,
+            },
+            "2026-08-15T00:00:00.000Z",
+        )
+        .expect("record contribution");
+    }
+
+    /// `undone` is derived from the owning commit's status, never stored, so
+    /// undoing and redoing is lossless by construction: the stored state is
+    /// untouched throughout and simply re-emerges.
+    ///
+    /// This is the whole reason the Undo/Redo route writes nothing. Storing
+    /// `undone` would overwrite whatever the field state was, and Redo could
+    /// then only guess -- and `unchanged` is precisely the guess it must not
+    /// make on a row whose digest is NULL.
+    #[test]
+    fn undoing_and_redoing_a_commit_does_not_lose_the_field_state() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            // `missing` is the state legacy_backfill writes for a target it
+            // could not resolve, precisely because `unchanged` would be a
+            // known falsehood there. It is the one that must survive.
+            record_state(conn, "p1", ContributionTargetState::Missing);
+            assert_eq!(only_state(conn, "p1"), ContributionTargetState::Missing);
+
+            seed_commit(conn, "p1", "undone");
+            assert_eq!(
+                only_state(conn, "p1"),
+                ContributionTargetState::Undone,
+                "an undone commit's Contributions read as undone"
+            );
+
+            seed_commit(conn, "p1", "redone");
+            assert_eq!(
+                only_state(conn, "p1"),
+                ContributionTargetState::Missing,
+                "redo must restore the stored state, not fabricate `unchanged`"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// An operation that wrote nothing has nothing to roll back, so calling it
+    /// `undone` would claim a rollback that never happened.
+    #[test]
+    fn a_not_applicable_contribution_outranks_the_commit_lifecycle() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "undone");
+            record_state(conn, "p1", ContributionTargetState::NotApplicable);
+
+            assert_eq!(
+                only_state(conn, "p1"),
+                ContributionTargetState::NotApplicable
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The stored column must never carry the lifecycle axis. If some future
+    /// path writes `undone` into it, that is the two-places-one-fact bug this
+    /// design exists to prevent, and it should be caught here rather than by a
+    /// reader disagreeing with the commit table.
+    #[test]
+    fn an_applied_commit_reports_the_stored_state_verbatim() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            for state in [
+                ContributionTargetState::Unchanged,
+                ContributionTargetState::Modified,
+                ContributionTargetState::Missing,
+                ContributionTargetState::Superseded,
+            ] {
+                record_state(conn, "p1", state);
+                assert_eq!(only_state(conn, "p1"), state);
+            }
+            Ok(())
+        })
+        .expect("test body");
     }
 
     #[test]
