@@ -374,5 +374,12 @@
     "protection": "table",
     "writer": "narrative.maintenance-attention",
     "enforcement": "active"
+  },
+  {
+    "aggregate": "schema-data-migration",
+    "table": "schema_data_migrations",
+    "protection": "table",
+    "writer": "schema.migration",
+    "enforcement": "active"
   }
 ]

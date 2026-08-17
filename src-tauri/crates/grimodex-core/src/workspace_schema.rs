@@ -571,9 +571,12 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// the Gate C2 Run Kind Policy's Semantic Index metadata and Repair lease
 /// tables, Dependency Edge State / Consumer Freshness baseline-digest
 /// columns for Verify, and widens the Run `run_kind` CHECK to admit
-/// `dependency-verify`/`dependency-repair`.
+/// `dependency-verify`/`dependency-repair`. Version 28 rewrites Application
+/// Contribution target identities into the ratified Object Addressing
+/// vocabulary; it changes no table, column, or constraint, so it adds no
+/// physical invariant of its own — only the version guard below moves.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 27
+    Ok(SCHEMA_VERSION == 28
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -592,7 +595,11 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v24_run_kind_policy_tables(conn)?
         && has_v25_attention_occ_columns(conn)?
         && has_v26_run_request_identity_columns(conn)?
-        && has_v27_repair_lease_run_binding(conn)?)
+        && has_v27_repair_lease_run_binding(conn)?
+        // SCHEMA 28 carries a data migration, so without this both of
+        // `migrate_impl`'s fast paths skip it: see
+        // `has_c2_identity_data_migration_marker`.
+        && has_c2_identity_data_migration_marker(conn)?)
 }
 
 /// SCHEMA 27: a Repair lease names the Run entitled to apply it, so the
@@ -1319,6 +1326,44 @@ fn has_text_column(columns: &[ColumnShape], name: &str) -> bool {
         .iter()
         .any(|column| column.name == name && column.declared_type == "TEXT" && column.not_null)
 }
+
+/// Whether this workspace has seen the current revision of the SCHEMA 28 C2
+/// identity data migration.
+///
+/// SCHEMA 28's repair is a data migration, so on physical evidence alone a
+/// complete SCHEMA 27 database already satisfies every other clause here --
+/// and both of `migrate_impl`'s fast paths would then skip it. This is what
+/// makes the repair's completion part of the checkpoint.
+///
+/// It reads a durable marker rather than inspecting today's rows, because
+/// the two questions differ. "Are any repairable identities left?" cannot
+/// separate a workspace the migration never touched from one an earlier
+/// SCHEMA 28 build already rewrote *without* invalidating the Freshness that
+/// had been decided against the identities it replaced. Both look clean; only
+/// one is. The evidence that distinguishes them is what that build did, which
+/// exists nowhere unless it was written down.
+///
+/// The marker carries a contract version so the migration can gain a side
+/// effect inside one `SCHEMA_VERSION` and still re-run on workspaces that
+/// only saw the earlier revision.
+fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_IDENTITY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(applied.is_some_and(|version| version >= C2_IDENTITY_CONTRACT_VERSION))
+}
+
+/// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
+pub const C2_IDENTITY_MIGRATION_ID: &str = "narrative-c2-identity-v28";
+/// See [`C2_IDENTITY_MIGRATION_ID`].
+pub const C2_IDENTITY_CONTRACT_VERSION: i64 = 2;
 
 fn table_exists(conn: &Connection, table: &str) -> anyhow::Result<bool> {
     conn.query_row(

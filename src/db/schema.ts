@@ -2959,6 +2959,22 @@ export const narrativeChangeCursors = sqliteTable(
 // Semantic Epoch is the generation boundary a restore/migration/full
 // rebuild advances.
 // =========================================================================
+/**
+ * Which data migrations this workspace has completed, and at which revision
+ * of their side effects.
+ *
+ * Separate from `PRAGMA user_version` because that marker only records which
+ * *schema* a workspace reached. A data migration whose side effects grow
+ * inside one schema version cannot be recovered from the rows it left behind
+ * — an already-repaired identity looks identical whether the rest of that
+ * migration ran or not — so completion is recorded rather than inferred.
+ */
+export const schemaDataMigrations = sqliteTable("schema_data_migrations", {
+  migrationId: text("migration_id").primaryKey(),
+  contractVersion: integer("contract_version").notNull(),
+  appliedAt: text("applied_at").notNull(),
+});
+
 export const narrativeSemanticEpochs = sqliteTable(
   "narrative_semantic_epochs",
   {

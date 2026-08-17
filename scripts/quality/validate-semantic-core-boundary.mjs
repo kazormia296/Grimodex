@@ -26,7 +26,11 @@ const REPO_ROOT = path.resolve(
 // authority and the concern matrix is unchanged. The dropped nullable
 // set_by is superseded by the NOT NULL actor_id, which narrows rather than
 // widens what may be written.
-export const EXPECTED_SCHEMA_VERSION = 27;
+// SCHEMA 28 rewrites narrative_application_contributions.target_object_identity
+// into the ratified Object Addressing vocabulary. It is a data-only migration:
+// no table, column, or authority changes, so the concern matrix below is
+// unchanged.
+export const EXPECTED_SCHEMA_VERSION = 28;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

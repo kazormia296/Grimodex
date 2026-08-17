@@ -871,10 +871,7 @@ struct ApprovedRequestSpec {
 
 /// Reads a Run's approved spec. This -- not the incoming call's arguments
 /// -- is what a resume re-derives its plan from.
-fn load_approved_request_spec(
-    db: &Database,
-    run_id: &str,
-) -> anyhow::Result<ApprovedRequestSpec> {
+fn load_approved_request_spec(db: &Database, run_id: &str) -> anyhow::Result<ApprovedRequestSpec> {
     let spec_json: String = db.with_conn(|conn| {
         conn.query_row(
             "SELECT spec_json FROM narrative_extraction_runs WHERE id = ?1",
@@ -3352,9 +3349,7 @@ mod tests {
         )
         .expect_err("the losing attempt must not proceed");
         assert!(
-            error
-                .to_string()
-                .contains("NEX_REPAIR_REQUEST_IN_PROGRESS"),
+            error.to_string().contains("NEX_REPAIR_REQUEST_IN_PROGRESS"),
             "unexpected error: {error}"
         );
         assert_eq!(
@@ -3670,7 +3665,11 @@ mod tests {
         assert_eq!(outcome.edges_deactivated, 1);
         assert_eq!(run_status(&db, &crashed_run_id), "completed");
         assert!(!surviving_edge_ids(&db).contains(&old_id));
-        assert_eq!(repair_run_count(&db), 1, "resume must not mint a second Run");
+        assert_eq!(
+            repair_run_count(&db),
+            1,
+            "resume must not mint a second Run"
+        );
     }
 
     #[test]

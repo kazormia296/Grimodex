@@ -1,6 +1,6 @@
 //! Persistent run runtime for Narrative Extraction (Chronicle + Codex Vertical Slice).
 
-mod application_contributions;
+pub(crate) mod application_contributions;
 mod attention;
 pub mod change_feed;
 mod chronicle_operations;
@@ -73,8 +73,9 @@ pub(crate) use cursor_reservation::{
 };
 #[allow(unused_imports)]
 pub(crate) use dependency_edges::{
-    delete_edges_for_consumer_in_tx, find_edges_by_consumer, find_edges_by_source,
-    record_dependency_edge_in_tx, DependencyEdge,
+    canonical_source_object_identity, delete_edges_for_consumer_in_tx, find_edges_by_consumer,
+    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge, RUN_CONSUMER_KIND,
+    SOURCE_IDENTITY_PREFIXES,
 };
 #[allow(unused_imports)]
 pub(crate) use evaluator::{evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation};

@@ -6,7 +6,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
+use super::dependency_edges::{
+    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+};
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -1138,13 +1140,15 @@ fn record_run_dependency_edges_in_tx(
     created_at: &str,
 ) -> anyhow::Result<()> {
     for row in rows {
+        let source_object_identity =
+            canonical_source_object_identity(&row.source_kind, &row.source_key)?;
         let read_set_json = serde_json::to_string(&[row.revision_token.as_str()])?;
         record_dependency_edge_in_tx(
             conn,
             project_id,
             RUN_CONSUMER_KIND,
             run_id,
-            &row.source_key,
+            &source_object_identity,
             &read_set_json,
             None,
             created_at,

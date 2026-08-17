@@ -1,4 +1,5 @@
-use rusqlite::{params, Connection, ErrorCode};
+use anyhow::Context;
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use std::time::Duration;
 
 use super::codex_relation_keys::build_codex_relation_semantic_key;
@@ -3242,6 +3243,15 @@ impl Database {
         // `docs/adr/006-narrative-mutation-authority-routes.md`'s
         // `semantic-epoch-event` control.
         conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS schema_data_migrations (
+                migration_id     TEXT NOT NULL,
+                contract_version INTEGER NOT NULL CHECK(contract_version > 0),
+                applied_at       TEXT NOT NULL,
+                PRIMARY KEY(migration_id)
+            );",
+        )?;
+
+        conn.execute_batch(
             "CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (
                 id                             TEXT NOT NULL,
                 project_id                     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -3486,6 +3496,24 @@ impl Database {
         // the lease rather than assuming the claim it made minutes earlier
         // survived a slow backup.
         Self::migrate_narrative_repair_lease_run_binding_v27(&conn)?;
+
+        // SCHEMA 28: Application Contributions are addressed by the ratified
+        // Object Addressing kind. Two writers had been storing two different
+        // vocabularies for one object, so a backfilled row and a live row
+        // describing the same entity could never join.
+        Self::migrate_narrative_contribution_target_identity_v28(&conn)?;
+
+        // SCHEMA 28: repair Dependency Edges the pre-#535 Backfill wrote
+        // double-prefixed. Re-running the Backfill cannot do it -- the work
+        // key reuses a completed Run without comparing its sealed spec, so
+        // the v2 transform never executes on a workspace that already ran v1.
+        Self::migrate_narrative_dependency_edge_identity_v28(&conn)?;
+
+        // SCHEMA 28: record that the C2 identity data migration ran, and on
+        // the way there put every C2 derived state back to "not yet
+        // evaluated". Both are one step because the marker is what makes the
+        // discard happen exactly once.
+        Self::finish_narrative_c2_identity_data_migration_v28(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -4498,6 +4526,669 @@ impl Database {
     ///
     /// Plain ADD COLUMN: nullable, so a lease claimed before this migration
     /// simply carries NULL and fails the CAS, which is the safe direction.
+    /// Every Source identity prefix as of SCHEMA 28, longest first so
+    /// `project:codex-catalog:` is tested before anything shorter could
+    /// shadow it.
+    ///
+    /// Frozen here rather than read from `dependency_edges.rs` for the same
+    /// reason the Contribution prefix table below is: a migration has to keep
+    /// describing the same transition after the live rule changes. A test
+    /// asserts this list still agrees with
+    /// `canonical_source_object_identity`, so the two can only diverge
+    /// deliberately.
+    const SOURCE_IDENTITY_PREFIXES_V28: &'static [&'static str] = &[
+        "project:codex-catalog:",
+        "project:scene:",
+        "projection:",
+        "snapshot:",
+        "artifact:",
+        "capture:",
+        "evidence:",
+    ];
+
+    /// The Dependency Edge Consumer kind whose `consumer_key` is a Run id,
+    /// frozen as of SCHEMA 28. Mirrors `dependency_edges.rs`'s
+    /// `RUN_CONSUMER_KIND`; frozen for the same reason the prefix tables are,
+    /// and pinned to it by a test.
+    const RUN_CONSUMER_KIND_V28: &'static str = "narrative-extraction-run";
+
+    /// Legacy `kind:` prefix -> canonical `kind:` prefix, frozen as of
+    /// SCHEMA 28. Kinds already canonical in both old vocabularies
+    /// (`scene:`, `foreshadow:`, `codex-entry:`, ...) are absent on purpose:
+    /// leaving them out is what makes this re-runnable, since a canonical
+    /// prefix is never itself a key. Every entry ends in `:`, and no entry is
+    /// a prefix of another, so a row matches at most one.
+    ///
+    /// An associated const rather than a local one so the schema checkpoint's
+    /// copy of the left column can be pinned against it.
+    const LEGACY_TARGET_IDENTITY_PREFIXES_V28: &'static [(&'static str, &'static str)] = &[
+        // Writer-row vocabulary (`applied_entity_kind`), via Backfill.
+        ("codex_entry:", "codex-entry:"),
+        ("codex_relation:", "codex-relation:"),
+        ("codex_phase:", "codex-phase:"),
+        ("codex_entry_phase:", "codex-phase:"),
+        ("codex_detail_definition:", "codex-detail-definition:"),
+        ("codex_detail_value:", "codex-detail-value:"),
+        (
+            "codex_semantic_binding:",
+            "component:codex_semantic_binding:",
+        ),
+        ("plot_thread:", "plot-thread:"),
+        ("plot_thread_marker:", "plot-marker:"),
+        ("plot_thread_branch:", "plot-branch:"),
+        ("foreshadow_setup:", "foreshadow-setup:"),
+        ("foreshadow_payoff:", "foreshadow-payoff:"),
+        ("temporal_node:", "temporal-node:"),
+        ("temporal_constraint:", "temporal-constraint:"),
+        ("temporal_projection:", "temporal-projection:"),
+        // Temporal annotation rows address the object they annotate.
+        ("temporal_event_chronicle:", "chronicle-event:"),
+        ("temporal_scene_chronicle:", "scene:"),
+        ("temporal_scene_story_order:", "scene:"),
+        // Written by *both* old vocabularies, canonical in neither.
+        ("event:", "chronicle-event:"),
+        // Field Authority vocabulary, via Apply. The only other FA kind that
+        // was not already canonical.
+        (
+            "codex-detail-semantic-binding:",
+            "component:codex_semantic_binding:",
+        ),
+    ];
+
+    /// Collapses a run of repeats of one Source prefix down to a single one,
+    /// which is the exact shape the pre-#535 Backfill produced by re-deriving
+    /// an already-qualified key: `project:scene:project:scene:s1`. Returns
+    /// `None` when the identity is already well-formed.
+    fn collapse_doubled_source_prefix(identity: &str) -> Option<String> {
+        let prefix = Self::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .find(|prefix| identity.starts_with(**prefix))?;
+        let mut rest = &identity[prefix.len()..];
+        let mut collapsed = false;
+        while let Some(next) = rest.strip_prefix(*prefix) {
+            rest = next;
+            collapsed = true;
+        }
+        if !collapsed || rest.is_empty() {
+            return None;
+        }
+        Some(format!("{prefix}{rest}"))
+    }
+
+    /// SCHEMA 28: repair `narrative_dependency_edges.source_object_identity`
+    /// rows the pre-#535 Legacy Backfill wrote double-prefixed.
+    ///
+    /// `record_legacy_dependency_edges_in_tx` used to re-derive the identity
+    /// from a `source_key` that was already fully qualified, producing
+    /// `project:scene:project:scene:s1`. `restore_rebuild.rs`'s
+    /// `infer_source_kind` matches on the leading prefix and then hands the
+    /// remainder to a resolver that strips its own prefix again, so every one
+    /// of those Edges resolves to nothing and evaluates as `source-missing`.
+    ///
+    /// Fixing the writer does not fix them, and neither does re-running the
+    /// Backfill: `find_reusable_system_run` matches on
+    /// `(project_id, run_kind, work_key, status)` only -- it never compares
+    /// the sealed spec -- so a Run left `completed` under
+    /// `LEGACY_BACKFILL_ALGORITHM_VERSION = "1"` is reused and the v2
+    /// transform never executes.
+    ///
+    /// `narrative_dependency_edges` is `UNIQUE(project_id, consumer_kind,
+    /// consumer_key, source_object_identity)`, so collapsing an identity can
+    /// collide with a correct Edge the same Consumer already declared. The
+    /// malformed row loses in that case: both rows describe the same Source
+    /// read, and only the canonical one was ever resolvable, so it carries
+    /// nothing the survivor lacks. Its Edge State row is deleted explicitly
+    /// rather than left to the FK's `ON DELETE CASCADE`, which does nothing
+    /// unless `PRAGMA foreign_keys` happens to be on.
+    /// The C2 identity data migration's id in `schema_data_migrations`.
+    pub(crate) const C2_IDENTITY_MIGRATION_ID: &'static str = "narrative-c2-identity-v28";
+
+    /// Which revision of that migration's side effects a workspace has seen.
+    ///
+    /// Bump this whenever the migration gains a side effect, even within one
+    /// `SCHEMA_VERSION`. That is the whole point: revision 1 rewrote
+    /// identities but left Freshness decided on the old ones in place on the
+    /// non-collision path, and no amount of looking at today's rows can tell
+    /// a workspace that stopped there from one that never needed the repair.
+    pub(crate) const C2_IDENTITY_CONTRACT_VERSION: i64 = 2;
+
+    /// Closes out the SCHEMA 28 identity repair: discard the C2 derived state
+    /// wholesale, correct Contributions left pointing at an unresolvable
+    /// target, and record that this contract revision has been applied.
+    ///
+    /// **Why a durable marker rather than inspecting the rows.** The earlier
+    /// check asked "are any repairable identities left?", which conflates two
+    /// different workspaces: one the migration never touched, and one an
+    /// earlier SCHEMA 28 build already rewrote. Those are indistinguishable
+    /// from the current rows, because the distinguishing evidence -- what
+    /// *else* that build did -- was never written down. A workspace migrated
+    /// by revision 1 has canonical Edge identities *and* Consumer Freshness
+    /// that was decided against the identities they replaced, and the identity
+    /// probe calls it healthy.
+    ///
+    /// **Why the discard is unconditional rather than targeted.** Revision 1's
+    /// invalidation only covered Consumers whose identity that same pass
+    /// changed. Re-running it now finds nothing to change, so a targeted pass
+    /// would clear nothing. There is no record of which Consumers the earlier
+    /// pass touched, so the conservative reading is the only sound one: put
+    /// every C2 derived state back to absent, which is exactly the "not yet
+    /// evaluated" state Rebuild-Derived exists to fill. C2 is still shadow
+    /// infrastructure with no production reader, so the cost is recomputation,
+    /// while the alternative is serving a stale `source-missing` as truth.
+    ///
+    /// `narrative_consumer_freshness` is the durable Freshness authority, not
+    /// a cache, which is precisely why it cannot be left to sort itself out.
+    fn finish_narrative_c2_identity_data_migration_v28(conn: &Connection) -> anyhow::Result<()> {
+        if Self::has_c2_identity_data_migration_marker(conn)? {
+            return Ok(());
+        }
+
+        // Rebuildable derived state. Absent *is* the initial state, so
+        // deleting is a reset, not data loss.
+        for table in [
+            "narrative_dependency_edge_states",
+            "narrative_consumer_freshness",
+            "narrative_maintenance_finding_observations",
+        ] {
+            if Self::table_exists_for_v28(conn, table)? {
+                conn.execute(&format!("DELETE FROM {table}"), [])
+                    .with_context(|| format!("clearing C2 derived state in '{table}'"))?;
+            }
+        }
+
+        // An earlier revision marked these `unresolved:` but left the state
+        // the Apply had written. `unchanged` asserts the field still matches
+        // what was applied to an object that cannot be found, which is a
+        // claim this migration is in a position to withdraw.
+        if Self::table_exists_for_v28(conn, "narrative_application_contributions")? {
+            conn.execute(
+                "UPDATE narrative_application_contributions
+                    SET target_state = 'missing'
+                  WHERE substr(target_object_identity, 1, ?1) = ?2
+                    AND target_state <> 'missing'",
+                params![
+                    Self::UNRESOLVED_TARGET_PREFIX_V28.len() as i64,
+                    Self::UNRESOLVED_TARGET_PREFIX_V28
+                ],
+            )
+            .context("correcting unresolved Contribution target states")?;
+        }
+
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_IDENTITY_MIGRATION_ID,
+                Self::C2_IDENTITY_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )
+        .context("recording the C2 identity data migration marker")?;
+        Ok(())
+    }
+
+    /// Whether this workspace has seen the current revision of the C2
+    /// identity data migration's side effects.
+    pub(crate) fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+        if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
+            return Ok(false);
+        }
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Self::C2_IDENTITY_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(applied.is_some_and(|version| version >= Self::C2_IDENTITY_CONTRACT_VERSION))
+    }
+
+    /// The `unresolved:` prefix as of SCHEMA 28, frozen for the same reason
+    /// the identity prefix tables are. A test pins it to the live constant.
+    const UNRESOLVED_TARGET_PREFIX_V28: &'static str = "unresolved:";
+
+    fn table_exists_for_v28(conn: &Connection, table: &str) -> anyhow::Result<bool> {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            params![table],
+            |row| row.get::<_, bool>(0),
+        )?)
+    }
+
+    fn migrate_narrative_dependency_edge_identity_v28(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_dependency_edges'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        let rows: Vec<(String, String, String, String, String)> = conn
+            .prepare(
+                "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity
+                   FROM narrative_dependency_edges
+                  ORDER BY id ASC",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let mut affected_consumers: std::collections::BTreeSet<(String, String, String)> =
+            std::collections::BTreeSet::new();
+
+        for (id, project_id, consumer_kind, consumer_key, identity) in rows {
+            let repaired = match Self::collapse_doubled_source_prefix(&identity) {
+                Some(repaired) => repaired,
+                None => match Self::canonicalize_bare_projection_identity(
+                    conn,
+                    &project_id,
+                    &consumer_kind,
+                    &consumer_key,
+                    &identity,
+                )? {
+                    Some(repaired) => repaired,
+                    None => continue,
+                },
+            };
+            let canonical_exists: bool = conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM narrative_dependency_edges
+                     WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
+                       AND source_object_identity = ?4 AND id <> ?5
+                 )",
+                params![project_id, consumer_kind, consumer_key, repaired, id],
+                |row| row.get(0),
+            )?;
+            affected_consumers.insert((
+                project_id.clone(),
+                consumer_kind.clone(),
+                consumer_key.clone(),
+            ));
+
+            if canonical_exists {
+                conn.execute(
+                    "DELETE FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                    params![id],
+                )
+                .with_context(|| format!("dropping Edge State for superseded Edge '{id}'"))?;
+                conn.execute(
+                    "DELETE FROM narrative_dependency_edges WHERE id = ?1",
+                    params![id],
+                )
+                .with_context(|| {
+                    format!("dropping malformed Edge '{id}' superseded by '{repaired}'")
+                })?;
+                continue;
+            }
+
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET source_object_identity = ?2
+                  WHERE id = ?1",
+                params![id, repaired],
+            )
+            .with_context(|| {
+                format!("repairing Edge source identity '{identity}' to '{repaired}'")
+            })?;
+        }
+
+        Self::invalidate_derived_freshness_for_consumers_v28(conn, &affected_consumers)
+    }
+
+    /// Recovers the Source kind for an Edge whose identity carries no prefix
+    /// at all, so a legitimately-bare `domain-projection` key can be
+    /// canonicalized like the writers now do.
+    ///
+    /// A bare key is not necessarily corruption: `resolve_domain_projection`
+    /// falls back to `.unwrap_or(source_key)`, so
+    /// `{"sourceKind":"domain-projection","sourceKey":"projection-1"}` was a
+    /// valid envelope that the pre-#535 Producer copied verbatim into an
+    /// Edge. `infer_source_kind` only recognises `projection:`-prefixed
+    /// identities, so those Edges read as an unknown Source forever, and
+    /// re-running the Backfill does not help: the Edge upsert key includes
+    /// `source_object_identity`, so the canonical row is *added* beside the
+    /// bare one rather than replacing it, and worst-edge aggregation then
+    /// drags the whole Consumer to `source-missing`.
+    ///
+    /// The kind is read back from the rows that declared the Source, scoped
+    /// to the Edge's own Run: a Proposal Revision's Source Basis for a live
+    /// Producer Edge, or a legacy Application's projection dependencies for a
+    /// backfilled one. Rewrites only when every declaration agrees the Source
+    /// is a projection. No declaration, or a disagreement, leaves the row
+    /// untouched -- it stays visibly unresolvable rather than being guessed
+    /// into pointing at some other object.
+    fn canonicalize_bare_projection_identity(
+        conn: &Connection,
+        project_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+        identity: &str,
+    ) -> anyhow::Result<Option<String>> {
+        if Self::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .any(|prefix| identity.starts_with(prefix))
+        {
+            return Ok(None);
+        }
+
+        // Both writers key an Edge under `(RUN_CONSUMER_KIND, run_id)`, so
+        // the Edge names its own Run and the declaration can be read back
+        // from that Run alone. A Consumer of any other kind has no Run to
+        // narrow to and falls back to the project.
+        let run_id = (consumer_kind == Self::RUN_CONSUMER_KIND_V28).then_some(consumer_key);
+
+        let mut kinds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (table_probe, sql, run_scoped_sql) in [
+            (
+                "narrative_revision_source_basis",
+                "SELECT DISTINCT b.source_kind
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE s.project_id = ?1 AND b.source_key = ?2",
+                "SELECT DISTINCT b.source_kind
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE s.project_id = ?1 AND b.source_key = ?2 AND s.run_id = ?3",
+            ),
+            (
+                "narrative_projection_dependencies",
+                "SELECT DISTINCT d.source_kind
+                   FROM narrative_projection_dependencies d
+                   JOIN narrative_proposal_applications a ON a.id = d.application_id
+                   JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE c.project_id = ?1 AND d.source_key = ?2",
+                "SELECT DISTINCT d.source_kind
+                   FROM narrative_projection_dependencies d
+                   JOIN narrative_proposal_applications a ON a.id = d.application_id
+                   JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE c.project_id = ?1 AND d.source_key = ?2 AND c.run_id = ?3",
+            ),
+        ] {
+            if !conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                 )",
+                params![table_probe],
+                |row| row.get::<_, bool>(0),
+            )? {
+                continue;
+            }
+            let found = match run_id {
+                Some(run_id) => conn
+                    .prepare(run_scoped_sql)?
+                    .query_map(params![project_id, identity, run_id], |row| {
+                        row.get::<_, String>(0)
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?,
+                None => conn
+                    .prepare(sql)?
+                    .query_map(params![project_id, identity], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()?,
+            };
+            kinds.extend(found);
+        }
+
+        let projection_only = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|kind| matches!(kind.as_str(), "domain-projection" | "projection"));
+        if !projection_only {
+            return Ok(None);
+        }
+        Ok(Some(format!("projection:{identity}")))
+    }
+
+    /// Drops the Freshness state that was computed against an Edge identity
+    /// this migration has just changed.
+    ///
+    /// Rewriting the identity is not enough on its own.
+    /// `narrative_consumer_freshness` is not a cache -- it is the durable
+    /// authority for a Consumer's current Freshness -- and
+    /// `narrative_dependency_edge_states` holds the last evaluation of each
+    /// Edge. A workspace that ran Rebuild-Derived before this migration has
+    /// `source-missing` recorded in both, decided from an identity that no
+    /// longer exists, and nothing else would ever revisit it: the Semantic
+    /// Epoch does not rotate here. The moment C2-T2 wires the read path,
+    /// that stale verdict would be served as the truth.
+    ///
+    /// Deleting rather than re-evaluating: evaluation needs a Run and an
+    /// Epoch, which a migration has no business minting. Absent rows are
+    /// already the "not yet evaluated" state the Rebuild-Derived path is
+    /// built to fill, so removing them asks for the recompute instead of
+    /// faking its answer. Finding Observations keyed on the same Consumer go
+    /// too, since `finding_key` is `<consumer_kind>:<consumer_key>` and those
+    /// diagnostics describe the same superseded evaluation.
+    fn invalidate_derived_freshness_for_consumers_v28(
+        conn: &Connection,
+        consumers: &std::collections::BTreeSet<(String, String, String)>,
+    ) -> anyhow::Result<()> {
+        for (project_id, consumer_kind, consumer_key) in consumers {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edge_states
+                  WHERE edge_id IN (
+                        SELECT id FROM narrative_dependency_edges
+                         WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
+                  )",
+                params![project_id, consumer_kind, consumer_key],
+            )
+            .with_context(|| {
+                format!(
+                    "clearing Edge States for repaired Consumer '{consumer_kind}:{consumer_key}'"
+                )
+            })?;
+
+            for (table, sql) in [
+                (
+                    "narrative_consumer_freshness",
+                    "DELETE FROM narrative_consumer_freshness
+                      WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+                ),
+                (
+                    "narrative_maintenance_finding_observations",
+                    "DELETE FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1 AND finding_key = ?2 || ':' || ?3",
+                ),
+            ] {
+                if !conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                     )",
+                    params![table],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    continue;
+                }
+                conn.execute(sql, params![project_id, consumer_kind, consumer_key])
+                    .with_context(|| {
+                        format!("clearing {table} for repaired Consumer '{consumer_kind}:{consumer_key}'")
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Moves one Contribution onto its canonical identity.
+    ///
+    /// `narrative_application_contributions` is `UNIQUE(project_id,
+    /// application_id, target_object_identity, field_path)`. Two rows only
+    /// collide here if they already described the same field of the same
+    /// object under different spellings, in which case they were always one
+    /// record; the rewritten row is dropped rather than duplicated.
+    fn rewrite_contribution_identity(
+        conn: &Connection,
+        id: &str,
+        identity: &str,
+        rewritten: &str,
+    ) -> anyhow::Result<()> {
+        let collides: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM narrative_application_contributions AS other
+                  JOIN narrative_application_contributions AS row_to_move
+                    ON row_to_move.id = ?1
+                 WHERE other.id <> row_to_move.id
+                   AND other.project_id = row_to_move.project_id
+                   AND other.application_id = row_to_move.application_id
+                   AND other.field_path = row_to_move.field_path
+                   AND other.target_object_identity = ?2
+             )",
+            params![id, rewritten],
+            |row| row.get(0),
+        )?;
+        if collides {
+            conn.execute(
+                "DELETE FROM narrative_application_contributions WHERE id = ?1",
+                params![id],
+            )
+            .with_context(|| format!("dropping Contribution '{id}' superseded by '{rewritten}'"))?;
+            return Ok(());
+        }
+        conn.execute(
+            "UPDATE narrative_application_contributions
+                SET target_object_identity = ?2
+              WHERE id = ?1",
+            params![id, rewritten],
+        )
+        .with_context(|| {
+            format!("rewriting Contribution target identity '{identity}' to '{rewritten}'")
+        })?;
+        Ok(())
+    }
+
+    /// SCHEMA 28: rewrite `narrative_application_contributions
+    /// .target_object_identity` into the ratified Object Addressing
+    /// vocabulary.
+    ///
+    /// Two writers had been filling this column from two different
+    /// vocabularies -- `commit.rs` from the Field Authority ledger's
+    /// (`event:e1`), `legacy_backfill.rs` from the writer-row one
+    /// (`codex_entry:e1`) -- and neither was the one
+    /// `policies/narrative/change-feed-writers.json` declares for the
+    /// `narrative-extraction.apply` writer. Both now emit the canonical form,
+    /// but existing rows still carry the old ones, and re-running the
+    /// Backfill will not repair them: its work key reuses
+    /// `RunningAndCompleted`, so a project that already ran it is skipped
+    /// regardless of `LEGACY_BACKFILL_ALGORITHM_VERSION`.
+    ///
+    /// Rewrites rather than deletes and re-derives. The Backfill can only
+    /// ever restore its own one-row-per-Application sentinel; the per-field
+    /// rows a live Apply wrote are not reproducible from anything it reads,
+    /// so deleting them would lose real history.
+    ///
+    /// The prefix table is deliberately duplicated here instead of calling
+    /// `application_contributions.rs`. A migration describes one fixed
+    /// transition between two schema versions and has to keep meaning that
+    /// after the live mapping changes again; binding it to today's function
+    /// would silently redefine what SCHEMA 28 did.
+    fn migrate_narrative_contribution_target_identity_v28(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_application_contributions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        const LEGACY_TARGET_IDENTITY_PREFIXES: &[(&str, &str)] =
+            Database::LEGACY_TARGET_IDENTITY_PREFIXES_V28;
+
+        let rows: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, target_object_identity
+                   FROM narrative_application_contributions",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (id, identity) in rows {
+            // `codex.detail.value.set` is the one operation whose two writers
+            // disagree about the *object*, not just its spelling: `commit.rs`
+            // records the detail-value row, while `affected_fields` reports
+            // the owning Codex Entry plus `/details/<definitionId>`.
+            // Hyphenating the kind would leave the two pointing at different
+            // objects with different ids, so the row is projected onto its
+            // Entry. Every other kind was checked and already agrees.
+            let detail_value_id = identity
+                .strip_prefix("codex_detail_value:")
+                .or_else(|| identity.strip_prefix("codex-detail-value:"));
+            if let Some(detail_value_id) = detail_value_id {
+                let entry_id: Option<String> = conn
+                    .query_row(
+                        "SELECT entry_id FROM codex_detail_values WHERE id = ?1",
+                        params![detail_value_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                // A deleted detail value cannot be projected. Say so rather
+                // than guess: `unresolved:` is not a canonical object key, so
+                // nothing joins it, and it is greppable for manual review.
+                // Such a row also stops being `unchanged`: its target does not
+                // exist, so the field this Application wrote cannot still
+                // match what was applied. `missing` is exactly that state.
+                let (rewritten, target_state) = match entry_id {
+                    Some(entry_id) => (format!("codex-entry:{entry_id}"), None),
+                    None => (
+                        format!("unresolved:codex-detail-value:{detail_value_id}"),
+                        Some("missing"),
+                    ),
+                };
+                if rewritten != identity {
+                    Self::rewrite_contribution_identity(conn, &id, &identity, &rewritten)?;
+                }
+                if let Some(target_state) = target_state {
+                    conn.execute(
+                        "UPDATE narrative_application_contributions
+                            SET target_state = ?2
+                          WHERE id = ?1 AND target_state = 'unchanged'",
+                        params![id, target_state],
+                    )
+                    .with_context(|| {
+                        format!("marking unresolvable Contribution '{id}' as {target_state}")
+                    })?;
+                }
+                continue;
+            }
+
+            let Some(rewritten) =
+                LEGACY_TARGET_IDENTITY_PREFIXES
+                    .iter()
+                    .find_map(|(legacy, canonical)| {
+                        identity
+                            .strip_prefix(legacy)
+                            .map(|rest| format!("{canonical}{rest}"))
+                    })
+            else {
+                continue;
+            };
+            Self::rewrite_contribution_identity(conn, &id, &identity, &rewritten)?;
+        }
+        Ok(())
+    }
+
     fn migrate_narrative_repair_lease_run_binding_v27(conn: &Connection) -> anyhow::Result<()> {
         if !conn.query_row(
             "SELECT EXISTS(
@@ -8518,6 +9209,938 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open scratch connection");
         Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
             .expect("a workspace with no lease table must migrate cleanly");
+    }
+
+    fn seed_pre_v28_contributions(conn: &Connection, rows: &[(&str, &str, &str)]) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                target_object_identity TEXT NOT NULL,
+                field_path             TEXT NOT NULL,
+                target_state           TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );",
+        )
+        .expect("seed a pre-v28 contributions table");
+        for (id, identity, field_path) in rows {
+            conn.execute(
+                "INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, target_object_identity,
+                     field_path, target_state, created_at)
+                 VALUES (?1, 'proj-1', ?1, ?2, ?3, 'unchanged',
+                         '2026-08-15T00:00:00.000Z')",
+                params![id, identity, field_path],
+            )
+            .expect("seed a pre-v28 contribution");
+        }
+    }
+
+    fn migrated_identity(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT target_object_identity FROM narrative_application_contributions
+              WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("read the migrated contribution")
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_canonicalizes_both_old_vocabularies() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                // Written by the Legacy Backfill from `applied_entity_kind`.
+                (
+                    "backfill-codex",
+                    "codex_entry:entry-1",
+                    "/legacy-application",
+                ),
+                (
+                    "backfill-marker",
+                    "plot_thread_marker:marker-1",
+                    "/legacy-application",
+                ),
+                // Temporal annotation rows address what they annotate.
+                (
+                    "backfill-scene-chronicle",
+                    "temporal_scene_chronicle:scene-1",
+                    "/legacy-application",
+                ),
+                // Written by Apply from the Field Authority ledger. Canonical
+                // in neither vocabulary.
+                ("apply-event", "event:event-1", "/title"),
+                (
+                    "apply-binding",
+                    "codex-detail-semantic-binding:binding-1",
+                    "/boundEntityId",
+                ),
+                // Already canonical; must be left exactly as-is.
+                ("apply-scene", "scene:scene-9", "/storyTimeOrder"),
+                ("apply-foreshadow", "foreshadow:fs-1", "/note"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "backfill-codex"),
+            "codex-entry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-marker"),
+            "plot-marker:marker-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-scene-chronicle"),
+            "scene:scene-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-event"),
+            "chronicle-event:event-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-binding"),
+            "component:codex_semantic_binding:binding-1"
+        );
+        assert_eq!(migrated_identity(&conn, "apply-scene"), "scene:scene-9");
+        assert_eq!(
+            migrated_identity(&conn, "apply-foreshadow"),
+            "foreshadow:fs-1"
+        );
+    }
+
+    /// Re-running must not rewrite an already-canonical row a second time --
+    /// `codex-entry:` is not itself a key in the prefix table, so a second
+    /// pass has nothing to match.
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[("row-1", "codex_entry:entry-1", "/legacy-application")],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("first SCHEMA 28 pass");
+        let once = migrated_identity(&conn, "row-1");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("second SCHEMA 28 pass must be a no-op");
+        assert_eq!(once, migrated_identity(&conn, "row-1"));
+        assert_eq!(once, "codex-entry:entry-1");
+    }
+
+    /// `_` is a single-character wildcard in SQL `LIKE`, so a prefix match
+    /// written that way would also rewrite unrelated kinds. Matching is done
+    /// on exact string prefixes in Rust; this pins that.
+    #[test]
+    fn migrate_contribution_target_identity_v28_matches_prefixes_literally() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                (
+                    "wildcard-bait",
+                    "codexXentry:entry-1",
+                    "/legacy-application",
+                ),
+                ("unknown-kind", "not-a-kind:thing-1", "/legacy-application"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "wildcard-bait"),
+            "codexXentry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "unknown-kind"),
+            "not-a-kind:thing-1"
+        );
+    }
+
+    fn seed_pre_v28_edges(conn: &Connection, rows: &[(&str, &str, &str)]) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_dependency_edges (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                consumer_kind          TEXT NOT NULL,
+                consumer_key           TEXT NOT NULL,
+                source_object_identity TEXT NOT NULL,
+                read_set_json          TEXT NOT NULL DEFAULT '[]',
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+             );
+             CREATE TABLE narrative_dependency_edge_states (
+                edge_id      TEXT PRIMARY KEY,
+                project_id   TEXT NOT NULL,
+                evaluated_at TEXT NOT NULL
+             );",
+        )
+        .expect("seed a pre-v28 edges table");
+        for (id, consumer_key, identity) in rows {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, created_at)
+                 VALUES (?1, 'proj-1', 'narrative-extraction-run', ?2, ?3,
+                         '2026-08-15T00:00:00.000Z')",
+                params![id, consumer_key, identity],
+            )
+            .expect("seed a pre-v28 edge");
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states (edge_id, project_id, evaluated_at)
+                 VALUES (?1, 'proj-1', '2026-08-15T00:00:00.000Z')",
+                params![id],
+            )
+            .expect("seed a pre-v28 edge state");
+        }
+    }
+
+    fn edge_identities(conn: &Connection) -> Vec<String> {
+        conn.prepare(
+            "SELECT source_object_identity FROM narrative_dependency_edges
+              ORDER BY source_object_identity ASC",
+        )
+        .expect("prepare edge read")
+        .query_map([], |row| row.get(0))
+        .expect("read edges")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect edges")
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_collapses_every_doubled_prefix() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("e1", "run-1", "project:scene:project:scene:scene-1"),
+                ("e2", "run-1", "snapshot:snapshot:run-legacy-1"),
+                (
+                    "e3",
+                    "run-1",
+                    "project:codex-catalog:project:codex-catalog:project-1",
+                ),
+                ("e4", "run-1", "projection:projection:proj-1"),
+                ("e5", "run-1", "artifact:artifact:artifact-1"),
+                ("e6", "run-1", "capture:capture:capture-1"),
+                ("e7", "run-1", "evidence:evidence:evidence-1"),
+                // Already correct; must survive untouched.
+                ("e8", "run-1", "project:scene:scene-9"),
+            ],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(
+            edge_identities(&conn),
+            vec![
+                "artifact:artifact-1",
+                "capture:capture-1",
+                "evidence:evidence-1",
+                "project:codex-catalog:project-1",
+                "project:scene:scene-1",
+                "project:scene:scene-9",
+                "projection:proj-1",
+                "snapshot:run-legacy-1",
+            ]
+        );
+    }
+
+    /// The repaired identity can already exist for the same Consumer, which
+    /// the table's UNIQUE forbids. The malformed row loses, and its Edge
+    /// State goes with it rather than being orphaned.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_drops_a_row_that_would_collide() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("right", "run-1", "project:scene:scene-1"),
+                // Same malformed identity under a *different* Consumer has
+                // nothing to collide with and must be repaired, not dropped.
+                ("other", "run-2", "project:scene:project:scene:scene-1"),
+            ],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let surviving: Vec<String> = conn
+            .prepare("SELECT id FROM narrative_dependency_edges ORDER BY id ASC")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(surviving, vec!["other".to_string(), "right".to_string()]);
+
+        let orphan_states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states
+                  WHERE edge_id NOT IN (SELECT id FROM narrative_dependency_edges)",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count orphan states");
+        assert_eq!(orphan_states, 0, "a dropped Edge must not orphan its State");
+    }
+
+    /// A bare `projection-1` was a legal envelope value, so the pre-#535
+    /// Producer stored it verbatim. It is not a doubled prefix, so prefix
+    /// collapsing alone leaves it -- and the v2 Backfill only *adds* the
+    /// canonical Edge beside it, because the upsert key includes the
+    /// identity. The kind is recovered from the Source Basis that declared it.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_canonicalizes_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "projection-1")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1', 'run-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'projection-1');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["projection:projection-1"]);
+    }
+
+    /// An Edge names its own Run through `consumer_key`, so a declaration
+    /// belonging to a *different* Run says nothing about this Edge's Source
+    /// -- two Runs can use the same bare key for different objects. Scoping
+    /// project-wide would decorate the identity on someone else's evidence.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_ignores_another_runs_declaration() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "projection-1")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, run_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-2', 'proj-1', 'run-2');
+             INSERT INTO narrative_proposals VALUES ('proposal-2', 'set-2');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-2', 'proposal-2');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-2', 0, 'domain-projection', 'projection-1');",
+        )
+        .expect("seed another Run's Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(
+            edge_identities(&conn),
+            vec!["projection-1"],
+            "run-2's declaration must not resolve run-1's Edge"
+        );
+    }
+
+    /// Without a declaration the kind cannot be known, and decorating the key
+    /// anyway could point the Edge at a different object. The row stays
+    /// visibly unresolvable instead.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_leaves_an_unattributable_bare_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "mystery-1")]);
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["mystery-1"]);
+    }
+
+    /// Rewriting an Edge's identity invalidates every verdict reached against
+    /// the old one. `narrative_consumer_freshness` is the durable Freshness
+    /// authority, not a cache, and nothing else would revisit it -- the
+    /// Semantic Epoch does not rotate here.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_decided_on_the_old_identity() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("untouched", "run-2", "project:scene:scene-2"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             CREATE TABLE narrative_maintenance_finding_observations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL,
+                finding_key TEXT NOT NULL
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing'),
+                       ('proj-1', 'narrative-extraction-run', 'run-2', 'fresh');
+             INSERT INTO narrative_maintenance_finding_observations
+                VALUES ('finding-1', 'proj-1', 'narrative-extraction-run:run-1'),
+                       ('finding-2', 'proj-1', 'narrative-extraction-run:run-2');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let surviving_freshness: Vec<String> = conn
+            .prepare("SELECT consumer_key FROM narrative_consumer_freshness ORDER BY consumer_key")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            surviving_freshness,
+            vec!["run-2".to_string()],
+            "the repaired Consumer's stale verdict must go; an untouched one must not"
+        );
+
+        let surviving_states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = 'wrong'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count edge states");
+        assert_eq!(surviving_states, 0);
+
+        let surviving_findings: Vec<String> = conn
+            .prepare("SELECT id FROM narrative_maintenance_finding_observations ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(surviving_findings, vec!["finding-2".to_string()]);
+    }
+
+    /// The collision path drops the malformed Edge instead of updating it,
+    /// but the Consumer's aggregate verdict was still computed with that Edge
+    /// in the set, so it is just as stale.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_after_a_collision_drop() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("right", "run-1", "project:scene:scene-1"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freshness");
+        assert_eq!(remaining, 0);
+        let states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count states");
+        assert_eq!(
+            states, 0,
+            "the surviving Edge's own State was decided alongside the dropped one"
+        );
+    }
+
+    /// Seeds a fully-migrated workspace, plants pre-#535 rows, and rewinds
+    /// the marker so the next `migrate()` sees the shape a real upgrade does.
+    fn seed_full_schema_with_unrepaired_rows(db: &Database, stamp_version: i32) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                         'project:scene:project:scene:scene-1', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'proj-1', 0, 'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing',
+                         'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            // An older build reached this marker without the data migration,
+            // which is exactly the state that has no completion record.
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", stamp_version)?;
+            Ok(())
+        })
+        .expect("seed unrepaired rows");
+    }
+
+    fn edge_identity(db: &Database) -> String {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT source_object_identity FROM narrative_dependency_edges WHERE id = 'edge-1'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read edge identity")
+    }
+
+    /// The state an earlier SCHEMA 28 build could actually leave behind:
+    /// identities already canonical, but Freshness still holding the verdict
+    /// it reached against the identities they replaced. Nothing in today's
+    /// rows distinguishes this from a healthy workspace, which is why the
+    /// completion marker exists.
+    #[test]
+    fn a_partially_migrated_workspace_has_its_derived_state_discarded() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                         'project:scene:scene-1', '[]', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'proj-1', 0, 'initial', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES ('edge-1', 'proj-1', 'source-missing', 'rebuild-required',
+                         'epoch-1', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing',
+                         'rebuild-required', 'epoch-1', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed a partially migrated workspace");
+
+        db.migrate().expect("migrate");
+
+        assert_eq!(
+            edge_identity(&db),
+            "project:scene:scene-1",
+            "the identity was already canonical and must be left alone"
+        );
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            0,
+            "Freshness decided against the replaced identity must not survive"
+        );
+        assert_eq!(edge_state_rows(&db), 0, "Edge State is rebuildable");
+        assert!(
+            Database::has_c2_identity_data_migration_marker(&db.lock_conn().expect("lock"))
+                .expect("marker"),
+            "the migration must record that it ran"
+        );
+
+        // Second open: the marker is what stops this repeating.
+        db.migrate().expect("second open");
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "a marked workspace must satisfy the checkpoint"
+        );
+    }
+
+    /// An earlier revision marked a Contribution's target unresolvable but
+    /// left the state the Apply had written, which asserts the field still
+    /// matches what was applied to an object that cannot be found.
+    #[test]
+    fn a_partially_migrated_workspace_corrects_unresolved_contribution_states() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, target_object_identity,
+                     field_path, target_state, created_at)
+                 VALUES ('c1', 'proj-1', 'app-1',
+                         'unresolved:codex-detail-value:value-gone', '/legacy-application',
+                         'unchanged', '2026-08-15T00:00:00.000Z');",
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations WHERE migration_id = ?1",
+                params![Database::C2_IDENTITY_MIGRATION_ID],
+            )?;
+            conn.pragma_update(None, "user_version", grimodex_core::SCHEMA_VERSION)?;
+            Ok(())
+        })
+        .expect("seed an unresolved Contribution");
+
+        db.migrate().expect("migrate");
+
+        let state: String = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT target_state FROM narrative_application_contributions WHERE id = 'c1'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read target state");
+        assert_eq!(state, "missing");
+    }
+
+    fn edge_state_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count edge states")
+    }
+
+    fn consumer_freshness_rows(db: &Database) -> i64 {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("count consumer freshness")
+    }
+
+    /// SCHEMA 28 changes no physical object, so a complete SCHEMA 27 database
+    /// satisfies every physical checkpoint. Without the repair being part of
+    /// that checkpoint, `migrate()` takes the previous-schema fast path,
+    /// stamps 28, and never runs the data migration -- and the workspace can
+    /// never be repaired afterwards, because 28 then takes the
+    /// current-schema fast path. This goes through the public entry point,
+    /// not the migration helpers, because that is where the hole was.
+    #[test]
+    fn public_migrate_repairs_identities_from_the_previous_schema_marker() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, 27);
+
+        db.migrate().expect("migrate from the previous marker");
+
+        db.with_conn(|conn| {
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            Ok(())
+        })
+        .expect("read version");
+        assert_eq!(edge_identity(&db), "project:scene:scene-1");
+        assert_eq!(
+            consumer_freshness_rows(&db),
+            0,
+            "Freshness decided on the old identity must not survive"
+        );
+    }
+
+    /// The same workspace, already stamped 28 by an earlier build that had
+    /// the marker but not the repair. The current-schema fast path must also
+    /// notice and fall through.
+    #[test]
+    fn public_migrate_repairs_identities_already_stamped_at_the_current_marker() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, grimodex_core::SCHEMA_VERSION);
+
+        db.migrate().expect("migrate at the current marker");
+
+        assert_eq!(edge_identity(&db), "project:scene:scene-1");
+        assert_eq!(consumer_freshness_rows(&db), 0);
+    }
+
+    /// And a healthy workspace must keep the cheap path: repeated opens must
+    /// not keep finding work.
+    #[test]
+    fn public_migrate_is_a_no_op_once_identities_are_canonical() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        seed_full_schema_with_unrepaired_rows(&db, grimodex_core::SCHEMA_VERSION);
+        db.migrate().expect("first repair");
+
+        let before = edge_identity(&db);
+        db.migrate().expect("second open must find nothing to do");
+        assert_eq!(edge_identity(&db), before);
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "a repaired workspace must satisfy the checkpoint, or every open replays the migration"
+        );
+    }
+
+    /// The checkpoint decides whether to re-run the migration, so it must
+    /// never claim work the migration then declines to do -- that combination
+    /// replays the whole migration on every single open and never converges.
+    /// Contested declarations are the case where the two could disagree: the
+    /// migration refuses to guess, so the checkpoint must call the row clean.
+    #[test]
+    fn a_bare_identity_the_migration_refuses_to_repair_does_not_replay_forever() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open");
+        db.migrate().expect("reach the current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
+                 INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-1', 'proj-1', 'narrative-extraction-run', 'run-9',
+                         'contested-1', '[]', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, created_at, updated_at)
+                 VALUES ('set-9', 'run-9', 'proj-1', 'extraction',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, payload_json,
+                     created_at, updated_at)
+                 VALUES ('prop-9', 'set-9', 'key-9', 'codex-entry', '{}',
+                         '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z');
+                 INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, created_at, created_by)
+                 VALUES ('rev-a', 'prop-9', 1, '{}', '2026-08-15T00:00:00.000Z', 'test'),
+                        ('rev-b', 'prop-9', 2, '{}', '2026-08-15T00:00:00.000Z', 'test');
+                 INSERT INTO narrative_revision_source_basis
+                    (revision_id, ordinal, source_kind, source_key, revision_token)
+                 VALUES ('rev-a', 0, 'domain-projection', 'contested-1', 'tok-a'),
+                        ('rev-b', 0, 'scene', 'contested-1', 'tok-b');",
+            )?;
+            conn.pragma_update(None, "user_version", 27)?;
+            Ok(())
+        })
+        .expect("seed a contested bare identity");
+
+        db.migrate().expect("migrate");
+
+        assert_eq!(
+            edge_identity(&db),
+            "contested-1",
+            "the migration must not guess a kind the declarations disagree on"
+        );
+        assert!(
+            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                &db.lock_conn().expect("lock")
+            )
+            .expect("checkpoint"),
+            "the checkpoint must agree the row is unrepairable, or every open replays"
+        );
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[("e1", "run-1", "project:scene:project:scene:scene-1")],
+        );
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn).expect("first pass");
+        let once = edge_identities(&conn);
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("second pass must be a no-op");
+        assert_eq!(once, edge_identities(&conn));
+        assert_eq!(once, vec!["project:scene:scene-1"]);
+    }
+
+    #[test]
+    fn migrate_dependency_edge_identity_v28_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("a workspace with no edges table must migrate cleanly");
+    }
+
+    /// The migration freezes its own copy of the prefix list so SCHEMA 28
+    /// keeps meaning what it meant. This binds that copy to the live
+    /// canonicalizer at this point in time, so the two can only diverge on
+    /// purpose.
+    #[test]
+    fn the_frozen_v28_prefix_table_still_matches_the_live_canonicalizer() {
+        use crate::narrative_extraction::SOURCE_IDENTITY_PREFIXES;
+
+        let mut frozen = Database::SOURCE_IDENTITY_PREFIXES_V28.to_vec();
+        let mut live = SOURCE_IDENTITY_PREFIXES.to_vec();
+        frozen.sort_unstable();
+        live.sort_unstable();
+        assert_eq!(
+            frozen, live,
+            "SCHEMA 28's frozen prefix list drifted from dependency_edges.rs"
+        );
+
+        assert_eq!(
+            Database::RUN_CONSUMER_KIND_V28,
+            crate::narrative_extraction::RUN_CONSUMER_KIND,
+            "SCHEMA 28 scopes its Source lookup by this Consumer kind"
+        );
+    }
+
+    /// The checkpoint reads the marker the migration writes, from a different
+    /// crate. If the two ever name different migrations, or drift on the
+    /// contract version, the checkpoint silently stops gating the repair --
+    /// which is the exact failure this marker was introduced to end.
+    #[test]
+    fn the_checkpoint_and_the_migration_name_the_same_marker() {
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_IDENTITY_MIGRATION_ID,
+            Database::C2_IDENTITY_MIGRATION_ID
+        );
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_IDENTITY_CONTRACT_VERSION,
+            Database::C2_IDENTITY_CONTRACT_VERSION
+        );
+    }
+
+    /// The migration's frozen copy of the unresolved marker has to keep
+    /// matching the writer's, or the one-time correction misses the rows the
+    /// writer produced.
+    #[test]
+    fn the_frozen_unresolved_prefix_still_matches_the_writer() {
+        assert_eq!(
+            Database::UNRESOLVED_TARGET_PREFIX_V28,
+            crate::narrative_extraction::application_contributions::UNRESOLVED_TARGET_PREFIX
+        );
+    }
+
+    /// Hyphenating `codex_detail_value:<valueId>` would keep the Backfill
+    /// row pointing at the detail-value row while the live Apply path points
+    /// at the owning Entry -- different objects, different ids. The migration
+    /// has to resolve the Entry, exactly as the Backfill now does.
+    #[test]
+    fn migrate_contribution_target_identity_v28_projects_detail_values_onto_their_entry() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                (
+                    "live-row",
+                    "codex_detail_value:value-1",
+                    "/legacy-application",
+                ),
+                (
+                    "hyphenated-row",
+                    "codex-detail-value:value-1",
+                    "/details/def-1",
+                ),
+                (
+                    "gone-row",
+                    "codex_detail_value:value-gone",
+                    "/legacy-application",
+                ),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE codex_detail_values (
+                id            TEXT PRIMARY KEY,
+                entry_id      TEXT NOT NULL,
+                definition_id TEXT NOT NULL
+             );
+             INSERT INTO codex_detail_values VALUES ('value-1', 'entry-1', 'def-1');",
+        )
+        .expect("seed detail values");
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(migrated_identity(&conn, "live-row"), "codex-entry:entry-1");
+        assert_eq!(
+            migrated_identity(&conn, "hyphenated-row"),
+            "codex-entry:entry-1",
+            "an already-hyphenated detail value still points at the wrong object"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "gone-row"),
+            "unresolved:codex-detail-value:value-gone",
+            "a deleted detail value must be marked, never guessed"
+        );
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("a workspace with no contributions table must migrate cleanly");
     }
 
     #[test]

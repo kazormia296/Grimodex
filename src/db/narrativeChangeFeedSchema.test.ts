@@ -42,11 +42,11 @@ describe("narrative maintenance Change Feed schema (SCHEMA 22)", () => {
   });
 
   it("is emitted by the SCHEMA 22 Native migration contract", () => {
-    // SCHEMA 22 introduced this contract; SCHEMA 23/24/25/26 (Gate C2) advance the
+    // SCHEMA 22 introduced this contract; SCHEMA 23-28 (Gate C2) advance the
     // top-level schemaVersion further but do not touch narrative_change_*
     // itself -- this guard exists so the next schema bump revisits this test
     // too.
-    expect(contractJson.schemaVersion).toBe(27);
+    expect(contractJson.schemaVersion).toBe(28);
     expect(
       contractJson.tables.narrative_change_transactions.columns
         .source_change_event_uid,

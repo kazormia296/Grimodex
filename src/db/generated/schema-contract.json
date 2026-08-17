@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 27,
+  "schemaVersion": 28,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -11557,6 +11557,35 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE scene_lens_data ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL REFERENCES post_effect_runs(id) ON DELETE CASCADE, target_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, lens_type TEXT NOT NULL CHECK(lens_type IN ('plot_structure','pacing','character_arc','pov')), metrics TEXT NOT NULL DEFAULT '{}', finding TEXT, severity TEXT NOT NULL DEFAULT 'info' CHECK(severity IN ('info','suggestion','warning','error')), created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
+    },
+    "schema_data_migrations": {
+      "kind": "table",
+      "columns": {
+        "applied_at": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "contract_version": {
+          "ordinal": 1,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "migration_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        }
+      },
+      "foreignKeys": [],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE schema_data_migrations ( migration_id TEXT NOT NULL, contract_version INTEGER NOT NULL CHECK(contract_version > 0), applied_at TEXT NOT NULL, PRIMARY KEY(migration_id) )"
     },
     "snippet_entry_tags": {
       "kind": "table",

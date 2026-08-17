@@ -59,23 +59,107 @@ pub(crate) const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
 /// independently rather than importing this function (see that module's own
 /// doc comment on why it duplicates rather than imports from a read-only
 /// Lane).
-pub(crate) fn source_object_identity_for(
-    source_kind: &str,
-    source_key: &str,
-) -> anyhow::Result<String> {
-    let prefix = match source_kind {
+///
+/// No production caller today. Both Producer-time paths receive a
+/// `source_key` that is *already* the fully-qualified identity -- the
+/// envelope's `inputRef`, which `source_revision.rs`'s resolvers require to
+/// carry its prefix -- so `repository.rs` and `legacy_backfill.rs` both copy
+/// it rather than rebuild it here (rebuilding it is what produced the
+/// `project:scene:project:scene:s1` double-prefix defect). This stays as the
+/// canonical forward mapping, tested against all seven kinds below, for the
+/// mutation-time changed-source locator that has to *construct* an identity
+/// from a Change Feed event's `(kind, key)` rather than receive one.
+pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'static str> {
+    // `resolve_source_revision` dispatches on `domain-projection | projection`
+    // and `evidence-anchor | evidence`, so both spellings must resolve here
+    // too or a legitimate envelope would fail canonicalization.
+    Ok(match source_kind {
         "scene-body" => "project:scene:",
         "snapshot-document" => "snapshot:",
         "codex-catalog" => "project:codex-catalog:",
-        "domain-projection" => "projection:",
+        "domain-projection" | "projection" => "projection:",
         "narrative-artifact" => "artifact:",
         "import-capture" => "capture:",
-        "evidence-anchor" => "evidence:",
+        "evidence-anchor" | "evidence" => "evidence:",
         other => {
             anyhow::bail!("NEX_DEPENDENCY_SOURCE_KIND_INVALID: unsupported source kind '{other}'")
         }
-    };
-    Ok(format!("{prefix}{source_key}"))
+    })
+}
+
+/// Every identity prefix, longest first so `project:codex-catalog:` is tested
+/// before any shorter `project:`-shaped one could shadow it.
+pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
+    "project:codex-catalog:",
+    "project:scene:",
+    "projection:",
+    "snapshot:",
+    "artifact:",
+    "capture:",
+    "evidence:",
+];
+
+fn starts_with_any_source_prefix(value: &str) -> bool {
+    SOURCE_IDENTITY_PREFIXES
+        .iter()
+        .any(|prefix| value.starts_with(prefix))
+}
+
+/// The one place a `(source_kind, source_key)` pair becomes a
+/// `source_object_identity`, for every writer and for SCHEMA 28's repair.
+///
+/// Idempotent by construction: a key that already carries its own kind's
+/// prefix is returned unchanged, so running it twice cannot double-prefix
+/// the way `record_run_dependency_edges_in_tx` once did.
+///
+/// The bare-key rule is not a style choice, it mirrors what
+/// `source_revision.rs`'s resolvers actually accept.
+/// `resolve_domain_projection` alone falls back to `.unwrap_or(source_key)`,
+/// so a bare `projection-1` is a *valid* envelope today -- but
+/// `restore_rebuild.rs`'s `infer_source_kind` only recognises identities that
+/// start with `projection:`, so storing that bare key verbatim produced an
+/// Edge the Evaluator reads as an unknown Source. Adding the prefix here is
+/// what closes that gap. Every other kind's resolver rejects a bare key with
+/// `NEX_SOURCE_KEY_INVALID`, so a bare key for those is malformed input and
+/// fails closed rather than being silently decorated into something that
+/// resolves to a different object than the caller meant.
+///
+/// A key carrying a *different* kind's prefix always fails closed, as does a
+/// key whose remainder is itself prefixed -- the stored shape of the
+/// double-prefix defect. Repairing those is SCHEMA 28's job, not a writer's.
+pub(crate) fn canonical_source_object_identity(
+    source_kind: &str,
+    source_key: &str,
+) -> anyhow::Result<String> {
+    let prefix = source_identity_prefix_for(source_kind)?;
+    anyhow::ensure!(
+        !source_key.is_empty(),
+        "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey must not be empty"
+    );
+
+    if let Some(rest) = source_key.strip_prefix(prefix) {
+        anyhow::ensure!(
+            !rest.is_empty(),
+            "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey must be {prefix}<id>"
+        );
+        anyhow::ensure!(
+            !starts_with_any_source_prefix(rest),
+            "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
+        );
+        return Ok(source_key.to_string());
+    }
+
+    anyhow::ensure!(
+        !starts_with_any_source_prefix(source_key),
+        "NEX_SOURCE_KEY_KIND_MISMATCH: {source_kind} sourceKey '{source_key}' carries another source kind's prefix"
+    );
+
+    match source_kind {
+        "domain-projection" | "projection" => Ok(format!("{prefix}{source_key}")),
+        other => anyhow::bail!(
+            "NEX_SOURCE_KEY_INVALID: {other} sourceKey must be {prefix}<id>, got '{source_key}'"
+        ),
+    }
 }
 
 /// One row of `narrative_dependency_edges`: a declaration that Consumer
@@ -483,41 +567,96 @@ mod tests {
         .expect("delete edges for consumer");
     }
 
+    /// Every kind whose resolver in `source_revision.rs` requires the prefix.
+    /// A key that already carries it is returned untouched.
     #[test]
-    fn source_object_identity_for_covers_every_recognized_source_kind() {
+    fn an_already_qualified_key_is_returned_unchanged() {
+        for (kind, key) in [
+            ("scene-body", "project:scene:scene-1"),
+            ("snapshot-document", "snapshot:snap-1"),
+            ("codex-catalog", "project:codex-catalog:entry-1"),
+            ("domain-projection", "projection:proj-1"),
+            ("narrative-artifact", "artifact:art-1"),
+            ("import-capture", "capture:cap-1"),
+            ("evidence-anchor", "evidence:ev-1"),
+        ] {
+            assert_eq!(
+                canonical_source_object_identity(kind, key).unwrap(),
+                key,
+                "{kind} must be idempotent"
+            );
+        }
+    }
+
+    /// `resolve_source_revision` dispatches on both spellings, so a
+    /// legitimate envelope using the short one must canonicalize too.
+    #[test]
+    fn source_kind_aliases_resolve_to_the_same_prefix() {
         assert_eq!(
-            source_object_identity_for("scene-body", "scene-1").unwrap(),
-            "project:scene:scene-1"
-        );
-        assert_eq!(
-            source_object_identity_for("snapshot-document", "snap-1").unwrap(),
-            "snapshot:snap-1"
-        );
-        assert_eq!(
-            source_object_identity_for("codex-catalog", "entry-1").unwrap(),
-            "project:codex-catalog:entry-1"
-        );
-        assert_eq!(
-            source_object_identity_for("domain-projection", "proj-1").unwrap(),
+            canonical_source_object_identity("projection", "proj-1").unwrap(),
             "projection:proj-1"
         );
         assert_eq!(
-            source_object_identity_for("narrative-artifact", "art-1").unwrap(),
-            "artifact:art-1"
-        );
-        assert_eq!(
-            source_object_identity_for("import-capture", "cap-1").unwrap(),
-            "capture:cap-1"
-        );
-        assert_eq!(
-            source_object_identity_for("evidence-anchor", "ev-1").unwrap(),
+            canonical_source_object_identity("evidence", "evidence:ev-1").unwrap(),
             "evidence:ev-1"
         );
     }
 
+    /// `resolve_domain_projection` is the only resolver that tolerates a bare
+    /// key, so it is the only kind whose bare key gets decorated rather than
+    /// rejected. `infer_source_kind` needs the prefix to recognise the Edge
+    /// at all, which is why storing the bare form was a defect.
     #[test]
-    fn source_object_identity_for_rejects_an_unrecognized_source_kind() {
-        let result = source_object_identity_for("unknown-kind", "key-1");
+    fn only_domain_projection_accepts_a_bare_key() {
+        assert_eq!(
+            canonical_source_object_identity("domain-projection", "proj-1").unwrap(),
+            "projection:proj-1"
+        );
+        for kind in [
+            "scene-body",
+            "snapshot-document",
+            "codex-catalog",
+            "narrative-artifact",
+            "import-capture",
+            "evidence-anchor",
+        ] {
+            let error = canonical_source_object_identity(kind, "bare-1")
+                .expect_err("a bare key must not be accepted for {kind}");
+            assert!(
+                error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
+                "unexpected error for {kind}: {error}"
+            );
+        }
+    }
+
+    /// Decorating a key that already names a different kind would silently
+    /// point the Edge at another object.
+    #[test]
+    fn a_key_carrying_another_kinds_prefix_fails_closed() {
+        let error = canonical_source_object_identity("scene-body", "projection:proj-1")
+            .expect_err("a cross-kind prefix must not be accepted");
+        assert!(
+            error.to_string().contains("NEX_SOURCE_KEY_KIND_MISMATCH"),
+            "unexpected error: {error}"
+        );
+    }
+
+    /// The stored shape of the pre-#535 defect. Repairing it belongs to
+    /// SCHEMA 28; a writer handed one is looking at malformed input.
+    #[test]
+    fn an_already_doubled_prefix_fails_closed() {
+        let error =
+            canonical_source_object_identity("scene-body", "project:scene:project:scene:scene-1")
+                .expect_err("a doubled prefix must not be accepted");
+        assert!(
+            error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn canonical_source_object_identity_rejects_an_unrecognized_source_kind() {
+        let result = canonical_source_object_identity("unknown-kind", "key-1");
         assert!(result.is_err());
         assert!(result
             .unwrap_err()

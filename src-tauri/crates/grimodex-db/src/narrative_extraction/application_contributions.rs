@@ -25,8 +25,179 @@
 //! call-site wiring into `commit.rs` lands in C2-T1 — this module only
 //! establishes the bookkeeping primitives.
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
+use serde_json::Value;
 use uuid::Uuid;
+
+use super::change_feed::narrative_object_key;
+
+/// Builds the canonical `kind:id` string a Contribution's
+/// `target_object_identity` is keyed by, from the writer-row `entity_kind`
+/// vocabulary (`codex_entry`, `temporal_scene_chronicle`, ...).
+///
+/// Object Addressing is a ratified contract, not a local convention: ADR 005
+/// fixes it as a C2 start condition, and
+/// `policies/narrative/change-feed-writers.json` declares the
+/// `narrative-extraction.apply` writer's own objectKey as
+/// `codex-entry|chronicle-event|plot-thread|foreshadow`. So the Applications
+/// this table records must be addressed by the same names the Change Feed
+/// uses -- notably `chronicle-event`, never `event`.
+///
+/// [`narrative_object_key`] is the single source of that mapping, so this
+/// delegates rather than restating it. That also makes the two writers agree
+/// *by construction*: `commit.rs`'s Apply path reaches this through
+/// [`contribution_target_identity_for_authority_kind`], and
+/// `legacy_backfill.rs` calls it directly, so neither can drift from the
+/// Feed's vocabulary without the other following.
+///
+/// Kinds with no first-class canonical key (today: the codex semantic
+/// binding) fall through `narrative_object_key`'s `component` catch-all,
+/// whose `componentId` already carries the originating kind. Those keep the
+/// full `component:<kind>:<id>` form -- dropping to `component:<id>` would
+/// collide across kinds.
+pub(crate) fn contribution_target_identity(
+    entity_kind: &str,
+    entity_id: &str,
+) -> anyhow::Result<String> {
+    // `narrative_object_key` funnels *every* unrecognized kind into its
+    // `component` catch-all, which is right for the Change Feed -- an
+    // unmodelled component still needs an addressable key -- but wrong as a
+    // durable identity boundary. Without this allowlist, adding an
+    // `applied_entity_kind` and forgetting to map it would persist
+    // `component:<newKind>:<id>` and pass CI. Only the kinds below may reach
+    // the catch-all.
+    const CATCH_ALL_KINDS: &[&str] = &["codex_semantic_binding"];
+    anyhow::ensure!(
+        CATCH_ALL_KINDS.contains(&entity_kind)
+            || !matches!(
+                narrative_object_key(entity_kind, entity_id)
+                    .get("kind")
+                    .and_then(Value::as_str),
+                Some("component")
+            ),
+        "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for entity kind '{entity_kind}'"
+    );
+    let object_key = narrative_object_key(entity_kind, entity_id);
+    let kind = object_key
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CONTRIBUTION_TARGET_IDENTITY_INVALID: no canonical object kind for '{entity_kind}'"
+            )
+        })?;
+    if kind == "component" {
+        let component_id = object_key
+            .get("componentId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CONTRIBUTION_TARGET_IDENTITY_INVALID: component object key for '{entity_kind}' has no componentId"
+                )
+            })?;
+        return Ok(format!("{kind}:{component_id}"));
+    }
+    Ok(format!("{kind}:{entity_id}"))
+}
+
+/// Marks a Contribution whose real target could not be determined. Not a
+/// canonical object key on purpose: nothing should ever join on it, and it is
+/// greppable for the manual review it asks for. Preferred over guessing,
+/// which would attribute a field to the wrong object.
+pub(crate) const UNRESOLVED_TARGET_PREFIX: &str = "unresolved:";
+
+/// The identity for an Application row's `(applied_entity_kind,
+/// applied_entity_id)`, projected onto the object the Contribution is
+/// actually *about*.
+///
+/// For almost every operation the applied entity already is that object, so
+/// this is [`contribution_target_identity`] unchanged. `codex.detail.value.
+/// set` is the one exception, and it is not a spelling difference but an
+/// identity one: `commit.rs` records `applied_entity_kind =
+/// codex_detail_value` with the detail-value row's id, while
+/// `field_authority.rs`'s `affected_fields` reports the same write as
+/// `codex-entry:<entryId>` plus `/details/<definitionId>`. Translating the
+/// kind alone would leave the two paths pointing at different objects --
+/// `codex-detail-value:<valueId>` versus `codex-entry:<entryId>` -- which no
+/// name mapping can reconcile, because the ids differ too.
+///
+/// The scene and event metadata patches and the story-order materialize were
+/// checked for the same hazard and match: they all record the scene/event id
+/// they annotate (`temporal_operations.rs`), as does the semantic binding
+/// upsert with its `binding_id` (`semantic_bindings.rs`).
+///
+/// `temporal.constraint.create` does **not** match, and is not fixed here.
+/// `affected_fields` reports `authority_entity_id()`, a Field Authority
+/// coordinate that falls back to the payload fingerprint, while
+/// `apply_constraint_create_in_tx` mints a fresh UUID for the row -- so the
+/// Apply path addresses an object that does not exist. Addressing
+/// Contributions by the Application row's `applied_entity_id` is the fix; see
+/// `the_two_writers_disagree_on_the_constraint_id_itself`.
+///
+/// A detail-value row that no longer exists cannot be projected. That yields
+/// an explicit [`UNRESOLVED_TARGET_PREFIX`] identity rather than a guess.
+pub(crate) fn contribution_target_identity_for_application(
+    conn: &Connection,
+    applied_entity_kind: &str,
+    applied_entity_id: &str,
+) -> anyhow::Result<String> {
+    if applied_entity_kind == "codex_detail_value" {
+        let entry_id: Option<String> = conn
+            .query_row(
+                "SELECT entry_id FROM codex_detail_values WHERE id = ?1",
+                params![applied_entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return match entry_id {
+            Some(entry_id) => contribution_target_identity("codex_entry", &entry_id),
+            None => Ok(format!(
+                "{UNRESOLVED_TARGET_PREFIX}codex-detail-value:{applied_entity_id}"
+            )),
+        };
+    }
+    contribution_target_identity(applied_entity_kind, applied_entity_id)
+}
+
+/// Same identity, from `field_authority.rs`'s `affected_fields` vocabulary.
+///
+/// That vocabulary is a third, non-ratified one: it is already *projected*
+/// (a `codex.detail.value.set` reports `codex-entry` plus
+/// `/details/<definitionId>`, not the detail-value row), which is what makes
+/// it the right grain for a field-level table -- but its spellings are the
+/// Field Authority ledger's, shared with `record_human_field_write`'s human
+/// writes, and they are not the Feed's. Renaming them there would drag every
+/// human-write call site and every existing `narrative_field_authority` row
+/// along for no gain, so the projection is kept and only the *name* is
+/// translated, here, at the one boundary that needs it.
+///
+/// Exhaustive on purpose: an unrecognized kind fails closed rather than
+/// silently minting an identity nothing can resolve, matching how
+/// `affected_fields` itself rejects operation kinds it does not model.
+pub(crate) fn contribution_target_identity_for_authority_kind(
+    authority_kind: &str,
+    entity_id: &str,
+) -> anyhow::Result<String> {
+    let entity_kind = match authority_kind {
+        "event" => "event",
+        "scene" => "scene",
+        "codex-entry" => "codex_entry",
+        "codex-relation" => "codex_relation",
+        "codex-phase" => "codex_phase",
+        "codex-detail-semantic-binding" => "codex_semantic_binding",
+        "temporal-node" => "temporal_node",
+        "temporal-constraint" => "temporal_constraint",
+        "temporal-projection" => "temporal_projection",
+        "plot-thread" => "plot_thread",
+        "plot-marker" => "plot_thread_marker",
+        "plot-branch" => "plot_thread_branch",
+        "foreshadow" => "foreshadow",
+        other => anyhow::bail!(
+            "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for Field Authority kind '{other}'"
+        ),
+    };
+    contribution_target_identity(entity_kind, entity_id)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContributionTargetState {
@@ -243,6 +414,139 @@ mod tests {
             params![project_id, "Test Project"],
         )
         .expect("seed project");
+    }
+
+    /// Every kind `field_authority.rs`'s `affected_fields` can report, paired
+    /// with the `applied_entity_kind` the same object is written under by
+    /// `commit.rs`'s operation match. The Apply path reaches
+    /// `target_object_identity` through the first, the Legacy Backfill path
+    /// through the second.
+    const AUTHORITY_AND_WRITER_KINDS: &[(&str, &str)] = &[
+        ("event", "event"),
+        ("scene", "scene"),
+        ("codex-entry", "codex_entry"),
+        ("codex-relation", "codex_relation"),
+        ("codex-phase", "codex_phase"),
+        ("codex-detail-semantic-binding", "codex_semantic_binding"),
+        ("temporal-node", "temporal_node"),
+        // `temporal-constraint` is deliberately absent: see
+        // `the_two_writers_disagree_on_the_constraint_id_itself`.
+        ("temporal-projection", "temporal_projection"),
+        ("plot-thread", "plot_thread"),
+        ("plot-marker", "plot_thread_marker"),
+        ("plot-branch", "plot_thread_branch"),
+        ("foreshadow", "foreshadow"),
+    ];
+
+    /// The reason this translation exists. Before it, `commit.rs` stored the
+    /// Field Authority spelling and `legacy_backfill.rs` the writer-row
+    /// spelling, so a live Contribution and a backfilled one describing the
+    /// same object were two strings that never joined.
+    ///
+    /// **Scope: spelling only.** Both sides are handed the same id on
+    /// purpose, so this proves the two vocabularies normalize to one *kind*.
+    /// It says nothing about whether the two writers arrive at the same *id*
+    /// for a given operation -- that is a property of the callers, and
+    /// `temporal.constraint.create` does not have it. Reading this as
+    /// "the two writers agree on one identity" is what let that gap survive a
+    /// review; the id side is pinned separately, below.
+    #[test]
+    fn both_writer_vocabularies_normalize_to_one_kind_spelling() {
+        for (authority_kind, writer_kind) in AUTHORITY_AND_WRITER_KINDS {
+            let from_apply = contribution_target_identity_for_authority_kind(authority_kind, "x1")
+                .unwrap_or_else(|error| panic!("{authority_kind} must map: {error}"));
+            let from_backfill = contribution_target_identity(writer_kind, "x1")
+                .unwrap_or_else(|error| panic!("{writer_kind} must map: {error}"));
+            assert_eq!(
+                from_apply, from_backfill,
+                "the two vocabularies spell {authority_kind}/{writer_kind} differently"
+            );
+        }
+    }
+
+    /// `temporal.constraint.create` is the kind the spelling test above
+    /// cannot cover, and this pins why so the gap cannot be quietly closed by
+    /// renaming something.
+    ///
+    /// `affected_fields` reports `authority_entity_id()`
+    /// (`temporal_constraints.rs`), which falls back to the payload
+    /// fingerprint -- then a referenced node id, then the literal
+    /// `"constraint"` -- when no `constraintId` is supplied.
+    /// `apply_constraint_create_in_tx` mints a fresh UUID in exactly that
+    /// case. The two ids therefore *cannot* coincide, so translating the kind
+    /// leaves the Apply path addressing an object that does not exist.
+    ///
+    /// The runtime fix belongs with the Apply path (address Contributions by
+    /// the Application row's `applied_entity_id`), not with this mapping.
+    /// Until that lands, this test is the standing record that the C2-T2
+    /// precondition is unmet for this kind.
+    #[test]
+    fn the_two_writers_disagree_on_the_constraint_id_itself() {
+        let from_ledger_coordinate =
+            contribution_target_identity_for_authority_kind("temporal-constraint", "fingerprint-1")
+                .expect("temporal-constraint maps");
+        let from_applied_row = contribution_target_identity("temporal_constraint", "uuid-1")
+            .expect("temporal_constraint maps");
+
+        assert_eq!(from_ledger_coordinate, "temporal-constraint:fingerprint-1");
+        assert_eq!(from_applied_row, "temporal-constraint:uuid-1");
+        assert_ne!(
+            from_ledger_coordinate, from_applied_row,
+            "if these ever match, the id-level gap has been closed and \
+             temporal-constraint can rejoin AUTHORITY_AND_WRITER_KINDS"
+        );
+    }
+
+    /// The one kind whose two vocabularies genuinely differ, and the whole
+    /// reason a translation is needed rather than a pass-through.
+    /// `change-feed-writers.json` declares the `narrative-extraction.apply`
+    /// writer's objectKey as `chronicle-event`, never `event`.
+    #[test]
+    fn chronicle_events_are_addressed_by_their_ratified_kind() {
+        assert_eq!(
+            contribution_target_identity_for_authority_kind("event", "event-1")
+                .expect("event maps"),
+            "chronicle-event:event-1"
+        );
+        assert_eq!(
+            contribution_target_identity("temporal_event_chronicle", "event-1")
+                .expect("temporal event chronicle maps"),
+            "chronicle-event:event-1",
+            "the temporal chronicle row collapses onto the event it annotates"
+        );
+        assert_eq!(
+            contribution_target_identity("temporal_scene_chronicle", "scene-1")
+                .expect("temporal scene chronicle maps"),
+            "scene:scene-1"
+        );
+    }
+
+    /// A kind with no first-class canonical key keeps the originating kind in
+    /// its identity; collapsing to `component:<id>` would make two different
+    /// kinds sharing an id indistinguishable.
+    #[test]
+    fn kinds_without_a_canonical_key_stay_distinguishable() {
+        assert_eq!(
+            contribution_target_identity_for_authority_kind(
+                "codex-detail-semantic-binding",
+                "binding-1"
+            )
+            .expect("semantic binding maps"),
+            "component:codex_semantic_binding:binding-1"
+        );
+    }
+
+    /// Fails closed rather than minting an identity nothing can resolve.
+    #[test]
+    fn an_unmapped_authority_kind_is_rejected() {
+        let error = contribution_target_identity_for_authority_kind("not-a-kind", "x1")
+            .expect_err("an unmapped kind must not silently produce an identity");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CONTRIBUTION_TARGET_KIND_INVALID"),
+            "unexpected error: {error}"
+        );
     }
 
     fn test_db() -> Database {
