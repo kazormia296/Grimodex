@@ -26,7 +26,101 @@
 //! establishes the bookkeeping primitives.
 
 use rusqlite::{params, Connection, Row};
+use serde_json::Value;
 use uuid::Uuid;
+
+use super::change_feed::narrative_object_key;
+
+/// Builds the canonical `kind:id` string a Contribution's
+/// `target_object_identity` is keyed by, from the writer-row `entity_kind`
+/// vocabulary (`codex_entry`, `temporal_scene_chronicle`, ...).
+///
+/// Object Addressing is a ratified contract, not a local convention: ADR 005
+/// fixes it as a C2 start condition, and
+/// `policies/narrative/change-feed-writers.json` declares the
+/// `narrative-extraction.apply` writer's own objectKey as
+/// `codex-entry|chronicle-event|plot-thread|foreshadow`. So the Applications
+/// this table records must be addressed by the same names the Change Feed
+/// uses -- notably `chronicle-event`, never `event`.
+///
+/// [`narrative_object_key`] is the single source of that mapping, so this
+/// delegates rather than restating it. That also makes the two writers agree
+/// *by construction*: `commit.rs`'s Apply path reaches this through
+/// [`contribution_target_identity_for_authority_kind`], and
+/// `legacy_backfill.rs` calls it directly, so neither can drift from the
+/// Feed's vocabulary without the other following.
+///
+/// Kinds with no first-class canonical key (today: the codex semantic
+/// binding) fall through `narrative_object_key`'s `component` catch-all,
+/// whose `componentId` already carries the originating kind. Those keep the
+/// full `component:<kind>:<id>` form -- dropping to `component:<id>` would
+/// collide across kinds.
+pub(crate) fn contribution_target_identity(
+    entity_kind: &str,
+    entity_id: &str,
+) -> anyhow::Result<String> {
+    let object_key = narrative_object_key(entity_kind, entity_id);
+    let kind = object_key
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_CONTRIBUTION_TARGET_IDENTITY_INVALID: no canonical object kind for '{entity_kind}'"
+            )
+        })?;
+    if kind == "component" {
+        let component_id = object_key
+            .get("componentId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CONTRIBUTION_TARGET_IDENTITY_INVALID: component object key for '{entity_kind}' has no componentId"
+                )
+            })?;
+        return Ok(format!("{kind}:{component_id}"));
+    }
+    Ok(format!("{kind}:{entity_id}"))
+}
+
+/// Same identity, from `field_authority.rs`'s `affected_fields` vocabulary.
+///
+/// That vocabulary is a third, non-ratified one: it is already *projected*
+/// (a `codex.detail.value.set` reports `codex-entry` plus
+/// `/details/<definitionId>`, not the detail-value row), which is what makes
+/// it the right grain for a field-level table -- but its spellings are the
+/// Field Authority ledger's, shared with `record_human_field_write`'s human
+/// writes, and they are not the Feed's. Renaming them there would drag every
+/// human-write call site and every existing `narrative_field_authority` row
+/// along for no gain, so the projection is kept and only the *name* is
+/// translated, here, at the one boundary that needs it.
+///
+/// Exhaustive on purpose: an unrecognized kind fails closed rather than
+/// silently minting an identity nothing can resolve, matching how
+/// `affected_fields` itself rejects operation kinds it does not model.
+pub(crate) fn contribution_target_identity_for_authority_kind(
+    authority_kind: &str,
+    entity_id: &str,
+) -> anyhow::Result<String> {
+    let entity_kind = match authority_kind {
+        "event" => "event",
+        "scene" => "scene",
+        "codex-entry" => "codex_entry",
+        "codex-relation" => "codex_relation",
+        "codex-phase" => "codex_phase",
+        "codex-detail-semantic-binding" => "codex_semantic_binding",
+        "temporal-node" => "temporal_node",
+        "temporal-constraint" => "temporal_constraint",
+        "temporal-projection" => "temporal_projection",
+        "plot-thread" => "plot_thread",
+        "plot-marker" => "plot_thread_marker",
+        "plot-branch" => "plot_thread_branch",
+        "foreshadow" => "foreshadow",
+        other => anyhow::bail!(
+            "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for Field Authority kind '{other}'"
+        ),
+    };
+    contribution_target_identity(entity_kind, entity_id)
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ContributionTargetState {
@@ -243,6 +337,97 @@ mod tests {
             params![project_id, "Test Project"],
         )
         .expect("seed project");
+    }
+
+    /// Every kind `field_authority.rs`'s `affected_fields` can report, paired
+    /// with the `applied_entity_kind` the same object is written under by
+    /// `commit.rs`'s operation match. The Apply path reaches
+    /// `target_object_identity` through the first, the Legacy Backfill path
+    /// through the second.
+    const AUTHORITY_AND_WRITER_KINDS: &[(&str, &str)] = &[
+        ("event", "event"),
+        ("scene", "scene"),
+        ("codex-entry", "codex_entry"),
+        ("codex-relation", "codex_relation"),
+        ("codex-phase", "codex_phase"),
+        ("codex-detail-semantic-binding", "codex_semantic_binding"),
+        ("temporal-node", "temporal_node"),
+        ("temporal-constraint", "temporal_constraint"),
+        ("temporal-projection", "temporal_projection"),
+        ("plot-thread", "plot_thread"),
+        ("plot-marker", "plot_thread_marker"),
+        ("plot-branch", "plot_thread_branch"),
+        ("foreshadow", "foreshadow"),
+    ];
+
+    /// The reason this translation exists. Before it, `commit.rs` stored the
+    /// Field Authority spelling and `legacy_backfill.rs` the writer-row
+    /// spelling, so a live Contribution and a backfilled one describing the
+    /// same object were two strings that never joined.
+    #[test]
+    fn both_writer_paths_agree_on_one_identity_per_object() {
+        for (authority_kind, writer_kind) in AUTHORITY_AND_WRITER_KINDS {
+            let from_apply = contribution_target_identity_for_authority_kind(authority_kind, "x1")
+                .unwrap_or_else(|error| panic!("{authority_kind} must map: {error}"));
+            let from_backfill = contribution_target_identity(writer_kind, "x1")
+                .unwrap_or_else(|error| panic!("{writer_kind} must map: {error}"));
+            assert_eq!(
+                from_apply, from_backfill,
+                "Apply and Backfill disagree for {authority_kind}/{writer_kind}"
+            );
+        }
+    }
+
+    /// The one kind whose two vocabularies genuinely differ, and the whole
+    /// reason a translation is needed rather than a pass-through.
+    /// `change-feed-writers.json` declares the `narrative-extraction.apply`
+    /// writer's objectKey as `chronicle-event`, never `event`.
+    #[test]
+    fn chronicle_events_are_addressed_by_their_ratified_kind() {
+        assert_eq!(
+            contribution_target_identity_for_authority_kind("event", "event-1")
+                .expect("event maps"),
+            "chronicle-event:event-1"
+        );
+        assert_eq!(
+            contribution_target_identity("temporal_event_chronicle", "event-1")
+                .expect("temporal event chronicle maps"),
+            "chronicle-event:event-1",
+            "the temporal chronicle row collapses onto the event it annotates"
+        );
+        assert_eq!(
+            contribution_target_identity("temporal_scene_chronicle", "scene-1")
+                .expect("temporal scene chronicle maps"),
+            "scene:scene-1"
+        );
+    }
+
+    /// A kind with no first-class canonical key keeps the originating kind in
+    /// its identity; collapsing to `component:<id>` would make two different
+    /// kinds sharing an id indistinguishable.
+    #[test]
+    fn kinds_without_a_canonical_key_stay_distinguishable() {
+        assert_eq!(
+            contribution_target_identity_for_authority_kind(
+                "codex-detail-semantic-binding",
+                "binding-1"
+            )
+            .expect("semantic binding maps"),
+            "component:codex_semantic_binding:binding-1"
+        );
+    }
+
+    /// Fails closed rather than minting an identity nothing can resolve.
+    #[test]
+    fn an_unmapped_authority_kind_is_rejected() {
+        let error = contribution_target_identity_for_authority_kind("not-a-kind", "x1")
+            .expect_err("an unmapped kind must not silently produce an identity");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CONTRIBUTION_TARGET_KIND_INVALID"),
+            "unexpected error: {error}"
+        );
     }
 
     fn test_db() -> Database {

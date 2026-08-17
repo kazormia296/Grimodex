@@ -73,7 +73,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
 
-use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
+use super::application_contributions::{
+    contribution_target_identity, record_contribution_in_tx, ContributionTargetState,
+};
 use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
@@ -95,7 +97,11 @@ const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill";
 /// the one parameter worth sealing: bump it if this transform's write
 /// shape ever changes in a way that would make an older completed Run
 /// unsafe to treat as equivalent to a fresh one.
-const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "1";
+/// `"2"` since Contribution `target_object_identity` and Dependency Edge
+/// `source_object_identity` are both written in canonical form: a Run
+/// completed under `"1"` left `codex_entry:<id>` Contributions and
+/// double-prefixed Edges, so it is not equivalent to a fresh one.
+const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
 pub enum LegacyBackfillBootstrapOutcome {
@@ -343,10 +349,17 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
     let edges_before = count_edges(conn, project_id)?;
     let mut applications_without_run_id = 0usize;
     for application in load_legacy_applications(conn, project_id)? {
-        let target_object_identity = format!(
-            "{}:{}",
-            application.applied_entity_kind, application.applied_entity_id
-        );
+        // `applied_entity_kind` is the writer-row vocabulary
+        // (`codex_entry`, `temporal_scene_chronicle`, ...), which is neither
+        // what the Change Feed addresses objects by nor what `commit.rs`'s
+        // live Apply path writes into this same column. Both now go through
+        // the one canonical mapping, so a backfilled row and a live row
+        // describing the same object share an identity instead of being two
+        // strings that never join.
+        let target_object_identity = contribution_target_identity(
+            &application.applied_entity_kind,
+            &application.applied_entity_id,
+        )?;
         record_contribution_in_tx(
             conn,
             project_id,
@@ -683,7 +696,7 @@ mod tests {
             assert_eq!(contributions_1.len(), 1);
             assert_eq!(
                 contributions_1[0].target_object_identity,
-                "codex_entry:entry-1"
+                "codex-entry:entry-1"
             );
             assert_eq!(contributions_1[0].field_path, LEGACY_BACKFILL_FIELD_PATH);
             assert_eq!(
@@ -693,7 +706,12 @@ mod tests {
 
             let contributions_2 = list_contributions_for_application(conn, "project-1", "app-2")?;
             assert_eq!(contributions_2.len(), 1);
-            assert_eq!(contributions_2[0].target_object_identity, "event:event-1");
+            // `event` in the writer-row vocabulary, `chronicle-event` in the
+            // ratified Object Addressing one this column now uses.
+            assert_eq!(
+                contributions_2[0].target_object_identity,
+                "chronicle-event:event-1"
+            );
             Ok(())
         })
         .expect("backfill with applications");
@@ -784,11 +802,11 @@ mod tests {
             assert_eq!(summary.contributions_created, 1);
 
             let project_1_contributions =
-                list_contributions_for_target(conn, "project-1", "codex_entry:entry-1")?;
+                list_contributions_for_target(conn, "project-1", "codex-entry:entry-1")?;
             assert_eq!(project_1_contributions.len(), 1);
 
             let project_2_contributions =
-                list_contributions_for_target(conn, "project-2", "codex_entry:entry-2")?;
+                list_contributions_for_target(conn, "project-2", "codex-entry:entry-2")?;
             assert!(
                 project_2_contributions.is_empty(),
                 "backfilling project-1 must not touch project-2's Applications"

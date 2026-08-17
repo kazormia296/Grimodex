@@ -7,7 +7,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
+use super::application_contributions::{
+    contribution_target_identity_for_authority_kind, record_contribution_in_tx,
+    ContributionTargetState,
+};
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
     AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind, NarrativeChangeOrigin,
@@ -1502,8 +1505,17 @@ pub fn narrative_extraction_apply_commit(
             // transition it away from `Unchanged`, not this commit itself.
             for (operation, application_id) in payload.operations.iter().zip(&application_ids) {
                 for field in affected_fields(operation, &commit_map)? {
-                    let target_object_identity =
-                        format!("{}:{}", field.entity_kind, field.entity_id);
+                    // `affected_fields` speaks the Field Authority ledger's
+                    // kind vocabulary, which is not the ratified Object
+                    // Addressing one (`event` there is `chronicle-event`
+                    // here). Translate rather than storing the ledger's name:
+                    // `legacy_backfill.rs` writes this same column from the
+                    // writer-row vocabulary, and both must land on one
+                    // identity for anything to ever join them.
+                    let target_object_identity = contribution_target_identity_for_authority_kind(
+                        &field.entity_kind,
+                        &field.entity_id,
+                    )?;
                     record_contribution_in_tx(
                         conn,
                         &payload.project_id,

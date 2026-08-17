@@ -390,7 +390,25 @@ fn backfill_project_replica(conn: &Connection, project_id: &str, now: &str) -> (
         .expect("collect legacy applications");
 
     for (application_id, applied_entity_kind, applied_entity_id) in applications {
-        let target_object_identity = format!("{applied_entity_kind}:{applied_entity_id}");
+        // Mirrors `application_contributions::contribution_target_identity`:
+        // the writer-row `applied_entity_kind` is translated to the ratified
+        // Object Addressing kind before it becomes an identity. That function
+        // lives in a private module, so this replica restates the mapping for
+        // the kinds this fixture seeds and panics on anything else rather
+        // than silently reintroducing the pre-canonical `codex_entry:` form
+        // this test is supposed to be exercising production against.
+        let canonical_kind: &str = match applied_entity_kind.as_str() {
+            "codex_entry" => "codex-entry",
+            "event" | "temporal_event_chronicle" => "chronicle-event",
+            "scene" | "temporal_scene_chronicle" | "temporal_scene_story_order" => "scene",
+            "plot_thread" => "plot-thread",
+            "foreshadow" => "foreshadow",
+            other => panic!(
+                "extend this replica (and check it still matches \
+                 contribution_target_identity) for '{other}'"
+            ),
+        };
+        let target_object_identity = format!("{canonical_kind}:{applied_entity_id}");
         conn.execute(
             "INSERT INTO narrative_application_contributions
                 (id, project_id, application_id, target_object_identity, field_path,
