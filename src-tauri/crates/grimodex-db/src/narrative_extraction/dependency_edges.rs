@@ -59,6 +59,17 @@ pub(crate) const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
 /// independently rather than importing this function (see that module's own
 /// doc comment on why it duplicates rather than imports from a read-only
 /// Lane).
+///
+/// No production caller today. Both Producer-time paths receive a
+/// `source_key` that is *already* the fully-qualified identity -- the
+/// envelope's `inputRef`, which `source_revision.rs`'s resolvers require to
+/// carry its prefix -- so `repository.rs` and `legacy_backfill.rs` both copy
+/// it rather than rebuild it here (rebuilding it is what produced the
+/// `project:scene:project:scene:s1` double-prefix defect). This stays as the
+/// canonical forward mapping, tested against all seven kinds below, for the
+/// mutation-time changed-source locator that has to *construct* an identity
+/// from a Change Feed event's `(kind, key)` rather than receive one.
+#[allow(dead_code)]
 pub(crate) fn source_object_identity_for(
     source_kind: &str,
     source_key: &str,

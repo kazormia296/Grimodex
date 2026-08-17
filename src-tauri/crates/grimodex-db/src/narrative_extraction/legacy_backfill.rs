@@ -74,9 +74,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::application_contributions::{record_contribution_in_tx, ContributionTargetState};
-use super::dependency_edges::{
-    record_dependency_edge_in_tx, source_object_identity_for, RUN_CONSUMER_KIND,
-};
+use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
@@ -150,7 +148,6 @@ struct LegacyApplication {
 }
 
 struct LegacyProjectionDependency {
-    source_kind: String,
     source_key: String,
     observed_revision_token: String,
 }
@@ -390,6 +387,22 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 /// `record_run_dependency_edges_in_tx` exactly (same Consumer identity, same
 /// one-element `read_set_json`) so this Run's Edge set looks identical
 /// whether it was declared live or backfilled.
+///
+/// `dependency.source_key` is used directly as the Edge's
+/// `source_object_identity`, for exactly the reason `repository.rs`'s
+/// `record_run_dependency_edges_in_tx` documents: it is *not* run back
+/// through `source_object_identity_for`. `narrative_projection_dependencies`
+/// is written in one place only (`commit.rs`'s
+/// `INSERT OR IGNORE INTO narrative_projection_dependencies`), from the
+/// `SourceBasisRow`s that `reconciliation_envelope.rs`'s
+/// `load_source_basis_rows`/`load_read_set_rows` produce -- and those carry
+/// the envelope's `inputRef` verbatim, which `source_revision.rs`'s
+/// per-kind resolvers require to already be prefixed (`resolve_scene_body`
+/// rejects anything that does not `strip_prefix("project:scene:")` with
+/// `NEX_SOURCE_KEY_INVALID`). Re-deriving the identity here prepended the
+/// prefix a second time -- `project:scene:project:scene:s1` -- and every
+/// backfilled Edge then evaluated as `source-missing` because no resolver
+/// could match it back to its Source.
 fn record_legacy_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -398,15 +411,13 @@ fn record_legacy_dependency_edges_in_tx(
     now: &str,
 ) -> anyhow::Result<()> {
     for dependency in load_legacy_projection_dependencies(conn, application_id)? {
-        let source_object_identity =
-            source_object_identity_for(&dependency.source_kind, &dependency.source_key)?;
         let read_set_json = serde_json::to_string(&[dependency.observed_revision_token.as_str()])?;
         record_dependency_edge_in_tx(
             conn,
             project_id,
             RUN_CONSUMER_KIND,
             run_id,
-            &source_object_identity,
+            &dependency.source_key,
             &read_set_json,
             None,
             now,
@@ -435,14 +446,20 @@ fn count_edges(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
 
 /// Every `narrative_projection_dependencies` row a legacy Application left
 /// behind. `propagation` is always `'freshness-only'` today (the table's own
-/// `CHECK`), so it carries no information beyond what `source_kind`/
-/// `source_key`/`observed_revision_token` already give the Generic Graph.
+/// `CHECK`), so it carries no information beyond what `source_key`/
+/// `observed_revision_token` already give the Generic Graph.
+///
+/// `source_kind` is deliberately not loaded: `source_key` already holds the
+/// fully-qualified identity, whose prefix *is* the kind -- that is the same
+/// direction `restore_rebuild.rs`'s `infer_source_kind` reads it in. It is
+/// still the secondary sort key so the emitted Edge order stays the table's
+/// own `(source_kind, source_key)` primary-key order.
 fn load_legacy_projection_dependencies(
     conn: &Connection,
     application_id: &str,
 ) -> anyhow::Result<Vec<LegacyProjectionDependency>> {
     let mut statement = conn.prepare(
-        "SELECT source_kind, source_key, observed_revision_token
+        "SELECT source_key, observed_revision_token
            FROM narrative_projection_dependencies
           WHERE application_id = ?1
           ORDER BY source_kind ASC, source_key ASC",
@@ -450,9 +467,8 @@ fn load_legacy_projection_dependencies(
     let rows = statement
         .query_map(params![application_id], |row| {
             Ok(LegacyProjectionDependency {
-                source_kind: row.get(0)?,
-                source_key: row.get(1)?,
-                observed_revision_token: row.get(2)?,
+                source_key: row.get(0)?,
+                observed_revision_token: row.get(1)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -835,7 +851,7 @@ mod tests {
                 conn,
                 "app-1",
                 "scene-body",
-                "scene-1",
+                "project:scene:scene-1",
                 "v1@2026-08-14T00:00:00.000Z",
             );
 
@@ -854,6 +870,73 @@ mod tests {
             Ok(())
         })
         .expect("backfill with run-scoped dependency edges");
+    }
+
+    /// `narrative_projection_dependencies.source_key` already holds the
+    /// fully-qualified `source_object_identity` -- `commit.rs` writes it
+    /// straight from the Reconciliation Envelope's `inputRef`, and
+    /// `source_revision.rs`'s resolvers reject an `inputRef` that is not
+    /// already prefixed. Backfill must therefore copy it, never re-derive
+    /// it through `source_object_identity_for`: doing so produced
+    /// `project:scene:project:scene:scene-1` and made every backfilled Edge
+    /// evaluate as `source-missing`. Covers more than one source kind so the
+    /// invariant is pinned to the rule, not to one prefix.
+    #[test]
+    fn backfilled_edges_never_double_prefix_the_source_identity() {
+        use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+            for (source_kind, source_key) in [
+                ("scene-body", "project:scene:scene-1"),
+                ("snapshot-document", "snapshot:run-legacy-1"),
+                ("codex-catalog", "project:codex-catalog:project-1"),
+                ("narrative-artifact", "artifact:artifact-1"),
+            ] {
+                seed_legacy_projection_dependency(
+                    conn,
+                    "app-1",
+                    source_kind,
+                    source_key,
+                    "v1@2026-08-14T00:00:00.000Z",
+                );
+            }
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let mut identities = edges
+                .iter()
+                .map(|edge| edge.source_object_identity.as_str())
+                .collect::<Vec<_>>();
+            identities.sort_unstable();
+            assert_eq!(
+                identities,
+                vec![
+                    "artifact:artifact-1",
+                    "project:codex-catalog:project-1",
+                    "project:scene:scene-1",
+                    "snapshot:run-legacy-1",
+                ]
+            );
+            Ok(())
+        })
+        .expect("backfill copies the stored source identity verbatim");
     }
 
     #[test]
@@ -876,7 +959,7 @@ mod tests {
                 conn,
                 "app-1",
                 "scene-body",
-                "scene-1",
+                "project:scene:scene-1",
                 "v1@2026-08-14T00:00:00.000Z",
             );
 
@@ -920,7 +1003,7 @@ mod tests {
                 conn,
                 "app-1",
                 "scene-body",
-                "scene-1",
+                "project:scene:scene-1",
                 "v1@2026-08-14T00:00:00.000Z",
             );
 
@@ -979,7 +1062,7 @@ mod tests {
                 conn,
                 "app-1",
                 "scene-body",
-                "scene-1",
+                "project:scene:scene-1",
                 "v1@2026-08-14T00:00:00.000Z",
             );
             Ok(())
