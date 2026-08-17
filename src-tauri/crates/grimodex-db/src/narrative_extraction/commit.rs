@@ -1496,56 +1496,6 @@ pub fn narrative_extraction_apply_commit(
                 &commit_map,
             )?;
 
-            // Gate C2 Lane H (`application_contributions.rs`, wired in
-            // C2-T1): record which Application most recently touched which
-            // field, reusing the same `affected_fields` coverage table
-            // `record_operation_field_authority` above already relies on
-            // rather than re-deriving field ownership per operation kind a
-            // second, drifting way. `application_ids` is 1:1 with
-            // `payload.operations` by construction (both built from the
-            // same per-index `payload.applications` loop above).
-            // `Unchanged` is the correct initial `targetState`: this write
-            // just landed, so the field currently matches exactly what this
-            // Application applied; a later process (Undo/Redo, a
-            // superseding Application, a hand edit) is what would ever
-            // transition it away from `Unchanged`, not this commit itself.
-            for (index, (operation, application_id)) in
-                payload.operations.iter().zip(&application_ids).enumerate()
-            {
-                let application = payload.applications.get(index).ok_or_else(|| {
-                    anyhow::anyhow!("operation[{index}] has no matching application")
-                })?;
-                let provenance = ContributionProvenance {
-                    application_id,
-                    commit_id: &commit_id,
-                    proposal_id: &application.proposal_id,
-                    revision_id: &application.revision_id,
-                    operation_id: operation_ids.get(index).map(String::as_str),
-                };
-                for field in affected_fields(operation, &commit_map)? {
-                    // `affected_fields` speaks the Field Authority ledger's
-                    // kind vocabulary, which is not the ratified Object
-                    // Addressing one (`event` there is `chronicle-event`
-                    // here). Translate rather than storing the ledger's name:
-                    // `legacy_backfill.rs` writes this same column from the
-                    // writer-row vocabulary, and both must land on one
-                    // identity for anything to ever join them.
-                    let target_object_identity = contribution_target_identity_for_authority_kind(
-                        &field.entity_kind,
-                        &field.entity_id,
-                    )?;
-                    record_contribution_in_tx(
-                        conn,
-                        &payload.project_id,
-                        &provenance,
-                        &target_object_identity,
-                        &field.field_path,
-                        ContributionTargetState::Unchanged,
-                        &now,
-                    )?;
-                }
-            }
-
             let after_json = json!({
                 "entities": after_snapshots,
                 "entityBindings": commit_map.to_json(),
@@ -1591,6 +1541,71 @@ pub fn narrative_extraction_apply_commit(
                 canonical_append.inserted_count == 1,
                 "NEX_CHANGE_EVENT_CORRELATION_FAILED: canonical event was not appended"
             );
+
+            // Gate C2 Lane H (`application_contributions.rs`, wired in
+            // C2-T1): record which Application most recently touched which
+            // field, reusing the same `affected_fields` coverage table
+            // `record_operation_field_authority` above already relies on
+            // rather than re-deriving field ownership per operation kind a
+            // second, drifting way. `application_ids` is 1:1 with
+            // `payload.operations` by construction (both built from the
+            // same per-index `payload.applications` loop above).
+            //
+            // Deliberately *after* the canonical append, not with the rest of
+            // the Application bookkeeping: `baseline_sequence` is the
+            // canonical `change_events.sequence` this commit's own write
+            // landed on, and it does not exist until the append returns. It
+            // is the self-stale guard's lower bound (ADR 005) -- without it a
+            // later evaluation would read this commit's own event as evidence
+            // that the Source changed underneath the Application, and mark
+            // the Application stale the instant it was applied. Everything
+            // this loop reads (`commit_map`, `payload`, `application_ids`,
+            // `operation_ids`, `now`) is still in scope here, and
+            // `application_ids` is not moved into the maintenance transaction
+            // until below.
+            //
+            // `Unchanged` is the correct initial `targetState`: this write
+            // just landed, so the field currently matches exactly what this
+            // Application applied; a later process (Undo/Redo, a
+            // superseding Application, a hand edit) is what would ever
+            // transition it away from `Unchanged`, not this commit itself.
+            for (index, (operation, application_id)) in
+                payload.operations.iter().zip(&application_ids).enumerate()
+            {
+                let application = payload.applications.get(index).ok_or_else(|| {
+                    anyhow::anyhow!("operation[{index}] has no matching application")
+                })?;
+                let provenance = ContributionProvenance {
+                    application_id,
+                    commit_id: &commit_id,
+                    proposal_id: &application.proposal_id,
+                    revision_id: &application.revision_id,
+                    operation_id: operation_ids.get(index).map(String::as_str),
+                    baseline_sequence: Some(canonical_append.tail_sequence),
+                };
+                for field in affected_fields(operation, &commit_map)? {
+                    // `affected_fields` speaks the Field Authority ledger's
+                    // kind vocabulary, which is not the ratified Object
+                    // Addressing one (`event` there is `chronicle-event`
+                    // here). Translate rather than storing the ledger's name:
+                    // `legacy_backfill.rs` writes this same column from the
+                    // writer-row vocabulary, and both must land on one
+                    // identity for anything to ever join them.
+                    let target_object_identity = contribution_target_identity_for_authority_kind(
+                        &field.entity_kind,
+                        &field.entity_id,
+                    )?;
+                    record_contribution_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &provenance,
+                        &target_object_identity,
+                        &field.field_path,
+                        ContributionTargetState::Unchanged,
+                        &now,
+                    )?;
+                }
+            }
 
             let maintenance_events = events_from_journal_entities(
                 after_json["entities"]

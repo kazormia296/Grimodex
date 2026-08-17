@@ -268,12 +268,22 @@ pub(crate) struct ApplicationContribution {
 /// Application has no `narrative_apply_operations` row, and that table has no
 /// unique key this one could join on retroactively, so `None` means "not
 /// identifiable" rather than "none".
+///
+/// `baseline_sequence` is the canonical `change_events.sequence` this
+/// Application's own write landed on -- the self-stale guard's lower bound
+/// (ADR 005). Without it, a later evaluation reads the Apply's own Change
+/// Feed event as evidence that the Source moved underneath the Application
+/// and marks it stale the instant it was applied. `None` for a Legacy
+/// Backfill row: a pre-Gate-C0 commit has no Feed transaction, so no single
+/// event corresponds to it, and "no lower bound" is the conservative reading
+/// -- every event counts as newer.
 pub(crate) struct ContributionProvenance<'a> {
     pub application_id: &'a str,
     pub commit_id: &'a str,
     pub proposal_id: &'a str,
     pub revision_id: &'a str,
     pub operation_id: Option<&'a str>,
+    pub baseline_sequence: Option<i64>,
 }
 
 pub(crate) fn record_contribution_in_tx(
@@ -291,6 +301,7 @@ pub(crate) fn record_contribution_in_tx(
         proposal_id,
         revision_id,
         operation_id,
+        baseline_sequence,
     } = *provenance;
     anyhow::ensure!(
         !project_id.is_empty(),
@@ -307,6 +318,10 @@ pub(crate) fn record_contribution_in_tx(
     anyhow::ensure!(
         operation_id.is_none_or(|id| !id.is_empty()),
         "NEX_CONTRIBUTION_PROVENANCE_INVALID: operationId must be absent or non-empty"
+    );
+    anyhow::ensure!(
+        baseline_sequence.is_none_or(|sequence| sequence > 0),
+        "NEX_CONTRIBUTION_PROVENANCE_INVALID: baselineSequence must be absent or positive"
     );
     anyhow::ensure!(
         !target_object_identity.is_empty(),
@@ -332,14 +347,16 @@ pub(crate) fn record_contribution_in_tx(
     conn.query_row(
         "INSERT INTO narrative_application_contributions
             (id, project_id, application_id, commit_id, proposal_id, revision_id,
-             operation_id, target_object_identity, field_path, target_state, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             operation_id, baseline_sequence, target_object_identity, field_path,
+             target_state, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
              commit_id = excluded.commit_id,
              proposal_id = excluded.proposal_id,
              revision_id = excluded.revision_id,
              operation_id = excluded.operation_id,
+             baseline_sequence = excluded.baseline_sequence,
              created_at = excluded.created_at
          RETURNING id",
         params![
@@ -350,6 +367,7 @@ pub(crate) fn record_contribution_in_tx(
             proposal_id,
             revision_id,
             operation_id,
+            baseline_sequence,
             target_object_identity,
             field_path,
             target_state.as_str(),
@@ -469,7 +487,39 @@ mod tests {
             proposal_id: "proposal-1",
             revision_id: "revision-1",
             operation_id: None,
+            baseline_sequence: None,
         }
+    }
+
+    /// `baseline_sequence` is the self-stale guard's lower bound, so a
+    /// nonsensical one has to be refused rather than stored: SQLite's CHECK
+    /// would catch it, but the writer should say which contract was broken.
+    #[test]
+    fn a_non_positive_baseline_sequence_is_rejected() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            let mut provenance = test_provenance("app-1");
+            provenance.baseline_sequence = Some(0);
+            let error = record_contribution_in_tx(
+                conn,
+                "p1",
+                &provenance,
+                "scene:s1",
+                "/title",
+                ContributionTargetState::Unchanged,
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("a zero baseline sequence must not be stored");
+            assert!(
+                error
+                    .to_string()
+                    .contains("NEX_CONTRIBUTION_PROVENANCE_INVALID"),
+                "unexpected error: {error}"
+            );
+            Ok(())
+        })
+        .expect("reject a non-positive baseline sequence");
     }
 
     /// Every kind `field_authority.rs`'s `affected_fields` can report, paired

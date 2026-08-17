@@ -405,6 +405,11 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
                 proposal_id: &application.proposal_id,
                 revision_id: &application.revision_id,
                 operation_id: None,
+                // No Feed transaction exists for a pre-Gate-C0 commit, so no
+                // single canonical event corresponds to this Application and
+                // there is no self-stale lower bound to record. None is the
+                // conservative reading: every event counts as newer.
+                baseline_sequence: None,
             },
             &target_object_identity,
             LEGACY_BACKFILL_FIELD_PATH,

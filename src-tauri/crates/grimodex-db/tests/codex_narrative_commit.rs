@@ -1788,4 +1788,50 @@ fn apply_commit_records_application_contributions_per_affected_field() {
         );
         assert_eq!(target_state, "unchanged");
     }
+
+    // SCHEMA 29 provenance. `baseline_sequence` is the canonical
+    // `change_events.sequence` this commit's own write landed on -- the
+    // self-stale guard's lower bound, without which a later evaluation would
+    // read the Apply's own event as proof the Source moved and mark the
+    // Application stale the moment it was applied. It only exists once the
+    // canonical append has returned, which is why the Contribution loop runs
+    // after it; this pins that ordering.
+    let (commit_ids, baselines): (Vec<String>, Vec<Option<i64>>) = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT commit_id, baseline_sequence
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows.into_iter().unzip())
+        })
+        .expect("read contribution provenance");
+
+    let canonical_sequence: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT sequence FROM change_events
+                  WHERE project_id = 'project-1' AND op_type = 'narrative.commit.apply'
+                  ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read the canonical apply event sequence");
+
+    assert!(
+        commit_ids.iter().all(|id| !id.is_empty()),
+        "every Contribution must name the Commit that produced it"
+    );
+    assert!(
+        baselines
+            .iter()
+            .all(|baseline| *baseline == Some(canonical_sequence)),
+        "every Contribution must carry this commit's own canonical sequence          ({canonical_sequence}), got {baselines:?}"
+    );
 }
