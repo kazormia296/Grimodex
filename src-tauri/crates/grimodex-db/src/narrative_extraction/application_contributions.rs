@@ -433,11 +433,40 @@ pub(crate) fn record_contribution_in_tx(
 /// cannot fabricate `unchanged` over a field it is in no position to compare.
 /// Neither statement exists to get wrong.
 ///
-/// Precedence: `not-applicable` outranks the commit's lifecycle, because an
-/// operation that wrote nothing has nothing to undo -- calling it `undone`
-/// would claim a rollback that never happened. Everything else yields to
-/// `undone` while the owning commit is undone, and re-emerges unchanged when
-/// it is redone.
+/// `superseded` is derived for the same reason. Whether a later Application
+/// has since written the same field of the same object is a fact about this
+/// table's own contents, so storing it would mean an UPDATE across earlier
+/// rows on every write -- and then a second one to walk it back whenever the
+/// superseding commit is undone. That is the same pair of statements Undo and
+/// Redo were, with the same way to get out of step.
+///
+/// Precedence, strongest first:
+///
+/// * `not-applicable` -- an operation that wrote nothing has nothing to undo
+///   and nothing to be superseded out of, so neither lifecycle applies;
+/// * `undone` -- while the owning commit is undone, what a later Application
+///   did to the field is not this row's story;
+/// * `superseded` -- a live, later Application owns the field now;
+/// * whatever is stored.
+///
+/// **What counts as "later"**, in order, because no single column answers it:
+///
+/// * `baseline_sequence` -- the canonical event this Application's write
+///   landed on. NULL on Legacy Backfill rows, which predate the Feed
+///   entirely, so `COALESCE(..., -1)` sorts them before every real sequence.
+///   That is the correct reading: a backfilled row describes a write that
+///   already happened, and any Feed-era Application supersedes it.
+/// * `operation_index` -- `baseline_sequence` is the *commit's* sequence,
+///   shared by every Application in it, so two Applications in one commit
+///   writing the same field tie on it. The operation order inside the commit
+///   is what actually decided the value, and that is what this recovers.
+/// * `created_at`, then `id` -- so the order is total. Without a final
+///   tie-break two rows could each see the other as later and both report
+///   `superseded`, leaving the field owned by nobody.
+///
+/// An `undone` Application supersedes nothing: its write was rolled back, so
+/// the field reverts to whoever held it before. A `not-applicable` one
+/// supersedes nothing either, because it never wrote.
 ///
 /// `LEFT JOIN`, not `JOIN`: a missing commit row must not silently drop the
 /// Contribution from the answer. `commit_id` is NOT NULL and SCHEMA 29's
@@ -446,6 +475,32 @@ pub(crate) fn record_contribution_in_tx(
 const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
         WHEN contribution.target_state = 'not-applicable' THEN 'not-applicable'
         WHEN apply_commit.status = 'undone' THEN 'undone'
+        WHEN EXISTS (SELECT 1 FROM narrative_application_contributions later
+                     LEFT JOIN narrative_apply_commits later_commit
+                            ON later_commit.id = later.commit_id
+                     LEFT JOIN narrative_apply_operations later_operation
+                            ON later_operation.id = later.operation_id
+                     LEFT JOIN narrative_apply_operations self_operation
+                            ON self_operation.id = contribution.operation_id
+                     WHERE later.project_id = contribution.project_id
+                       AND later.target_object_identity
+                           = contribution.target_object_identity
+                       AND later.field_path = contribution.field_path
+                       AND later.id <> contribution.id
+                       AND COALESCE(later_commit.status, '') <> 'undone'
+                       AND later.target_state <> 'not-applicable'
+                       AND (COALESCE(later.baseline_sequence, -1)
+                              > COALESCE(contribution.baseline_sequence, -1)
+                        OR (COALESCE(later.baseline_sequence, -1)
+                              = COALESCE(contribution.baseline_sequence, -1)
+                            AND (COALESCE(later_operation.operation_index, -1)
+                                   > COALESCE(self_operation.operation_index, -1)
+                             OR (COALESCE(later_operation.operation_index, -1)
+                                   = COALESCE(self_operation.operation_index, -1)
+                                 AND (later.created_at > contribution.created_at
+                                  OR (later.created_at = contribution.created_at
+                                      AND later.id > contribution.id))))))
+        ) THEN 'superseded'
         ELSE contribution.target_state
     END";
 
@@ -744,14 +799,74 @@ mod tests {
     /// The Application lifecycle side of the pair. `test_provenance` names
     /// `commit-1`, so seeding that id is what makes the derivation observable.
     fn seed_commit(conn: &Connection, project_id: &str, status: &str) {
+        seed_named_commit(conn, project_id, "commit-1", status);
+    }
+
+    fn seed_named_commit(conn: &Connection, project_id: &str, commit_id: &str, status: &str) {
         conn.execute(
             "INSERT INTO narrative_apply_commits
                 (id, project_id, request_id, plan_digest, status, created_at)
-             VALUES ('commit-1', ?1, 'req-1', 'digest-1', ?2, '2026-08-15T00:00:00.000Z')
+             VALUES (?1, ?2, ?3, 'digest-1', ?4, '2026-08-15T00:00:00.000Z')
              ON CONFLICT(id) DO UPDATE SET status = excluded.status",
-            params![project_id, status],
+            params![commit_id, project_id, format!("req-{commit_id}"), status],
         )
         .expect("seed apply commit");
+    }
+
+    /// One Contribution on the shared `scene:s1` / `body` field, so a whole
+    /// supersede chain can be described by its ordering keys alone.
+    #[allow(clippy::too_many_arguments)]
+    fn record_ordered(
+        conn: &Connection,
+        project_id: &str,
+        commit_id: &str,
+        application_id: &str,
+        baseline_sequence: Option<i64>,
+        operation: Option<(&str, i64)>,
+        state: ContributionTargetState,
+    ) {
+        if let Some((operation_id, operation_index)) = operation {
+            conn.execute(
+                "INSERT INTO narrative_apply_operations
+                    (id, commit_id, operation_index, operation_kind, status, created_at)
+                 VALUES (?1, ?2, ?3, 'codex.entry.patch', 'applied',
+                         '2026-08-15T00:00:00.000Z')
+                 ON CONFLICT(id) DO NOTHING",
+                params![operation_id, commit_id, operation_index],
+            )
+            .expect("seed apply operation");
+        }
+        record_contribution_in_tx(
+            conn,
+            project_id,
+            &ContributionProvenance {
+                application_id,
+                commit_id,
+                proposal_id: "proposal-1",
+                revision_id: "revision-1",
+                operation_id: operation.map(|(id, _)| id),
+                baseline_sequence,
+            },
+            &ContributionField {
+                target_object_identity: "scene:s1",
+                field_path: "body",
+                target_state: state,
+            },
+            "2026-08-15T00:00:00.000Z",
+        )
+        .expect("record contribution");
+    }
+
+    /// Effective state per Application, for the shared target/field.
+    fn states_by_application(
+        conn: &Connection,
+        project_id: &str,
+    ) -> Vec<(String, ContributionTargetState)> {
+        list_contributions_for_target(conn, project_id, "scene:s1")
+            .expect("list contributions for target")
+            .into_iter()
+            .map(|row| (row.application_id, row.target_state))
+            .collect()
     }
 
     fn only_state(conn: &Connection, project_id: &str) -> ContributionTargetState {
@@ -814,6 +929,248 @@ mod tests {
                 only_state(conn, "p1"),
                 ContributionTargetState::Missing,
                 "redo must restore the stored state, not fabricate `unchanged`"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The plain case: a later Application takes the field, and only the
+    /// latest one is still current.
+    #[test]
+    fn a_later_application_supersedes_the_earlier_one_on_the_same_field() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            for (commit, application, sequence) in [
+                ("c1", "app-1", 10),
+                ("c2", "app-2", 20),
+                ("c3", "app-3", 30),
+            ] {
+                seed_named_commit(conn, "p1", commit, "applied");
+                record_ordered(
+                    conn,
+                    "p1",
+                    commit,
+                    application,
+                    Some(sequence),
+                    None,
+                    ContributionTargetState::Unchanged,
+                );
+            }
+
+            assert_eq!(
+                states_by_application(conn, "p1"),
+                vec![
+                    ("app-1".into(), ContributionTargetState::Superseded),
+                    ("app-2".into(), ContributionTargetState::Superseded),
+                    ("app-3".into(), ContributionTargetState::Unchanged),
+                ]
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// Undoing the superseding commit hands the field back. A stored
+    /// `superseded` would have needed a second write to walk this back, which
+    /// is the whole reason it is derived.
+    #[test]
+    fn undoing_the_later_application_returns_the_field_to_the_earlier_one() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "c1", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c1",
+                "app-1",
+                Some(10),
+                None,
+                ContributionTargetState::Unchanged,
+            );
+            seed_named_commit(conn, "p1", "c2", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c2",
+                "app-2",
+                Some(20),
+                None,
+                ContributionTargetState::Unchanged,
+            );
+            assert_eq!(
+                states_by_application(conn, "p1")[0].1,
+                ContributionTargetState::Superseded
+            );
+
+            seed_named_commit(conn, "p1", "c2", "undone");
+
+            assert_eq!(
+                states_by_application(conn, "p1"),
+                vec![
+                    ("app-1".into(), ContributionTargetState::Unchanged),
+                    ("app-2".into(), ContributionTargetState::Undone),
+                ],
+                "an undone Application supersedes nothing"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// `baseline_sequence` is the commit's, shared by every Application in it,
+    /// so two Applications in one commit tie on it. The operation order inside
+    /// the commit is what actually decided the field's value.
+    #[test]
+    fn two_applications_in_one_commit_are_ordered_by_operation_index() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "c1", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c1",
+                "app-1",
+                Some(10),
+                Some(("op-1", 0)),
+                ContributionTargetState::Unchanged,
+            );
+            record_ordered(
+                conn,
+                "p1",
+                "c1",
+                "app-2",
+                Some(10),
+                Some(("op-2", 1)),
+                ContributionTargetState::Unchanged,
+            );
+
+            assert_eq!(
+                states_by_application(conn, "p1"),
+                vec![
+                    ("app-1".into(), ContributionTargetState::Superseded),
+                    ("app-2".into(), ContributionTargetState::Unchanged),
+                ],
+                "the later operation in the same commit owns the field"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// A Legacy Backfill row has no `baseline_sequence` because it predates
+    /// the Feed. It describes a write that already happened, so any Feed-era
+    /// Application supersedes it -- and it supersedes none of them.
+    #[test]
+    fn a_backfilled_row_without_a_sequence_sorts_before_every_real_one() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "c0", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c0",
+                "app-legacy",
+                None,
+                None,
+                ContributionTargetState::Unchanged,
+            );
+            seed_named_commit(conn, "p1", "c1", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c1",
+                "app-1",
+                Some(10),
+                None,
+                ContributionTargetState::Unchanged,
+            );
+
+            assert_eq!(
+                states_by_application(conn, "p1"),
+                vec![
+                    ("app-1".into(), ContributionTargetState::Unchanged),
+                    ("app-legacy".into(), ContributionTargetState::Superseded),
+                ]
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// An operation that wrote nothing cannot take a field away from the
+    /// Application that did write it.
+    #[test]
+    fn a_not_applicable_application_supersedes_nothing() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "c1", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c1",
+                "app-1",
+                Some(10),
+                None,
+                ContributionTargetState::Unchanged,
+            );
+            seed_named_commit(conn, "p1", "c2", "applied");
+            record_ordered(
+                conn,
+                "p1",
+                "c2",
+                "app-2",
+                Some(20),
+                None,
+                ContributionTargetState::NotApplicable,
+            );
+
+            assert_eq!(
+                states_by_application(conn, "p1"),
+                vec![
+                    ("app-1".into(), ContributionTargetState::Unchanged),
+                    ("app-2".into(), ContributionTargetState::NotApplicable),
+                ]
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// Every row of the chain must agree on who is current. Without the final
+    /// `id` tie-break two rows could each see the other as later and both
+    /// report `superseded`, leaving the field owned by nobody.
+    #[test]
+    fn exactly_one_row_of_a_fully_tied_chain_survives() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "c1", "applied");
+            for application in ["app-a", "app-b", "app-c"] {
+                record_ordered(
+                    conn,
+                    "p1",
+                    "c1",
+                    application,
+                    Some(10),
+                    None,
+                    ContributionTargetState::Unchanged,
+                );
+            }
+
+            let states = states_by_application(conn, "p1");
+            let current = states
+                .iter()
+                .filter(|(_, state)| *state != ContributionTargetState::Superseded)
+                .count();
+            assert_eq!(
+                current, 1,
+                "a totally tied chain must still name one owner, got {states:?}"
             );
             Ok(())
         })
