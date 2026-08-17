@@ -252,7 +252,7 @@ fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn canonicalize_json(value: &mut Value) {
+pub(crate) fn canonicalize_json(value: &mut Value) {
     match value {
         Value::Array(values) => {
             for value in values {
@@ -272,7 +272,13 @@ fn canonicalize_json(value: &mut Value) {
     }
 }
 
-fn digest_value(value: &Value) -> anyhow::Result<String> {
+/// Key-order-independent SHA-256 of a JSON value, `sha256:`-prefixed.
+///
+/// Shared with `application_contributions.rs`, which digests the value an
+/// Application wrote so a later pass can tell an untouched field from one a
+/// human edited over. Both must agree byte-for-byte, so there is one
+/// implementation rather than two.
+pub(crate) fn digest_value(value: &Value) -> anyhow::Result<String> {
     let mut canonical = value.clone();
     canonicalize_json(&mut canonical);
     Ok(format!(

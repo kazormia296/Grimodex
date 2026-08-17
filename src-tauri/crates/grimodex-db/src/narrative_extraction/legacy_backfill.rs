@@ -76,7 +76,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::application_contributions::{
-    contribution_target_identity_for_application, record_contribution_in_tx,
+    contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
     ContributionProvenance, ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
 use super::dependency_edges::{
@@ -411,9 +411,16 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
                 // conservative reading: every event counts as newer.
                 baseline_sequence: None,
             },
-            &target_object_identity,
-            LEGACY_BACKFILL_FIELD_PATH,
-            target_state,
+            &ContributionField {
+                target_object_identity: &target_object_identity,
+                field_path: LEGACY_BACKFILL_FIELD_PATH,
+                // `/legacy-application` is a sentinel for "whole entity,
+                // field granularity unknown", so there is no field whose
+                // value could be digested. None means "cannot compare",
+                // which is the truth here.
+                committed_value_digest: None,
+                target_state,
+            },
             now,
         )?;
 

@@ -8,8 +8,8 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::application_contributions::{
-    contribution_target_identity_for_authority_kind, record_contribution_in_tx,
-    ContributionProvenance, ContributionTargetState,
+    committed_value_digest_for_field, contribution_target_identity_for_authority_kind,
+    record_contribution_in_tx, ContributionField, ContributionProvenance, ContributionTargetState,
 };
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
@@ -1595,13 +1595,28 @@ pub fn narrative_extraction_apply_commit(
                         &field.entity_kind,
                         &field.entity_id,
                     )?;
+                    // Read after the write, so this is the value as applied.
+                    // `None` where the field has no canonical snapshot
+                    // representation -- the aggregate paths live in other
+                    // tables -- and a later pass must read that as "cannot
+                    // compare", not as "unchanged".
+                    let committed_value_digest = committed_value_digest_for_field(
+                        conn,
+                        &payload.project_id,
+                        &field.entity_kind,
+                        &field.entity_id,
+                        &field.field_path,
+                    )?;
                     record_contribution_in_tx(
                         conn,
                         &payload.project_id,
                         &provenance,
-                        &target_object_identity,
-                        &field.field_path,
-                        ContributionTargetState::Unchanged,
+                        &ContributionField {
+                            target_object_identity: &target_object_identity,
+                            field_path: &field.field_path,
+                            committed_value_digest: committed_value_digest.as_deref(),
+                            target_state: ContributionTargetState::Unchanged,
+                        },
                         &now,
                     )?;
                 }

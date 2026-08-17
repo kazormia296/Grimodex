@@ -1834,4 +1834,48 @@ fn apply_commit_records_application_contributions_per_affected_field() {
             .all(|baseline| *baseline == Some(canonical_sequence)),
         "every Contribution must carry this commit's own canonical sequence          ({canonical_sequence}), got {baselines:?}"
     );
+
+    // `committed_value_digest` is what lets a later pass decide `modified`
+    // from the value actually differing rather than from a field having been
+    // named -- the coarse signals (a declarative human-write field list, a
+    // `"/"` changed-path on create) would otherwise produce false positives
+    // almost everywhere. Every field of a codex entry create is present in
+    // the canonical snapshot, so every row here must carry one.
+    let digests: Vec<(String, Option<String>)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT field_path, committed_value_digest
+                   FROM narrative_application_contributions
+                  WHERE project_id = 'project-1' AND application_id = ?1
+                  ORDER BY field_path ASC",
+            )?;
+            let rows = statement
+                .query_map([&application_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })
+        .expect("read committed value digests");
+
+    for (field_path, digest) in &digests {
+        let digest = digest
+            .as_deref()
+            .unwrap_or_else(|| panic!("{field_path} is in the canonical snapshot and must digest"));
+        assert!(
+            digest.starts_with("sha256:"),
+            "unexpected digest shape for {field_path}: {digest}"
+        );
+    }
+
+    // Two fields holding different values must not collide.
+    let name_digest = digests
+        .iter()
+        .find(|(path, _)| path == "/name")
+        .and_then(|(_, digest)| digest.clone())
+        .expect("/name digest");
+    let summary_digest = digests
+        .iter()
+        .find(|(path, _)| path == "/summary")
+        .and_then(|(_, digest)| digest.clone())
+        .expect("/summary digest");
+    assert_ne!(name_digest, summary_digest);
 }

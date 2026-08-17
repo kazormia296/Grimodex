@@ -29,7 +29,8 @@ use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::change_feed::narrative_object_key;
+use super::change_feed::{digest_value, narrative_object_key};
+use crate::canonical_feed_snapshots::canonical_snapshot_for_object_key;
 
 /// Builds the canonical `kind:id` string a Contribution's
 /// `target_object_identity` is keyed by, from the writer-row `entity_kind`
@@ -171,7 +172,13 @@ pub(crate) fn contribution_target_identity_for_authority_kind(
     authority_kind: &str,
     entity_id: &str,
 ) -> anyhow::Result<String> {
-    let entity_kind = match authority_kind {
+    contribution_target_identity(writer_kind_for_authority_kind(authority_kind)?, entity_id)
+}
+
+/// The writer-row spelling of a Field Authority kind, so both the identity
+/// and the canonical snapshot are derived from one table rather than two.
+fn writer_kind_for_authority_kind(authority_kind: &str) -> anyhow::Result<&'static str> {
+    Ok(match authority_kind {
         "event" => "event",
         "scene" => "scene",
         "codex-entry" => "codex_entry",
@@ -188,8 +195,47 @@ pub(crate) fn contribution_target_identity_for_authority_kind(
         other => anyhow::bail!(
             "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for Field Authority kind '{other}'"
         ),
+    })
+}
+
+/// Digest of the value this Application wrote at `field_path`, or `None`
+/// when the value cannot be read out of a canonical snapshot.
+///
+/// This is what lets a later pass decide `modified` from *the value actually
+/// differing*, rather than from a field having been named. That distinction
+/// matters because the coarse signals lie in the safe-looking direction:
+/// `record_human_field_write` is handed a declarative field list (a
+/// `relation.create` marks seven paths human-owned in one go), and the Change
+/// Feed's `changed_paths` collapses to a single `"/"` on create and delete.
+/// Deciding `modified` from those alone would be false positives almost
+/// everywhere.
+///
+/// `None` is returned, never a fabricated digest, when:
+///
+/// * the field lives outside its object's canonical snapshot -- the
+///   aggregate paths (`/participants`, `/evidenceSceneLinks`, `/setups`,
+///   `/payoffs`, `/detailOverrides`, ...) are rows in other tables, and
+///   `legacy_value_present` only ever asks whether they exist;
+/// * the object kind has no snapshot arm; or
+/// * the object itself is gone.
+///
+/// Callers must read `None` as "cannot compare", not as "unchanged".
+pub(crate) fn committed_value_digest_for_field(
+    conn: &Connection,
+    project_id: &str,
+    authority_kind: &str,
+    entity_id: &str,
+    field_path: &str,
+) -> anyhow::Result<Option<String>> {
+    let object_key =
+        narrative_object_key(writer_kind_for_authority_kind(authority_kind)?, entity_id);
+    let Some(snapshot) = canonical_snapshot_for_object_key(conn, project_id, &object_key)? else {
+        return Ok(None);
     };
-    contribution_target_identity(entity_kind, entity_id)
+    let Some(value) = snapshot.pointer(field_path) else {
+        return Ok(None);
+    };
+    digest_value(value).map(Some)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -286,15 +332,35 @@ pub(crate) struct ContributionProvenance<'a> {
     pub baseline_sequence: Option<i64>,
 }
 
+/// The field this Contribution is about, and what the Application left in
+/// it.
+///
+/// Separate from [`ContributionProvenance`] because the two have different
+/// lifetimes at the call site: provenance is fixed per Application, while
+/// this varies per field the Application touched.
+pub(crate) struct ContributionField<'a> {
+    pub target_object_identity: &'a str,
+    pub field_path: &'a str,
+    /// `None` means the value could not be read out of a canonical snapshot,
+    /// which a later pass must treat as "cannot compare" rather than
+    /// "unchanged". See [`committed_value_digest_for_field`].
+    pub committed_value_digest: Option<&'a str>,
+    pub target_state: ContributionTargetState,
+}
+
 pub(crate) fn record_contribution_in_tx(
     conn: &Connection,
     project_id: &str,
     provenance: &ContributionProvenance<'_>,
-    target_object_identity: &str,
-    field_path: &str,
-    target_state: ContributionTargetState,
+    field: &ContributionField<'_>,
     created_at: &str,
 ) -> anyhow::Result<String> {
+    let ContributionField {
+        target_object_identity,
+        field_path,
+        committed_value_digest,
+        target_state,
+    } = *field;
     let ContributionProvenance {
         application_id,
         commit_id,
@@ -348,8 +414,8 @@ pub(crate) fn record_contribution_in_tx(
         "INSERT INTO narrative_application_contributions
             (id, project_id, application_id, commit_id, proposal_id, revision_id,
              operation_id, baseline_sequence, target_object_identity, field_path,
-             target_state, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             committed_value_digest, target_state, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
              commit_id = excluded.commit_id,
@@ -357,6 +423,7 @@ pub(crate) fn record_contribution_in_tx(
              revision_id = excluded.revision_id,
              operation_id = excluded.operation_id,
              baseline_sequence = excluded.baseline_sequence,
+             committed_value_digest = excluded.committed_value_digest,
              created_at = excluded.created_at
          RETURNING id",
         params![
@@ -370,6 +437,7 @@ pub(crate) fn record_contribution_in_tx(
             baseline_sequence,
             target_object_identity,
             field_path,
+            committed_value_digest,
             target_state.as_str(),
             created_at,
         ],
@@ -505,9 +573,12 @@ mod tests {
                 conn,
                 "p1",
                 &provenance,
-                "scene:s1",
-                "/title",
-                ContributionTargetState::Unchanged,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "/title",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Unchanged,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect_err("a zero baseline sequence must not be stored");
@@ -628,9 +699,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "body",
-                ContributionTargetState::Modified,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "body",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Modified,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect("record contribution");
@@ -667,9 +741,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "body",
-                ContributionTargetState::Modified,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "body",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Modified,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect("first record");
@@ -678,9 +755,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "body",
-                ContributionTargetState::Undone,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "body",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Undone,
+                },
                 "2026-08-15T01:00:00.000Z",
             )
             .expect("upsert record");
@@ -706,9 +786,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "body",
-                ContributionTargetState::Modified,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "body",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Modified,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect("record body field");
@@ -716,9 +799,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "title",
-                ContributionTargetState::Unchanged,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "title",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Unchanged,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect("record title field");
@@ -744,9 +830,12 @@ mod tests {
                 conn,
                 "p1",
                 &test_provenance("app-1"),
-                "scene:s1",
-                "body",
-                ContributionTargetState::Modified,
+                &ContributionField {
+                    target_object_identity: "scene:s1",
+                    field_path: "body",
+                    committed_value_digest: None,
+                    target_state: ContributionTargetState::Modified,
+                },
                 "2026-08-15T00:00:00.000Z",
             )
             .expect("record in p1");
