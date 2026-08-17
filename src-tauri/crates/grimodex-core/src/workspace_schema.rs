@@ -571,9 +571,12 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// the Gate C2 Run Kind Policy's Semantic Index metadata and Repair lease
 /// tables, Dependency Edge State / Consumer Freshness baseline-digest
 /// columns for Verify, and widens the Run `run_kind` CHECK to admit
-/// `dependency-verify`/`dependency-repair`.
+/// `dependency-verify`/`dependency-repair`. Version 28 rewrites Application
+/// Contribution target identities into the ratified Object Addressing
+/// vocabulary; it changes no table, column, or constraint, so it adds no
+/// physical invariant of its own — only the version guard below moves.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 27
+    Ok(SCHEMA_VERSION == 28
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?

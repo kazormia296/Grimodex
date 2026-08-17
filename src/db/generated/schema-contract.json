@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 27,
+  "schemaVersion": 28,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",

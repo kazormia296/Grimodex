@@ -1,3 +1,4 @@
+use anyhow::Context;
 use rusqlite::{params, Connection, ErrorCode};
 use std::time::Duration;
 
@@ -3487,6 +3488,12 @@ impl Database {
         // survived a slow backup.
         Self::migrate_narrative_repair_lease_run_binding_v27(&conn)?;
 
+        // SCHEMA 28: Application Contributions are addressed by the ratified
+        // Object Addressing kind. Two writers had been storing two different
+        // vocabularies for one object, so a backfilled row and a live row
+        // describing the same entity could never join.
+        Self::migrate_narrative_contribution_target_identity_v28(&conn)?;
+
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
         // could make a partially migrated database look compatible after a
@@ -4498,6 +4505,116 @@ impl Database {
     ///
     /// Plain ADD COLUMN: nullable, so a lease claimed before this migration
     /// simply carries NULL and fails the CAS, which is the safe direction.
+    /// SCHEMA 28: rewrite `narrative_application_contributions
+    /// .target_object_identity` into the ratified Object Addressing
+    /// vocabulary.
+    ///
+    /// Two writers had been filling this column from two different
+    /// vocabularies -- `commit.rs` from the Field Authority ledger's
+    /// (`event:e1`), `legacy_backfill.rs` from the writer-row one
+    /// (`codex_entry:e1`) -- and neither was the one
+    /// `policies/narrative/change-feed-writers.json` declares for the
+    /// `narrative-extraction.apply` writer. Both now emit the canonical form,
+    /// but existing rows still carry the old ones, and re-running the
+    /// Backfill will not repair them: its work key reuses
+    /// `RunningAndCompleted`, so a project that already ran it is skipped
+    /// regardless of `LEGACY_BACKFILL_ALGORITHM_VERSION`.
+    ///
+    /// Rewrites rather than deletes and re-derives. The Backfill can only
+    /// ever restore its own one-row-per-Application sentinel; the per-field
+    /// rows a live Apply wrote are not reproducible from anything it reads,
+    /// so deleting them would lose real history.
+    ///
+    /// The prefix table is deliberately duplicated here instead of calling
+    /// `application_contributions.rs`. A migration describes one fixed
+    /// transition between two schema versions and has to keep meaning that
+    /// after the live mapping changes again; binding it to today's function
+    /// would silently redefine what SCHEMA 28 did.
+    fn migrate_narrative_contribution_target_identity_v28(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_application_contributions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+
+        /// Legacy `kind:` prefix -> canonical `kind:` prefix, frozen as of
+        /// SCHEMA 28. Kinds already canonical in both old vocabularies
+        /// (`scene:`, `foreshadow:`, `codex-entry:`, ...) are absent on
+        /// purpose: leaving them out is what makes this re-runnable, since a
+        /// canonical prefix is never itself a key. Every entry ends in `:`,
+        /// and no entry is a prefix of another, so a row matches at most one.
+        const LEGACY_TARGET_IDENTITY_PREFIXES: &[(&str, &str)] = &[
+            // Writer-row vocabulary (`applied_entity_kind`), via Backfill.
+            ("codex_entry:", "codex-entry:"),
+            ("codex_relation:", "codex-relation:"),
+            ("codex_phase:", "codex-phase:"),
+            ("codex_entry_phase:", "codex-phase:"),
+            ("codex_detail_definition:", "codex-detail-definition:"),
+            ("codex_detail_value:", "codex-detail-value:"),
+            (
+                "codex_semantic_binding:",
+                "component:codex_semantic_binding:",
+            ),
+            ("plot_thread:", "plot-thread:"),
+            ("plot_thread_marker:", "plot-marker:"),
+            ("plot_thread_branch:", "plot-branch:"),
+            ("foreshadow_setup:", "foreshadow-setup:"),
+            ("foreshadow_payoff:", "foreshadow-payoff:"),
+            ("temporal_node:", "temporal-node:"),
+            ("temporal_constraint:", "temporal-constraint:"),
+            ("temporal_projection:", "temporal-projection:"),
+            // Temporal annotation rows address the object they annotate.
+            ("temporal_event_chronicle:", "chronicle-event:"),
+            ("temporal_scene_chronicle:", "scene:"),
+            ("temporal_scene_story_order:", "scene:"),
+            // Written by *both* old vocabularies, canonical in neither.
+            ("event:", "chronicle-event:"),
+            // Field Authority vocabulary, via Apply. The only other FA kind
+            // that was not already canonical.
+            (
+                "codex-detail-semantic-binding:",
+                "component:codex_semantic_binding:",
+            ),
+        ];
+
+        let rows: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, target_object_identity
+                   FROM narrative_application_contributions",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for (id, identity) in rows {
+            let Some(rewritten) =
+                LEGACY_TARGET_IDENTITY_PREFIXES
+                    .iter()
+                    .find_map(|(legacy, canonical)| {
+                        identity
+                            .strip_prefix(legacy)
+                            .map(|rest| format!("{canonical}{rest}"))
+                    })
+            else {
+                continue;
+            };
+            conn.execute(
+                "UPDATE narrative_application_contributions
+                    SET target_object_identity = ?2
+                  WHERE id = ?1",
+                params![id, rewritten],
+            )
+            .with_context(|| {
+                format!("rewriting Contribution target identity '{identity}' to '{rewritten}'")
+            })?;
+        }
+        Ok(())
+    }
+
     fn migrate_narrative_repair_lease_run_binding_v27(conn: &Connection) -> anyhow::Result<()> {
         if !conn.query_row(
             "SELECT EXISTS(
@@ -8518,6 +8635,168 @@ mod tests {
         let conn = Connection::open_in_memory().expect("open scratch connection");
         Database::migrate_narrative_repair_lease_run_binding_v27(&conn)
             .expect("a workspace with no lease table must migrate cleanly");
+    }
+
+    fn seed_pre_v28_contributions(conn: &Connection, rows: &[(&str, &str, &str)]) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                target_object_identity TEXT NOT NULL,
+                field_path             TEXT NOT NULL,
+                target_state           TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );",
+        )
+        .expect("seed a pre-v28 contributions table");
+        for (id, identity, field_path) in rows {
+            conn.execute(
+                "INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, target_object_identity,
+                     field_path, target_state, created_at)
+                 VALUES (?1, 'proj-1', ?1, ?2, ?3, 'unchanged',
+                         '2026-08-15T00:00:00.000Z')",
+                params![id, identity, field_path],
+            )
+            .expect("seed a pre-v28 contribution");
+        }
+    }
+
+    fn migrated_identity(conn: &Connection, id: &str) -> String {
+        conn.query_row(
+            "SELECT target_object_identity FROM narrative_application_contributions
+              WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .expect("read the migrated contribution")
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_canonicalizes_both_old_vocabularies() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                // Written by the Legacy Backfill from `applied_entity_kind`.
+                (
+                    "backfill-codex",
+                    "codex_entry:entry-1",
+                    "/legacy-application",
+                ),
+                (
+                    "backfill-marker",
+                    "plot_thread_marker:marker-1",
+                    "/legacy-application",
+                ),
+                // Temporal annotation rows address what they annotate.
+                (
+                    "backfill-scene-chronicle",
+                    "temporal_scene_chronicle:scene-1",
+                    "/legacy-application",
+                ),
+                // Written by Apply from the Field Authority ledger. Canonical
+                // in neither vocabulary.
+                ("apply-event", "event:event-1", "/title"),
+                (
+                    "apply-binding",
+                    "codex-detail-semantic-binding:binding-1",
+                    "/boundEntityId",
+                ),
+                // Already canonical; must be left exactly as-is.
+                ("apply-scene", "scene:scene-9", "/storyTimeOrder"),
+                ("apply-foreshadow", "foreshadow:fs-1", "/note"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "backfill-codex"),
+            "codex-entry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-marker"),
+            "plot-marker:marker-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "backfill-scene-chronicle"),
+            "scene:scene-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-event"),
+            "chronicle-event:event-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "apply-binding"),
+            "component:codex_semantic_binding:binding-1"
+        );
+        assert_eq!(migrated_identity(&conn, "apply-scene"), "scene:scene-9");
+        assert_eq!(
+            migrated_identity(&conn, "apply-foreshadow"),
+            "foreshadow:fs-1"
+        );
+    }
+
+    /// Re-running must not rewrite an already-canonical row a second time --
+    /// `codex-entry:` is not itself a key in the prefix table, so a second
+    /// pass has nothing to match.
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[("row-1", "codex_entry:entry-1", "/legacy-application")],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("first SCHEMA 28 pass");
+        let once = migrated_identity(&conn, "row-1");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("second SCHEMA 28 pass must be a no-op");
+        assert_eq!(once, migrated_identity(&conn, "row-1"));
+        assert_eq!(once, "codex-entry:entry-1");
+    }
+
+    /// `_` is a single-character wildcard in SQL `LIKE`, so a prefix match
+    /// written that way would also rewrite unrelated kinds. Matching is done
+    /// on exact string prefixes in Rust; this pins that.
+    #[test]
+    fn migrate_contribution_target_identity_v28_matches_prefixes_literally() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_contributions(
+            &conn,
+            &[
+                (
+                    "wildcard-bait",
+                    "codexXentry:entry-1",
+                    "/legacy-application",
+                ),
+                ("unknown-kind", "not-a-kind:thing-1", "/legacy-application"),
+            ],
+        );
+
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("SCHEMA 28 contribution identity migration");
+
+        assert_eq!(
+            migrated_identity(&conn, "wildcard-bait"),
+            "codexXentry:entry-1"
+        );
+        assert_eq!(
+            migrated_identity(&conn, "unknown-kind"),
+            "not-a-kind:thing-1"
+        );
+    }
+
+    #[test]
+    fn migrate_contribution_target_identity_v28_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_contribution_target_identity_v28(&conn)
+            .expect("a workspace with no contributions table must migrate cleanly");
     }
 
     #[test]
