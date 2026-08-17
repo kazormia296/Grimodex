@@ -66,6 +66,13 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
+    // Gate C2 item 4: narrative_application_contributions carries
+    // maintenance_ownership, which records that a human took a field. Generic
+    // renderer/MCP SQL must not be able to hand it back, so the table is
+    // protected and only these two modules write it -- the ledger writer and
+    // the Change Feed projection that moves target_state.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/application_contributions.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/contribution_target_state.rs",
   ],
   "narrative.revision-envelope": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",

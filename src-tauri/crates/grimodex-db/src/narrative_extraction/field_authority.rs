@@ -111,7 +111,6 @@ pub(crate) fn record_human_field_write(
         entity_kind,
         entity_id,
         field_paths,
-        updated_at,
     )?;
     Ok(())
 }

@@ -3408,8 +3408,6 @@ impl Database {
                 ON narrative_application_contributions(project_id, target_object_identity, field_path);
             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_application
                 ON narrative_application_contributions(project_id, application_id);
-            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
-                ON narrative_application_contributions(project_id, commit_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
                 ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
         )?;
@@ -3557,12 +3555,32 @@ impl Database {
         match c2_result {
             Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_29")?,
             Err(error) => {
-                conn.execute_batch(
+                // `?` here would replace the migration's own error with
+                // whatever the unwind failed on, losing the only description
+                // of why the workspace could not be upgraded.
+                if let Err(unwind) = conn.execute_batch(
                     "ROLLBACK TO narrative_c2_schema_29; RELEASE narrative_c2_schema_29",
-                )?;
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the SCHEMA 29 savepoint"
+                    );
+                }
                 return Err(error);
             }
         }
+
+        // After the rebuild, never with the other Contribution indexes in the
+        // base DDL batch. That batch runs against whatever shape the table
+        // already has, and on a SCHEMA 23-28 workspace that shape has no
+        // `commit_id` -- the index would fail with "no such column" and the
+        // workspace would stop opening. A fresh database does not show it,
+        // because its base DDL creates the column in the same statement.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
+                ON narrative_application_contributions(project_id, commit_id);",
+        )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier

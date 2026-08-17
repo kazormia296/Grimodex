@@ -109,10 +109,11 @@ fn pending_edits(
         rows
     {
         let object_key: Value = serde_json::from_str(&object_key_json)?;
-        // An object kind this build does not model cannot be projected onto a
-        // Contribution, and guessing would attribute an edit to the wrong
-        // object. Skipping still advances the cursor: the event is genuinely
-        // not evidence about any Contribution we hold.
+        // An object kind outside the ratified Object Addressing vocabulary
+        // cannot be projected onto a Contribution, and guessing would
+        // attribute an edit to the wrong object. The cursor still advances
+        // past it, because the event is genuinely not evidence about any
+        // Contribution we hold -- see `scanned_through` above.
         let Ok(target_object_identity) = contribution_target_identity_from_object_key(&object_key)
         else {
             continue;
@@ -146,10 +147,22 @@ pub(crate) fn project_out_of_band_edits_in_tx(
     let acknowledged = get_cursor(conn, project_id, CONSUMER_ID)?
         .map(|cursor| cursor.acknowledged_through_sequence)
         .unwrap_or(0);
-    let edits = pending_edits(conn, project_id, acknowledged)?;
-    let Some(highest) = edits.last().map(|edit| edit.canonical_sequence) else {
+    // The highest sequence *scanned*, which is not the highest retained: an
+    // event on an object kind this build cannot address, or one belonging to
+    // an Application, is still accounted for. Acknowledging only what was
+    // retained would leave the cursor parked behind such an event and rescan
+    // it on every read, forever.
+    let scanned_through: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(canonical_sequence), 0)
+           FROM narrative_change_events
+          WHERE project_id = ?1 AND canonical_sequence > ?2",
+        params![project_id, acknowledged],
+        |row| row.get(0),
+    )?;
+    if scanned_through <= acknowledged {
         return Ok(0);
-    };
+    }
+    let edits = pending_edits(conn, project_id, acknowledged)?;
 
     let mut updated = 0usize;
     for edit in &edits {
@@ -197,7 +210,7 @@ pub(crate) fn project_out_of_band_edits_in_tx(
         conn,
         project_id,
         CONSUMER_ID,
-        highest,
+        scanned_through,
         &chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string(),
@@ -458,6 +471,38 @@ mod tests {
                 seed_application(conn, 10);
                 seed_feed_event(conn, 20, None, &["/"], "update");
                 assert_eq!(only_state(conn), ContributionTargetState::Modified);
+                Ok(())
+            })
+        })
+        .expect("test body");
+    }
+
+    /// The cursor has to clear events this projection deliberately ignores,
+    /// or it parks behind the newest one and rescans the same window on every
+    /// read for the life of the workspace.
+    #[test]
+    fn the_cursor_clears_events_that_are_not_evidence() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                seed_application(conn, 10);
+                // Belongs to an Application, so it is not evidence -- but it is
+                // still the newest thing in the window.
+                seed_feed_event(conn, 20, Some("commit-1"), &["/title"], "update");
+
+                let first = project_out_of_band_edits_in_tx(conn, "p1").expect("first pump");
+                assert_eq!(first, 0, "nothing to project");
+
+                let second = project_out_of_band_edits_in_tx(conn, "p1").expect("second pump");
+                assert_eq!(second, 0);
+                let acknowledged = get_cursor(conn, "p1", CONSUMER_ID)
+                    .expect("cursor")
+                    .expect("cursor row")
+                    .acknowledged_through_sequence;
+                assert_eq!(
+                    acknowledged, 20,
+                    "the ignored event must be acknowledged, not rescanned forever"
+                );
                 Ok(())
             })
         })

@@ -384,12 +384,39 @@ pub(crate) fn record_contribution_in_tx(
     // DO UPDATE -- it is a durable disposition that a re-record must not
     // silently reset, the same reason Attention rows are not touched by
     // Run publish.
+    // Ownership belongs to the *field*, not to one Application's row, so a
+    // new Contribution on a field the user already holds inherits that rather
+    // than taking the column default. Without this the DO UPDATE below
+    // protects only rows that already exist: a later Application writing the
+    // same field inserts a fresh row at `maintained` and quietly takes the
+    // field back, which is exactly the implicit reclamation ADR 005 forbids.
+    //
+    // Read from a sibling row rather than from `narrative_field_authority`
+    // because the ledger is keyed by its own `(entity_kind, entity_id)`
+    // vocabulary and this table by the canonical identity; there is no index
+    // that joins them. That leaves one gap, deliberately: a field a human
+    // wrote *before* any Contribution existed on it has no sibling to inherit
+    // from, so the first Contribution lands `maintained` until the next human
+    // write stamps it. See `a_field_owned_before_any_contribution_is_not_yet_inherited`.
+    let inherited_ownership: Option<String> = conn
+        .query_row(
+            "SELECT maintenance_ownership
+               FROM narrative_application_contributions
+              WHERE project_id = ?1 AND target_object_identity = ?2
+                AND field_path = ?3 AND maintenance_ownership <> 'maintained'
+              LIMIT 1",
+            params![project_id, field.target_object_identity, field.field_path],
+            |row| row.get(0),
+        )
+        .optional()?;
+
     conn.query_row(
         "INSERT INTO narrative_application_contributions
             (id, project_id, application_id, commit_id, proposal_id, revision_id,
              operation_id, baseline_sequence, target_object_identity, field_path,
-             target_state, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             target_state, created_at, maintenance_ownership)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+                 COALESCE(?13, 'maintained'))
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
              commit_id = excluded.commit_id,
@@ -412,6 +439,7 @@ pub(crate) fn record_contribution_in_tx(
             field_path,
             target_state.as_str(),
             created_at,
+            inherited_ownership,
         ],
         |row| row.get(0),
     )
@@ -530,15 +558,15 @@ const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
 /// of `record_contribution_in_tx`'s `DO UPDATE`: re-recording a field must not
 /// quietly reset who owns it.
 ///
-/// Called from inside `record_human_field_write` rather than from its ten call
-/// sites, so a manual writer cannot be added later and silently skip it.
+/// Called from inside `record_human_field_write` rather than from each of its
+/// call sites -- there are over thirty across the manual writers -- so one
+/// added later cannot silently skip it.
 pub(crate) fn mark_fields_user_owned_in_tx(
     conn: &Connection,
     project_id: &str,
     entity_kind: &str,
     entity_id: &str,
     field_paths: &[&str],
-    updated_at: &str,
 ) -> anyhow::Result<()> {
     // The Field Authority ledger speaks its own kind vocabulary, and this is
     // the boundary that translates it -- the reason
@@ -554,14 +582,17 @@ pub(crate) fn mark_fields_user_owned_in_tx(
     };
     for field_path in field_paths {
         conn.execute(
+            // `target_state_updated_at` is deliberately untouched: it and
+            // `target_state_sequence` describe when the *state* axis last
+            // moved, and this moves the ownership axis. Stamping it here
+            // would make the pair describe two different things.
             "UPDATE narrative_application_contributions
-                SET maintenance_ownership = 'user-owned',
-                    target_state_updated_at = ?4
+                SET maintenance_ownership = 'user-owned'
               WHERE project_id = ?1
                 AND target_object_identity = ?2
                 AND field_path = ?3
                 AND maintenance_ownership = 'maintained'",
-            params![project_id, target_object_identity, field_path, updated_at],
+            params![project_id, target_object_identity, field_path],
         )?;
     }
     Ok(())
@@ -1408,6 +1439,124 @@ mod tests {
                 "detached",
                 "an unreconstructible link does not become user-owned"
             );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The reclamation ADR 005 forbids, taken by the one path that could still
+    /// do it: not by overwriting an owned row, but by inserting a fresh one
+    /// beside it. A later Application writing the same field gets its own
+    /// Contribution row, and a column default would hand it back `maintained`.
+    #[test]
+    fn a_later_application_inherits_the_users_ownership_of_the_field() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            let field = ContributionField {
+                target_object_identity: "codex-entry:e1",
+                field_path: "/name",
+                target_state: ContributionTargetState::Unchanged,
+            };
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &field,
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("first Application");
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("human takes the field");
+
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-2"),
+                &field,
+                "2026-08-17T00:00:00.000Z",
+            )
+            .expect("second Application on the same field");
+
+            let owners: Vec<String> = conn
+                .prepare(
+                    "SELECT maintenance_ownership FROM narrative_application_contributions
+                      WHERE project_id = 'p1' AND field_path = '/name'
+                      ORDER BY application_id ASC",
+                )
+                .expect("prepare")
+                .query_map([], |row| row.get(0))
+                .expect("query")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect");
+            assert_eq!(
+                owners,
+                vec!["user-owned".to_string(), "user-owned".to_string()],
+                "a new row on a user-owned field must not reset ownership"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The gap the sibling-inheritance leaves, pinned rather than hidden. A
+    /// human who writes a field before any Application has contributed to it
+    /// leaves no Contribution row to inherit from, because the ledger is keyed
+    /// by its own vocabulary and cannot be joined to this table. The next
+    /// human write on that field closes it.
+    #[test]
+    fn a_field_owned_before_any_contribution_is_not_yet_inherited() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("human writes first");
+
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/name",
+                    target_state: ContributionTargetState::Unchanged,
+                },
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("first Application afterwards");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/name"),
+                "maintained",
+                "known gap: no sibling row existed to inherit from"
+            );
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-17T00:00:00.000Z",
+            )
+            .expect("the next human write closes it");
+            assert_eq!(ownership_of(conn, "p1", "/name"), "user-owned");
             Ok(())
         })
         .expect("test body");
