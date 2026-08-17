@@ -4605,9 +4605,19 @@ impl Database {
             })?
             .collect::<Result<Vec<_>, _>>()?;
 
+        let mut affected_consumers: std::collections::BTreeSet<(String, String, String)> =
+            std::collections::BTreeSet::new();
+
         for (id, project_id, consumer_kind, consumer_key, identity) in rows {
-            let Some(repaired) = Self::collapse_doubled_source_prefix(&identity) else {
-                continue;
+            let repaired = match Self::collapse_doubled_source_prefix(&identity) {
+                Some(repaired) => repaired,
+                None => {
+                    match Self::canonicalize_bare_projection_identity(conn, &project_id, &identity)?
+                    {
+                        Some(repaired) => repaired,
+                        None => continue,
+                    }
+                }
             };
             let canonical_exists: bool = conn.query_row(
                 "SELECT EXISTS(
@@ -4618,6 +4628,11 @@ impl Database {
                 params![project_id, consumer_kind, consumer_key, repaired, id],
                 |row| row.get(0),
             )?;
+            affected_consumers.insert((
+                project_id.clone(),
+                consumer_kind.clone(),
+                consumer_key.clone(),
+            ));
 
             if canonical_exists {
                 conn.execute(
@@ -4630,7 +4645,7 @@ impl Database {
                     params![id],
                 )
                 .with_context(|| {
-                    format!("dropping double-prefixed Edge '{id}' superseded by '{repaired}'")
+                    format!("dropping malformed Edge '{id}' superseded by '{repaired}'")
                 })?;
                 continue;
             }
@@ -4644,6 +4659,156 @@ impl Database {
             .with_context(|| {
                 format!("repairing Edge source identity '{identity}' to '{repaired}'")
             })?;
+        }
+
+        Self::invalidate_derived_freshness_for_consumers_v28(conn, &affected_consumers)
+    }
+
+    /// Recovers the Source kind for an Edge whose identity carries no prefix
+    /// at all, so a legitimately-bare `domain-projection` key can be
+    /// canonicalized like the writers now do.
+    ///
+    /// A bare key is not necessarily corruption: `resolve_domain_projection`
+    /// falls back to `.unwrap_or(source_key)`, so
+    /// `{"sourceKind":"domain-projection","sourceKey":"projection-1"}` was a
+    /// valid envelope that the pre-#535 Producer copied verbatim into an
+    /// Edge. `infer_source_kind` only recognises `projection:`-prefixed
+    /// identities, so those Edges read as an unknown Source forever, and
+    /// re-running the Backfill does not help: the Edge upsert key includes
+    /// `source_object_identity`, so the canonical row is *added* beside the
+    /// bare one rather than replacing it, and worst-edge aggregation then
+    /// drags the whole Consumer to `source-missing`.
+    ///
+    /// The kind is read back from the rows that declared the Source, scoped
+    /// to the Edge's own project: a Proposal Revision's Source Basis for a
+    /// live Producer Edge, or a legacy Application's projection dependencies
+    /// for a backfilled one. Rewrites only when every declaration agrees the
+    /// Source is a projection. No declaration, or a disagreement, leaves the
+    /// row untouched -- it stays visibly unresolvable rather than being
+    /// guessed into pointing at some other object.
+    fn canonicalize_bare_projection_identity(
+        conn: &Connection,
+        project_id: &str,
+        identity: &str,
+    ) -> anyhow::Result<Option<String>> {
+        if Self::SOURCE_IDENTITY_PREFIXES_V28
+            .iter()
+            .any(|prefix| identity.starts_with(prefix))
+        {
+            return Ok(None);
+        }
+
+        let mut kinds: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for (table_probe, sql) in [
+            (
+                "narrative_revision_source_basis",
+                "SELECT DISTINCT b.source_kind
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposal_revisions r ON r.id = b.revision_id
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE s.project_id = ?1 AND b.source_key = ?2",
+            ),
+            (
+                "narrative_projection_dependencies",
+                "SELECT DISTINCT d.source_kind
+                   FROM narrative_projection_dependencies d
+                   JOIN narrative_proposal_applications a ON a.id = d.application_id
+                   JOIN narrative_apply_commits c ON c.id = a.commit_id
+                  WHERE c.project_id = ?1 AND d.source_key = ?2",
+            ),
+        ] {
+            if !conn.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                 )",
+                params![table_probe],
+                |row| row.get::<_, bool>(0),
+            )? {
+                continue;
+            }
+            let found = conn
+                .prepare(sql)?
+                .query_map(params![project_id, identity], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()?;
+            kinds.extend(found);
+        }
+
+        let projection_only = !kinds.is_empty()
+            && kinds
+                .iter()
+                .all(|kind| matches!(kind.as_str(), "domain-projection" | "projection"));
+        if !projection_only {
+            return Ok(None);
+        }
+        Ok(Some(format!("projection:{identity}")))
+    }
+
+    /// Drops the Freshness state that was computed against an Edge identity
+    /// this migration has just changed.
+    ///
+    /// Rewriting the identity is not enough on its own.
+    /// `narrative_consumer_freshness` is not a cache -- it is the durable
+    /// authority for a Consumer's current Freshness -- and
+    /// `narrative_dependency_edge_states` holds the last evaluation of each
+    /// Edge. A workspace that ran Rebuild-Derived before this migration has
+    /// `source-missing` recorded in both, decided from an identity that no
+    /// longer exists, and nothing else would ever revisit it: the Semantic
+    /// Epoch does not rotate here. The moment C2-T2 wires the read path,
+    /// that stale verdict would be served as the truth.
+    ///
+    /// Deleting rather than re-evaluating: evaluation needs a Run and an
+    /// Epoch, which a migration has no business minting. Absent rows are
+    /// already the "not yet evaluated" state the Rebuild-Derived path is
+    /// built to fill, so removing them asks for the recompute instead of
+    /// faking its answer. Finding Observations keyed on the same Consumer go
+    /// too, since `finding_key` is `<consumer_kind>:<consumer_key>` and those
+    /// diagnostics describe the same superseded evaluation.
+    fn invalidate_derived_freshness_for_consumers_v28(
+        conn: &Connection,
+        consumers: &std::collections::BTreeSet<(String, String, String)>,
+    ) -> anyhow::Result<()> {
+        for (project_id, consumer_kind, consumer_key) in consumers {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edge_states
+                  WHERE edge_id IN (
+                        SELECT id FROM narrative_dependency_edges
+                         WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
+                  )",
+                params![project_id, consumer_kind, consumer_key],
+            )
+            .with_context(|| {
+                format!(
+                    "clearing Edge States for repaired Consumer '{consumer_kind}:{consumer_key}'"
+                )
+            })?;
+
+            for (table, sql) in [
+                (
+                    "narrative_consumer_freshness",
+                    "DELETE FROM narrative_consumer_freshness
+                      WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+                ),
+                (
+                    "narrative_maintenance_finding_observations",
+                    "DELETE FROM narrative_maintenance_finding_observations
+                      WHERE project_id = ?1 AND finding_key = ?2 || ':' || ?3",
+                ),
+            ] {
+                if !conn.query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+                     )",
+                    params![table],
+                    |row| row.get::<_, bool>(0),
+                )? {
+                    continue;
+                }
+                conn.execute(sql, params![project_id, consumer_kind, consumer_key])
+                    .with_context(|| {
+                        format!("clearing {table} for repaired Consumer '{consumer_kind}:{consumer_key}'")
+                    })?;
+            }
         }
         Ok(())
     }
@@ -4802,12 +4967,29 @@ impl Database {
                 // A deleted detail value cannot be projected. Say so rather
                 // than guess: `unresolved:` is not a canonical object key, so
                 // nothing joins it, and it is greppable for manual review.
-                let rewritten = match entry_id {
-                    Some(entry_id) => format!("codex-entry:{entry_id}"),
-                    None => format!("unresolved:codex-detail-value:{detail_value_id}"),
+                // Such a row also stops being `unchanged`: its target does not
+                // exist, so the field this Application wrote cannot still
+                // match what was applied. `missing` is exactly that state.
+                let (rewritten, target_state) = match entry_id {
+                    Some(entry_id) => (format!("codex-entry:{entry_id}"), None),
+                    None => (
+                        format!("unresolved:codex-detail-value:{detail_value_id}"),
+                        Some("missing"),
+                    ),
                 };
                 if rewritten != identity {
                     Self::rewrite_contribution_identity(conn, &id, &identity, &rewritten)?;
+                }
+                if let Some(target_state) = target_state {
+                    conn.execute(
+                        "UPDATE narrative_application_contributions
+                            SET target_state = ?2
+                          WHERE id = ?1 AND target_state = 'unchanged'",
+                        params![id, target_state],
+                    )
+                    .with_context(|| {
+                        format!("marking unresolvable Contribution '{id}' as {target_state}")
+                    })?;
                 }
                 continue;
             }
@@ -9133,6 +9315,174 @@ mod tests {
             )
             .expect("count orphan states");
         assert_eq!(orphan_states, 0, "a dropped Edge must not orphan its State");
+    }
+
+    /// A bare `projection-1` was a legal envelope value, so the pre-#535
+    /// Producer stored it verbatim. It is not a doubled prefix, so prefix
+    /// collapsing alone leaves it -- and the v2 Backfill only *adds* the
+    /// canonical Edge beside it, because the upsert key includes the
+    /// identity. The kind is recovered from the Source Basis that declared it.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_canonicalizes_a_bare_projection_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "projection-1")]);
+        conn.execute_batch(
+            "CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL,
+                ordinal     INTEGER NOT NULL,
+                source_kind TEXT NOT NULL,
+                source_key  TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL);
+             CREATE TABLE narrative_proposal_sets (id TEXT PRIMARY KEY, project_id TEXT NOT NULL);
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'proj-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('revision-1', 'proposal-1');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('revision-1', 0, 'domain-projection', 'projection-1');",
+        )
+        .expect("seed the declaring Source Basis");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["projection:projection-1"]);
+    }
+
+    /// Without a declaration the kind cannot be known, and decorating the key
+    /// anyway could point the Edge at a different object. The row stays
+    /// visibly unresolvable instead.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_leaves_an_unattributable_bare_key() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(&conn, &[("e1", "run-1", "mystery-1")]);
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        assert_eq!(edge_identities(&conn), vec!["mystery-1"]);
+    }
+
+    /// Rewriting an Edge's identity invalidates every verdict reached against
+    /// the old one. `narrative_consumer_freshness` is the durable Freshness
+    /// authority, not a cache, and nothing else would revisit it -- the
+    /// Semantic Epoch does not rotate here.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_decided_on_the_old_identity() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("untouched", "run-2", "project:scene:scene-2"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             CREATE TABLE narrative_maintenance_finding_observations (
+                id          TEXT PRIMARY KEY,
+                project_id  TEXT NOT NULL,
+                finding_key TEXT NOT NULL
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing'),
+                       ('proj-1', 'narrative-extraction-run', 'run-2', 'fresh');
+             INSERT INTO narrative_maintenance_finding_observations
+                VALUES ('finding-1', 'proj-1', 'narrative-extraction-run:run-1'),
+                       ('finding-2', 'proj-1', 'narrative-extraction-run:run-2');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let surviving_freshness: Vec<String> = conn
+            .prepare("SELECT consumer_key FROM narrative_consumer_freshness ORDER BY consumer_key")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            surviving_freshness,
+            vec!["run-2".to_string()],
+            "the repaired Consumer's stale verdict must go; an untouched one must not"
+        );
+
+        let surviving_states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states WHERE edge_id = 'wrong'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count edge states");
+        assert_eq!(surviving_states, 0);
+
+        let surviving_findings: Vec<String> = conn
+            .prepare("SELECT id FROM narrative_maintenance_finding_observations ORDER BY id")
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("read")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(surviving_findings, vec!["finding-2".to_string()]);
+    }
+
+    /// The collision path drops the malformed Edge instead of updating it,
+    /// but the Consumer's aggregate verdict was still computed with that Edge
+    /// in the set, so it is just as stale.
+    #[test]
+    fn migrate_dependency_edge_identity_v28_clears_freshness_after_a_collision_drop() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v28_edges(
+            &conn,
+            &[
+                ("wrong", "run-1", "project:scene:project:scene:scene-1"),
+                ("right", "run-1", "project:scene:scene-1"),
+            ],
+        );
+        conn.execute_batch(
+            "CREATE TABLE narrative_consumer_freshness (
+                project_id         TEXT NOT NULL,
+                consumer_kind      TEXT NOT NULL,
+                consumer_key       TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+             );
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'source-missing');",
+        )
+        .expect("seed derived Freshness state");
+
+        Database::migrate_narrative_dependency_edge_identity_v28(&conn)
+            .expect("SCHEMA 28 edge identity migration");
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freshness");
+        assert_eq!(remaining, 0);
+        let states: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edge_states",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count states");
+        assert_eq!(
+            states, 0,
+            "the surviving Edge's own State was decided alongside the dropped one"
+        );
     }
 
     #[test]
