@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::application_contributions::{
-    committed_value_digest_for_field, contribution_target_identity_for_authority_kind,
+    committed_value_digest_for_field, contribution_target_identity_for_application,
     record_contribution_in_tx, ContributionField, ContributionProvenance, ContributionTargetState,
 };
 use super::change_feed::{
@@ -1583,18 +1583,34 @@ pub fn narrative_extraction_apply_commit(
                     operation_id: operation_ids.get(index).map(String::as_str),
                     baseline_sequence: Some(canonical_append.tail_sequence),
                 };
+                // Which *object* was written comes from the Application row,
+                // not from `affected_fields`. `affected_fields` is the
+                // authority on which fields an operation touches, but its
+                // entity id is a Field Authority *coordinate*:
+                // `temporal.constraint.create` uses `authority_entity_id()`,
+                // which falls back to a fingerprint (then a node id, then the
+                // literal "constraint") when the payload carries no
+                // `constraintId` -- while the row that was actually inserted
+                // got a fresh UUID. Those can never be the same string, so a
+                // Contribution addressed that way points at no object.
+                //
+                // `applied_entity_kind`/`applied_entity_id` are the ids the
+                // Apply really wrote, and running them through the same
+                // function `legacy_backfill.rs` uses is what makes the two
+                // writers agree by construction rather than by coincidence.
+                let (applied_entity_kind, applied_entity_id): (String, String) = conn.query_row(
+                    "SELECT applied_entity_kind, applied_entity_id
+                       FROM narrative_proposal_applications
+                      WHERE id = ?1",
+                    params![application_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let target_object_identity = contribution_target_identity_for_application(
+                    conn,
+                    &applied_entity_kind,
+                    &applied_entity_id,
+                )?;
                 for field in affected_fields(operation, &commit_map)? {
-                    // `affected_fields` speaks the Field Authority ledger's
-                    // kind vocabulary, which is not the ratified Object
-                    // Addressing one (`event` there is `chronicle-event`
-                    // here). Translate rather than storing the ledger's name:
-                    // `legacy_backfill.rs` writes this same column from the
-                    // writer-row vocabulary, and both must land on one
-                    // identity for anything to ever join them.
-                    let target_object_identity = contribution_target_identity_for_authority_kind(
-                        &field.entity_kind,
-                        &field.entity_id,
-                    )?;
                     // Read after the write, so this is the value as applied.
                     // `None` where the field has no canonical snapshot
                     // representation -- the aggregate paths live in other

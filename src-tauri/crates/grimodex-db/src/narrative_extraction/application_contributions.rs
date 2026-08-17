@@ -168,6 +168,20 @@ pub(crate) fn contribution_target_identity_for_application(
 /// Exhaustive on purpose: an unrecognized kind fails closed rather than
 /// silently minting an identity nothing can resolve, matching how
 /// `affected_fields` itself rejects operation kinds it does not model.
+///
+/// **No production caller.** The Apply path used to address Contributions
+/// through this function, but `affected_fields`'s entity id is a Field
+/// Authority coordinate, not an object id -- `temporal.constraint.create`
+/// reports `authority_entity_id()`, which falls back to a fingerprint while
+/// the inserted row gets a fresh UUID. Apply now reads
+/// `applied_entity_kind`/`applied_entity_id` off the Application row and goes
+/// through [`contribution_target_identity_for_application`], the same path the
+/// Legacy Backfill takes, so the two writers agree by construction. This is
+/// kept because it is the only written-down statement of how the Field
+/// Authority vocabulary corresponds to Object Addressing, which
+/// `writer_kind_for_authority_kind` still relies on for digests, and its test
+/// pins that correspondence across every kind `affected_fields` can report.
+#[allow(dead_code)]
 pub(crate) fn contribution_target_identity_for_authority_kind(
     authority_kind: &str,
     entity_id: &str,
@@ -229,8 +243,28 @@ pub(crate) fn committed_value_digest_for_field(
 ) -> anyhow::Result<Option<String>> {
     let object_key =
         narrative_object_key(writer_kind_for_authority_kind(authority_kind)?, entity_id);
-    let Some(snapshot) = canonical_snapshot_for_object_key(conn, project_id, &object_key)? else {
-        return Ok(None);
+    // A digest is advisory: `None` already means "cannot compare", and no
+    // Apply may fail because one could not be taken. `canonical_snapshot_for_object_key`
+    // reports an absent object as `Err`, not `Ok(None)` -- its `Option` is
+    // vestigial (`result.map(Some)`) -- and the collectors disagree on the
+    // shape, some raising `QueryReturnedNoRows` and some a plain "not found".
+    // Classifying that reliably is not possible from here, and guessing wrong
+    // would abort a commit over metadata, so any failure to read the object
+    // becomes "cannot compare".
+    let snapshot = match canonical_snapshot_for_object_key(conn, project_id, &object_key) {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            tracing::debug!(
+                target: "narrative.contribution",
+                %error,
+                authority_kind,
+                entity_id,
+                field_path,
+                "no canonical snapshot for a Contribution target; recording no digest"
+            );
+            return Ok(None);
+        }
     };
     let Some(value) = snapshot.pointer(field_path) else {
         return Ok(None);
