@@ -25,7 +25,7 @@
 //! call-site wiring into `commit.rs` lands in C2-T1 — this module only
 //! establishes the bookkeeping primitives.
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -59,6 +59,24 @@ pub(crate) fn contribution_target_identity(
     entity_kind: &str,
     entity_id: &str,
 ) -> anyhow::Result<String> {
+    // `narrative_object_key` funnels *every* unrecognized kind into its
+    // `component` catch-all, which is right for the Change Feed -- an
+    // unmodelled component still needs an addressable key -- but wrong as a
+    // durable identity boundary. Without this allowlist, adding an
+    // `applied_entity_kind` and forgetting to map it would persist
+    // `component:<newKind>:<id>` and pass CI. Only the kinds below may reach
+    // the catch-all.
+    const CATCH_ALL_KINDS: &[&str] = &["codex_semantic_binding"];
+    anyhow::ensure!(
+        CATCH_ALL_KINDS.contains(&entity_kind)
+            || !matches!(
+                narrative_object_key(entity_kind, entity_id)
+                    .get("kind")
+                    .and_then(Value::as_str),
+                Some("component")
+            ),
+        "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for entity kind '{entity_kind}'"
+    );
     let object_key = narrative_object_key(entity_kind, entity_id);
     let kind = object_key
         .get("kind")
@@ -80,6 +98,58 @@ pub(crate) fn contribution_target_identity(
         return Ok(format!("{kind}:{component_id}"));
     }
     Ok(format!("{kind}:{entity_id}"))
+}
+
+/// Marks a Contribution whose real target could not be determined. Not a
+/// canonical object key on purpose: nothing should ever join on it, and it is
+/// greppable for the manual review it asks for. Preferred over guessing,
+/// which would attribute a field to the wrong object.
+pub(crate) const UNRESOLVED_TARGET_PREFIX: &str = "unresolved:";
+
+/// The identity for an Application row's `(applied_entity_kind,
+/// applied_entity_id)`, projected onto the object the Contribution is
+/// actually *about*.
+///
+/// For almost every operation the applied entity already is that object, so
+/// this is [`contribution_target_identity`] unchanged. `codex.detail.value.
+/// set` is the one exception, and it is not a spelling difference but an
+/// identity one: `commit.rs` records `applied_entity_kind =
+/// codex_detail_value` with the detail-value row's id, while
+/// `field_authority.rs`'s `affected_fields` reports the same write as
+/// `codex-entry:<entryId>` plus `/details/<definitionId>`. Translating the
+/// kind alone would leave the two paths pointing at different objects --
+/// `codex-detail-value:<valueId>` versus `codex-entry:<entryId>` -- which no
+/// name mapping can reconcile, because the ids differ too.
+///
+/// Every other kind was checked for the same hazard and matches: the scene
+/// and event metadata patches and the story-order materialize all record the
+/// scene/event id they annotate (`temporal_operations.rs`), and the semantic
+/// binding upsert records the same `binding_id` `affected_fields` uses
+/// (`semantic_bindings.rs`).
+///
+/// A detail-value row that no longer exists cannot be projected. That yields
+/// an explicit [`UNRESOLVED_TARGET_PREFIX`] identity rather than a guess.
+pub(crate) fn contribution_target_identity_for_application(
+    conn: &Connection,
+    applied_entity_kind: &str,
+    applied_entity_id: &str,
+) -> anyhow::Result<String> {
+    if applied_entity_kind == "codex_detail_value" {
+        let entry_id: Option<String> = conn
+            .query_row(
+                "SELECT entry_id FROM codex_detail_values WHERE id = ?1",
+                params![applied_entity_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        return match entry_id {
+            Some(entry_id) => contribution_target_identity("codex_entry", &entry_id),
+            None => Ok(format!(
+                "{UNRESOLVED_TARGET_PREFIX}codex-detail-value:{applied_entity_id}"
+            )),
+        };
+    }
+    contribution_target_identity(applied_entity_kind, applied_entity_id)
 }
 
 /// Same identity, from `field_authority.rs`'s `affected_fields` vocabulary.

@@ -74,9 +74,12 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::application_contributions::{
-    contribution_target_identity, record_contribution_in_tx, ContributionTargetState,
+    contribution_target_identity_for_application, record_contribution_in_tx,
+    ContributionTargetState,
 };
-use super::dependency_edges::{record_dependency_edge_in_tx, RUN_CONSUMER_KIND};
+use super::dependency_edges::{
+    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+};
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
@@ -86,8 +89,19 @@ use crate::Database;
 
 /// Work key every project's Legacy Dependency Backfill Run is created
 /// under (Run Kind Policy `dependency-backfill`). One logical Backfill per
-/// project, ever -- see [`bootstrap_legacy_dependency_backfill_for_project`].
-const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill";
+/// project per algorithm version -- see
+/// [`bootstrap_legacy_dependency_backfill_for_project`].
+///
+/// The trailing `:v<n>` is load-bearing and must move with
+/// [`LEGACY_BACKFILL_ALGORITHM_VERSION`] (a test pins that). The Run Kind
+/// Policy seals `backfillAlgorithmVersion` as a `sealedParameters` entry, so
+/// the contract already says two Runs at different algorithm versions are
+/// not the same work -- but `find_reusable_system_run` matches on
+/// `(project_id, run_kind, work_key, status)` and never opens the sealed
+/// spec, so with a version-free key a Run left `completed` by an older
+/// algorithm is reused and the new transform never runs. Carrying the
+/// version in the key is what makes the implementation honour the seal.
+const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 
 /// Sealed into the Run's `spec_json` per the Run Kind Policy's
 /// `sealedParameters`. This backfill has no legacy schema-version/
@@ -154,6 +168,7 @@ struct LegacyApplication {
 }
 
 struct LegacyProjectionDependency {
+    source_kind: String,
     source_key: String,
     observed_revision_token: String,
 }
@@ -356,7 +371,8 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
         // the one canonical mapping, so a backfilled row and a live row
         // describing the same object share an identity instead of being two
         // strings that never join.
-        let target_object_identity = contribution_target_identity(
+        let target_object_identity = contribution_target_identity_for_application(
+            conn,
             &application.applied_entity_kind,
             &application.applied_entity_id,
         )?;
@@ -424,13 +440,15 @@ fn record_legacy_dependency_edges_in_tx(
     now: &str,
 ) -> anyhow::Result<()> {
     for dependency in load_legacy_projection_dependencies(conn, application_id)? {
+        let source_object_identity =
+            canonical_source_object_identity(&dependency.source_kind, &dependency.source_key)?;
         let read_set_json = serde_json::to_string(&[dependency.observed_revision_token.as_str()])?;
         record_dependency_edge_in_tx(
             conn,
             project_id,
             RUN_CONSUMER_KIND,
             run_id,
-            &dependency.source_key,
+            &source_object_identity,
             &read_set_json,
             None,
             now,
@@ -462,17 +480,17 @@ fn count_edges(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
 /// `CHECK`), so it carries no information beyond what `source_key`/
 /// `observed_revision_token` already give the Generic Graph.
 ///
-/// `source_kind` is deliberately not loaded: `source_key` already holds the
-/// fully-qualified identity, whose prefix *is* the kind -- that is the same
-/// direction `restore_rebuild.rs`'s `infer_source_kind` reads it in. It is
-/// still the secondary sort key so the emitted Edge order stays the table's
-/// own `(source_kind, source_key)` primary-key order.
+/// `source_kind` *is* loaded, even though `source_key` is normally already
+/// the fully-qualified identity. `domain-projection` is the exception:
+/// `resolve_domain_projection` accepts a bare id, so a legitimate envelope
+/// can leave `projection-1` here, and only the kind says what prefix that
+/// bare id is missing. `canonical_source_object_identity` needs both.
 fn load_legacy_projection_dependencies(
     conn: &Connection,
     application_id: &str,
 ) -> anyhow::Result<Vec<LegacyProjectionDependency>> {
     let mut statement = conn.prepare(
-        "SELECT source_key, observed_revision_token
+        "SELECT source_kind, source_key, observed_revision_token
            FROM narrative_projection_dependencies
           WHERE application_id = ?1
           ORDER BY source_kind ASC, source_key ASC",
@@ -480,8 +498,9 @@ fn load_legacy_projection_dependencies(
     let rows = statement
         .query_map(params![application_id], |row| {
             Ok(LegacyProjectionDependency {
-                source_key: row.get(0)?,
-                observed_revision_token: row.get(1)?,
+                source_kind: row.get(0)?,
+                source_key: row.get(1)?,
+                observed_revision_token: row.get(2)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -955,6 +974,147 @@ mod tests {
             Ok(())
         })
         .expect("backfill copies the stored source identity verbatim");
+    }
+
+    /// The work key must carry the algorithm version, or a workspace that
+    /// already completed an older Backfill silently reuses it and never runs
+    /// the new transform.
+    #[test]
+    fn the_work_key_carries_the_algorithm_version() {
+        assert!(
+            LEGACY_BACKFILL_WORK_KEY.ends_with(&format!(":v{LEGACY_BACKFILL_ALGORITHM_VERSION}")),
+            "work key '{LEGACY_BACKFILL_WORK_KEY}' must end with \
+             ':v{LEGACY_BACKFILL_ALGORITHM_VERSION}'"
+        );
+    }
+
+    /// A bare `projection-1` is a legitimate envelope value --
+    /// `resolve_domain_projection` accepts it -- but `infer_source_kind` only
+    /// recognises `projection:`-prefixed identities, so storing it verbatim
+    /// produced an Edge the Evaluator reads as an unknown Source.
+    #[test]
+    fn a_bare_projection_source_key_is_canonicalized_into_the_edge() {
+        use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+            seed_legacy_projection_dependency(
+                conn,
+                "app-1",
+                "domain-projection",
+                "projection-1",
+                "v1@2026-08-14T00:00:00.000Z",
+            );
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            assert_eq!(edges.len(), 1);
+            assert_eq!(edges[0].source_object_identity, "projection:projection-1");
+            Ok(())
+        })
+        .expect("a bare projection key is canonicalized");
+    }
+
+    /// The Backfill sentinel must land on the same object the live Apply path
+    /// records, which for a detail-value write is the owning Codex Entry --
+    /// not the detail-value row. Only `field_path` may differ.
+    #[test]
+    fn a_detail_value_application_is_projected_onto_its_codex_entry() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, name, type)
+                 VALUES ('entry-1', 'project-1', 'Entry', 'character')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name)
+                 VALUES ('def-1', 'project-1', 'character', 'Height')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO codex_detail_values (id, entry_id, definition_id, value)
+                 VALUES ('value-1', 'entry-1', 'def-1', '180cm')",
+                [],
+            )?;
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_detail_value",
+                "value-1",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let contributions = list_contributions_for_application(conn, "project-1", "app-1")?;
+            assert_eq!(contributions.len(), 1);
+            assert_eq!(
+                contributions[0].target_object_identity, "codex-entry:entry-1",
+                "the Backfill sentinel must name the Entry the live Apply path names"
+            );
+            Ok(())
+        })
+        .expect("detail value applications project onto their entry");
+    }
+
+    /// A detail value that no longer exists cannot be projected, and guessing
+    /// would attribute the field to the wrong object.
+    #[test]
+    fn an_unresolvable_detail_value_is_marked_rather_than_guessed() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application_with_run(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_detail_value",
+                "value-gone",
+                "2026-08-15T00:00:00.000Z",
+                Some("run-1"),
+            );
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let contributions = list_contributions_for_application(conn, "project-1", "app-1")?;
+            assert_eq!(contributions.len(), 1);
+            assert_eq!(
+                contributions[0].target_object_identity,
+                "unresolved:codex-detail-value:value-gone"
+            );
+            Ok(())
+        })
+        .expect("an unresolvable detail value is marked");
     }
 
     #[test]
