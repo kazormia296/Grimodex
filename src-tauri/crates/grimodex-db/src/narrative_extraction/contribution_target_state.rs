@@ -392,6 +392,52 @@ mod tests {
         rows[0].target_state
     }
 
+    /// Re-recording a Contribution puts `target_state` back to what the
+    /// Application wrote, so the projection's watermark for the state it just
+    /// discarded has to go with it.
+    ///
+    /// Keeping it left the row saying "as of event N the field was modified"
+    /// while claiming `unchanged`, and the guard `COALESCE(
+    /// target_state_sequence, -1) < N` then refused to re-apply event N --
+    /// permanently. Rewinding the cursor does not help, because the refusal
+    /// is in the row, which is why this test rewinds it and still expects the
+    /// state to come back.
+    #[test]
+    fn re_recording_a_contribution_lets_the_projection_run_again() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                seed_application(conn, 10);
+                seed_feed_event(conn, 20, None, &["/title"], "update");
+                assert_eq!(only_state(conn), ContributionTargetState::Modified);
+
+                seed_application(conn, 10);
+                let watermark: Option<i64> = conn.query_row(
+                    "SELECT target_state_sequence FROM narrative_application_contributions
+                      WHERE project_id = 'p1'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(
+                    watermark, None,
+                    "the watermark describes a state the re-record just replaced"
+                );
+
+                conn.execute(
+                    "DELETE FROM narrative_change_cursors WHERE project_id = 'p1'",
+                    [],
+                )?;
+                assert_eq!(
+                    only_state(conn),
+                    ContributionTargetState::Modified,
+                    "the edit is still in the Feed, so a replay has to find it again"
+                );
+                Ok(())
+            })
+        })
+        .expect("test body");
+    }
+
     /// The Legacy Backfill sentinel is the other spelling of "the whole
     /// object", and a field-level hand edit has to reach it. Before the
     /// sentinel was recognised, only an event that had already collapsed to
@@ -465,17 +511,18 @@ mod tests {
                     [],
                 )?;
                 conn.execute(
-                    "INSERT INTO codex_entries (id, project_id, name, entry_type, created_at,
-                                                updated_at)
-                     VALUES ('e1', 'p1', 'Entry', 'character', '2026-08-15T00:00:00.000Z',
-                             '2026-08-15T00:00:00.000Z')",
+                    "INSERT INTO codex_entries (id, project_id, type, name)
+                     VALUES ('e1', 'p1', 'character', 'Entry')",
                     [],
                 )?;
                 conn.execute(
-                    "INSERT INTO codex_detail_values (id, project_id, entry_id, definition_id,
-                                                      value_json, created_at, updated_at)
-                     VALUES ('v9', 'p1', 'e1', 'def-1', '\"x\"',
-                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                    "INSERT INTO codex_detail_definitions (id, project_id, type_slug, name)
+                     VALUES ('def-1', 'p1', 'character', 'Detail')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_detail_values (id, entry_id, definition_id, value)
+                     VALUES ('v9', 'e1', 'def-1', 'x')",
                     [],
                 )?;
                 record_contribution_in_tx(

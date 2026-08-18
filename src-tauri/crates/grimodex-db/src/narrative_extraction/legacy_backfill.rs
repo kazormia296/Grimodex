@@ -749,6 +749,73 @@ mod tests {
         .expect("backfill empty project");
     }
 
+    /// A Backfill row's lower bound is where the Feed already is, not "no
+    /// lower bound".
+    ///
+    /// NULL claimed every event ever recorded is evidence about the row,
+    /// while the projection's per-project cursor had in general already moved
+    /// past all of it -- and neither acknowledge helper can move a cursor
+    /// backwards. The row asked for a replay that could never be delivered.
+    #[test]
+    fn a_backfilled_contribution_starts_at_the_current_feed_head() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+            );
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, domain, op_type, payload, session_id,
+                     sequence, timestamp, prev_hash, hash)
+                 VALUES ('uid-77', 'project-1', 'narrative', 'update', '{}', 'session-1',
+                         77, 0, '', 'uid-77')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain, source_change_event_uid,
+                     source_change_event_sequence, cause_kind, origin, payload_digest,
+                     created_at)
+                 VALUES ('tx-77', 'project-1', 'req-77', 'test', 'uid-77', 77, 'forward',
+                         'human', 'digest', '2026-08-15T01:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json, change_kind,
+                     mutation_kind, changed_paths_json, occurred_at)
+                 VALUES ('ev-77', 'project-1', 'tx-77', 'uid-77', 77, 0,
+                         '{\"kind\":\"scene\",\"sceneId\":\"s1\"}', 'content', 'update',
+                         '[\"/title\"]', '2026-08-15T01:00:00.000Z')",
+                [],
+            )?;
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let baseline: Option<i64> = conn.query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(baseline, Some(77));
+            Ok(())
+        })
+        .expect("test body");
+    }
+
     #[test]
     fn existing_applications_get_one_unchanged_contribution_each() {
         let db = test_db();

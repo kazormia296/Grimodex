@@ -325,6 +325,62 @@ fn continuity_guard_chains_repeated_roots_in_event_ordinal_order() {
     .expect("same-root event chain");
 }
 
+/// One transaction carries one canonical sequence, and its events differ
+/// only by `event_ordinal`. The Contribution projection watermarks each row
+/// by sequence alone, so of two events at one sequence bearing on the same
+/// field it can keep only the first -- and its cursor then acknowledges the
+/// sequence, putting the other beyond replay.
+///
+/// That is harmless while every repeated identity in a transaction carries
+/// the same mutation kind, because the projection derives `missing` only
+/// from a delete and stamps a transaction-wide timestamp, so the refused
+/// write would have been byte-identical. Mixing a delete with a non-delete
+/// is the shape that would genuinely lose information, and no writer builds
+/// it. This keeps it that way, so the projection can stay one-dimensional
+/// rather than growing an ordering key the cursor does not share.
+#[test]
+fn continuity_guard_rejects_a_delete_and_a_non_delete_for_one_object() {
+    let db = migrated_db();
+    db.with_conn(|conn| {
+        conn.execute_batch("BEGIN IMMEDIATE")?;
+        append_canonical_in_tx(
+            conn,
+            PROJECT_ONE,
+            "mixed-mutation-event",
+            "mixed-mutation",
+            1_786_579_200_102,
+        );
+        let created = NarrativeChangeEventInput {
+            after_version: Some(1),
+            after_digest: Some("sha256:one".to_string()),
+            ..narrative_event("mixed-mutation", "create")
+        };
+        let deleted = NarrativeChangeEventInput {
+            before_version: Some(1),
+            before_digest: Some("sha256:one".to_string()),
+            mutation_kind: "delete".to_string(),
+            ..narrative_event("mixed-mutation", "delete")
+        };
+        let error = append_narrative_change_transaction_in_tx(
+            conn,
+            &transaction_input(
+                PROJECT_ONE,
+                "mixed-mutation",
+                "mixed-mutation-event",
+                vec![created, deleted],
+            ),
+        )
+        .expect_err("a delete and a non-delete for one object must not share a sequence");
+        assert!(
+            format!("{error:#}").contains("NARRATIVE_CHANGE_FEED_MIXED_MUTATION"),
+            "unexpected error: {error:#}"
+        );
+        conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    })
+    .expect("mixed mutation rejection");
+}
+
 #[test]
 fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
     let db = migrated_db();
