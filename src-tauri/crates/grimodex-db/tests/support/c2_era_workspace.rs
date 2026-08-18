@@ -75,10 +75,14 @@ pub const CHRONICLE_FIELD_PATH: &str = "/title";
 /// The `change_events.sequence` of this Application's own canonical apply
 /// event, which is the baseline SCHEMA 29 must reconstruct.
 pub const APPLY_EVENT_SEQUENCE: i64 = 42;
-/// A later apply event belonging to a different commit. It exists so the
-/// reconstruction has to group by commit rather than take the project's
-/// minimum or maximum apply sequence.
-pub const OTHER_APPLY_EVENT_SEQUENCE: i64 = 55;
+/// A later apply event belonging to a different commit, so a reconstruction
+/// that took the project's *maximum* apply sequence would be visibly wrong.
+pub const LATER_OTHER_APPLY_EVENT_SEQUENCE: i64 = 55;
+/// An *earlier* apply event belonging to a third commit. Without it the
+/// project-wide minimum apply sequence is also 42, and dropping `entity_id`
+/// from SCHEMA 29's grouping -- taking the project's first apply instead of
+/// this commit's -- would leave every assertion in this fixture green.
+pub const EARLIER_OTHER_APPLY_EVENT_SEQUENCE: i64 = 11;
 
 pub const ATTENTION_FINDING_KEY: &str = "narrative-extraction-run:c2-upgrade-run-repaired";
 pub const ATTENTION_ACTOR_ID: &str = "c2-upgrade-actor";
@@ -384,18 +388,26 @@ fn seed_apply_history(conn: &Connection) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The canonical audit log the SCHEMA 29 baseline is reconstructed from. The
-/// unrelated earlier edit and the later apply of a different commit are both
-/// there so a reconstruction that took the project's minimum or maximum apply
-/// sequence would be visibly wrong.
+/// The canonical audit log the SCHEMA 29 baseline is reconstructed from.
+///
+/// Three apply events, deliberately straddling this commit's own: the
+/// project's minimum apply sequence is 11 and its maximum is 55, so the only
+/// way to arrive at 42 is to group by `entity_id` the way SCHEMA 29's
+/// subquery does. An unrelated non-apply edit sits at 7 to prove the
+/// `op_type` filter is doing its job too.
 fn seed_change_events(conn: &Connection) -> anyhow::Result<()> {
     for (op_type, entity_id, sequence) in [
         ("codex.entry.update", ENTRY_ID, 7_i64),
+        (
+            "narrative.commit.apply",
+            "c2-upgrade-earlier-commit",
+            EARLIER_OTHER_APPLY_EVENT_SEQUENCE,
+        ),
         ("narrative.commit.apply", COMMIT_ID, APPLY_EVENT_SEQUENCE),
         (
             "narrative.commit.apply",
-            "c2-upgrade-other-commit",
-            OTHER_APPLY_EVENT_SEQUENCE,
+            "c2-upgrade-later-commit",
+            LATER_OTHER_APPLY_EVENT_SEQUENCE,
         ),
     ] {
         conn.execute(

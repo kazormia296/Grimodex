@@ -34,7 +34,8 @@ use c2_era_workspace::{
     read_only_connection, seed_c2_era_workspace, table_exists, table_has_column, user_version,
     EraWorkspace, APPLICATION_ID, APPLY_EVENT_SEQUENCE, ATTENTION_ACTOR_ID, ATTENTION_FINDING_KEY,
     CANONICAL_CHRONICLE_IDENTITY, CANONICAL_CODEX_IDENTITY, CANONICAL_EDGE_IDENTITY,
-    CHRONICLE_CONTRIBUTION_ID, COMMIT_ID, HUMAN_OWNED_CONTRIBUTION_ID, LEGACY_ACTOR_SENTINEL,
+    CHRONICLE_CONTRIBUTION_ID, COMMIT_ID, EARLIER_OTHER_APPLY_EVENT_SEQUENCE,
+    HUMAN_OWNED_CONTRIBUTION_ID, LATER_OTHER_APPLY_EVENT_SEQUENCE, LEGACY_ACTOR_SENTINEL,
     MAINTAINED_CONTRIBUTION_ID, NEWEST_C2_ERA, OLDEST_C2_ERA, PROJECT_ID, PROPOSAL_ID,
     REPAIRED_EDGE_ID, REPAIRED_RUN_ID, REVISION_ID, UNATTRIBUTED_ATTENTION_FINDING_KEY,
     UNTOUCHED_EDGE_ID, UNTOUCHED_EDGE_IDENTITY, UNTOUCHED_RUN_ID,
@@ -306,7 +307,10 @@ fn migrate_preserves_contribution_attribution_and_reconstructs_its_provenance() 
                 contribution_baseline(&conn, id),
                 Some(APPLY_EVENT_SEQUENCE),
                 "the baseline is this commit's own apply event, not the project's \
-                 first or last (from SCHEMA {era})"
+                 first ({EARLIER_OTHER_APPLY_EVENT_SEQUENCE}) or last \
+                 ({LATER_OTHER_APPLY_EVENT_SEQUENCE}) -- the fixture straddles it on \
+                 both sides so dropping entity_id from the grouping cannot pass \
+                 (from SCHEMA {era})"
             );
         }
 

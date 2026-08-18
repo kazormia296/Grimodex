@@ -481,6 +481,65 @@ mod tests {
         .expect("upsert edge");
     }
 
+    /// The Producer-time gate this module's doc comment claims, exercised
+    /// through the writer rather than only through
+    /// `validate_consumer_identity` itself -- otherwise deleting the call
+    /// leaves every test in this crate green while two unrelated Consumers
+    /// start sharing one `finding_key`, and with it one human disposition.
+    #[test]
+    fn a_consumer_kind_carrying_the_finding_key_separator_fails_closed() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            // ("a:b", "c") and ("a", "b:c") both render as "a:b:c".
+            let collides = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                "a:b",
+                "c",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            );
+            assert!(collides
+                .expect_err("a consumer kind containing the separator must be refused")
+                .to_string()
+                .contains("NEX_CONSUMER_KIND_INVALID"));
+
+            for (kind, key) in [("", "run-1"), (RUN_CONSUMER_KIND, ""), (" padded", "run-1")] {
+                assert!(
+                    record_dependency_edge_in_tx(
+                        conn,
+                        "project-1",
+                        kind,
+                        key,
+                        "project:scene:scene-1",
+                        r#"["/body"]"#,
+                        None,
+                        "2026-08-15T00:00:00.000Z",
+                    )
+                    .is_err(),
+                    "expected ({kind:?}, {key:?}) to be refused"
+                );
+            }
+
+            // A key may carry separators; only the kind may not.
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                "semantic-index",
+                "embeddings:v2",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("a compound consumer key is legitimate");
+            Ok(())
+        })
+        .expect("consumer identity gate");
+    }
+
     #[test]
     fn non_array_read_set_json_fails_closed() {
         let db = test_db();

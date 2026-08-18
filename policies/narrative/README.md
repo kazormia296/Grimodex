@@ -1033,6 +1033,18 @@ reserved kind, which is intentional while those kinds have no readers.
 Refusing at the writer, and re-keying any Producer off
 `narrative-extraction-run`, are the rest of C2-2 and are not started here.
 
+The registry is guarded from both sides, because neither side can see the
+other's language. `validate-semantic-core-boundary.mjs`'s
+`validateConsumerContract` catches what a JSON Schema cannot express — one
+`kind` registered twice with contradictory `status` values (`uniqueItems`
+only compares whole entries), the loss of the last `declared` entry, and a
+`durableIdentitySource` naming a table `migrate.rs` never creates. From
+Rust, `consumer_identity.rs` reads this file with `include_str!` (the same
+way `protected_writers.rs` reads its own policy) and fails if the
+`declared` set and `ConsumerKind` stop naming the same kinds, or if a
+`reserved` kind starts being accepted. Renaming the literal on either side
+now breaks a test rather than silently splitting the vocabulary in two.
+
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
 `contributionTargetStates`/`maintenanceOwnershipStates`), M

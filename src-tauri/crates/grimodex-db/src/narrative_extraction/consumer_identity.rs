@@ -298,6 +298,72 @@ mod tests {
         }
     }
 
+    /// The ratified registry, read the same way `protected_writers.rs` reads
+    /// its own policy file: by `include_str!`, so the check runs against the
+    /// committed contract rather than a copy of it.
+    const CONSUMER_CONTRACT_JSON: &str =
+        include_str!("../../../../../policies/narrative/narrative-consumer-contract.json");
+
+    fn contract_kinds_with_status(status: &str) -> Vec<String> {
+        let contract: serde_json::Value = serde_json::from_str(CONSUMER_CONTRACT_JSON)
+            .expect("policies/narrative/narrative-consumer-contract.json must parse");
+        contract["consumerKinds"]
+            .as_array()
+            .expect("consumerKinds must be an array")
+            .iter()
+            .filter(|entry| entry["status"] == status)
+            .map(|entry| {
+                entry["kind"]
+                    .as_str()
+                    .expect("every consumerKinds entry needs a kind")
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// The registry and this enum have to mean the same thing in both
+    /// directions, and neither the JSON Schema nor the `.mjs` validator can
+    /// see Rust. Without this, renaming `ConsumerKind::as_str()`'s literal or
+    /// adding a `declared` entry to the contract leaves
+    /// `pnpm test:narrative:semantic-contract` green while the "single owner
+    /// of the Consumer vocabulary" claim quietly stops being true.
+    #[test]
+    fn every_declared_contract_kind_has_a_consumer_kind_variant_and_vice_versa() {
+        let declared = contract_kinds_with_status("declared");
+        assert_eq!(
+            declared,
+            vec![RUN_CONSUMER_KIND.to_string()],
+            "the contract's `declared` set and this enum must name the same kinds;              add the variant in the same change that declares the kind"
+        );
+        for kind in &declared {
+            ConsumerKind::try_from(kind.as_str())
+                .unwrap_or_else(|error| panic!("declared kind '{kind}' is unknown here: {error}"));
+        }
+    }
+
+    /// A `reserved` kind is a promise the contract makes and this crate has
+    /// deliberately not kept yet. If one ever starts converting, it stopped
+    /// being reserved and the contract has to say so.
+    #[test]
+    fn no_reserved_contract_kind_is_accepted_as_a_consumer_kind() {
+        let reserved = contract_kinds_with_status("reserved");
+        assert!(
+            !reserved.is_empty(),
+            "the contract should still reserve the finer Consumer classes C2-2 will introduce"
+        );
+        for kind in reserved {
+            assert!(
+                ConsumerKind::try_from(kind.as_str()).is_err(),
+                "'{kind}' is reserved in the contract but accepted here; a variant with no                  Producer and no reader is a promise nothing keeps"
+            );
+            assert_eq!(
+                owning_run_id_for_consumer(&kind, "any-key"),
+                None,
+                "a reserved kind has no owning Run to resolve"
+            );
+        }
+    }
+
     /// `migrate.rs`'s SCHEMA 28 `invalidate_derived_freshness_for_consumers_v28`
     /// builds the same key in raw SQL (`?2 || ':' || ?3`) and cannot import
     /// this function -- a migration has to keep working against the schema

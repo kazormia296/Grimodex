@@ -1434,6 +1434,35 @@ mod tests {
         .expect("query after rejected write");
     }
 
+    /// Same Producer-time gate as `dependency_edges`', on the Freshness
+    /// authority's own writer. Both have to refuse, or the two tables could
+    /// disagree about what a Consumer even is.
+    #[test]
+    fn write_consumer_freshness_refuses_a_kind_carrying_the_finding_key_separator() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            let error = write_consumer_freshness_in_tx(
+                conn,
+                "project-1",
+                "a:b",
+                "c",
+                &fresh(),
+                &epoch_id,
+                None,
+                None,
+                "2026-08-15T01:00:00.000Z",
+            )
+            .expect_err("a consumer kind containing the separator must be refused");
+            assert!(
+                error.to_string().contains("NEX_CONSUMER_KIND_INVALID"),
+                "unexpected error: {error}"
+            );
+            Ok(())
+        })
+        .expect("consumer identity gate");
+    }
+
     #[test]
     fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
         let db = test_db();
