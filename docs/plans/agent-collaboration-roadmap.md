@@ -20,6 +20,11 @@ Semantic Verificationについて、実装順序と投資判断を管理する�
   はCanonical mutation authority routeを所有する。
 - [ADR 007: Agent共同作業の実行・Task・投機的Workspace境界](../adr/007-agent-collaboration-execution-boundary.md)
   は本書が用いる実行、Task、Workspace、一貫性、承認、Verification境界を所有する。
+- [ADR 008: Agent既定モードと書き込み承認境界](../adr/008-agent-default-mode-and-write-approval.md)
+  はAgent既定モード、ツール効果分類（effect / approvalMode）、承認・Capability発行境界を
+  所有する。その実装順序は
+  [Agent Auto / Write-Safety Roadmap](agent-auto-write-safety-roadmap.md)（Gate A／B）が
+  管理し、本書のRelease A〜DはそのGate C／D相当の正本である。
 - [Narrative Semantic Core / Living Story Bible Roadmap](narrative-semantic-core-roadmap.md)
   はSemantic Coreのcritical pathを所有する。本書はそのstable surfaceを利用し、
   第二のSemantic authorityを作らない。
