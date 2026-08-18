@@ -5172,13 +5172,38 @@ impl Database {
     /// matching how SCHEMA 23 refuses to coerce an unrecognized Attempt
     /// status.
     ///
-    /// Deliberately *not* reconstructed, because neither can be identified
-    /// rather than guessed: `operation_id` (`narrative_apply_operations` has
-    /// no unique key this table could join on) and `baseline_sequence` (no
-    /// single canonical event corresponds to it).
-    /// They stay NULL, which is the honest answer. `maintenance_ownership`
-    /// starts at `maintained` for every row; deriving it from Field Authority
-    /// is its own step, not this one.
+    /// `operation_id` is deliberately *not* reconstructed: it cannot be
+    /// identified rather than guessed, because `narrative_apply_operations`
+    /// carries no unique key this table could join on. It stays NULL, which
+    /// is the honest answer.
+    ///
+    /// `baseline_sequence` *is* reconstructed, and the earlier claim that "no
+    /// single canonical event corresponds to it" was simply wrong. Every
+    /// Apply appends exactly one `narrative.commit.apply` row to
+    /// `change_events` carrying its `commit_id`, and `commit.rs` stores that
+    /// row's `sequence` as the live path's baseline -- so the subquery below
+    /// reads the same number the live path would have written, on the same
+    /// scale the projection compares against (`narrative_change_events.
+    /// canonical_sequence` is the source change event's `sequence`).
+    ///
+    /// Writing NULL here was not a missing nicety. The projection admits an
+    /// event when `COALESCE(baseline_sequence, -1) < sequence`, so NULL means
+    /// "every event ever recorded postdates this Application". On a migrated
+    /// workspace the consumer cursor does not exist either, so the first pump
+    /// starts at 0 and replays the project's whole history: a human edit made
+    /// *before* the Application would be read as evidence the field was
+    /// changed *after* it, and the row would report `modified` -- or
+    /// `missing`, for a delete -- while holding exactly what the Application
+    /// wrote. NULL now survives only where it is true: an Application with no
+    /// canonical apply event, which predates the Change Feed entirely, and
+    /// for which every Feed event genuinely is later.
+    ///
+    /// `maintenance_ownership` starts at `maintained` here and is then
+    /// re-projected from the Field Authority ledger by
+    /// [`Self::reproject_contribution_ownership_v29`], which runs as part of
+    /// this migration rather than "its own step, not this one" -- the column
+    /// asserts who may keep maintaining a field, and shipping every migrated
+    /// row as `maintained` asserts that of fields the author already owns.
     fn migrate_narrative_application_contributions_v29(conn: &Connection) -> anyhow::Result<()> {
         if !conn.query_row(
             "SELECT EXISTS(
@@ -5247,7 +5272,12 @@ impl Database {
              SELECT c.id, c.project_id, c.application_id,
                     a.commit_id, a.proposal_id, a.revision_id,
                     NULL, c.target_object_identity, c.field_path, c.target_state,
-                    'maintained', NULL, NULL, NULL, c.created_at
+                    'maintained',
+                    (SELECT e.sequence FROM change_events e
+                      WHERE e.project_id = c.project_id
+                        AND e.op_type = 'narrative.commit.apply'
+                        AND e.entity_id = a.commit_id),
+                    NULL, NULL, c.created_at
                FROM narrative_application_contributions c
                JOIN narrative_proposal_applications a ON a.id = c.application_id;
              DROP TABLE narrative_application_contributions;
@@ -5263,6 +5293,50 @@ impl Database {
                 ON narrative_application_contributions(project_id, commit_id);",
         )
         .context("rebuilding narrative_application_contributions for SCHEMA 29")?;
+        Self::reproject_contribution_ownership_v29(conn)
+            .context("re-projecting Contribution ownership from Field Authority for SCHEMA 29")?;
+        Ok(())
+    }
+
+    /// Replays the Field Authority ledger onto the freshly rebuilt
+    /// Contribution rows, so `maintenance_ownership` starts out agreeing with
+    /// the ledger that already decides who holds each field.
+    ///
+    /// Without this the rebuild ships every pre-existing row as `maintained`
+    /// -- "maintenance may keep proposing and applying to this field" -- for
+    /// fields a person had already written or explicitly locked. Nothing
+    /// self-corrects it: ownership is only ever stamped forward, on the next
+    /// human write, so a field the author took and never touched again would
+    /// have reported the wrong owner for the life of the workspace.
+    ///
+    /// Reuses `mark_fields_user_owned_in_tx` rather than restating its UPDATE
+    /// as migration SQL. The kind vocabularies differ on the two sides and
+    /// the translation between them lives in one function; a second copy here
+    /// would be a second thing to keep in step, which is the failure this
+    /// branch has already had to fix twice.
+    fn reproject_contribution_ownership_v29(conn: &Connection) -> anyhow::Result<()> {
+        if !Self::table_exists_for_v28(conn, "narrative_field_authority")? {
+            return Ok(());
+        }
+        let owned: Vec<(String, String, String, String)> = conn
+            .prepare(
+                "SELECT project_id, entity_kind, entity_id, field_path
+                   FROM narrative_field_authority
+                  WHERE owner_kind = 'human' OR explicit_lock <> 0",
+            )?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (project_id, entity_kind, entity_id, field_path) in owned {
+            crate::narrative_extraction::application_contributions::mark_fields_user_owned_in_tx(
+                conn,
+                &project_id,
+                &entity_kind,
+                &entity_id,
+                &[field_path.as_str()],
+            )?;
+        }
         Ok(())
     }
 

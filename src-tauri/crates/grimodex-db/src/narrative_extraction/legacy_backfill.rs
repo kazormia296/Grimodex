@@ -135,7 +135,7 @@ pub enum LegacyBackfillBootstrapOutcome {
 /// Applications predate per-field Contribution tracking, so there is no
 /// specific JSON pointer to recover -- this sentinel stands for "the whole
 /// entity this Application wrote, granularity unknown".
-const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
+pub(crate) const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -367,6 +367,34 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 
     let contributions_before = count_contributions(conn, project_id)?;
     let edges_before = count_edges(conn, project_id)?;
+    // The Feed head at the moment of the Backfill, and the lower bound every
+    // row it writes gets.
+    //
+    // `None` was wrong, and not merely imprecise. The projection reads
+    // `COALESCE(baseline_sequence, -1)`, so a NULL baseline claims "every
+    // event ever recorded is evidence about this row" -- but the projection's
+    // cursor is per project, and on any project whose Contributions have been
+    // read before, it has already advanced past all of that history. The two
+    // modules each assumed the other kept the coupling: the row said replay
+    // everything, the cursor said there is nothing left to replay, and the
+    // events in between reached the row never. Neither acknowledge helper can
+    // move a cursor backwards -- both clamp with `MAX()` -- so the loss was
+    // permanent.
+    //
+    // Anchoring to the head makes the row's claim match what the cursor can
+    // actually deliver: everything before the Backfill is out of scope,
+    // everything after it is evidence. That does give up pre-Backfill edits,
+    // but by a rule stated once here rather than by an invisible interaction
+    // between two watermarks.
+    let backfill_baseline_sequence: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(canonical_sequence) FROM narrative_change_events
+              WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     let mut applications_without_run_id = 0usize;
     for application in load_legacy_applications(conn, project_id)? {
         // `applied_entity_kind` is the writer-row vocabulary
@@ -406,15 +434,20 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
                 revision_id: &application.revision_id,
                 operation_id: None,
                 // No Feed transaction exists for a pre-Gate-C0 commit, so no
-                // single canonical event corresponds to this Application and
-                // there is no self-stale lower bound to record. None is the
-                // conservative reading: every event counts as newer.
-                baseline_sequence: None,
+                // canonical event corresponds to this Application itself.
+                // The Backfill's own position in the Feed is the honest
+                // stand-in -- see `backfill_baseline_sequence` above.
+                baseline_sequence: backfill_baseline_sequence,
             },
             &ContributionField {
                 target_object_identity: &target_object_identity,
                 field_path: LEGACY_BACKFILL_FIELD_PATH,
                 target_state,
+                // A pre-Gate-C2 Application wrote the whole entity at unknown
+                // granularity, so there is no Field Authority coordinate to
+                // read ownership from. These rows stay `maintained` until a
+                // human write on a real field stamps them.
+                authority: None,
             },
             now,
         )?;

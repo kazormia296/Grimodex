@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use super::application_contributions::{
     contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
-    ContributionProvenance, ContributionTargetState,
+    ContributionProvenance, ContributionTargetState, FieldAuthorityCoordinate,
 };
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
@@ -1644,6 +1644,20 @@ pub fn narrative_extraction_apply_commit(
                             target_object_identity: &target_object_identity,
                             field_path: &field.field_path,
                             target_state,
+                            // `affected_fields` *is* the Field Authority
+                            // coordinate -- the same `(entity_kind,
+                            // entity_id, field_path)` triple
+                            // `record_operation_field_authority` writes just
+                            // above -- so ownership is read from the ledger
+                            // with the key the ledger is actually indexed by,
+                            // no translation and no guess. The object the
+                            // Contribution is filed under still comes from
+                            // the Application row, for the reason spelled out
+                            // above; only ownership uses this coordinate.
+                            authority: Some(FieldAuthorityCoordinate {
+                                entity_kind: &field.entity_kind,
+                                entity_id: &field.entity_id,
+                            }),
                         },
                         &now,
                     )?;

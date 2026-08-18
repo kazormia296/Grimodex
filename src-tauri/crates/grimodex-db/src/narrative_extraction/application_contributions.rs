@@ -321,6 +321,64 @@ pub(crate) struct ContributionField<'a> {
     pub target_object_identity: &'a str,
     pub field_path: &'a str,
     pub target_state: ContributionTargetState,
+    /// Where this field lives in the Field Authority ledger, when the caller
+    /// knows. `maintenance_ownership` is decided from that ledger and from
+    /// nothing else, so a caller that cannot name the coordinate gets
+    /// `maintained` rather than a guess.
+    ///
+    /// The Apply path always knows it: `affected_fields` yields exactly this
+    /// coordinate, and its `field_path` is the same string stored here. The
+    /// Legacy Backfill never does -- a pre-Gate-C2 Application records the
+    /// whole-entity sentinel, which is not a Field Authority coordinate at
+    /// all -- so its rows stay `maintained` until a human write stamps them.
+    pub authority: Option<FieldAuthorityCoordinate<'a>>,
+}
+
+/// A field's address in `narrative_field_authority`, which speaks its own
+/// `(entity_kind, entity_id)` vocabulary rather than the canonical object
+/// identity this table is keyed by.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FieldAuthorityCoordinate<'a> {
+    pub entity_kind: &'a str,
+    pub entity_id: &'a str,
+}
+
+/// Whether the Field Authority ledger says a person holds this field.
+///
+/// This is the *only* input to a new Contribution's `maintenance_ownership`.
+/// Reading a sibling Contribution instead -- which is what this did before --
+/// answered a different question: it could only see ownership that some
+/// earlier stamp had already copied onto this table, so a field a human wrote
+/// before any Contribution existed came out `maintained`, and an explicit
+/// lock (which never stamped anything) came out `maintained` forever.
+///
+/// `explicit_lock` is checked as well as `owner_kind` because the lock path
+/// is the stronger statement of the two, and a row can only carry it after
+/// `set_human_field_lock_in_tx` has also set `owner_kind = 'human'`; testing
+/// both means a future writer that sets one without the other still fails
+/// closed towards the user.
+fn field_is_user_owned(
+    conn: &Connection,
+    project_id: &str,
+    coordinate: FieldAuthorityCoordinate<'_>,
+    field_path: &str,
+) -> anyhow::Result<bool> {
+    let owned: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM narrative_field_authority
+             WHERE project_id = ?1 AND entity_kind = ?2 AND entity_id = ?3
+               AND field_path = ?4
+               AND (owner_kind = 'human' OR explicit_lock <> 0)
+         )",
+        params![
+            project_id,
+            coordinate.entity_kind,
+            coordinate.entity_id,
+            field_path
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(owned)
 }
 
 pub(crate) fn record_contribution_in_tx(
@@ -334,6 +392,7 @@ pub(crate) fn record_contribution_in_tx(
         target_object_identity,
         field_path,
         target_state,
+        authority,
     } = *field;
     let ContributionProvenance {
         application_id,
@@ -384,39 +443,44 @@ pub(crate) fn record_contribution_in_tx(
     // DO UPDATE -- it is a durable disposition that a re-record must not
     // silently reset, the same reason Attention rows are not touched by
     // Run publish.
-    // Ownership belongs to the *field*, not to one Application's row, so a
-    // new Contribution on a field the user already holds inherits that rather
-    // than taking the column default. Without this the DO UPDATE below
-    // protects only rows that already exist: a later Application writing the
-    // same field inserts a fresh row at `maintained` and quietly takes the
-    // field back, which is exactly the implicit reclamation ADR 005 forbids.
     //
-    // Read from a sibling row rather than from `narrative_field_authority`
-    // because the ledger is keyed by its own `(entity_kind, entity_id)`
-    // vocabulary and this table by the canonical identity; there is no index
-    // that joins them. That leaves one gap, deliberately: a field a human
-    // wrote *before* any Contribution existed on it has no sibling to inherit
-    // from, so the first Contribution lands `maintained` until the next human
-    // write stamps it. See `a_field_owned_before_any_contribution_is_not_yet_inherited`.
-    let inherited_ownership: Option<String> = conn
-        .query_row(
-            "SELECT maintenance_ownership
-               FROM narrative_application_contributions
-              WHERE project_id = ?1 AND target_object_identity = ?2
-                AND field_path = ?3 AND maintenance_ownership <> 'maintained'
-              LIMIT 1",
-            params![project_id, field.target_object_identity, field.field_path],
-            |row| row.get(0),
-        )
-        .optional()?;
+    // The two `target_state_*` columns are cleared rather than left, because
+    // they are the projection's watermark for the state the DO UPDATE just
+    // overwrote. Leaving them said "as of event N the field was `modified`"
+    // on a row now claiming `unchanged`, and the projection's
+    // `COALESCE(target_state_sequence, -1) < ?` guard then refused to
+    // re-apply event N -- permanently, and not repairable by rewinding the
+    // cursor, since the refusal is in the row rather than in the cursor. A
+    // re-record moves `baseline_sequence` forward too, so clearing the
+    // watermark is also what lets the new lower bound decide which events
+    // still count. Reachable through a Legacy Backfill re-run, which upserts
+    // on this same key.
+    // Ownership belongs to the *field*, and `narrative_field_authority` is
+    // where a person's claim on a field is recorded. Reading it here is what
+    // makes this column agree with the ledger the Apply-time gate
+    // (`validate_operation_field_authority`) already enforces against, rather
+    // than being a second, drifting opinion about the same fact.
+    //
+    // This replaced reading a sibling Contribution on the same field. The
+    // sibling could only report ownership that some earlier write had already
+    // copied onto this table, which got three cases wrong: a field a human
+    // wrote before any Contribution existed, a field held only by an explicit
+    // lock, and -- because the predicate was `<> 'maintained'` with no
+    // ordering -- a field whose only sibling carried the Repair Run's
+    // `detached` verdict, which is a statement about one Contribution rather
+    // than about who owns the field.
+    let user_owned = match authority {
+        Some(coordinate) => field_is_user_owned(conn, project_id, coordinate, field_path)?,
+        None => false,
+    };
+    let initial_ownership = if user_owned { "user-owned" } else { "maintained" };
 
     conn.query_row(
         "INSERT INTO narrative_application_contributions
             (id, project_id, application_id, commit_id, proposal_id, revision_id,
              operation_id, baseline_sequence, target_object_identity, field_path,
              target_state, created_at, maintenance_ownership)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                 COALESCE(?13, 'maintained'))
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(project_id, application_id, target_object_identity, field_path)
          DO UPDATE SET target_state = excluded.target_state,
              commit_id = excluded.commit_id,
@@ -424,6 +488,8 @@ pub(crate) fn record_contribution_in_tx(
              revision_id = excluded.revision_id,
              operation_id = excluded.operation_id,
              baseline_sequence = excluded.baseline_sequence,
+             target_state_sequence = NULL,
+             target_state_updated_at = NULL,
              created_at = excluded.created_at
          RETURNING id",
         params![
@@ -439,7 +505,7 @@ pub(crate) fn record_contribution_in_tx(
             field_path,
             target_state.as_str(),
             created_at,
-            inherited_ownership,
+            initial_ownership,
         ],
         |row| row.get(0),
     )
@@ -496,6 +562,21 @@ pub(crate) fn record_contribution_in_tx(
 /// the field reverts to whoever held it before. A `not-applicable` one
 /// supersedes nothing either, because it never wrote.
 ///
+/// The `/legacy-application` disjunct is the Legacy Backfill sentinel, which
+/// means "the whole entity this Application wrote, granularity unknown"
+/// rather than a field literally called that. Compared as an ordinary path it
+/// equalled nothing a live Apply ever records, so a backfilled Contribution
+/// stayed `unchanged` no matter how thoroughly a later Application rewrote
+/// the object. Switching this to the projection's `paths_overlap` would not
+/// have fixed it -- the sentinel is not a prefix of `/title` either -- so the
+/// marker has to be recognised by name. `the_supersede_sql_and_the_backfill_
+/// agree_on_the_sentinel` pins this literal against the constant.
+///
+/// One direction only. A legacy row is superseded by any later live write to
+/// the same object; a later legacy row does not supersede a live field row,
+/// because "something wrote this object at unknown granularity" is not
+/// evidence that it wrote *that* field.
+///
 /// `LEFT JOIN`, not `JOIN`: a missing commit row must not silently drop the
 /// Contribution from the answer. `commit_id` is NOT NULL and SCHEMA 29's
 /// rebuild fails closed on orphans, so this should be unreachable -- but a
@@ -513,7 +594,8 @@ const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
                      WHERE later.project_id = contribution.project_id
                        AND later.target_object_identity
                            = contribution.target_object_identity
-                       AND later.field_path = contribution.field_path
+                       AND (later.field_path = contribution.field_path
+                        OR contribution.field_path = '/legacy-application')
                        AND later.id <> contribution.id
                        AND COALESCE(later_commit.status, '') <> 'undone'
                        AND later.target_state <> 'not-applicable'
@@ -760,6 +842,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "/title",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -969,6 +1052,7 @@ mod tests {
                 target_object_identity: "scene:s1",
                 field_path: "body",
                 target_state: state,
+                authority: None,
             },
             "2026-08-15T00:00:00.000Z",
         )
@@ -1009,6 +1093,7 @@ mod tests {
                 target_object_identity: "scene:s1",
                 field_path: "body",
                 target_state: state,
+                authority: None,
             },
             "2026-08-15T00:00:00.000Z",
         )
@@ -1321,6 +1406,7 @@ mod tests {
                     target_object_identity: "codex-entry:e1",
                     field_path: "/name",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1356,6 +1442,7 @@ mod tests {
                 target_object_identity: "codex-entry:e1",
                 field_path: "/name",
                 target_state: ContributionTargetState::Unchanged,
+                authority: None,
             };
             record_contribution_in_tx(
                 conn,
@@ -1413,6 +1500,7 @@ mod tests {
                     target_object_identity: "codex-entry:e1",
                     field_path: "/name",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1458,6 +1546,7 @@ mod tests {
                 target_object_identity: "codex-entry:e1",
                 field_path: "/name",
                 target_state: ContributionTargetState::Unchanged,
+                authority: None,
             };
             record_contribution_in_tx(
                 conn,
@@ -1536,6 +1625,7 @@ mod tests {
                     target_object_identity: "codex-entry:e1",
                     field_path: "/name",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-16T00:00:00.000Z",
             )
@@ -1579,6 +1669,7 @@ mod tests {
                         target_object_identity: "codex-entry:e1",
                         field_path,
                         target_state: ContributionTargetState::Unchanged,
+                        authority: None,
                     },
                     "2026-08-15T00:00:00.000Z",
                 )
@@ -1620,6 +1711,7 @@ mod tests {
                     target_object_identity: "codex-entry:e1",
                     field_path: "/name",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1701,6 +1793,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "body",
                     target_state: ContributionTargetState::Modified,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1742,6 +1835,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "body",
                     target_state: ContributionTargetState::Modified,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1755,6 +1849,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "body",
                     target_state: ContributionTargetState::Undone,
+                    authority: None,
                 },
                 "2026-08-15T01:00:00.000Z",
             )
@@ -1785,6 +1880,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "body",
                     target_state: ContributionTargetState::Modified,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1797,6 +1893,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "title",
                     target_state: ContributionTargetState::Unchanged,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )
@@ -1827,6 +1924,7 @@ mod tests {
                     target_object_identity: "scene:s1",
                     field_path: "body",
                     target_state: ContributionTargetState::Modified,
+                    authority: None,
                 },
                 "2026-08-15T00:00:00.000Z",
             )

@@ -194,6 +194,25 @@ pub(crate) fn set_human_field_lock_in_tx(
             ],
         )?;
     }
+    // Both branches above leave `owner_kind = 'human'`, so this endpoint is a
+    // human claim on the field exactly as `record_human_field_write` is, and
+    // the Contribution ledger has to hear about it from here too. It did not:
+    // `mark_fields_user_owned_in_tx` had a single caller, the manual-write
+    // path, so a field taken by an explicit lock -- the strongest statement a
+    // person can make about a field -- kept reporting `maintained`, which by
+    // this table's own definition means maintenance may keep applying to it.
+    //
+    // Unlocking runs it as well, and that is deliberate rather than an
+    // oversight: clearing `explicit_lock` leaves `owner_kind = 'human'`, and
+    // ADR 005 forbids implicit reclamation, so the field stays the author's
+    // until an explicit act says otherwise.
+    super::application_contributions::mark_fields_user_owned_in_tx(
+        conn,
+        &payload.project_id,
+        &payload.entity_kind,
+        &payload.entity_id,
+        &[payload.field_path.as_str()],
+    )?;
     let version: i64 = conn.query_row(
         "SELECT version FROM narrative_field_authority
           WHERE project_id = ?1 AND entity_kind = ?2 AND entity_id = ?3 AND field_path = ?4",

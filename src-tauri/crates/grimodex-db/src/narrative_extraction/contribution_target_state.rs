@@ -32,6 +32,7 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 
 use super::change_feed::{acknowledge_cursor_in_tx, contribution_target_identity_from_object_key};
+use super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH;
 use super::cursor_reservation::get_cursor;
 
 /// The Feed consumer identity this projection acknowledges under.
@@ -61,6 +62,17 @@ struct OutOfBandEdit {
 /// for a state whose claim is "something else may have written here".
 fn paths_overlap(event_path: &str, field_path: &str) -> bool {
     if event_path == "/" || field_path == "/" {
+        return true;
+    }
+    // The Legacy Backfill's sentinel is the *other* spelling of "the whole
+    // object" -- `LEGACY_BACKFILL_FIELD_PATH` stands for "the whole entity
+    // this Application wrote, granularity unknown". Compared as an ordinary
+    // path it overlaps nothing: it is neither `/` nor a prefix of any real
+    // pointer, so a backfilled Contribution could only ever be reached by an
+    // event that already collapsed to `/`. Only the field side is checked --
+    // a Feed event never carries the sentinel, and `validate_changed_path`
+    // would not accept it as evidence if one did.
+    if field_path == LEGACY_BACKFILL_FIELD_PATH {
         return true;
     }
     if event_path == field_path {
@@ -114,7 +126,8 @@ fn pending_edits(
         // attribute an edit to the wrong object. The cursor still advances
         // past it, because the event is genuinely not evidence about any
         // Contribution we hold -- see `scanned_through` above.
-        let Ok(target_object_identity) = contribution_target_identity_from_object_key(&object_key)
+        let Ok(target_object_identity) =
+            contribution_target_identity_from_object_key(conn, &object_key)
         else {
             continue;
         };
@@ -296,6 +309,7 @@ mod tests {
                 target_object_identity: "scene:s1",
                 field_path: "/title",
                 target_state: ContributionTargetState::Unchanged,
+                authority: None,
             },
             "2026-08-15T00:00:00.000Z",
         )

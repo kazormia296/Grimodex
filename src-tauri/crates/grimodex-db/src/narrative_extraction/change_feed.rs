@@ -2279,7 +2279,18 @@ pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static s
 /// rather than a join condition spelled out at each call site. This is the
 /// direction Step 7 needs: a Feed event arrives and has to find the
 /// Contributions it bears on.
+///
+/// `codex-detail-value` is projected onto its owning Codex Entry, which is
+/// the one place the two sides do not simply translate a kind name. The
+/// ledger stores a detail write as `codex-entry:<entryId>` with
+/// `/details/<definitionId>` -- `contribution_target_identity_for_application`
+/// makes that projection on the Apply side, because `affected_fields` reports
+/// the write at entry grain. Without the same projection here, a hand edit of
+/// a detail arrives as `codex-detail-value:<valueId>`, matches no
+/// Contribution, and the field stays `unchanged` after a person overwrote it.
+/// The field paths already agree; only the object identity did not.
 pub(crate) fn contribution_target_identity_from_object_key(
+    conn: &Connection,
     object_key: &Value,
 ) -> anyhow::Result<String> {
     let kind = object_key
@@ -2292,6 +2303,13 @@ pub(crate) fn contribution_target_identity_from_object_key(
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
         .ok_or_else(|| anyhow::anyhow!("Narrative object key has no {field}"))?;
+    if kind == "codex-detail-value" {
+        return super::application_contributions::contribution_target_identity_for_application(
+            conn,
+            "codex_detail_value",
+            id,
+        );
+    }
     Ok(format!("{kind}:{id}"))
 }
 
