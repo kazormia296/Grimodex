@@ -76,8 +76,9 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::application_contributions::{
-    contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
-    ContributionProvenance, ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
+    contribution_target_identity_for_application, record_contribution_in_tx,
+    reproject_user_ownership_from_authority_in_tx, ContributionField, ContributionProvenance,
+    ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
 use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
@@ -465,6 +466,15 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             None => applications_without_run_id += 1,
         }
     }
+    // The rows minted above all took `authority: None` -- a whole-entity
+    // sentinel is not a Field Authority coordinate, so there is nothing to
+    // look up per row. That is correct at insert time and wrong a moment
+    // later if the author had already claimed fields of these objects, which
+    // is the common case: the Backfill runs on old workspaces, and old
+    // workspaces have been edited. Replaying the ledger here makes ownership
+    // independent of whether the Backfill or the human write happened first.
+    reproject_user_ownership_from_authority_in_tx(conn, Some(project_id))?;
+
     let contributions_after = count_contributions(conn, project_id)?;
     let edges_after = count_edges(conn, project_id)?;
 

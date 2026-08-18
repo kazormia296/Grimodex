@@ -5330,43 +5330,8 @@ impl Database {
         if !Self::table_exists_for_v28(conn, "narrative_field_authority")? {
             return Ok(());
         }
-        let owned: Vec<(String, String, String, String)> = conn
-            .prepare(
-                "SELECT project_id, entity_kind, entity_id, field_path
-                   FROM narrative_field_authority
-                  WHERE owner_kind = 'human' OR explicit_lock <> 0",
-            )?
-            .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<Result<_, _>>()?;
-        for (project_id, entity_kind, entity_id, field_path) in owned {
-            // Logged rather than propagated, and that asymmetry is deliberate.
-            // `mark_fields_user_owned_in_tx` fails closed on a kind it cannot
-            // map, which is right when a person is taking a field right now --
-            // the write should not appear to succeed while the claim goes
-            // nowhere. Here the input is an arbitrary historical ledger, and
-            // refusing the migration would mean the workspace cannot be opened
-            // at all because of one stale row for a kind this build no longer
-            // maps. Every other row still gets its ownership.
-            if let Err(error) =
-                crate::narrative_extraction::application_contributions::mark_fields_user_owned_in_tx(
-                    conn,
-                    &project_id,
-                    &entity_kind,
-                    &entity_id,
-                    &[field_path.as_str()],
-                )
-            {
-                tracing::warn!(
-                    target: "narrative.migrate",
-                    %error,
-                    entity_kind,
-                    "could not re-project Field Authority ownership onto Contributions"
-                );
-            }
-        }
-        Ok(())
+        crate::narrative_extraction::application_contributions::
+            reproject_user_ownership_from_authority_in_tx(conn, None)
     }
 
     /// Moves one Contribution onto its canonical identity.

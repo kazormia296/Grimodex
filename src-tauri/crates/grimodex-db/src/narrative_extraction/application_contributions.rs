@@ -698,14 +698,93 @@ pub(crate) fn mark_fields_user_owned_in_tx(
             // `target_state_sequence` describe when the *state* axis last
             // moved, and this moves the ownership axis. Stamping it here
             // would make the pair describe two different things.
+            //
+            // The sentinel disjunct is the Legacy Backfill's whole-object
+            // row. It means "the whole entity this Application wrote,
+            // granularity unknown", so a person taking any field of that
+            // entity has taken part of what it covers, and maintenance may
+            // no longer keep applying to it. Matching only `= ?3` left it
+            // `maintained` forever: no live writer ever supplies a field
+            // literally called `/legacy-application`, so nothing could reach
+            // it. The state axis already treats the sentinel this way in
+            // `paths_overlap` and in the supersede subquery; leaving the
+            // ownership axis on exact equality made one marker mean two
+            // different things depending on which column was being decided.
             "UPDATE narrative_application_contributions
                 SET maintenance_ownership = 'user-owned'
               WHERE project_id = ?1
                 AND target_object_identity = ?2
-                AND field_path = ?3
+                AND (field_path = ?3 OR field_path = ?4)
                 AND maintenance_ownership = 'maintained'",
-            params![project_id, target_object_identity, field_path],
+            params![
+                project_id,
+                target_object_identity,
+                field_path,
+                super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH
+            ],
         )?;
+    }
+    Ok(())
+}
+
+/// Replays the Field Authority ledger onto Contributions that already exist.
+///
+/// `mark_fields_user_owned_in_tx` runs forward, at the moment a person takes
+/// a field. Two paths need the reverse: the SCHEMA 29 rebuild, which inherits
+/// a ledger written long before this column existed, and the Legacy Backfill,
+/// which mints Contributions for Applications that predate Gate C2 and may
+/// well run on a workspace whose fields the author has already claimed.
+/// Without this, ownership depended on which of the two happened last.
+///
+/// `project_id` scopes it: the Backfill knows its project, the migration
+/// sweeps them all.
+///
+/// Per-row errors are logged rather than propagated. Both callers replay
+/// arbitrary historical ledger content in bulk, where one row naming a kind
+/// this build no longer maps should not fail an entire workspace open or an
+/// entire Backfill -- unlike a single deliberate human write, which fails
+/// closed so the person is not told their claim was recorded when it was not.
+pub(crate) fn reproject_user_ownership_from_authority_in_tx(
+    conn: &Connection,
+    project_id: Option<&str>,
+) -> anyhow::Result<()> {
+    let owned: Vec<(String, String, String, String)> = match project_id {
+        Some(project_id) => conn
+            .prepare(
+                "SELECT project_id, entity_kind, entity_id, field_path
+                   FROM narrative_field_authority
+                  WHERE project_id = ?1 AND (owner_kind = 'human' OR explicit_lock <> 0)",
+            )?
+            .query_map(params![project_id], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<_, _>>()?,
+        None => conn
+            .prepare(
+                "SELECT project_id, entity_kind, entity_id, field_path
+                   FROM narrative_field_authority
+                  WHERE owner_kind = 'human' OR explicit_lock <> 0",
+            )?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<Result<_, _>>()?,
+    };
+    for (project_id, entity_kind, entity_id, field_path) in owned {
+        if let Err(error) = mark_fields_user_owned_in_tx(
+            conn,
+            &project_id,
+            &entity_kind,
+            &entity_id,
+            &[field_path.as_str()],
+        ) {
+            tracing::warn!(
+                target: "narrative.authority",
+                %error,
+                entity_kind,
+                "could not re-project Field Authority ownership onto Contributions"
+            );
+        }
     }
     Ok(())
 }
@@ -1845,6 +1924,105 @@ mod tests {
                 ownership_of(conn, "p1", "/name"),
                 "user-owned",
                 "a locked field cannot keep reporting that maintenance may apply to it"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The sentinel means "the whole entity, granularity unknown", so a
+    /// person taking any field of that entity has taken part of what it
+    /// covers. Exact `field_path` equality could never conclude that: no
+    /// writer ever supplies a field literally called `/legacy-application`,
+    /// so the row stayed `maintained` for the life of the workspace while the
+    /// state axis had already been taught to treat the marker as whole-object.
+    #[test]
+    fn a_human_edit_hands_the_whole_object_sentinel_to_the_user() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-legacy"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: super::super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH,
+                    target_state: ContributionTargetState::Unchanged,
+                    authority: None,
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("legacy backfill row");
+
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("the author takes a field of the same entity");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/legacy-application"),
+                "user-owned",
+                "a whole-entity row covers the field the author just took"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The same fact, reached from the other order. A Backfill runs on old
+    /// workspaces, and old workspaces have already been edited, so the row is
+    /// minted after the claim rather than before it. Its `authority` is
+    /// `None` -- a sentinel is not a ledger coordinate -- so nothing decides
+    /// ownership at insert time and the replay has to.
+    #[test]
+    fn a_backfill_after_a_human_edit_still_hands_the_sentinel_over() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "codex-entry",
+                "e1",
+                &["/name"],
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("the author takes a field first");
+
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-legacy"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: super::super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH,
+                    target_state: ContributionTargetState::Unchanged,
+                    authority: None,
+                },
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("legacy backfill row minted afterwards");
+            assert_eq!(
+                ownership_of(conn, "p1", "/legacy-application"),
+                "maintained",
+                "nothing can decide this at insert time -- the replay is what fixes it"
+            );
+
+            reproject_user_ownership_from_authority_in_tx(conn, Some("p1"))
+                .expect("replay the ledger");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/legacy-application"),
+                "user-owned",
+                "ownership must not depend on whether the Backfill or the edit came first"
             );
             Ok(())
         })
