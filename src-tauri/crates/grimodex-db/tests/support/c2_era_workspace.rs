@@ -28,10 +28,14 @@ use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
 /// The oldest and newest markers a Gate C2 workspace can carry on disk today.
-/// SCHEMA 23 is the first Semantic Build Graph schema; 28 is the last one
-/// before the SCHEMA 29 rebuild this path is really about.
+/// SCHEMA 23 is the first Semantic Build Graph schema; 29 is the last one
+/// before the current marker.
 pub const OLDEST_C2_ERA: i32 = 23;
-pub const NEWEST_C2_ERA: i32 = 28;
+pub const NEWEST_C2_ERA: i32 = 29;
+/// The newest marker that still needs the SCHEMA 29 Contribution rebuild.
+/// Tests about that rebuild bound themselves with this rather than with
+/// [`NEWEST_C2_ERA`], which has already been through it.
+pub const NEWEST_PRE_V29_ERA: i32 = 28;
 
 pub const PROJECT_ID: &str = "c2-upgrade-project";
 pub const SCENE_ID: &str = "c2-upgrade-scene";
@@ -171,8 +175,12 @@ pub fn seed_c2_era_workspace(label: &str, era: i32) -> EraWorkspace {
 }
 
 fn rewind_schema_to_era(conn: &Connection, era: i32) -> anyhow::Result<()> {
-    // Always: every era on this path predates the SCHEMA 29 rebuild.
-    rewind_application_contributions_to_v28(conn)?;
+    if era < 30 {
+        rewind_dependency_edge_owning_run(conn)?;
+    }
+    if era < 29 {
+        rewind_application_contributions_to_v28(conn)?;
+    }
     if (24..27).contains(&era) {
         rewind_repair_lease_run_binding(conn)?;
     }
@@ -185,6 +193,20 @@ fn rewind_schema_to_era(conn: &Connection, era: i32) -> anyhow::Result<()> {
     if era < 24 {
         rewind_v24_objects(conn)?;
     }
+    Ok(())
+}
+
+/// The pre-SCHEMA-30 shape of `narrative_dependency_edges`: no record of the
+/// Run that declared each Edge, so resolving a `snapshot:<runId>` Source
+/// still depended on `consumer_key` happening to be that Run's id.
+///
+/// `DROP COLUMN` rather than a rebuild: the column is nullable, carries no
+/// constraint and is last in the table, which is exactly the shape SQLite can
+/// drop in place.
+fn rewind_dependency_edge_owning_run(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "ALTER TABLE narrative_dependency_edges DROP COLUMN owning_run_id;",
+    )?;
     Ok(())
 }
 
@@ -466,6 +488,40 @@ fn seed_contributions(conn: &Connection, era: i32) -> anyhow::Result<()> {
             CHRONICLE_FIELD_PATH,
         ),
     ] {
+        if era >= 29 {
+            // A SCHEMA 29 build already performed the rebuild, so its rows
+            // carry the provenance the migration reconstructs and the
+            // ownership it re-projected from the Field Authority ledger.
+            // Seeding them any other way would make an already-migrated
+            // workspace look like one that still needs migrating, and the
+            // idempotency assertions would pass for the wrong reason.
+            let ownership = if id == HUMAN_OWNED_CONTRIBUTION_ID {
+                "user-owned"
+            } else {
+                "maintained"
+            };
+            conn.execute(
+                "INSERT INTO narrative_application_contributions
+                    (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                     operation_id, target_object_identity, field_path, target_state,
+                     maintenance_ownership, baseline_sequence, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8, 'unchanged', ?9, ?10, ?11)",
+                params![
+                    id,
+                    PROJECT_ID,
+                    APPLICATION_ID,
+                    COMMIT_ID,
+                    PROPOSAL_ID,
+                    REVISION_ID,
+                    identity,
+                    field_path,
+                    ownership,
+                    APPLY_EVENT_SEQUENCE,
+                    SEEDED_AT
+                ],
+            )?;
+            continue;
+        }
         conn.execute(
             "INSERT INTO narrative_application_contributions
                 (id, project_id, application_id, target_object_identity, field_path,
@@ -618,6 +674,36 @@ pub fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
         .any(|name| name == column)
 }
 
+/// `(ordinal, name)` for every column of `table`, in `PRAGMA table_info`
+/// order.
+///
+/// Exists to compare an upgraded workspace against a fresh one. `ALTER TABLE
+/// ADD COLUMN` appends, so a column the fresh DDL declares anywhere but last
+/// gets a different ordinal on the two paths -- and the schema contract
+/// compares by ordinal, which is what makes that a real divergence rather
+/// than a cosmetic one.
+pub fn table_column_ordinals(conn: &Connection, table: &str) -> Vec<(i64, String)> {
+    conn.prepare(&format!("PRAGMA table_info({table})"))
+        .expect("prepare table_info")
+        .query_map([], |row| Ok((row.get::<_, i64>("cid")?, row.get::<_, String>("name")?)))
+        .expect("query table_info")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect table_info")
+}
+
+/// A database at the current schema, created from scratch rather than
+/// upgraded -- the comparison target for [`table_column_ordinals`].
+pub fn fresh_workspace_connection(label: &str) -> (PathBuf, Connection) {
+    let root = temp_workspace(&format!("{label}-fresh"));
+    let db_path = root.join("grimodex.db");
+    {
+        let db = Database::new(&db_path).expect("create a fresh workspace database");
+        db.migrate().expect("migrate a fresh workspace");
+    }
+    let conn = Connection::open(&db_path).expect("open the fresh workspace");
+    (root, conn)
+}
+
 pub fn index_exists(conn: &Connection, index: &str) -> bool {
     conn.query_row(
         "SELECT EXISTS(
@@ -684,6 +770,15 @@ pub fn edge_identity(conn: &Connection, edge_id: &str) -> String {
         |row| row.get(0),
     )
     .expect("read the Edge identity")
+}
+
+pub fn edge_owning_run(conn: &Connection, edge_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT owning_run_id FROM narrative_dependency_edges WHERE id = ?1",
+        params![edge_id],
+        |row| row.get(0),
+    )
+    .expect("read the Edge's owning run")
 }
 
 pub fn consumer_freshness_rows(conn: &Connection, consumer_key: &str) -> i64 {

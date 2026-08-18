@@ -575,8 +575,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// Contribution target identities into the ratified Object Addressing
 /// vocabulary; it changes no table, column, or constraint, so it adds no
 /// physical invariant of its own — only the version guard below moves.
+/// Version 30 records on each Dependency Edge the Run that declared it, so
+/// resolving a `snapshot:<runId>` Source no longer depends on the Consumer
+/// key happening to be a Run id.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 29
+    Ok(SCHEMA_VERSION == 30
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -596,12 +599,25 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v25_attention_occ_columns(conn)?
         && has_v26_run_request_identity_columns(conn)?
         && has_v27_repair_lease_run_binding(conn)?
+        && has_v30_dependency_edge_owning_run_column(conn)?
         // SCHEMA 28 carries a data migration, so without this both of
         // `migrate_impl`'s fast paths skip it: see
         // `has_c2_identity_data_migration_marker`. This supersedes the
         // row-shape probe this branch briefly carried -- see that function
         // for why current rows cannot answer the question.
         && has_c2_identity_data_migration_marker(conn)?)
+}
+
+/// SCHEMA 30: a Dependency Edge records the Run that declared it. Nullable by
+/// design — an Edge under a Consumer kind this build cannot resolve a Run for
+/// carries NULL, and `restore_rebuild` reports that rather than guessing.
+fn has_v30_dependency_edge_owning_run_column(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_dependency_edges")? {
+        return Ok(false);
+    }
+    Ok(table_columns(conn, "narrative_dependency_edges")?
+        .iter()
+        .any(|column| column.name == "owning_run_id" && column.declared_type == "TEXT"))
 }
 
 /// SCHEMA 27: a Repair lease names the Run entitled to apply it, so the

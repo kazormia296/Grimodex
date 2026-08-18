@@ -34,8 +34,11 @@ use c2_era_workspace::{
     read_only_connection, seed_c2_era_workspace, table_exists, table_has_column, user_version,
     EraWorkspace, APPLICATION_ID, APPLY_EVENT_SEQUENCE, ATTENTION_ACTOR_ID, ATTENTION_FINDING_KEY,
     CANONICAL_CHRONICLE_IDENTITY, CANONICAL_CODEX_IDENTITY, CANONICAL_EDGE_IDENTITY,
-    CHRONICLE_CONTRIBUTION_ID, COMMIT_ID, EARLIER_OTHER_APPLY_EVENT_SEQUENCE,
+    edge_owning_run, fresh_workspace_connection, table_column_ordinals,
+    CHRONICLE_CONTRIBUTION_ID, COMMIT_ID,
+    EARLIER_OTHER_APPLY_EVENT_SEQUENCE,
     HUMAN_OWNED_CONTRIBUTION_ID, LATER_OTHER_APPLY_EVENT_SEQUENCE, LEGACY_ACTOR_SENTINEL,
+    NEWEST_PRE_V29_ERA,
     MAINTAINED_CONTRIBUTION_ID, NEWEST_C2_ERA, OLDEST_C2_ERA, PROJECT_ID, PROPOSAL_ID,
     REPAIRED_EDGE_ID, REPAIRED_RUN_ID, REVISION_ID, UNATTRIBUTED_ATTENTION_FINDING_KEY,
     UNTOUCHED_EDGE_ID, UNTOUCHED_EDGE_IDENTITY, UNTOUCHED_RUN_ID,
@@ -53,6 +56,15 @@ fn c2_eras() -> impl Iterator<Item = i32> {
     OLDEST_C2_ERA..=NEWEST_C2_ERA
 }
 
+/// The markers that still need the SCHEMA 29 Contribution rebuild. A SCHEMA
+/// 29 workspace was written *by* that rebuild, so the hazards belonging to it
+/// -- the index it cannot carry beforehand, the savepoint that unwinds it, the
+/// orphan it refuses -- have nothing to act on there, and asserting them for
+/// era 29 would be asserting something untrue rather than something stricter.
+fn pre_v29_eras() -> impl Iterator<Item = i32> {
+    OLDEST_C2_ERA..29
+}
+
 /// Hazard 1, pinned from the workspace's side rather than by reading the
 /// migration's source: on a genuine SCHEMA 23-28 database the Contribution
 /// index the base DDL batch would carry cannot be created at all. That is why
@@ -60,7 +72,7 @@ fn c2_eras() -> impl Iterator<Item = i32> {
 /// really is in the shape a fresh database can never be in.
 #[test]
 fn a_c2_era_workspace_cannot_carry_the_commit_index_before_migrating() {
-    for era in c2_eras() {
+    for era in pre_v29_eras() {
         let workspace = seed_c2_era_workspace("pre-shape", era);
         let conn = read_only_connection(&workspace.db_path);
 
@@ -181,6 +193,36 @@ fn migrate_upgrades_every_c2_era_workspace_to_the_current_schema() {
             has_c2_identity_marker(&conn),
             "the SCHEMA 28 completion marker must be recorded (from SCHEMA {era})"
         );
+
+        // SCHEMA 30 put `owning_run_id` last in the fresh DDL on purpose:
+        // `ALTER TABLE ADD COLUMN` appends, and the schema contract compares
+        // by ordinal, so declaring it anywhere else would make an upgraded
+        // workspace and a fresh one disagree on a table neither reports as
+        // broken. Only comparing the two shapes catches that.
+        {
+            let (_fresh_root, fresh) = fresh_workspace_connection("edge-shape");
+            assert_eq!(
+                table_column_ordinals(&conn, "narrative_dependency_edges"),
+                table_column_ordinals(&fresh, "narrative_dependency_edges"),
+                "an upgraded SCHEMA {era} workspace must have the same Edge column \
+                 ordinals as a fresh database"
+            );
+        }
+
+        // SCHEMA 30: every Edge names the Run that declared it. The backfill
+        // reads that off `consumer_key`, which is only the right answer while
+        // every Consumer is a Run -- which is exactly why it is copied once
+        // here instead of being re-derived at every read.
+        for (edge_id, run_id) in [
+            (REPAIRED_EDGE_ID, REPAIRED_RUN_ID),
+            (UNTOUCHED_EDGE_ID, UNTOUCHED_RUN_ID),
+        ] {
+            assert_eq!(
+                edge_owning_run(&conn, edge_id).as_deref(),
+                Some(run_id),
+                "the Edge's declaring Run must survive the upgrade (from SCHEMA {era})"
+            );
+        }
 
         // SCHEMA 24's Run Kind Policy objects.
         for table in [
@@ -436,7 +478,7 @@ fn migrate_is_idempotent_on_an_upgraded_c2_era_workspace() {
 /// step was rolled back" from "the marker step never ran".
 #[test]
 fn an_orphan_contribution_fails_closed_and_unwinds_the_schema_29_savepoint() {
-    for era in [OLDEST_C2_ERA, NEWEST_C2_ERA] {
+    for era in [OLDEST_C2_ERA, NEWEST_PRE_V29_ERA] {
         let workspace = seed_c2_era_workspace("orphan", era);
         {
             let db = workspace.open();
@@ -527,7 +569,7 @@ fn an_orphan_contribution_fails_closed_and_unwinds_the_schema_29_savepoint() {
 /// a released upgrade goes through.
 #[test]
 fn the_shadow_migration_supervisor_upgrades_a_c2_era_workspace() {
-    for era in [OLDEST_C2_ERA, NEWEST_C2_ERA] {
+    for era in [OLDEST_C2_ERA, NEWEST_PRE_V29_ERA] {
         let workspace: EraWorkspace = seed_c2_era_workspace("supervisor", era);
 
         let outcome = migration_supervisor::open_or_migrate_workspace_db(&workspace.root)
@@ -609,7 +651,7 @@ fn a_failure_inside_the_schema_29_rebuild_unwinds_to_the_pre_upgrade_workspace()
     const BLANK_APPLICATION_ID: &str = "c2-upgrade-application-blank";
     const BLANK_CONTRIBUTION_ID: &str = "c2-upgrade-contribution-blank";
 
-    for era in [OLDEST_C2_ERA, NEWEST_C2_ERA] {
+    for era in [OLDEST_C2_ERA, NEWEST_PRE_V29_ERA] {
         let workspace = seed_c2_era_workspace("rebuild-unwind", era);
         {
             let db = workspace.open();

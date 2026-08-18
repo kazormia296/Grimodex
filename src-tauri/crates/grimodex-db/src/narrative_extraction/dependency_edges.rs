@@ -182,6 +182,11 @@ pub(crate) struct DependencyEdge {
     pub read_set_json: String,
     pub generated_by_transaction_id: Option<String>,
     pub created_at: String,
+    /// The Run that declared this Edge (SCHEMA 30). Provenance, not a
+    /// derivation: it stays true after the Proposal the declaration came from
+    /// is gone. `None` for an Edge whose declaring Run could not be
+    /// identified -- `restore_rebuild` reports that instead of guessing.
+    pub owning_run_id: Option<String>,
 }
 
 fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
@@ -194,6 +199,7 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
         read_set_json: row.get(5)?,
         generated_by_transaction_id: row.get(6)?,
         created_at: row.get(7)?,
+        owning_run_id: row.get(8)?,
     })
 }
 
@@ -227,6 +233,7 @@ pub(crate) fn record_dependency_edge_in_tx(
     source_object_identity: &str,
     read_set_json: &str,
     generated_by_transaction_id: Option<&str>,
+    owning_run_id: Option<&str>,
     created_at: &str,
 ) -> anyhow::Result<String> {
     validate_consumer_identity(consumer_kind, consumer_key)?;
@@ -240,13 +247,14 @@ pub(crate) fn record_dependency_edge_in_tx(
     let id: String = conn.query_row(
         "INSERT INTO narrative_dependency_edges (
              id, project_id, consumer_kind, consumer_key, source_object_identity,
-             read_set_json, generated_by_transaction_id, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             read_set_json, generated_by_transaction_id, created_at, owning_run_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, consumer_kind, consumer_key, source_object_identity)
          DO UPDATE SET
              read_set_json = excluded.read_set_json,
              generated_by_transaction_id = excluded.generated_by_transaction_id,
-             created_at = excluded.created_at
+             created_at = excluded.created_at,
+             owning_run_id = excluded.owning_run_id
          RETURNING id",
         params![
             candidate_id,
@@ -257,6 +265,7 @@ pub(crate) fn record_dependency_edge_in_tx(
             read_set_json,
             generated_by_transaction_id,
             created_at,
+            owning_run_id,
         ],
         |row| row.get(0),
     )?;
@@ -319,7 +328,7 @@ pub(crate) fn find_edges_by_source(
 ) -> anyhow::Result<Vec<DependencyEdge>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
-                read_set_json, generated_by_transaction_id, created_at
+                read_set_json, generated_by_transaction_id, created_at, owning_run_id
            FROM narrative_dependency_edges
           WHERE project_id = ?1 AND source_object_identity = ?2
           ORDER BY consumer_kind ASC, consumer_key ASC",
@@ -339,7 +348,7 @@ pub(crate) fn find_edges_by_consumer(
 ) -> anyhow::Result<Vec<DependencyEdge>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
-                read_set_json, generated_by_transaction_id, created_at
+                read_set_json, generated_by_transaction_id, created_at, owning_run_id
            FROM narrative_dependency_edges
           WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
           ORDER BY source_object_identity ASC",
@@ -407,8 +416,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body","/title"]"#,
                 Some("tx-1"),
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
             assert!(!id.is_empty());
 
             let by_source = find_edges_by_source(conn, "project-1", "project:scene:scene-1")?;
@@ -452,8 +461,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 Some("tx-1"),
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
 
             let second_id = record_dependency_edge_in_tx(
                 conn,
@@ -463,8 +472,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body","/title"]"#,
                 Some("tx-2"),
-                "2026-08-15T01:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T01:00:00.000Z")?;
 
             assert_eq!(first_id, second_id, "upsert must keep the original edge id");
 
@@ -499,8 +508,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            );
+                None,
+                "2026-08-15T00:00:00.000Z");
             assert!(collides
                 .expect_err("a consumer kind containing the separator must be refused")
                 .to_string()
@@ -516,8 +525,8 @@ mod tests {
                         "project:scene:scene-1",
                         r#"["/body"]"#,
                         None,
-                        "2026-08-15T00:00:00.000Z",
-                    )
+                        None,
+                        "2026-08-15T00:00:00.000Z")
                     .is_err(),
                     "expected ({kind:?}, {key:?}) to be refused"
                 );
@@ -532,8 +541,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                None,
+                "2026-08-15T00:00:00.000Z")
             .expect("a compound consumer key is legitimate");
             Ok(())
         })
@@ -552,8 +561,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"{"not":"an array"}"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            );
+                None,
+                "2026-08-15T00:00:00.000Z");
             assert!(result.is_err());
             assert!(result
                 .unwrap_err()
@@ -569,8 +578,8 @@ mod tests {
                 "project:scene:scene-1",
                 "not json at all",
                 None,
-                "2026-08-15T00:00:00.000Z",
-            );
+                None,
+                "2026-08-15T00:00:00.000Z");
             assert!(malformed.is_err());
 
             // Nothing should have been persisted by either failed attempt.
@@ -597,8 +606,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
             record_dependency_edge_in_tx(
                 conn,
                 "project-2",
@@ -607,8 +616,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
 
             let project_1_by_source =
                 find_edges_by_source(conn, "project-1", "project:scene:scene-1")?;
@@ -645,8 +654,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
             record_dependency_edge_in_tx(
                 conn,
                 "project-1",
@@ -655,8 +664,8 @@ mod tests {
                 "project:scene:scene-2",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
             record_dependency_edge_in_tx(
                 conn,
                 "project-1",
@@ -665,8 +674,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )?;
+                None,
+                "2026-08-15T00:00:00.000Z")?;
 
             delete_edges_for_consumer_in_tx(conn, "project-1", "proposal", "proposal-1")?;
 

@@ -1730,8 +1730,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["v1@t"]"#,
                 None,
-                "2026-08-14T00:00:00.000Z",
-            )
+                Some("run-1"),
+                "2026-08-14T00:00:00.000Z")
         })
         .expect("seed first edge");
         // `narrative_dependency_edges`'s own UNIQUE(project_id, consumer_kind,
@@ -1760,6 +1760,7 @@ mod tests {
                         CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'),
                     generated_by_transaction_id TEXT,
                     created_at                  TEXT NOT NULL,
+                    owning_run_id               TEXT,
                     PRIMARY KEY(id)
                  );
                  INSERT INTO narrative_dependency_edges_unconstrained
@@ -1778,9 +1779,9 @@ mod tests {
                 conn.execute(
                     "INSERT INTO narrative_dependency_edges
                         (id, project_id, consumer_kind, consumer_key, source_object_identity,
-                         read_set_json, created_at)
+                         read_set_json, created_at, owning_run_id)
                      VALUES (?1, 'project-1', ?2, 'run-1', 'project:scene:scene-1',
-                             '[\"v2@t\"]', '2026-08-15T00:00:00.000Z')",
+                             '[\"v2@t\"]', '2026-08-15T00:00:00.000Z', 'run-1')",
                     params![id, RUN_CONSUMER_KIND],
                 )?;
                 Ok(id)
@@ -1830,8 +1831,8 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["v1@t"]"#,
                 None,
-                "2026-08-14T00:00:00.000Z",
-            )
+                Some("run-1"),
+                "2026-08-14T00:00:00.000Z")
         })
         .expect("seed a single healthy edge");
 

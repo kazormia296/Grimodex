@@ -3008,6 +3008,9 @@ export const narrativeDependencyEdges = sqliteTable(
     readSetJson: text("read_set_json").notNull().default("[]"),
     generatedByTransactionId: text("generated_by_transaction_id"),
     createdAt: text("created_at").notNull(),
+    // SCHEMA 30. Last, matching where `ALTER TABLE ADD COLUMN` puts it on an
+    // upgraded workspace — the schema contract compares by ordinal.
+    owningRunId: text("owning_run_id"),
   },
   (table) => [
     index("idx_narrative_dependency_edges_source").on(

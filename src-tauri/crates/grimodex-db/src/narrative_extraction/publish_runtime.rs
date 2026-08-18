@@ -790,8 +790,8 @@ mod tests {
             source_object_identity,
             r#"["/body"]"#,
             None,
-            "2026-08-15T00:00:00.000Z",
-        )
+            None,
+            "2026-08-15T00:00:00.000Z")
         .expect("record edge")
     }
 

@@ -449,7 +449,7 @@ fn rebuild_derived_state_edges_in_project(
                 // the right id for `publish_freshness_evaluation_edges_only_in_tx`
                 // below: it records which Run *observed* this Finding,
                 // correctly the Rebuild Run itself.
-                let Some(owning_run_id) =
+                let Some(consumer_owning_run) =
                     owning_run_id_for_consumer(&consumer_kind, &consumer_key)
                 else {
                     tracing::warn!(
@@ -464,6 +464,15 @@ fn rebuild_derived_state_edges_in_project(
                 };
                 let mut edges_and_observations = Vec::with_capacity(edges.len());
                 for edge in &edges {
+                    // SCHEMA 30: the Edge's own declaration wins. The
+                    // Consumer-derived answer above is the compatibility
+                    // path for a row written before the column existed --
+                    // the migration backfills every Run-declared Edge, so
+                    // this falls back only on a row nothing wrote.
+                    let owning_run_id = edge
+                        .owning_run_id
+                        .as_deref()
+                        .unwrap_or(consumer_owning_run);
                     let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
                     edges_and_observations.push((edge.id.clone(), observation));
                 }
@@ -854,9 +863,13 @@ pub fn verify_narrative_dependency_graph_for_project(
             // to an error, which `edge_source_is_missing` reports as
             // `true` -- a Source that is present being filed as gone. The
             // Consumer is reported under its own heading above instead.
-            let Some(owning_run_id) = owning_run_id else {
+            let Some(consumer_owning_run) = owning_run_id else {
                 continue;
             };
+            let owning_run_id = edge
+                .owning_run_id
+                .as_deref()
+                .unwrap_or(consumer_owning_run);
             if edge_source_is_missing(conn, project_id, owning_run_id, edge) {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
@@ -1006,11 +1019,20 @@ fn consumer_keys_with_stale_dependency_set_digest(
     Ok(stale)
 }
 
-/// `RUN_CONSUMER_KIND`-declared Edges whose Consumer (Run) belongs to a
-/// different project than the Edge's own `project_id`. Edges under any
-/// other `consumer_kind` have no Run to cross-check against yet (this
-/// crate declares no other Consumer kind today), so this only inspects
-/// `RUN_CONSUMER_KIND` rows.
+/// Edges whose declaring Run belongs to a different project than the Edge's
+/// own `project_id` -- the one place that boundary could silently slip, since
+/// `source_object_identity` carries no project scope of its own.
+///
+/// Joins on `owning_run_id` (SCHEMA 30) rather than on `consumer_key`. The
+/// old join could only inspect `RUN_CONSUMER_KIND` rows, because only for
+/// those was `consumer_key` a Run id -- which meant every future Consumer
+/// kind would have been added to a check that silently skipped it. Every Edge
+/// now names its declaring Run directly, so the check covers all kinds and
+/// keeps covering them.
+///
+/// An Edge with no `owning_run_id` is not reported here: it has no Run to
+/// compare against, which is a different fact from having one in the wrong
+/// project. `edge_ids_with_unresolvable_consumer_scope` is where that shows.
 fn cross_project_run_consumer_edge_ids(
     conn: &Connection,
     project_id: &str,
@@ -1018,16 +1040,13 @@ fn cross_project_run_consumer_edge_ids(
     let mut statement = conn.prepare(
         "SELECT e.id
            FROM narrative_dependency_edges e
-           INNER JOIN narrative_extraction_runs r ON r.id = e.consumer_key
+           INNER JOIN narrative_extraction_runs r ON r.id = e.owning_run_id
           WHERE e.project_id = ?1
-            AND e.consumer_kind = ?2
             AND r.project_id != e.project_id
           ORDER BY e.id ASC",
     )?;
     let rows = statement
-        .query_map(params![project_id, RUN_CONSUMER_KIND], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map(params![project_id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -1267,8 +1286,8 @@ mod tests {
                 source_object_identity,
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                Some(run_id),
+                "2026-08-15T00:00:00.000Z")
         })
         .expect("record run-scoped edge")
     }
@@ -1459,8 +1478,8 @@ mod tests {
                     "project:scene:scene-live",
                     &format!(r#"["{current_token}"]"#),
                     None,
-                    "2026-08-15T00:00:00.000Z",
-                )
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z")
             })
             .expect("record edge with current token");
 
@@ -1490,8 +1509,8 @@ mod tests {
                     "project:scene:scene-live",
                     r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
                     None,
-                    "2026-08-15T00:00:00.000Z",
-                )
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z")
             })
             .expect("record edge with a stale token");
 
@@ -1524,8 +1543,8 @@ mod tests {
                     "project:scene:scene-does-not-exist",
                     r#"["v0@2026-01-01T00:00:00.000Z"]"#,
                     None,
-                    "2026-08-15T00:00:00.000Z",
-                )
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z")
             })
             .expect("record edge pointing at a nonexistent scene");
 
@@ -1558,8 +1577,8 @@ mod tests {
                     "totally:unknown:identity",
                     r#"["v0@2026-01-01T00:00:00.000Z"]"#,
                     None,
-                    "2026-08-15T00:00:00.000Z",
-                )
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z")
             })
             .expect("record edge with an unrecognized source identity");
 
@@ -1636,8 +1655,8 @@ mod tests {
                 "project:scene:scene-live",
                 &format!(r#"["{current_token}"]"#),
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z")
         })
         .expect("record fresh edge for run-1");
 
@@ -1651,8 +1670,8 @@ mod tests {
                 "project:scene:scene-live",
                 r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                Some("run-2"),
+                "2026-08-15T00:00:00.000Z")
         })
         .expect("record stale edge for run-2");
 
@@ -1800,8 +1819,8 @@ mod tests {
                 "project:scene:scene-live",
                 r#"["/body"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                None,
+                "2026-08-15T00:00:00.000Z")
         })
         .expect("record an edge under an unimplemented consumer kind");
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -1850,6 +1869,7 @@ mod tests {
                     "revision-1",
                     "project:scene:scene-live",
                     r#"["/body"]"#,
+                    None,
                     None,
                     "2026-08-15T00:00:00.000Z",
                 )
@@ -2126,8 +2146,8 @@ mod tests {
                 "snapshot:owning-run",
                 r#"["sha256:snapshot-digest-1"]"#,
                 None,
-                "2026-08-15T00:00:00.000Z",
-            )
+                Some("owning-run"),
+                "2026-08-15T00:00:00.000Z")
         })
         .expect("record an edge over the snapshot source");
 

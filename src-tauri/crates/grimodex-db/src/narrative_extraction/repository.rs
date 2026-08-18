@@ -1151,6 +1151,9 @@ fn record_run_dependency_edges_in_tx(
             &source_object_identity,
             &read_set_json,
             None,
+            // SCHEMA 30: the declaring Run, recorded rather than left to be
+            // re-derived from `consumer_key` at read time.
+            Some(run_id),
             created_at,
         )?;
     }

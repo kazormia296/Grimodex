@@ -3273,6 +3273,7 @@ impl Database {
                     CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'),
                 generated_by_transaction_id TEXT,
                 created_at                  TEXT NOT NULL,
+                owning_run_id               TEXT,
                 PRIMARY KEY(id),
                 UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
             );
@@ -3524,6 +3525,31 @@ impl Database {
         // key reuses a completed Run without comparing its sealed spec, so
         // the v2 transform never executes on a workspace that already ran v1.
         Self::migrate_narrative_dependency_edge_identity_v28(&conn)?;
+
+        // SCHEMA 30: a Dependency Edge records the Run that declared it,
+        // instead of that being inferrable only from `consumer_kind`.
+        //
+        // `restore_rebuild` has to answer "which Run is this Edge's
+        // `snapshot:<runId>` Source expected to name?" before it can resolve
+        // that Source at all. Today it answers by reading `consumer_key`,
+        // which is only correct because every Consumer happens to be a Run.
+        // Gate C2-2's finer Consumer grain breaks that, and breaks it
+        // silently: `resolve_snapshot_document` requires an exact match, and
+        // `build_edge_comparison_input` turns the resulting error into
+        // `current_source_exists = false`, so present Sources would be
+        // reported missing.
+        //
+        // Storing it per Edge rather than deriving it through
+        // `narrative_proposal_revisions -> narrative_proposals ->
+        // narrative_proposal_sets.run_id` is deliberate. It is a
+        // *provenance* fact -- which Run declared this read -- so it stays
+        // true after the Proposal it came from is deleted, exactly like the
+        // Contribution provenance SCHEMA 29 added for the same reason. The
+        // join would answer only while the Proposal graph is intact.
+        //
+        // Nullable: an Edge whose declaring Run cannot be identified must say
+        // so rather than name a wrong one.
+        Self::migrate_narrative_dependency_edge_owning_run_v30(&conn)?;
 
         // SCHEMA 29's rebuild and SCHEMA 28's completion marker both write
         // `narrative_application_contributions`, and `migrate_impl` otherwise
@@ -5093,6 +5119,40 @@ impl Database {
                     })?;
             }
         }
+        Ok(())
+    }
+
+    /// SCHEMA 30: `narrative_dependency_edges.owning_run_id` -- the Run that
+    /// declared this Edge.
+    ///
+    /// The backfill is exact rather than a guess. Every Edge that exists when
+    /// this runs was written by one of two Producers
+    /// (`repository.rs`'s `record_run_dependency_edges_in_tx` and
+    /// `legacy_backfill.rs`'s `record_legacy_dependency_edges_in_tx`), and
+    /// both key the Edge under `(RUN_CONSUMER_KIND, run_id)` -- so for those
+    /// rows `consumer_key` *is* the declaring Run's id, and copying it across
+    /// restates a fact rather than inventing one. That is also precisely the
+    /// equivalence this column exists to stop depending on, which is why the
+    /// copy happens once, here, instead of at every read.
+    ///
+    /// Rows under any other `consumer_kind` keep NULL. None exist today --
+    /// `ConsumerKind` has one variant -- but a row written by a newer build
+    /// and read by this one must not have a Run id inferred for it from a
+    /// `consumer_key` that no longer means that.
+    fn migrate_narrative_dependency_edge_owning_run_v30(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        if !Self::table_exists_for_v28(conn, "narrative_dependency_edges")? {
+            return Ok(());
+        }
+        Self::add_column_if_missing(conn, "narrative_dependency_edges", "owning_run_id", "TEXT")?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = consumer_key
+              WHERE owning_run_id IS NULL AND consumer_kind = ?1",
+            params![Self::RUN_CONSUMER_KIND_V28],
+        )
+        .context("backfilling narrative_dependency_edges.owning_run_id for SCHEMA 30")?;
         Ok(())
     }
 

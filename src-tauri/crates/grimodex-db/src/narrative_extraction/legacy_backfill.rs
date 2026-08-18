@@ -527,6 +527,11 @@ fn record_legacy_dependency_edges_in_tx(
             &source_object_identity,
             &read_set_json,
             None,
+            // SCHEMA 30. The Backfill's Consumer identity is the owning
+            // `narrative_apply_commits.run_id`, which is also the Run whose
+            // read this Edge restates -- so the same id is the honest answer
+            // on both axes here.
+            Some(run_id),
             now,
         )?;
     }
