@@ -49,7 +49,7 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | Gate B2, C0, C1, C1.5 | **Complete** | Writer authority, Change Feed, semantic contracts, and authority routes are ratified. |
 | Gate C2 foundation | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts. |
 | C2 identity normalization | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows. |
-| Application Contribution ownership | **Active** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) implements C2 item 4. |
+| Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers. |
 | Remaining C2-T2 runtime | **Blocked / Planned** | Consumer granularity, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain. |
 | C2-Z canonical cutover | **Blocked** | Generic Consumer Freshness remains shadow until parity and cutover criteria pass. |
 | First Retrieval Vertical Slice | **Planned** | Begins after C2-Z and the minimum shared Narrative IR contract are ready. |
@@ -58,8 +58,6 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 ## Critical path
 
 ```text
-PR #536: Application Contribution ownership
-  ↓
 C2-T2: Consumer granularity ───────────────┐
   ↓                                       │
 Finding three-layer identity              ├─ in parallel where safe
@@ -83,7 +81,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #535 is intentional: **Application Contribution ownership → Consumer granularity → Finding identity**, while the Change-Feed-driven runtime may proceed alongside Consumer granularity once object identity and publish contracts are stable.
+The ordering after PR #536 is intentional: **Consumer granularity → Finding identity**, while the Change-Feed-driven runtime may proceed alongside Consumer granularity once object identity and publish contracts are stable.
 
 ---
 
@@ -91,7 +89,7 @@ The ordering after PR #535 is intentional: **Application Contribution ownership 
 
 ## C2-4: Application Contribution ownership
 
-**State:** Active in [PR #536](https://github.com/kazormia296/Grimodex/pull/536)
+**State:** Complete — merged in [PR #536](https://github.com/kazormia296/Grimodex/pull/536)
 
 ### Deliverables
 
