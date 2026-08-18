@@ -30,7 +30,7 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-export const EXPECTED_SCHEMA_VERSION = 28;
+export const EXPECTED_SCHEMA_VERSION = 29;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

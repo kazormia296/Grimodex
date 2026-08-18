@@ -576,7 +576,7 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// vocabulary; it changes no table, column, or constraint, so it adds no
 /// physical invariant of its own — only the version guard below moves.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 28
+    Ok(SCHEMA_VERSION == 29
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -598,7 +598,9 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v27_repair_lease_run_binding(conn)?
         // SCHEMA 28 carries a data migration, so without this both of
         // `migrate_impl`'s fast paths skip it: see
-        // `has_c2_identity_data_migration_marker`.
+        // `has_c2_identity_data_migration_marker`. This supersedes the
+        // row-shape probe this branch briefly carried -- see that function
+        // for why current rows cannot answer the question.
         && has_c2_identity_data_migration_marker(conn)?)
 }
 
@@ -1113,7 +1115,20 @@ fn has_v23_semantic_build_graph_tables(conn: &Connection) -> anyhow::Result<bool
         && has_column(&contributions, "target_object_identity", "TEXT", true)
         && has_column(&contributions, "field_path", "TEXT", true)
         && has_column(&contributions, "target_state", "TEXT", true)
-        && has_column(&contributions, "created_at", "TEXT", true);
+        && has_column(&contributions, "created_at", "TEXT", true)
+        // SCHEMA 29: provenance, value baseline, and the Maintenance
+        // ownership axis. The three provenance columns are NOT NULL because
+        // every Contribution is produced by an Application that has them;
+        // the rest are nullable because "not known" is a real answer for a
+        // row the Backfill wrote.
+        && has_column(&contributions, "commit_id", "TEXT", true)
+        && has_column(&contributions, "proposal_id", "TEXT", true)
+        && has_column(&contributions, "revision_id", "TEXT", true)
+        && has_column(&contributions, "operation_id", "TEXT", false)
+        && has_column(&contributions, "maintenance_ownership", "TEXT", true)
+        && has_column(&contributions, "baseline_sequence", "INTEGER", false)
+        && has_column(&contributions, "target_state_sequence", "INTEGER", false)
+        && has_column(&contributions, "target_state_updated_at", "TEXT", false);
 
     let observations_ok = has_column(&observations, "id", "TEXT", true)
         && has_column(&observations, "project_id", "TEXT", true)

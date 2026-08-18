@@ -77,6 +77,7 @@ use serde_json::json;
 
 use super::application_contributions::{
     contribution_target_identity_for_application, record_contribution_in_tx,
+    reproject_user_ownership_from_authority_in_tx, ContributionField, ContributionProvenance,
     ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
 use super::dependency_edges::{
@@ -135,7 +136,7 @@ pub enum LegacyBackfillBootstrapOutcome {
 /// Applications predate per-field Contribution tracking, so there is no
 /// specific JSON pointer to recover -- this sentinel stands for "the whole
 /// entity this Application wrote, granularity unknown".
-const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
+pub(crate) const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +165,9 @@ pub struct BackfillSummary {
 
 struct LegacyApplication {
     id: String,
+    commit_id: String,
+    proposal_id: String,
+    revision_id: String,
     applied_entity_kind: String,
     applied_entity_id: String,
     run_id: Option<String>,
@@ -364,6 +368,34 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 
     let contributions_before = count_contributions(conn, project_id)?;
     let edges_before = count_edges(conn, project_id)?;
+    // The Feed head at the moment of the Backfill, and the lower bound every
+    // row it writes gets.
+    //
+    // `None` was wrong, and not merely imprecise. The projection reads
+    // `COALESCE(baseline_sequence, -1)`, so a NULL baseline claims "every
+    // event ever recorded is evidence about this row" -- but the projection's
+    // cursor is per project, and on any project whose Contributions have been
+    // read before, it has already advanced past all of that history. The two
+    // modules each assumed the other kept the coupling: the row said replay
+    // everything, the cursor said there is nothing left to replay, and the
+    // events in between reached the row never. Neither acknowledge helper can
+    // move a cursor backwards -- both clamp with `MAX()` -- so the loss was
+    // permanent.
+    //
+    // Anchoring to the head makes the row's claim match what the cursor can
+    // actually deliver: everything before the Backfill is out of scope,
+    // everything after it is evidence. That does give up pre-Backfill edits,
+    // but by a rule stated once here rather than by an invisible interaction
+    // between two watermarks.
+    let backfill_baseline_sequence: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(canonical_sequence) FROM narrative_change_events
+              WHERE project_id = ?1",
+            params![project_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
     let mut applications_without_run_id = 0usize;
     for application in load_legacy_applications(conn, project_id)? {
         // `applied_entity_kind` is the writer-row vocabulary
@@ -392,10 +424,32 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
         record_contribution_in_tx(
             conn,
             project_id,
-            &application.id,
-            &target_object_identity,
-            LEGACY_BACKFILL_FIELD_PATH,
-            target_state,
+            // `operation_id` is None, not missing data to fill in later: a
+            // pre-Gate-C2 Application has no `narrative_apply_operations`
+            // row, and that table carries no unique key this one could join
+            // on to identify one retroactively.
+            &ContributionProvenance {
+                application_id: &application.id,
+                commit_id: &application.commit_id,
+                proposal_id: &application.proposal_id,
+                revision_id: &application.revision_id,
+                operation_id: None,
+                // No Feed transaction exists for a pre-Gate-C0 commit, so no
+                // canonical event corresponds to this Application itself.
+                // The Backfill's own position in the Feed is the honest
+                // stand-in -- see `backfill_baseline_sequence` above.
+                baseline_sequence: backfill_baseline_sequence,
+            },
+            &ContributionField {
+                target_object_identity: &target_object_identity,
+                field_path: LEGACY_BACKFILL_FIELD_PATH,
+                target_state,
+                // A pre-Gate-C2 Application wrote the whole entity at unknown
+                // granularity, so there is no Field Authority coordinate to
+                // read ownership from. These rows stay `maintained` until a
+                // human write on a real field stamps them.
+                authority: None,
+            },
             now,
         )?;
 
@@ -412,6 +466,15 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             None => applications_without_run_id += 1,
         }
     }
+    // The rows minted above all took `authority: None` -- a whole-entity
+    // sentinel is not a Field Authority coordinate, so there is nothing to
+    // look up per row. That is correct at insert time and wrong a moment
+    // later if the author had already claimed fields of these objects, which
+    // is the common case: the Backfill runs on old workspaces, and old
+    // workspaces have been edited. Replaying the ledger here makes ownership
+    // independent of whether the Backfill or the human write happened first.
+    reproject_user_ownership_from_authority_in_tx(conn, Some(project_id))?;
+
     let contributions_after = count_contributions(conn, project_id)?;
     let edges_after = count_edges(conn, project_id)?;
 
@@ -531,7 +594,8 @@ fn load_legacy_applications(
     project_id: &str,
 ) -> anyhow::Result<Vec<LegacyApplication>> {
     let mut statement = conn.prepare(
-        "SELECT a.id, a.applied_entity_kind, a.applied_entity_id, c.run_id
+        "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id,
+                a.applied_entity_kind, a.applied_entity_id, c.run_id
            FROM narrative_proposal_applications a
            INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
           WHERE c.project_id = ?1
@@ -541,9 +605,12 @@ fn load_legacy_applications(
         .query_map(params![project_id], |row| {
             Ok(LegacyApplication {
                 id: row.get(0)?,
-                applied_entity_kind: row.get(1)?,
-                applied_entity_id: row.get(2)?,
-                run_id: row.get(3)?,
+                commit_id: row.get(1)?,
+                proposal_id: row.get(2)?,
+                revision_id: row.get(3)?,
+                applied_entity_kind: row.get(4)?,
+                applied_entity_id: row.get(5)?,
+                run_id: row.get(6)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -690,6 +757,73 @@ mod tests {
             Ok(())
         })
         .expect("backfill empty project");
+    }
+
+    /// A Backfill row's lower bound is where the Feed already is, not "no
+    /// lower bound".
+    ///
+    /// NULL claimed every event ever recorded is evidence about the row,
+    /// while the projection's per-project cursor had in general already moved
+    /// past all of it -- and neither acknowledge helper can move a cursor
+    /// backwards. The row asked for a replay that could never be delivered.
+    #[test]
+    fn a_backfilled_contribution_starts_at_the_current_feed_head() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            seed_legacy_application(
+                conn,
+                "project-1",
+                "commit-1",
+                "app-1",
+                "codex_entry",
+                "entry-1",
+                "2026-08-15T00:00:00.000Z",
+            );
+            conn.execute(
+                "INSERT INTO change_events
+                    (event_uid, project_id, domain, op_type, payload, session_id,
+                     sequence, timestamp, prev_hash, hash)
+                 VALUES ('uid-77', 'project-1', 'narrative', 'update', '{}', 'session-1',
+                         77, 0, '', 'uid-77')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_transactions
+                    (id, project_id, request_id, source_domain, source_change_event_uid,
+                     source_change_event_sequence, cause_kind, origin, payload_digest,
+                     created_at)
+                 VALUES ('tx-77', 'project-1', 'req-77', 'test', 'uid-77', 77, 'forward',
+                         'human', 'digest', '2026-08-15T01:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_change_events
+                    (id, project_id, transaction_id, canonical_change_event_uid,
+                     canonical_sequence, event_ordinal, object_key_json, change_kind,
+                     mutation_kind, changed_paths_json, occurred_at)
+                 VALUES ('ev-77', 'project-1', 'tx-77', 'uid-77', 77, 0,
+                         '{\"kind\":\"scene\",\"sceneId\":\"s1\"}', 'content', 'update',
+                         '[\"/title\"]', '2026-08-15T01:00:00.000Z')",
+                [],
+            )?;
+
+            backfill_project_semantic_build_graph_in_tx(
+                conn,
+                "project-1",
+                "2026-08-15T02:00:00.000Z",
+            )?;
+
+            let baseline: Option<i64> = conn.query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(baseline, Some(77));
+            Ok(())
+        })
+        .expect("test body");
     }
 
     #[test]

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 28,
+  "schemaVersion": 29,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -6106,15 +6106,29 @@
           "default": null,
           "primaryKey": 0
         },
+        "baseline_sequence": {
+          "ordinal": 11,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "commit_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "created_at": {
-          "ordinal": 6,
+          "ordinal": 14,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
         "field_path": {
-          "ordinal": 4,
+          "ordinal": 8,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
@@ -6127,6 +6141,20 @@
           "default": null,
           "primaryKey": 1
         },
+        "maintenance_ownership": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'maintained'",
+          "primaryKey": 0
+        },
+        "operation_id": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "project_id": {
           "ordinal": 1,
           "declaredType": "TEXT",
@@ -6134,17 +6162,45 @@
           "default": null,
           "primaryKey": 0
         },
+        "proposal_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "revision_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
         "target_object_identity": {
-          "ordinal": 3,
+          "ordinal": 7,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 0
         },
         "target_state": {
-          "ordinal": 5,
+          "ordinal": 9,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_state_sequence": {
+          "ordinal": 12,
+          "declaredType": "INTEGER",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "target_state_updated_at": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         }
@@ -6171,7 +6227,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, application_id TEXT NOT NULL CHECK(length(application_id) > 0), target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0), field_path TEXT NOT NULL CHECK(length(field_path) > 0), target_state TEXT NOT NULL CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, application_id, target_object_identity, field_path) )"
+      "createSql": "CREATE TABLE narrative_application_contributions ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, application_id TEXT NOT NULL CHECK(length(application_id) > 0), commit_id TEXT NOT NULL CHECK(length(commit_id) > 0), proposal_id TEXT NOT NULL CHECK(length(proposal_id) > 0), revision_id TEXT NOT NULL CHECK(length(revision_id) > 0), operation_id TEXT CHECK(operation_id IS NULL OR length(operation_id) > 0), target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0), field_path TEXT NOT NULL CHECK(length(field_path) > 0), target_state TEXT NOT NULL CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')), maintenance_ownership TEXT NOT NULL DEFAULT 'maintained' CHECK(maintenance_ownership IN ('maintained','user-owned','detached')), baseline_sequence INTEGER CHECK(baseline_sequence IS NULL OR baseline_sequence > 0), target_state_sequence INTEGER CHECK(target_state_sequence IS NULL OR target_state_sequence > 0), target_state_updated_at TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, application_id, target_object_identity, field_path) )"
     },
     "narrative_apply_commits": {
       "kind": "table",
@@ -14141,6 +14197,58 @@
         }
       ],
       "createSql": "CREATE INDEX idx_map_stickies_chat_msg ON map_stickies(source_chat_message_id) WHERE source_chat_message_id IS NOT NULL"
+    },
+    "idx_narrative_application_contributions_application": {
+      "table": "narrative_application_contributions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "application_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_contributions_application ON narrative_application_contributions(project_id, application_id)"
+    },
+    "idx_narrative_application_contributions_commit": {
+      "table": "narrative_application_contributions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "commit_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_contributions_commit ON narrative_application_contributions(project_id, commit_id)"
+    },
+    "idx_narrative_application_contributions_field": {
+      "table": "narrative_application_contributions",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "target_object_identity"
+        },
+        {
+          "ordinal": 2,
+          "column": "field_path"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_application_contributions_field ON narrative_application_contributions(project_id, target_object_identity, field_path)"
     },
     "idx_narrative_application_contributions_target": {
       "table": "narrative_application_contributions",

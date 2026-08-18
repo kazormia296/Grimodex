@@ -376,6 +376,13 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "narrative-authority",
+    "table": "narrative_application_contributions",
+    "protection": "table",
+    "writer": "narrative.authority",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "schema-data-migration",
     "table": "schema_data_migrations",
     "protection": "table",

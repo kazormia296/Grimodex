@@ -373,9 +373,10 @@ fn backfill_project_replica(conn: &Connection, project_id: &str, now: &str) -> (
         )
         .expect("count contributions before");
 
-    let applications: Vec<(String, String, String)> = conn
+    let applications: Vec<(String, String, String, String, String, String)> = conn
         .prepare(
-            "SELECT a.id, a.applied_entity_kind, a.applied_entity_id
+            "SELECT a.id, a.commit_id, a.proposal_id, a.revision_id,
+                    a.applied_entity_kind, a.applied_entity_id
                FROM narrative_proposal_applications a
                INNER JOIN narrative_apply_commits c ON c.id = a.commit_id
               WHERE c.project_id = ?1
@@ -383,13 +384,28 @@ fn backfill_project_replica(conn: &Connection, project_id: &str, now: &str) -> (
         )
         .expect("prepare legacy application query")
         .query_map(params![project_id], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
         })
         .expect("query legacy applications")
         .collect::<Result<Vec<_>, _>>()
         .expect("collect legacy applications");
 
-    for (application_id, applied_entity_kind, applied_entity_id) in applications {
+    for (
+        application_id,
+        commit_id,
+        proposal_id,
+        revision_id,
+        applied_entity_kind,
+        applied_entity_id,
+    ) in applications
+    {
         // Mirrors `application_contributions::contribution_target_identity`:
         // the writer-row `applied_entity_kind` is translated to the ratified
         // Object Addressing kind before it becomes an identity. That function
@@ -409,17 +425,28 @@ fn backfill_project_replica(conn: &Connection, project_id: &str, now: &str) -> (
             ),
         };
         let target_object_identity = format!("{canonical_kind}:{applied_entity_id}");
+        // SCHEMA 29 provenance. `operation_id` stays NULL exactly as the
+        // real Backfill leaves it: a pre-Gate-C2 Application has no
+        // `narrative_apply_operations` row to name.
         conn.execute(
             "INSERT INTO narrative_application_contributions
-                (id, project_id, application_id, target_object_identity, field_path,
-                 target_state, created_at)
-             VALUES (?1, ?2, ?3, ?4, '/legacy-application', 'unchanged', ?5)
+                (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                 operation_id, target_object_identity, field_path, target_state, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, '/legacy-application', 'unchanged', ?8)
              ON CONFLICT(project_id, application_id, target_object_identity, field_path)
-             DO UPDATE SET target_state = excluded.target_state, created_at = excluded.created_at",
+             DO UPDATE SET target_state = excluded.target_state,
+                 commit_id = excluded.commit_id,
+                 proposal_id = excluded.proposal_id,
+                 revision_id = excluded.revision_id,
+                 operation_id = excluded.operation_id,
+                 created_at = excluded.created_at",
             params![
                 format!("contribution-{application_id}"),
                 project_id,
                 application_id,
+                commit_id,
+                proposal_id,
+                revision_id,
                 target_object_identity,
                 now
             ],

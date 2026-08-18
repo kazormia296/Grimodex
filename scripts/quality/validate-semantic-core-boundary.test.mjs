@@ -200,7 +200,7 @@ describe("validate-semantic-core-boundary", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
-    assert.equal(result.schemaVersion, 28);
+    assert.equal(result.schemaVersion, 29);
   });
 
   it("fails closed for an unknown route and a forbidden interpreter import", () => {

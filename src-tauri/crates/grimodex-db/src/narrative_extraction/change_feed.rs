@@ -272,6 +272,7 @@ fn canonicalize_json(value: &mut Value) {
     }
 }
 
+/// Key-order-independent SHA-256 of a JSON value, `sha256:`-prefixed.
 fn digest_value(value: &Value) -> anyhow::Result<String> {
     let mut canonical = value.clone();
     canonicalize_json(&mut canonical);
@@ -496,6 +497,7 @@ fn ensure_event_history_continuity(
 ) -> anyhow::Result<()> {
     let mut heads =
         std::collections::HashMap::<String, Option<(Option<i64>, Option<String>)>>::new();
+    let mut mutation_kinds = std::collections::HashMap::<String, String>::new();
     for event in events {
         let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
         let prior_after = match heads.get(&identity) {
@@ -529,6 +531,36 @@ fn ensure_event_history_continuity(
                     current_before
                 );
             }
+        }
+        // One transaction gets one `canonical_sequence`, and its events are
+        // told apart only by `event_ordinal`. The Contribution projection
+        // watermarks each row by sequence alone, so of two events at one
+        // sequence bearing on the same field, the second is refused -- and
+        // the cursor then acknowledges the sequence, making it unreplayable.
+        //
+        // Today that costs nothing: every writer that repeats an identity
+        // inside a transaction emits `update` for all of them, and the
+        // projection derives only `missing` (delete) or `modified`
+        // (everything else) with a transaction-wide timestamp, so the refused
+        // write would have been byte-identical. The one shape that would
+        // genuinely lose information is a delete and a non-delete for the
+        // same object in the same transaction, and nothing constructs it.
+        //
+        // That is an invariant the projection depends on, so it is checked
+        // here rather than left as a property of the current writers, and the
+        // projection keeps its one-dimensional watermark instead of growing a
+        // second ordering key that neither the cursor nor `baseline_sequence`
+        // would share.
+        if let Some(previous_kind) = mutation_kinds.insert(identity.clone(), event.mutation_kind.clone())
+        {
+            anyhow::ensure!(
+                (previous_kind == "delete") == (event.mutation_kind == "delete"),
+                "NARRATIVE_CHANGE_FEED_MIXED_MUTATION: object {identity} has both '{}' and '{}' \
+                 in one transaction; a delete and a non-delete for one object share a canonical \
+                 sequence and the Contribution projection can only keep one of them",
+                previous_kind,
+                event.mutation_kind
+            );
         }
         heads.insert(
             identity,
@@ -737,29 +769,7 @@ fn validate_event(event: &NarrativeChangeEventInput) -> anyhow::Result<()> {
         .get("kind")
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("objectKey.kind is required"))?;
-    let required_identity = match kind {
-        "project" => "projectId",
-        "scene" => "sceneId",
-        "chronicle-event" => "eventId",
-        "codex-entry" => "entryId",
-        "codex-relation" => "relationId",
-        "codex-phase" => "phaseId",
-        "codex-detail-definition" => "definitionId",
-        "codex-detail-value" => "valueId",
-        "plot-thread" => "threadId",
-        "plot-marker" => "markerId",
-        "plot-branch" => "branchId",
-        "foreshadow" => "foreshadowId",
-        "foreshadow-setup" => "setupId",
-        "foreshadow-payoff" => "payoffId",
-        "temporal-node" => "nodeId",
-        "temporal-constraint" => "constraintId",
-        "temporal-projection" => "projectionId",
-        "calendar" => "calendarRef",
-        "import-source" => "sourceSetId",
-        "component" => "componentId",
-        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
-    };
+    let required_identity = object_key_identity_field(kind)?;
     require_non_empty(
         key.get(required_identity)
             .and_then(Value::as_str)
@@ -2249,6 +2259,109 @@ fn mutation_kind(op_kind: &str, direction: NarrativeChangeCauseKind) -> &'static
     }
 }
 
+/// The field on an Object Addressing key that carries the object's id, for
+/// each ratified `kind`.
+///
+/// One table, three readers. `validate_event` uses it to reject a key that
+/// omits its own id, `object_key_identity` to normalize a key into the string
+/// the Change Feed's object heads are keyed by, and
+/// `contribution_target_identity_from_object_key` to turn a Feed event back
+/// into the `kind:id` form the Contribution ledger stores. Written out once at
+/// each of those sites, the three would disagree the first time a kind is
+/// added -- and each would fail differently: a key accepted but unaddressable,
+/// a head keyed under a shape nothing else produces, a Feed event that matches
+/// no Contribution.
+///
+/// `import-source` needs a second field (`objectKey`) for its full normalized
+/// form; that stays with `object_key_identity`, since the id is what every
+/// caller here is asking for.
+pub(crate) fn object_key_identity_field(kind: &str) -> anyhow::Result<&'static str> {
+    Ok(match kind {
+        "project" => "projectId",
+        "scene" => "sceneId",
+        "chronicle-event" => "eventId",
+        "codex-entry" => "entryId",
+        "codex-relation" => "relationId",
+        "codex-phase" => "phaseId",
+        "codex-detail-definition" => "definitionId",
+        "codex-detail-value" => "valueId",
+        "plot-thread" => "threadId",
+        "plot-marker" => "markerId",
+        "plot-branch" => "branchId",
+        "foreshadow" => "foreshadowId",
+        "foreshadow-setup" => "setupId",
+        "foreshadow-payoff" => "payoffId",
+        "temporal-node" => "nodeId",
+        "temporal-constraint" => "constraintId",
+        "temporal-projection" => "projectionId",
+        "calendar" => "calendarRef",
+        "import-source" => "sourceSetId",
+        "component" => "componentId",
+        other => anyhow::bail!("unsupported objectKey.kind '{other}'"),
+    })
+}
+
+/// The `kind:id` a Feed event's object key addresses, in the spelling the
+/// Contribution ledger stores.
+///
+/// The two representations exist for different jobs -- the Feed carries a
+/// structured key it validates field by field, the ledger a short string it
+/// indexes and greps -- so the boundary between them gets one named function
+/// rather than a join condition spelled out at each call site. This is the
+/// direction Step 7 needs: a Feed event arrives and has to find the
+/// Contributions it bears on.
+///
+/// `codex-detail-value` is projected onto its owning Codex Entry, which is
+/// the one place the two sides do not simply translate a kind name. The
+/// ledger stores a detail write as `codex-entry:<entryId>` with
+/// `/details/<definitionId>` -- `contribution_target_identity_for_application`
+/// makes that projection on the Apply side, because `affected_fields` reports
+/// the write at entry grain. Without the same projection here, a hand edit of
+/// a detail arrives as `codex-detail-value:<valueId>`, matches no
+/// Contribution, and the field stays `unchanged` after a person overwrote it.
+/// The field paths already agree; only the object identity did not.
+pub(crate) fn contribution_target_identity_from_object_key(
+    conn: &Connection,
+    object_key: &Value,
+) -> anyhow::Result<String> {
+    let kind = object_key
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no kind"))?;
+    let field = object_key_identity_field(kind)?;
+    let id = object_key
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Narrative object key has no {field}"))?;
+    if kind == "codex-detail-value" {
+        return super::application_contributions::contribution_target_identity_for_application(
+            conn,
+            "codex_detail_value",
+            id,
+        );
+    }
+    Ok(format!("{kind}:{id}"))
+}
+
+/// Whether a commit-journal `opKind` describes an operation that wrote
+/// nothing.
+///
+/// `temporal.node.ensure` is a true no-op when the semantic node already
+/// exists: `apply_node_ensure_in_tx` returns `created: false` and the row is
+/// left byte-for-byte alone. The journal still records the entity, because
+/// Undo/Redo needs it for OCC, but nothing downstream may treat it as a
+/// mutation.
+///
+/// Shared rather than restated at each site: `events_from_journal_entities`
+/// must not invent a freshness mutation for one, `undo.rs` must not try to
+/// roll one back, and `commit.rs` must not record a Contribution claiming a
+/// field currently holds what this Application wrote. Three independent
+/// copies of one string literal is how those three quietly disagree.
+pub(crate) fn journal_op_kind_wrote_nothing(op_kind: &str) -> bool {
+    op_kind == "ensure-existing"
+}
+
 /// Convert the existing immutable commit-journal entity snapshots into typed
 /// freshness events. This does not mutate persistence and never applies a fix.
 pub fn events_from_journal_entities(
@@ -2269,11 +2382,7 @@ pub fn events_from_journal_entities(
             .get("opKind")
             .and_then(Value::as_str)
             .unwrap_or("create");
-        // `temporal.node.ensure` can be a true no-op when the semantic
-        // node already exists. Keep that row in the immutable commit
-        // journal for Undo/Redo OCC, but do not invent a freshness
-        // mutation for it.
-        if op_kind == "ensure-existing" {
+        if journal_op_kind_wrote_nothing(op_kind) {
             continue;
         }
         let before_snapshot = entity.get("beforeSnapshot");

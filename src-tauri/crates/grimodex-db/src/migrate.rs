@@ -3311,10 +3311,22 @@ impl Database {
                 id                     TEXT NOT NULL,
                 project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 application_id         TEXT NOT NULL CHECK(length(application_id) > 0),
+                commit_id              TEXT NOT NULL CHECK(length(commit_id) > 0),
+                proposal_id            TEXT NOT NULL CHECK(length(proposal_id) > 0),
+                revision_id            TEXT NOT NULL CHECK(length(revision_id) > 0),
+                operation_id           TEXT
+                    CHECK(operation_id IS NULL OR length(operation_id) > 0),
                 target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0),
                 field_path             TEXT NOT NULL CHECK(length(field_path) > 0),
                 target_state           TEXT NOT NULL
                     CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
+                maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
+                    CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
+                baseline_sequence      INTEGER
+                    CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
+                target_state_sequence  INTEGER
+                    CHECK(target_state_sequence IS NULL OR target_state_sequence > 0),
+                target_state_updated_at TEXT,
                 created_at             TEXT NOT NULL,
                 PRIMARY KEY(id),
                 UNIQUE(project_id, application_id, target_object_identity, field_path)
@@ -3392,6 +3404,10 @@ impl Database {
                 ON narrative_consumer_freshness(project_id, semantic_epoch_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
                 ON narrative_application_contributions(project_id, target_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_field
+                ON narrative_application_contributions(project_id, target_object_identity, field_path);
+            CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_application
+                ON narrative_application_contributions(project_id, application_id);
             CREATE INDEX IF NOT EXISTS idx_narrative_finding_observations_key
                 ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
         )?;
@@ -3509,11 +3525,62 @@ impl Database {
         // the v2 transform never executes on a workspace that already ran v1.
         Self::migrate_narrative_dependency_edge_identity_v28(&conn)?;
 
-        // SCHEMA 28: record that the C2 identity data migration ran, and on
-        // the way there put every C2 derived state back to "not yet
-        // evaluated". Both are one step because the marker is what makes the
-        // discard happen exactly once.
-        Self::finish_narrative_c2_identity_data_migration_v28(&conn)?;
+        // SCHEMA 29's rebuild and SCHEMA 28's completion marker both write
+        // `narrative_application_contributions`, and `migrate_impl` otherwise
+        // runs in autocommit -- so without this savepoint a failure between
+        // them is durable. Two distinct hazards live in that window:
+        //
+        //   * the marker step opens with three unconditional DELETEs of C2
+        //     derived state, while the rebuild fails closed on an orphaned
+        //     Contribution. Marker-first would pay the whole discard and then
+        //     refuse to open, leaving Consumer Freshness -- the durable
+        //     Freshness authority -- empty on a workspace nothing can rebuild
+        //     until the orphan is repaired by hand.
+        //   * the rebuild's own DROP+RENAME is a batch. Interrupted between
+        //     them, the table is simply gone; the next open recreates it empty
+        //     from `CREATE TABLE IF NOT EXISTS`, the rebuild's own guard sees
+        //     the v29 columns and returns, and the checkpoint passes -- losing
+        //     every Contribution attribution row while reporting health.
+        //
+        // Making the pair atomic answers both, and makes their relative order
+        // a matter of taste rather than of data. They are ordered rebuild-first
+        // anyway, so the only step that can refuse runs before the only step
+        // that destroys.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_29")?;
+        let c2_result = (|| -> anyhow::Result<()> {
+            Self::migrate_narrative_application_contributions_v29(&conn)?;
+            Self::finish_narrative_c2_identity_data_migration_v28(&conn)?;
+            Ok(())
+        })();
+        match c2_result {
+            Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_29")?,
+            Err(error) => {
+                // `?` here would replace the migration's own error with
+                // whatever the unwind failed on, losing the only description
+                // of why the workspace could not be upgraded.
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_29; RELEASE narrative_c2_schema_29",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the SCHEMA 29 savepoint"
+                    );
+                }
+                return Err(error);
+            }
+        }
+
+        // After the rebuild, never with the other Contribution indexes in the
+        // base DDL batch. That batch runs against whatever shape the table
+        // already has, and on a SCHEMA 23-28 workspace that shape has no
+        // `commit_id` -- the index would fail with "no such column" and the
+        // workspace would stop opening. A fresh database does not show it,
+        // because its base DDL creates the column in the same statement.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
+                ON narrative_application_contributions(project_id, commit_id);",
+        )?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -5027,6 +5094,244 @@ impl Database {
             }
         }
         Ok(())
+    }
+
+    /// SCHEMA 29: give `narrative_application_contributions` the provenance,
+    /// value-baseline and ownership columns Application Contribution
+    /// ownership needs (PR #534 out-of-scope item 4).
+    ///
+    /// The columns, since neither DDL below may carry SQL comments (the
+    /// schema-contract generator collapses newlines, so a `--` comment would
+    /// swallow the rest of the statement and the browser mock could not
+    /// execute the recorded DDL):
+    ///
+    /// * `commit_id` / `proposal_id` / `revision_id` / `operation_id` --
+    ///   which Prepared Commit, Proposal Revision and operation produced this
+    ///   field write. `operation_id` is nullable because a pre-Gate-C2
+    ///   Application has no `narrative_apply_operations` row to point at.
+    /// * `maintenance_ownership` -- the axis ratified as
+    ///   `maintenanceOwnershipStates` in
+    ///   `policies/narrative/semantic-state-vocabulary.json`, whose JSON
+    ///   Schema pins the three values with a `const` and which
+    ///   `validate-semantic-core-boundary.mjs` cross-checks, so the CHECK
+    ///   must list exactly those.
+    /// * `baseline_sequence` -- the canonical `change_events.sequence` this
+    ///   Application's own write landed on: the self-stale guard's lower
+    ///   bound, so an Application is never marked `modified` by its own
+    ///   event.
+    /// * `target_state_sequence` / `target_state_updated_at` -- what last
+    ///   moved `target_state`, making at-least-once Change Feed delivery
+    ///   idempotent here.
+    ///
+    /// There is deliberately no per-field `committed_value_digest`. An earlier
+    /// revision of SCHEMA 29 carried one, on the assumption that
+    /// `affected_fields`'s field paths are JSON pointers into the canonical
+    /// snapshot. They are not -- they are Field Authority *coordinates*, and
+    /// they diverge from the snapshot shape three different ways:
+    ///
+    /// * nesting -- a `chronicle-event`'s scalars live under `/eventData`,
+    ///   so `/title` resolves against nothing;
+    /// * casing -- `canonical_plot_thread_snapshot` selects the row verbatim,
+    ///   so its key is `sort_order` while the coordinate is `/sortOrder`;
+    /// * absence -- a temporal constraint's `/nodes` has no counterpart in
+    ///   `collect_constraint_snapshot`'s `json_object` at all.
+    ///
+    /// Whole families of kinds therefore digested to NULL, and a NULL could
+    /// not be told apart from the legitimate "this field has no canonical
+    /// representation". (Other kinds did digest cleanly -- a codex entry
+    /// create resolved every one of its paths -- which is what let the gap go
+    /// unnoticed.)
+    ///
+    /// It is left out rather than repaired because nothing needs it. A
+    /// superseding Application is visible in this table, and a human edit is
+    /// visible in the Change Feed's `origin` and `changed_paths` -- at object
+    /// grain, since `changed_paths` collapses to `"/"` on create and delete
+    /// and the event digests cover the whole snapshot, which is enough for
+    /// every consumer that exists today.
+    ///
+    /// It is also recoverable. `narrative_commit_journals.after_json` keeps
+    /// each Application's full entity snapshot, so a nullable
+    /// `ALTER TABLE ADD COLUMN` plus a backfill from the journal reintroduces
+    /// the column without a rebuild. Two caveats for whoever does that:
+    /// `ColumnContract` compares by `ordinal`, so the fresh DDL has to append
+    /// the column in the same position `ADD COLUMN` puts it, or
+    /// `validate_migrated_schema` rejects the import; and a Redo rewrites
+    /// `after_json` in place, so the journal holds the latest replay rather
+    /// than the original apply. Reintroducing it also means fixing the
+    /// coordinate-to-pointer projection above, which is the actual work.
+    ///
+    /// A rebuild rather than a stack of `ADD COLUMN`s, because `commit_id`,
+    /// `proposal_id` and `revision_id` are NOT NULL with no defensible
+    /// default: they have to come from the Application row each Contribution
+    /// already points at, which `ADD COLUMN` cannot express.
+    ///
+    /// **Fails closed on an orphan.** `application_id` has no foreign key, so
+    /// a Contribution can outlive its `narrative_proposal_applications` row.
+    /// Such a row cannot be given provenance, and dropping it would silently
+    /// discard attribution history, so the migration stops instead --
+    /// matching how SCHEMA 23 refuses to coerce an unrecognized Attempt
+    /// status.
+    ///
+    /// `operation_id` is deliberately *not* reconstructed: it cannot be
+    /// identified rather than guessed, because `narrative_apply_operations`
+    /// carries no unique key this table could join on. It stays NULL, which
+    /// is the honest answer.
+    ///
+    /// `baseline_sequence` *is* reconstructed, and the earlier claim that "no
+    /// single canonical event corresponds to it" was simply wrong. Every
+    /// Apply appends exactly one `narrative.commit.apply` row to
+    /// `change_events` carrying its `commit_id`, and `commit.rs` stores that
+    /// row's `sequence` as the live path's baseline -- so the join below
+    /// reads the same number the live path would have written, on the same
+    /// scale the projection compares against (`narrative_change_events.
+    /// canonical_sequence` is the source change event's `sequence`).
+    ///
+    /// It is a grouped derived table rather than the correlated subquery this
+    /// first used. `change_events` is the canonical audit log and grows with
+    /// every edit a person makes; it carries no index on `entity_id` or
+    /// `op_type`, so a correlated lookup rescans the whole project's history
+    /// once per Contribution row. On a workspace with a long history that is
+    /// minutes of work at open time. The derived table scans it once.
+    /// `MIN` is a formality -- a commit has exactly one apply event -- that
+    /// keeps the aggregate well defined.
+    ///
+    /// Writing NULL here was not a missing nicety. The projection admits an
+    /// event when `COALESCE(baseline_sequence, -1) < sequence`, so NULL means
+    /// "every event ever recorded postdates this Application". On a migrated
+    /// workspace the consumer cursor does not exist either, so the first pump
+    /// starts at 0 and replays the project's whole history: a human edit made
+    /// *before* the Application would be read as evidence the field was
+    /// changed *after* it, and the row would report `modified` -- or
+    /// `missing`, for a delete -- while holding exactly what the Application
+    /// wrote. NULL now survives only where it is true: an Application with no
+    /// canonical apply event, which predates the Change Feed entirely, and
+    /// for which every Feed event genuinely is later.
+    ///
+    /// `maintenance_ownership` starts at `maintained` here and is then
+    /// re-projected from the Field Authority ledger by
+    /// [`Self::reproject_contribution_ownership_v29`], which runs as part of
+    /// this migration rather than "its own step, not this one" -- the column
+    /// asserts who may keep maintaining a field, and shipping every migrated
+    /// row as `maintained` asserts that of fields the author already owns.
+    fn migrate_narrative_application_contributions_v29(conn: &Connection) -> anyhow::Result<()> {
+        if !conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM sqlite_master
+                 WHERE type = 'table' AND name = 'narrative_application_contributions'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )? {
+            return Ok(());
+        }
+        let already_migrated: Vec<String> = conn
+            .prepare("PRAGMA table_info(narrative_application_contributions)")?
+            .query_map([], |row| row.get::<_, String>("name"))?
+            .collect::<Result<_, _>>()?;
+        if already_migrated.iter().any(|name| name == "commit_id") {
+            return Ok(());
+        }
+
+        let orphans: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_application_contributions c
+               LEFT JOIN narrative_proposal_applications a ON a.id = c.application_id
+              WHERE a.id IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        anyhow::ensure!(
+            orphans == 0,
+            "NEX_CONTRIBUTION_ORPHAN: {orphans} Application Contribution row(s) have no \
+             narrative_proposal_applications row to take commit/proposal/revision provenance \
+             from; SCHEMA 29 will not invent it or drop the attribution"
+        );
+
+        conn.execute_batch(
+            "CREATE TABLE narrative_application_contributions_v29 (
+                id                     TEXT NOT NULL,
+                project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                application_id         TEXT NOT NULL CHECK(length(application_id) > 0),
+                commit_id              TEXT NOT NULL CHECK(length(commit_id) > 0),
+                proposal_id            TEXT NOT NULL CHECK(length(proposal_id) > 0),
+                revision_id            TEXT NOT NULL CHECK(length(revision_id) > 0),
+                operation_id           TEXT
+                    CHECK(operation_id IS NULL OR length(operation_id) > 0),
+                target_object_identity TEXT NOT NULL CHECK(length(target_object_identity) > 0),
+                field_path             TEXT NOT NULL CHECK(length(field_path) > 0),
+                target_state           TEXT NOT NULL
+                    CHECK(target_state IN ('unchanged','modified','missing','superseded','undone','not-applicable')),
+                maintenance_ownership  TEXT NOT NULL DEFAULT 'maintained'
+                    CHECK(maintenance_ownership IN ('maintained','user-owned','detached')),
+                baseline_sequence      INTEGER
+                    CHECK(baseline_sequence IS NULL OR baseline_sequence > 0),
+                target_state_sequence  INTEGER
+                    CHECK(target_state_sequence IS NULL OR target_state_sequence > 0),
+                target_state_updated_at TEXT,
+                created_at             TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );
+             INSERT INTO narrative_application_contributions_v29 (
+                id, project_id, application_id, commit_id, proposal_id, revision_id,
+                operation_id, target_object_identity, field_path, target_state,
+                maintenance_ownership, baseline_sequence,
+                target_state_sequence, target_state_updated_at, created_at
+             )
+             SELECT c.id, c.project_id, c.application_id,
+                    a.commit_id, a.proposal_id, a.revision_id,
+                    NULL, c.target_object_identity, c.field_path, c.target_state,
+                    'maintained', apply_event.sequence, NULL, NULL, c.created_at
+               FROM narrative_application_contributions c
+               JOIN narrative_proposal_applications a ON a.id = c.application_id
+               LEFT JOIN (
+                    SELECT project_id, entity_id, MIN(sequence) AS sequence
+                      FROM change_events
+                     WHERE op_type = 'narrative.commit.apply'
+                     GROUP BY project_id, entity_id
+               ) apply_event
+                 ON apply_event.project_id = c.project_id
+                AND apply_event.entity_id = a.commit_id;
+             DROP TABLE narrative_application_contributions;
+             ALTER TABLE narrative_application_contributions_v29
+                RENAME TO narrative_application_contributions;
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_target
+                ON narrative_application_contributions(project_id, target_object_identity);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_field
+                ON narrative_application_contributions(project_id, target_object_identity, field_path);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_application
+                ON narrative_application_contributions(project_id, application_id);
+             CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
+                ON narrative_application_contributions(project_id, commit_id);",
+        )
+        .context("rebuilding narrative_application_contributions for SCHEMA 29")?;
+        Self::reproject_contribution_ownership_v29(conn)
+            .context("re-projecting Contribution ownership from Field Authority for SCHEMA 29")?;
+        Ok(())
+    }
+
+    /// Replays the Field Authority ledger onto the freshly rebuilt
+    /// Contribution rows, so `maintenance_ownership` starts out agreeing with
+    /// the ledger that already decides who holds each field.
+    ///
+    /// Without this the rebuild ships every pre-existing row as `maintained`
+    /// -- "maintenance may keep proposing and applying to this field" -- for
+    /// fields a person had already written or explicitly locked. Nothing
+    /// self-corrects it: ownership is only ever stamped forward, on the next
+    /// human write, so a field the author took and never touched again would
+    /// have reported the wrong owner for the life of the workspace.
+    ///
+    /// Reuses `mark_fields_user_owned_in_tx` rather than restating its UPDATE
+    /// as migration SQL. The kind vocabularies differ on the two sides and
+    /// the translation between them lives in one function; a second copy here
+    /// would be a second thing to keep in step, which is the failure this
+    /// branch has already had to fix twice.
+    fn reproject_contribution_ownership_v29(conn: &Connection) -> anyhow::Result<()> {
+        if !Self::table_exists_for_v28(conn, "narrative_field_authority")? {
+            return Ok(());
+        }
+        crate::narrative_extraction::application_contributions::
+            reproject_user_ownership_from_authority_in_tx(conn, None)
     }
 
     /// Moves one Contribution onto its canonical identity.
@@ -9837,9 +10142,9 @@ mod tests {
             conn.execute_batch(
                 "INSERT INTO projects (id, title) VALUES ('proj-1', 'Test');
                  INSERT INTO narrative_application_contributions
-                    (id, project_id, application_id, target_object_identity,
-                     field_path, target_state, created_at)
-                 VALUES ('c1', 'proj-1', 'app-1',
+                    (id, project_id, application_id, commit_id, proposal_id, revision_id,
+                     target_object_identity, field_path, target_state, created_at)
+                 VALUES ('c1', 'proj-1', 'app-1', 'commit-1', 'proposal-1', 'revision-1',
                          'unresolved:codex-detail-value:value-gone', '/legacy-application',
                          'unchanged', '2026-08-15T00:00:00.000Z');",
             )?;
@@ -10134,6 +10439,272 @@ mod tests {
             "unresolved:codex-detail-value:value-gone",
             "a deleted detail value must be marked, never guessed"
         );
+    }
+
+    /// A pre-SCHEMA-29 shape, modelled closely enough that the rebuild's two
+    /// reconstructions have something real to read.
+    ///
+    /// It previously created only the two narrative tables. That is why the
+    /// rebuild could ship `baseline_sequence = NULL` and `'maintained'` for
+    /// every row and still pass: the scratch database held no canonical apply
+    /// event to reconstruct a baseline from and no Field Authority row to
+    /// contradict the ownership, so both fabricated values looked correct.
+    ///
+    /// `row-1` is a field the author already holds; `row-2` is one nobody
+    /// claimed, so a blanket re-projection would be caught as readily as no
+    /// re-projection at all.
+    fn seed_pre_v29_contributions_with_applications(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE projects (id TEXT PRIMARY KEY, title TEXT NOT NULL);
+             INSERT INTO projects VALUES ('proj-1', 'Test Project');
+             CREATE TABLE change_events (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                op_type    TEXT NOT NULL,
+                entity_id  TEXT,
+                sequence   INTEGER NOT NULL
+             );
+             INSERT INTO change_events (project_id, op_type, entity_id, sequence)
+                VALUES ('proj-1', 'narrative.commit.apply', 'commit-1', 20);
+             CREATE TABLE narrative_field_authority (
+                project_id   TEXT NOT NULL,
+                entity_kind  TEXT NOT NULL,
+                entity_id    TEXT NOT NULL,
+                field_path   TEXT NOT NULL,
+                owner_kind   TEXT NOT NULL,
+                explicit_lock INTEGER NOT NULL DEFAULT 0,
+                version      INTEGER NOT NULL DEFAULT 0,
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY(project_id, entity_kind, entity_id, field_path)
+             );
+             INSERT INTO narrative_field_authority
+                VALUES ('proj-1', 'codex-entry', 'entry-1', '/name', 'human', 0, 1,
+                        '2026-08-15T00:00:00.000Z');
+             CREATE TABLE narrative_application_contributions (
+                id                     TEXT PRIMARY KEY,
+                project_id             TEXT NOT NULL,
+                application_id         TEXT NOT NULL,
+                target_object_identity TEXT NOT NULL,
+                field_path             TEXT NOT NULL,
+                target_state           TEXT NOT NULL,
+                created_at             TEXT NOT NULL,
+                UNIQUE(project_id, application_id, target_object_identity, field_path)
+             );
+             CREATE TABLE narrative_proposal_applications (
+                id          TEXT PRIMARY KEY,
+                commit_id   TEXT NOT NULL,
+                proposal_id TEXT NOT NULL,
+                revision_id TEXT NOT NULL
+             );
+             INSERT INTO narrative_proposal_applications
+                VALUES ('app-1', 'commit-1', 'proposal-1', 'revision-1');
+             INSERT INTO narrative_application_contributions
+                VALUES ('row-1', 'proj-1', 'app-1', 'codex-entry:entry-1', '/name',
+                        'unchanged', '2026-08-15T00:00:00.000Z');
+             INSERT INTO narrative_application_contributions
+                VALUES ('row-2', 'proj-1', 'app-1', 'codex-entry:entry-1', '/summary',
+                        'unchanged', '2026-08-15T00:00:00.000Z');",
+        )
+        .expect("seed a pre-v29 contributions table");
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_takes_provenance_from_the_application() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let (commit_id, proposal_id, revision_id, operation_id, ownership): (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT commit_id, proposal_id, revision_id, operation_id, maintenance_ownership
+                   FROM narrative_application_contributions WHERE id = 'row-1'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("read the migrated contribution");
+        assert_eq!(commit_id, "commit-1");
+        assert_eq!(proposal_id, "proposal-1");
+        assert_eq!(revision_id, "revision-1");
+        assert_eq!(
+            operation_id, None,
+            "an operation cannot be identified retroactively and must not be invented"
+        );
+        assert_eq!(
+            ownership, "user-owned",
+            "the Field Authority ledger already recorded this field as the author's"
+        );
+    }
+
+    /// The baseline is the sequence of the Application's own canonical apply
+    /// event, which is the same number `commit.rs` stores on the live path.
+    ///
+    /// Writing NULL instead is what made a *pre*-Application human edit read
+    /// as a *post*-Application one: the projection admits an event when
+    /// `COALESCE(baseline_sequence, -1) < sequence`, and a migrated workspace
+    /// has no consumer cursor either, so the first pump replays the whole
+    /// history against a lower bound of -1.
+    #[test]
+    fn migrate_application_contributions_v29_reconstructs_the_baseline_from_the_apply_event() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the migrated baseline");
+        assert_eq!(baseline, Some(20));
+    }
+
+    /// A commit with no canonical apply event predates the Change Feed, so
+    /// every Feed event genuinely is later than it. NULL is true there, and
+    /// the reconstruction must not invent a sequence to avoid it.
+    #[test]
+    fn migrate_application_contributions_v29_leaves_the_baseline_null_for_a_pre_feed_commit() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute(
+            "DELETE FROM change_events WHERE entity_id = 'commit-1'",
+            [],
+        )
+        .expect("remove the canonical apply event");
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let baseline: Option<i64> = conn
+            .query_row(
+                "SELECT baseline_sequence FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read the migrated baseline");
+        assert_eq!(baseline, None);
+    }
+
+    /// The re-projection is targeted, not a blanket stamp: `row-2` is a field
+    /// nobody claimed and has to survive the migration as `maintained`.
+    #[test]
+    fn migrate_application_contributions_v29_reprojects_ownership_only_where_the_ledger_says_so() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration");
+
+        let owners: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT id, maintenance_ownership FROM narrative_application_contributions
+                  ORDER BY id ASC",
+            )
+            .expect("prepare")
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert_eq!(
+            owners,
+            vec![
+                ("row-1".to_string(), "user-owned".to_string()),
+                ("row-2".to_string(), "maintained".to_string()),
+            ]
+        );
+    }
+
+    /// A workspace whose Field Authority table does not exist yet must still
+    /// migrate: the re-projection is a refinement of the rebuild, not a
+    /// precondition for it.
+    #[test]
+    fn migrate_application_contributions_v29_runs_without_a_field_authority_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute_batch("DROP TABLE narrative_field_authority;")
+            .expect("drop the ledger");
+
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("SCHEMA 29 contributions migration without a ledger");
+
+        let ownership: String = conn
+            .query_row(
+                "SELECT maintenance_ownership FROM narrative_application_contributions
+                  WHERE id = 'row-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read ownership");
+        assert_eq!(ownership, "maintained");
+    }
+
+    /// `application_id` has no foreign key, so a Contribution can outlive its
+    /// Application. Provenance cannot be invented for it and dropping the row
+    /// would discard attribution history, so the migration stops.
+    #[test]
+    fn migrate_application_contributions_v29_fails_closed_on_an_orphan() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+        conn.execute(
+            "INSERT INTO narrative_application_contributions
+             VALUES ('row-orphan', 'proj-1', 'app-gone', 'codex-entry:entry-2', '/name',
+                     'unchanged', '2026-08-15T00:00:00.000Z')",
+            [],
+        )
+        .expect("seed an orphan contribution");
+
+        let error = Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect_err("an orphan must stop the migration");
+        assert!(
+            error.to_string().contains("NEX_CONTRIBUTION_ORPHAN"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_pre_v29_contributions_with_applications(&conn);
+
+        Database::migrate_narrative_application_contributions_v29(&conn).expect("first pass");
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("second pass must be a no-op");
+
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_application_contributions",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count rows");
+        assert_eq!(rows, 2);
+    }
+
+    #[test]
+    fn migrate_application_contributions_v29_is_a_no_op_without_the_table() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        Database::migrate_narrative_application_contributions_v29(&conn)
+            .expect("a workspace with no contributions table must migrate cleanly");
     }
 
     #[test]
