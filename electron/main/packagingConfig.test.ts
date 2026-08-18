@@ -90,6 +90,9 @@ describe("Electron release packaging contract", () => {
       "dist/**",
       "dist-electron/**",
       "package.json",
+      "LICENSE",
+      "LICENSING.md",
+      "NOTICE",
       "electron/native/grimodex-node/grimodex-node.node",
     ]);
     expect(config.asarUnpack).toEqual([

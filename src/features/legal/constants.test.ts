@@ -17,6 +17,33 @@ describe("EULA_VERSION", () => {
     }
   });
 
+  it("ships the proprietary source and official-binary license split", () => {
+    const expected = {
+      ja: [
+        "第一者ソースコードはプロプライエタリ",
+        "公式 Grimodex バイナリ",
+        "閲覧およびエクスポートは制限されません",
+        "LICENSING.md",
+      ],
+      en: [
+        "first-party source code of the Software is proprietary",
+        "official Grimodex binaries",
+        "viewing and exporting the data created by the User is not restricted",
+        "LICENSING.md",
+      ],
+    } as const;
+
+    for (const locale of ["ja", "en"] as const) {
+      const terms = readFileSync(
+        resolve(REPO_ROOT, `public/TERMS_${locale}.md`),
+        "utf8",
+      );
+      for (const phrase of expected[locale]) {
+        expect(terms).toContain(phrase);
+      }
+    }
+  });
+
   it("ships localized editor-only privacy notices with BYOK safeguards", () => {
     const expectedEditorOnlyCopy = {
       ja: [

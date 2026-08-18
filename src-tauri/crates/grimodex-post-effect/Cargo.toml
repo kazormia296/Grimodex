@@ -2,7 +2,8 @@
 name = "grimodex-post-effect"
 version = "0.1.0"
 edition = "2021"
-license = "Elastic-2.0"
+license-file.workspace = true
+publish.workspace = true
 description = "Shared post-effect orchestration for the Tauri and Electron backends"
 
 [dependencies]

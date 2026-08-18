@@ -132,14 +132,36 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex -
 
 ## Contributing / コントリビューション
 
-This is a personal project and I'm not familiar with OSS workflows. I may not be able to review or merge pull requests in a timely manner — or at all. If you want to add features or make changes, forking is probably the way to go.
+Bug reports and non-code feedback via Issues are welcome, though response time
+isn't guaranteed. Grimodex is not accepting external code contributions or pull
+requests at this time. Do not submit patches unless the maintainer has requested
+them and separate written contribution terms are in place.
 
-Bug reports and feedback via issues are welcome, though response time isn't guaranteed.
+Public source availability and GitHub's in-service fork permission do not grant
+permission to reuse, modify, distribute, or commercialize Grimodex. See
+[LICENSING.md](./LICENSING.md) for the boundary and contribution policy.
 
-個人プロジェクトとして公開しているだけなので、PRのレビューやマージは基本的にできないと思ってください。機能を追加したい場合はフォークして自由に使ってもらえると助かります。バグ報告や感想などはイシューで気軽にどうぞ（返信が遅れる場合があります）。
+Issue による不具合報告やコードを含まないフィードバックは歓迎します（返信が
+遅れる場合があります）。現在、外部からのコードコントリビューションおよび Pull
+Request は受け付けていません。メンテナから依頼があり、個別の書面による条件が
+整備されている場合を除き、パッチを送付しないでください。
+
+ソースが公開され、GitHub 上で fork できることは、Grimodex を再利用、改変、配布、
+または商用化する権利を付与するものではありません。境界とコントリビューション
+方針は [LICENSING.md](./LICENSING.md) を参照してください。
 
 ---
 
 ## License / ライセンス
 
-[Elastic License 2.0](./LICENSE).
+**Proprietary — All Rights Reserved / プロプライエタリ — 全権利留保。**
+
+The source is publicly viewable for reference, security review, and Issue
+reporting only. Official binaries may be used under the applicable Grimodex
+Terms of Use. See [LICENSE](./LICENSE) and [LICENSING.md](./LICENSING.md).
+Third-party components remain under their respective licenses.
+
+ソースは参照、セキュリティ監査および Issue 報告のために公開されています。
+公式バイナリは適用される Grimodex 利用規約に基づいて利用できます。詳細は
+[LICENSE](./LICENSE) と [LICENSING.md](./LICENSING.md) を参照してください。
+第三者コンポーネントには、それぞれのライセンスが引き続き適用されます。
