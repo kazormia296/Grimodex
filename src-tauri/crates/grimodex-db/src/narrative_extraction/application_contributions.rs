@@ -25,6 +25,7 @@
 //! call-site wiring into `commit.rs` lands in C2-T1 — this module only
 //! establishes the bookkeeping primitives.
 
+use anyhow::Context as _;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::Value;
 use uuid::Uuid;
@@ -175,18 +176,20 @@ pub(crate) fn contribution_target_identity_for_application(
 /// silently minting an identity nothing can resolve, matching how
 /// `affected_fields` itself rejects operation kinds it does not model.
 ///
-/// **No production caller.** The Apply path used to address Contributions
-/// through this function, but `affected_fields`'s entity id is a Field
-/// Authority coordinate, not an object id -- `temporal.constraint.create`
-/// reports `authority_entity_id()`, which falls back to a fingerprint while
-/// the inserted row gets a fresh UUID. Apply now reads
-/// `applied_entity_kind`/`applied_entity_id` off the Application row and goes
-/// through [`contribution_target_identity_for_application`], the same path the
-/// Legacy Backfill takes, so the two writers agree by construction. This is
-/// kept because it is the only written-down statement of how the Field
-/// Authority vocabulary corresponds to Object Addressing, and its test pins
-/// that correspondence across every kind `affected_fields` can report.
-#[allow(dead_code)]
+/// **Not used to file a Contribution.** The Apply path used to address
+/// Contributions through this function, but `affected_fields`'s entity id is
+/// a Field Authority coordinate, not an object id --
+/// `temporal.constraint.create` reports `authority_entity_id()`, which falls
+/// back to a fingerprint while the inserted row gets a fresh UUID. Apply now
+/// reads `applied_entity_kind`/`applied_entity_id` off the Application row and
+/// goes through [`contribution_target_identity_for_application`], the same
+/// path the Legacy Backfill takes, so the two writers agree by construction.
+///
+/// It is still the production route in the other direction: a human write or
+/// an explicit lock arrives as a Field Authority coordinate and
+/// [`mark_fields_user_owned_in_tx`] has to find the Contributions it bears
+/// on. (An earlier version of this comment claimed "no production caller",
+/// which that function has been contradicting since it was written.)
 pub(crate) fn contribution_target_identity_for_authority_kind(
     authority_kind: &str,
     entity_id: &str,
@@ -211,6 +214,12 @@ fn writer_kind_for_authority_kind(authority_kind: &str) -> anyhow::Result<&'stat
         "plot-marker" => "plot_thread_marker",
         "plot-branch" => "plot_thread_branch",
         "foreshadow" => "foreshadow",
+        // Historic only: the live Apply path has no operation that files a
+        // Contribution against a detail *definition*, but SCHEMA 28 rewrites
+        // a `codex_detail_definition:` identity prefix, so rows predating
+        // this branch can carry one. Mapping it costs nothing and is what
+        // lets a human edit of a definition reach them.
+        "codex-detail-definition" => "codex_detail_definition",
         other => anyhow::bail!(
             "NEX_CONTRIBUTION_TARGET_KIND_INVALID: no canonical object kind is mapped for Field Authority kind '{other}'"
         ),
@@ -643,6 +652,15 @@ const EFFECTIVE_TARGET_STATE_SQL: &str = "CASE
 /// Called from inside `record_human_field_write` rather than from each of its
 /// call sites -- there are over thirty across the manual writers -- so one
 /// added later cannot silently skip it.
+/// Field Authority kinds that address something no Contribution can ever be
+/// filed against, so having no object mapping is the correct answer rather
+/// than a missing one.
+///
+/// `tree_node` is on the list even though scenes plainly do carry
+/// Contributions: the Apply path files those under the `scene` coordinate,
+/// and no production writer records Field Authority against `tree_node`.
+const KINDS_WITHOUT_CONTRIBUTIONS: &[&str] = &["project", "codex-tag", "codex-type", "tree_node"];
+
 pub(crate) fn mark_fields_user_owned_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -653,15 +671,27 @@ pub(crate) fn mark_fields_user_owned_in_tx(
     // The Field Authority ledger speaks its own kind vocabulary, and this is
     // the boundary that translates it -- the reason
     // `contribution_target_identity_for_authority_kind` was kept.
-    let Ok(target_object_identity) =
-        contribution_target_identity_for_authority_kind(entity_kind, entity_id)
-    else {
-        // A kind with no ratified object mapping (today: a temporal
-        // constraint, whose Field Authority coordinate is a fingerprint the
-        // applied row never had) cannot be pointed at a Contribution. Handing
-        // ownership to the wrong object is worse than leaving it maintained.
+    //
+    // An unmappable kind used to return `Ok(())` here. That silently answered
+    // two very different questions the same way: "this kind can never carry a
+    // Contribution, so there is nothing to hand over" and "this kind should
+    // have a Contribution and the mapping is missing". The first is a fact
+    // about the vocabulary and belongs in a list; the second is a defect, and
+    // swallowing it means a human's claim on a field disappears with no trace
+    // anywhere. It fails closed now.
+    if KINDS_WITHOUT_CONTRIBUTIONS.contains(&entity_kind) {
         return Ok(());
-    };
+    }
+    let target_object_identity =
+        contribution_target_identity_for_authority_kind(entity_kind, entity_id).with_context(
+            || {
+                format!(
+                    "cannot hand ownership of a '{entity_kind}' field to the user: \
+                     the kind maps to no canonical object and is not on the list of \
+                     kinds that carry no Contribution"
+                )
+            },
+        )?;
     for field_path in field_paths {
         conn.execute(
             // `target_state_updated_at` is deliberately untouched: it and
@@ -1546,7 +1576,10 @@ mod tests {
                 target_object_identity: "codex-entry:e1",
                 field_path: "/name",
                 target_state: ContributionTargetState::Unchanged,
-                authority: None,
+                authority: Some(FieldAuthorityCoordinate {
+                    entity_kind: "codex-entry",
+                    entity_id: "e1",
+                }),
             };
             record_contribution_in_tx(
                 conn,
@@ -1596,13 +1629,18 @@ mod tests {
         .expect("test body");
     }
 
-    /// The gap the sibling-inheritance leaves, pinned rather than hidden. A
-    /// human who writes a field before any Application has contributed to it
-    /// leaves no Contribution row to inherit from, because the ledger is keyed
-    /// by its own vocabulary and cannot be joined to this table. The next
-    /// human write on that field closes it.
+    /// The case sibling inheritance could not see, and the reason ownership
+    /// is read from the ledger instead. A human writes a field before any
+    /// Application has contributed to it, so there is no Contribution row to
+    /// copy an answer from -- and the ledger already holds the answer. The
+    /// first Contribution recorded afterwards has to arrive `user-owned`.
+    ///
+    /// This test previously asserted `maintained` here and called it a known
+    /// gap. It was not a gap in what could be known; the claim that the two
+    /// tables "cannot be joined" was wrong. `affected_fields` hands the Apply
+    /// path the exact ledger coordinate.
     #[test]
-    fn a_field_owned_before_any_contribution_is_not_yet_inherited() {
+    fn a_field_the_user_took_before_any_contribution_is_owned_from_the_first_row() {
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "p1");
@@ -1625,7 +1663,10 @@ mod tests {
                     target_object_identity: "codex-entry:e1",
                     field_path: "/name",
                     target_state: ContributionTargetState::Unchanged,
-                    authority: None,
+                    authority: Some(FieldAuthorityCoordinate {
+                        entity_kind: "codex-entry",
+                        entity_id: "e1",
+                    }),
                 },
                 "2026-08-16T00:00:00.000Z",
             )
@@ -1633,20 +1674,10 @@ mod tests {
 
             assert_eq!(
                 ownership_of(conn, "p1", "/name"),
-                "maintained",
-                "known gap: no sibling row existed to inherit from"
+                "user-owned",
+                "the ledger already said the author holds this field, so the \
+                 first Contribution on it has to say so too"
             );
-
-            super::super::field_authority::record_human_field_write(
-                conn,
-                "p1",
-                "codex-entry",
-                "e1",
-                &["/name"],
-                "2026-08-17T00:00:00.000Z",
-            )
-            .expect("the next human write closes it");
-            assert_eq!(ownership_of(conn, "p1", "/name"), "user-owned");
             Ok(())
         })
         .expect("test body");
@@ -1693,12 +1724,17 @@ mod tests {
         .expect("test body");
     }
 
-    /// A Field Authority coordinate with no ratified object mapping cannot be
-    /// pointed at a Contribution. Handing ownership to the wrong object is
-    /// worse than leaving it maintained, so the write is skipped rather than
-    /// guessed -- and it must not fail the human's edit either.
+    /// A kind that maps to no canonical object fails closed. Ownership must
+    /// never land on a guessed object, and it must not vanish silently
+    /// either: a `return Ok(())` here reported success while the person's
+    /// claim on the field went nowhere at all.
+    ///
+    /// `KINDS_WITHOUT_CONTRIBUTIONS` is the other half of this rule, and
+    /// `a_kind_that_carries_no_contribution_is_skipped_quietly` covers it --
+    /// the two must not be confused, which is exactly what one shared
+    /// `Ok(())` did.
     #[test]
-    fn an_unmappable_authority_kind_is_skipped_not_guessed() {
+    fn an_unmappable_authority_kind_fails_closed_rather_than_guessing() {
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "p1");
@@ -1717,7 +1753,7 @@ mod tests {
             )
             .expect("record contribution");
 
-            super::super::field_authority::record_human_field_write(
+            let error = super::super::field_authority::record_human_field_write(
                 conn,
                 "p1",
                 "not-a-ratified-kind",
@@ -1725,7 +1761,11 @@ mod tests {
                 &["/name"],
                 "2026-08-16T00:00:00.000Z",
             )
-            .expect("an unmappable kind must not fail the human write");
+            .expect_err("an unmappable kind must not report a silent success");
+            assert!(
+                format!("{error:#}").contains("cannot hand ownership of a"),
+                "the error has to name the failure, got: {error:#}"
+            );
 
             assert_eq!(
                 ownership_of(conn, "p1", "/name"),
@@ -1735,6 +1775,154 @@ mod tests {
             Ok(())
         })
         .expect("test body");
+    }
+
+    /// The other half of the rule above: a kind that genuinely cannot carry a
+    /// Contribution is not a defect, and a human write against it has to
+    /// succeed. `project` is one -- nothing files a Contribution against a
+    /// whole project.
+    #[test]
+    fn a_kind_that_carries_no_contribution_is_skipped_quietly() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            super::super::field_authority::record_human_field_write(
+                conn,
+                "p1",
+                "project",
+                "p1",
+                &["/title"],
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("a kind with no Contribution must not fail the human write");
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The explicit field lock is the strongest claim a person can make about
+    /// a field, and until now it reached `narrative_field_authority` and
+    /// stopped there -- `mark_fields_user_owned_in_tx` had one caller, the
+    /// manual-write path, and this was not it. Nothing covered this at all.
+    #[test]
+    fn an_explicit_lock_hands_the_contribution_to_the_user() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_commit(conn, "p1", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-1"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/name",
+                    target_state: ContributionTargetState::Unchanged,
+                    authority: Some(FieldAuthorityCoordinate {
+                        entity_kind: "codex-entry",
+                        entity_id: "e1",
+                    }),
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("record contribution");
+            assert_eq!(ownership_of(conn, "p1", "/name"), "maintained");
+
+            super::super::field_authority::set_human_field_lock_in_tx(
+                conn,
+                &super::super::models::HumanFieldLockPayload {
+                    project_id: "p1".to_string(),
+                    entity_kind: "codex-entry".to_string(),
+                    entity_id: "e1".to_string(),
+                    field_path: "/name".to_string(),
+                    locked: true,
+                    expected_version: 0,
+                },
+            )
+            .expect("lock the field");
+
+            assert_eq!(
+                ownership_of(conn, "p1", "/name"),
+                "user-owned",
+                "a locked field cannot keep reporting that maintenance may apply to it"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The Legacy Backfill sentinel means "the whole entity, granularity
+    /// unknown". A later Application that rewrites any field of that object
+    /// therefore supersedes it -- which exact `field_path` equality could
+    /// never conclude, because no live Apply records a field by that name.
+    #[test]
+    fn a_later_application_supersedes_the_whole_object_sentinel() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "p1");
+            seed_named_commit(conn, "p1", "commit-1", "applied");
+            seed_named_commit(conn, "p1", "commit-2", "applied");
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &test_provenance("app-legacy"),
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/legacy-application",
+                    target_state: ContributionTargetState::Unchanged,
+                    authority: None,
+                },
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("legacy backfill row");
+
+            let mut later = test_provenance("app-live");
+            later.commit_id = "commit-2";
+            later.baseline_sequence = Some(40);
+            record_contribution_in_tx(
+                conn,
+                "p1",
+                &later,
+                &ContributionField {
+                    target_object_identity: "codex-entry:e1",
+                    field_path: "/title",
+                    target_state: ContributionTargetState::Unchanged,
+                    authority: None,
+                },
+                "2026-08-16T00:00:00.000Z",
+            )
+            .expect("later live application");
+
+            let legacy = list_contributions_for_application(conn, "p1", "app-legacy")
+                .expect("read the legacy contribution");
+            assert_eq!(
+                legacy[0].target_state,
+                ContributionTargetState::Superseded,
+                "a whole-object row cannot stay unchanged after the object was rewritten"
+            );
+
+            let live = list_contributions_for_application(conn, "p1", "app-live")
+                .expect("read the live contribution");
+            assert_eq!(
+                live[0].target_state,
+                ContributionTargetState::Unchanged,
+                "the relaxation is one-directional: a whole-object row from the past \
+                 is not evidence that it wrote this particular field"
+            );
+            Ok(())
+        })
+        .expect("test body");
+    }
+
+    /// The sentinel is a literal in the supersede SQL and a constant in the
+    /// Backfill. Nothing but this test keeps the two spellings together.
+    #[test]
+    fn the_supersede_sql_and_the_backfill_agree_on_the_sentinel() {
+        assert!(
+            EFFECTIVE_TARGET_STATE_SQL
+                .contains(super::super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH),
+            "the supersede subquery must name the same sentinel the Backfill writes"
+        );
     }
 
     /// An operation that wrote nothing has nothing to roll back, so calling it

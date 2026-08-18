@@ -326,6 +326,27 @@ mod tests {
         changed_paths: &[&str],
         mutation_kind: &str,
     ) {
+        seed_feed_event_for(
+            conn,
+            sequence,
+            commit_id,
+            changed_paths,
+            mutation_kind,
+            r#"{"kind":"scene","sceneId":"s1"}"#,
+        );
+    }
+
+    /// The same, with the object key spelled out, for the kinds whose Feed
+    /// spelling and ledger spelling are not the same string.
+    #[allow(clippy::too_many_arguments)]
+    fn seed_feed_event_for(
+        conn: &Connection,
+        sequence: i64,
+        commit_id: Option<&str>,
+        changed_paths: &[&str],
+        mutation_kind: &str,
+        object_key_json: &str,
+    ) {
         let uid = format!("uid-{sequence}");
         conn.execute(
             "INSERT INTO change_events
@@ -350,8 +371,7 @@ mod tests {
                 (id, project_id, transaction_id, canonical_change_event_uid,
                  canonical_sequence, event_ordinal, object_key_json, change_kind,
                  mutation_kind, changed_paths_json, occurred_at)
-             VALUES (?1, 'p1', ?2, ?3, ?4, 0,
-                     '{\"kind\":\"scene\",\"sceneId\":\"s1\"}', 'content', ?5, ?6,
+             VALUES (?1, 'p1', ?2, ?3, ?4, 0, ?7, 'content', ?5, ?6,
                      '2026-08-16T00:00:00.000Z')",
             params![
                 format!("ev-{sequence}"),
@@ -360,6 +380,7 @@ mod tests {
                 sequence,
                 mutation_kind,
                 serde_json::to_string(changed_paths).expect("paths"),
+                object_key_json,
             ],
         )
         .expect("seed narrative change event");
@@ -369,6 +390,133 @@ mod tests {
         let rows = list_contributions_for_target(conn, "p1", "scene:s1").expect("list");
         assert_eq!(rows.len(), 1);
         rows[0].target_state
+    }
+
+    /// The Legacy Backfill sentinel is the other spelling of "the whole
+    /// object", and a field-level hand edit has to reach it. Before the
+    /// sentinel was recognised, only an event that had already collapsed to
+    /// `/` could ever touch a backfilled row.
+    #[test]
+    fn a_field_edit_reaches_a_whole_object_sentinel_contribution() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('p1', 'Test')
+                     ON CONFLICT(id) DO NOTHING",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_apply_commits
+                        (id, project_id, request_id, plan_digest, status, created_at)
+                     VALUES ('commit-1', 'p1', 'req-1', 'digest-1', 'applied',
+                             '2026-08-15T00:00:00.000Z')
+                     ON CONFLICT(id) DO NOTHING",
+                    [],
+                )?;
+                record_contribution_in_tx(
+                    conn,
+                    "p1",
+                    &ContributionProvenance {
+                        application_id: "app-legacy",
+                        commit_id: "commit-1",
+                        proposal_id: "proposal-1",
+                        revision_id: "revision-1",
+                        operation_id: None,
+                        baseline_sequence: Some(10),
+                    },
+                    &ContributionField {
+                        target_object_identity: "scene:s1",
+                        field_path: LEGACY_BACKFILL_FIELD_PATH,
+                        target_state: ContributionTargetState::Unchanged,
+                        authority: None,
+                    },
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                seed_feed_event(conn, 20, None, &["/title"], "update");
+                assert_eq!(only_state(conn), ContributionTargetState::Modified);
+                Ok(())
+            })
+        })
+        .expect("test body");
+    }
+
+    /// A detail write is filed against the owning entry, because that is the
+    /// grain `affected_fields` reports it at. The Feed addresses the same
+    /// write as `codex-detail-value:<valueId>`, so without the matching
+    /// projection on this side the identities never meet and a hand edit
+    /// leaves the Contribution claiming the Application's value is intact.
+    #[test]
+    fn a_hand_edited_detail_value_reaches_its_entry_grain_contribution() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            with_immediate_transaction(conn, |conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('p1', 'Test')
+                     ON CONFLICT(id) DO NOTHING",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_apply_commits
+                        (id, project_id, request_id, plan_digest, status, created_at)
+                     VALUES ('commit-1', 'p1', 'req-1', 'digest-1', 'applied',
+                             '2026-08-15T00:00:00.000Z')
+                     ON CONFLICT(id) DO NOTHING",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_entries (id, project_id, name, entry_type, created_at,
+                                                updated_at)
+                     VALUES ('e1', 'p1', 'Entry', 'character', '2026-08-15T00:00:00.000Z',
+                             '2026-08-15T00:00:00.000Z')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO codex_detail_values (id, project_id, entry_id, definition_id,
+                                                      value_json, created_at, updated_at)
+                     VALUES ('v9', 'p1', 'e1', 'def-1', '\"x\"',
+                             '2026-08-15T00:00:00.000Z', '2026-08-15T00:00:00.000Z')",
+                    [],
+                )?;
+                record_contribution_in_tx(
+                    conn,
+                    "p1",
+                    &ContributionProvenance {
+                        application_id: "app-1",
+                        commit_id: "commit-1",
+                        proposal_id: "proposal-1",
+                        revision_id: "revision-1",
+                        operation_id: None,
+                        baseline_sequence: Some(10),
+                    },
+                    &ContributionField {
+                        target_object_identity: "codex-entry:e1",
+                        field_path: "/details/def-1",
+                        target_state: ContributionTargetState::Unchanged,
+                        authority: None,
+                    },
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                seed_feed_event_for(
+                    conn,
+                    20,
+                    None,
+                    &["/details/def-1"],
+                    "update",
+                    r#"{"kind":"codex-detail-value","valueId":"v9"}"#,
+                );
+                let rows =
+                    list_contributions_for_target(conn, "p1", "codex-entry:e1").expect("list");
+                assert_eq!(rows.len(), 1);
+                assert_eq!(
+                    rows[0].target_state,
+                    ContributionTargetState::Modified,
+                    "the Feed and the ledger have to agree on which object this write touched"
+                );
+                Ok(())
+            })
+        })
+        .expect("test body");
     }
 
     /// The case the whole step exists for: someone edits the field by hand

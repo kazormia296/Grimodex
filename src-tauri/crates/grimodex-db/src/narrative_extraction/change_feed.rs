@@ -497,6 +497,7 @@ fn ensure_event_history_continuity(
 ) -> anyhow::Result<()> {
     let mut heads =
         std::collections::HashMap::<String, Option<(Option<i64>, Option<String>)>>::new();
+    let mut mutation_kinds = std::collections::HashMap::<String, String>::new();
     for event in events {
         let identity = crate::canonical_feed_snapshots::object_key_identity(&event.object_key)?;
         let prior_after = match heads.get(&identity) {
@@ -530,6 +531,36 @@ fn ensure_event_history_continuity(
                     current_before
                 );
             }
+        }
+        // One transaction gets one `canonical_sequence`, and its events are
+        // told apart only by `event_ordinal`. The Contribution projection
+        // watermarks each row by sequence alone, so of two events at one
+        // sequence bearing on the same field, the second is refused -- and
+        // the cursor then acknowledges the sequence, making it unreplayable.
+        //
+        // Today that costs nothing: every writer that repeats an identity
+        // inside a transaction emits `update` for all of them, and the
+        // projection derives only `missing` (delete) or `modified`
+        // (everything else) with a transaction-wide timestamp, so the refused
+        // write would have been byte-identical. The one shape that would
+        // genuinely lose information is a delete and a non-delete for the
+        // same object in the same transaction, and nothing constructs it.
+        //
+        // That is an invariant the projection depends on, so it is checked
+        // here rather than left as a property of the current writers, and the
+        // projection keeps its one-dimensional watermark instead of growing a
+        // second ordering key that neither the cursor nor `baseline_sequence`
+        // would share.
+        if let Some(previous_kind) = mutation_kinds.insert(identity.clone(), event.mutation_kind.clone())
+        {
+            anyhow::ensure!(
+                (previous_kind == "delete") == (event.mutation_kind == "delete"),
+                "NARRATIVE_CHANGE_FEED_MIXED_MUTATION: object {identity} has both '{}' and '{}' \
+                 in one transaction; a delete and a non-delete for one object share a canonical \
+                 sequence and the Contribution projection can only keep one of them",
+                previous_kind,
+                event.mutation_kind
+            );
         }
         heads.insert(
             identity,
