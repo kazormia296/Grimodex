@@ -11,12 +11,17 @@ members = [
     "crates/grimodex-semantic",
 ]
 
+[workspace.package]
+license-file = "../LICENSE"
+publish = false
+
 [package]
 name = "grimodex"
 version = "1.0.0"
 description = "Grimodex - Writing Fidget IDE (Tauri + React)"
 authors = ["kazormia296 <kazormia296@users.noreply.github.com>"]
-license = "Elastic-2.0"
+license-file.workspace = true
+publish.workspace = true
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

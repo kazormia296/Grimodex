@@ -13,7 +13,7 @@ pkgrel=5
 pkgdesc="AI-integrated novel writing editor (Electron + React)"
 arch=('x86_64')
 url="https://github.com/kazormia296/Grimodex"
-license=('Elastic-2.0')
+license=('LicenseRef-Grimodex-Proprietary')
 # electron-builder 26 の deb 既定dependsを Arch のパッケージ名へ対応させ、
 # legacy keyring migration用の libsecret / dbus も明示する。WebKitGTKは不要。
 depends=('glibc' 'gcc-libs' 'alsa-lib' 'gtk3' 'libnotify' 'nss' 'libxss' 'libxtst' 'xdg-utils' 'at-spi2-core' 'util-linux-libs' 'libsecret' 'dbus' 'hicolor-icon-theme')
@@ -22,7 +22,7 @@ provides=('grimodex')
 conflicts=('grimodex')
 # ビルド済みバイナリの再パッケージなので strip / debug 分離はしない
 options=('!strip' '!debug')
-# Elastic-2.0 は Arch の common license 外なのでライセンス本文の同梱が必須 (namcap E)。
+# Grimodex 独自ライセンスなのでライセンス本文の同梱が必須 (namcap E)。
 # バージョン付き名で保存し、SRCDEST キャッシュの stale 化を防ぐ。
 source=(
   "LICENSE-v${pkgver}::https://raw.githubusercontent.com/kazormia296/Grimodex/v${pkgver}/LICENSE"

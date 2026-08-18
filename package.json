@@ -1,7 +1,7 @@
 {
   "name": "grimodex",
   "private": true,
-  "license": "Elastic-2.0",
+  "license": "UNLICENSED",
   "description": "Local-first AI-integrated novel writing editor",
   "author": "kazormia296 <kazormia296@users.noreply.github.com>",
   "homepage": "https://github.com/kazormia296/Grimodex",
@@ -90,6 +90,7 @@
     "screenshot": "tsx scripts/capture-screenshots.ts",
     "screenshot:one": "tsx scripts/capture-screenshots.ts",
     "generate:licenses": "tsx scripts/generate-licenses.ts",
+    "test:license-policy": "node --test scripts/license-policy.test.mjs",
     "generate:db-contract": "cargo run --manifest-path src-tauri/crates/grimodex-db/Cargo.toml --bin schema-contract -- src/db/generated/schema-contract.json",
     "seed:sample-en": "python3 scripts/seed-sample-en.py",
     "seed:sample-ja": "python3 scripts/seed-sample-ja.py",

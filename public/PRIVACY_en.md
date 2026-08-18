@@ -1,9 +1,11 @@
 # Grimodex Privacy Notice
 
-Last updated: 2026-07-25
-Version: v1.7
+Last updated: 2026-08-19
+Version: v2.0
 
 This notice explains where the Grimodex desktop application and Web Editor trial store data and what is transmitted when the User configures AI. The Terms of Use control if this notice conflicts with them.
+
+This revision updates the shared policy version for re-consent to Terms of Use v2.0. It makes no material change to the storage, transmission, or processing practices described in this notice.
 
 ## 1. Scope of the service
 

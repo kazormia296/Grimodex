@@ -20,7 +20,7 @@ sed 置換してから使う。手で `makepkg` する場合も同様に置換�
   `release.yml` の `build-arch` ジョブは
   draft リリース段階で走るため URL からは取得できず、**同名の `.deb` を PKGBUILD の
   隣へ置く**ことで makepkg のローカルソース解決に拾わせている。
-- Elastic-2.0 は Arch の common license 集合外なので、ライセンス本文を
+- `LicenseRef-Grimodex-Proprietary` は独自ライセンスなので、ライセンス本文を
   `/usr/share/licenses/grimodex-bin/LICENSE` に同梱する（namcap の Error 対策）。
   `LICENSE-v<ver>` という取得名にしているのは SRCDEST キャッシュの stale 化防止。
 - `depends` はelectron-builder 26のdeb既定dependsをArch名へ対応させ、
