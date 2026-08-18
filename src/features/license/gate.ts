@@ -42,10 +42,19 @@ export function isWriteRestrictedByLicense(): boolean {
 /**
  * 制限中なら toast を出して true を返す defense ヘルパー。
  * チョークポイントは `if (blockIfUnlicensed()) return;` の形で早期 return する。
+ *
+ * `toastId` は「1 回のユーザー操作が複数チョークポイントに展開される」経路の
+ * ための重複抑止。素の toast は同じ文言をヒット数だけ積み上げるため、
+ * チャンクごとにループする backfill や、合成タスクが修復タスクを呼ぶような
+ * 入れ子経路では文言の山になる。id を渡すと sonner が 1 枚に畳む。
+ * 単発のユーザー操作では省略してよい。
  */
-export function blockIfUnlicensed(): boolean {
+export function blockIfUnlicensed(toastId?: string): boolean {
   if (!isWriteRestrictedByLicense()) return false;
-  toast.error(i18next.t("license.writeBlocked"));
+  toast.error(
+    i18next.t("license.writeBlocked"),
+    toastId ? { id: toastId } : undefined,
+  );
   return true;
 }
 

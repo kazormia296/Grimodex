@@ -1,8 +1,6 @@
-import { toast } from "sonner";
-import i18next from "@/lib/i18n";
 import type { AiFeature } from "@/features/ai-policy/types";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
-import { isWriteRestrictedByLicense } from "@/features/license/gate";
+import { blockIfUnlicensed } from "@/features/license/gate";
 
 /**
  * Narrative IR の AI タスク共通ガード。AI ポリシーとライセンスの両方を
@@ -25,13 +23,8 @@ import { isWriteRestrictedByLicense } from "@/features/license/gate";
  */
 export function blockNarrativeAiTask(feature: AiFeature = "analysis"): boolean {
   if (blockIfPolicyOff(feature)) return true;
-  if (!isWriteRestrictedByLicense()) return false;
-  // `blockIfUnlicensed()` をそのまま呼ばずに toast を自前で出しているのは
-  // 重複抑止のため。1 回のユーザー操作が複数タスクに展開される経路が実在し
-  // （例: 合成タスク → `runStructuredRepairTask`）、素の toast だと同じ文言が
-  // タスク数だけ積み上がる。id を固定すると sonner が 1 枚に畳む。
-  toast.error(i18next.t("license.writeBlocked"), {
-    id: "narrative-ai-task-license-blocked",
-  });
-  return true;
+  // toast id を渡すのは重複抑止のため。1 回のユーザー操作が複数タスクに
+  // 展開される経路が実在し（例: 合成タスク → `runStructuredRepairTask`）、
+  // 素の toast だと同じ文言がタスク数だけ積み上がる。
+  return blockIfUnlicensed("narrative-ai-task-license-blocked");
 }

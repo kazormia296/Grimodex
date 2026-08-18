@@ -49,48 +49,43 @@ describe("blockNarrativeAiTask", () => {
   afterEach(() => {
     vi.doUnmock("@/features/ai-policy/policyGuard");
     vi.doUnmock("@/features/license/gate");
-    vi.doUnmock("sonner");
   });
 
-  async function load(policyBlocked: boolean, licenseRestricted: boolean) {
-    const toastError = vi.fn();
-    vi.doMock("@/features/ai-policy/policyGuard", () => ({
-      blockIfPolicyOff: vi.fn(() => policyBlocked),
-    }));
-    vi.doMock("@/features/license/gate", () => ({
-      isWriteRestrictedByLicense: vi.fn(() => licenseRestricted),
-    }));
-    vi.doMock("sonner", () => ({ toast: { error: toastError } }));
+  async function load(policyBlocked: boolean, licenseBlocked: boolean) {
+    const blockIfUnlicensed = vi.fn(() => licenseBlocked);
+    const blockIfPolicyOff = vi.fn(() => policyBlocked);
+    vi.doMock("@/features/ai-policy/policyGuard", () => ({ blockIfPolicyOff }));
+    vi.doMock("@/features/license/gate", () => ({ blockIfUnlicensed }));
     const mod = await import("./narrativeAiTaskGuard");
-    return { blockNarrativeAiTask: mod.blockNarrativeAiTask, toastError };
+    return {
+      blockNarrativeAiTask: mod.blockNarrativeAiTask,
+      blockIfUnlicensed,
+      blockIfPolicyOff,
+    };
   }
 
-  it("ポリシー OFF でブロックする", async () => {
-    const { blockNarrativeAiTask } = await load(true, false);
+  it("ポリシー OFF でブロックし、ライセンスは見に行かない", async () => {
+    const { blockNarrativeAiTask, blockIfUnlicensed } = await load(true, false);
     expect(blockNarrativeAiTask()).toBe(true);
+    // policy OFF は利用者自身の設定なので、そちらの説明が優先される。
+    expect(blockIfUnlicensed).not.toHaveBeenCalled();
   });
 
   it("ライセンス制限中はポリシーが許可でもブロックする", async () => {
-    const { blockNarrativeAiTask, toastError } = await load(false, true);
+    const { blockNarrativeAiTask } = await load(false, true);
     expect(blockNarrativeAiTask()).toBe(true);
-    expect(toastError).toHaveBeenCalledTimes(1);
   });
 
-  it("同一文言の toast は id 固定で畳まれる（合成タスク→修復タスクの二重発火対策）", async () => {
-    const { blockNarrativeAiTask, toastError } = await load(false, true);
+  it("toast は固定 id 付きで要求する（合成タスク→修復タスクの二重発火対策）", async () => {
+    const { blockNarrativeAiTask, blockIfUnlicensed } = await load(false, true);
     blockNarrativeAiTask();
-    blockNarrativeAiTask();
-    expect(toastError).toHaveBeenCalledTimes(2);
-    for (const call of toastError.mock.calls) {
-      expect(call[1]).toMatchObject({
-        id: "narrative-ai-task-license-blocked",
-      });
-    }
+    expect(blockIfUnlicensed).toHaveBeenCalledWith(
+      "narrative-ai-task-license-blocked",
+    );
   });
 
   it("どちらも許可なら通す", async () => {
-    const { blockNarrativeAiTask, toastError } = await load(false, false);
+    const { blockNarrativeAiTask } = await load(false, false);
     expect(blockNarrativeAiTask()).toBe(false);
-    expect(toastError).not.toHaveBeenCalled();
   });
 });
