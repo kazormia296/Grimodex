@@ -1069,6 +1069,10 @@ function validatePolicySchemas(repoRoot, errors) {
     ["semantic-state-vocabulary.schema.json", "semantic-state-vocabulary.json"],
     ["semantic-core-authorities.schema.json", "semantic-core-authorities.json"],
     ["retrieval-disclosure.schema.json", "retrieval-disclosure.json"],
+    [
+      "narrative-consumer-contract.schema.json",
+      "narrative-consumer-contract.json",
+    ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   for (const [schemaName, contractName] of schemaContracts) {

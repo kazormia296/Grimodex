@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-consumer-contract",
+  "consumerKinds": [
+    {
+      "kind": "narrative-extraction-run",
+      "status": "declared",
+      "consumerKeyMeaning": "narrative_extraction_runs.id -- the Run whose Proposals and Artifacts the declared Sources were read for.",
+      "durableIdentitySource": "narrative_extraction_runs.id",
+      "notes": "The only Consumer kind a production Producer declares Edges under today: dependency_edges.rs's RUN_CONSUMER_KIND, written by repository.rs's insert_proposal_seed/append_revision_on_conn and mirrored by legacy_backfill.rs. It is also exactly the Run granularity C2-2 exists to replace -- editing one Scene stales every Proposal from the same Run -- so it stays declared until finer-grained Producers exist and Backfill can re-key without fabricating cross-run identity. This contract does not deprecate it; a Run remains a legitimate Consumer of its own Run-wide Sources."
+    },
+    {
+      "kind": "proposal-revision",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_proposal_revisions.id -- one immutable Revision of one Proposal.",
+      "durableIdentitySource": "narrative_proposal_revisions.id",
+      "notes": "The Revision row already carries its own Source Basis (reconciliation_envelope_json, narrative_revision_source_basis), so the Edges a Producer currently declares under the owning Run are re-keyable to it without inventing identity. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "extraction-artifact",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_extraction_artifacts.id -- one stored Interpreter output artifact.",
+      "durableIdentitySource": "narrative_extraction_artifacts.id",
+      "notes": "The row is durable and immutable once written, but it carries no Dependency Manifest of its own today; narrative-run-kind-policy.json's artifact-with-explicit-dependency-manifest repair category is written against that future manifest. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "application",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_proposal_applications.id -- one applied Projection of one Proposal Revision.",
+      "durableIdentitySource": "narrative_proposal_applications.id",
+      "notes": "This is the identity legacy narrative_projection_freshness is already keyed by (application_id PRIMARY KEY), so it is the one Consumer kind whose legacy/Generic parity can be checked row for row at the C2-Z cutover. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "application-contribution",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_application_contributions.id -- one field-level contribution of one Application to one target field.",
+      "durableIdentitySource": "narrative_application_contributions.id",
+      "notes": "The smallest durable unit that exists today: commit.rs already records one row per (application, target_object_identity, field_path) at apply time. Field-level Freshness is what lets one edited Scene stale one field rather than a whole Application. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "derived-projection",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_temporal_projections.id -- one solver-derived Projection row.",
+      "durableIdentitySource": "narrative_temporal_projections.id",
+      "notes": "The only Projection this codebase recomputes rather than applies directly: the row already stores constraint_set_digest, solver_version, and calendar_digest, which are Dependencies in everything but name. The directly applied Projection kinds (Codex Entry, Chronicle Event, Plot Marker, Foreshadow Setup/Payoff) are covered by application/application-contribution, not by this kind. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "semantic-index",
+      "status": "reserved",
+      "consumerKeyMeaning": "narrative_semantic_index_metadata.index_key -- one index a project builds (for example a lexical index and an embedding index are two Consumers).",
+      "durableIdentitySource": "narrative_semantic_index_metadata.index_key",
+      "notes": "The table's primary key is (project_id, index_key); only index_key belongs in the Consumer key, because narrative_consumer_freshness already carries project_id as its own column and a Consumer key must never repeat the project scope. An Index is not an authority -- semantic-core-authorities.json fixes it as rebuildable -- so its Freshness is a rebuild trigger, never a truth claim. No Producer declares Edges under this kind yet."
+    },
+    {
+      "kind": "narrative-ir-revision",
+      "status": "not-yet-modelled",
+      "consumerKeyMeaning": "One Narrative IR Revision, if it ever becomes a row.",
+      "durableIdentitySource": null,
+      "notes": "No durable table exists. Interpreter output lives inside narrative_proposal_revisions.payload_json / reconciliation_envelope_json and narrative_extraction_artifacts.payload_json, never as its own addressable row, so there is nothing stable to key an Edge to. It cannot be a Consumer until it has one; deriving a key from payload content would be exactly the heuristic identity the C2-2 exit criteria forbid."
+    },
+    {
+      "kind": "related-scenes-materialization",
+      "status": "not-yet-modelled",
+      "consumerKeyMeaning": "One materialized Related Scenes candidate set, if it ever becomes a row.",
+      "durableIdentitySource": null,
+      "notes": "No durable table exists. src/features/related-scenes computes candidates per query and keeps nothing, so there is no materialization to stale. It becomes a Consumer only once a candidate set is persisted with its own identity."
+    },
+    {
+      "kind": "chat-context-materialization",
+      "status": "not-yet-modelled",
+      "consumerKeyMeaning": "One materialized Chat Context assembly, if it ever becomes a row.",
+      "durableIdentitySource": null,
+      "notes": "No durable table exists. src/features/ai-context assembles context per request; the chat_* tables store the conversation, not the assembled context or the Sources it was assembled from. It becomes a Consumer only once an assembly is persisted with its own identity."
+    },
+    {
+      "kind": "structure-health-diagnostic",
+      "status": "not-yet-modelled",
+      "consumerKeyMeaning": "One persisted Consistency / Structure Health diagnostic, if it ever becomes a row.",
+      "durableIdentitySource": null,
+      "notes": "No durable table exists. StructureHealthPanel.tsx is still a Gate C0 placeholder with liveCountsAvailable: false, and narrative_maintenance_finding_observations is a rebuildable observation history keyed by finding_key, not a durable diagnostic artifact that could itself be a Consumer."
+    }
+  ],
+  "unknownConsumerKindPolicy": "fail-closed",
+  "unknownConsumerKindEnforcement": {
+    "state": "verify-only",
+    "verifyCheck": "consumer-and-source-key-format",
+    "gap": "Reported, not refused. consumer_identity::ConsumerKind::try_from fails closed on any kind outside this registry, and verify_narrative_dependency_graph_for_project lists such Edges under edge_ids_with_unresolvable_consumer_scope -- deliberately not under edge_ids_with_missing_source, whose Sources are present. The typed writer record_dependency_edge_in_tx enforces keyFormat's shape rules only, not membership, so an Edge under a reserved kind can still be stored; that is intentional while the reserved kinds have no readers, and it is what a Verify names rather than prevents. narrative_dependency_edges.consumer_kind and narrative_consumer_freshness.consumer_kind still carry only a length > 0 CHECK at the SQL layer."
+  },
+  "keyFormat": {
+    "findingKeyFormat": "{consumerKind}:{consumerKey}",
+    "findingKeyParseRule": "split-on-first-colon",
+    "consumerKindMustNotContainColon": true,
+    "consumerKeyMayContainColon": true,
+    "emptyComponentPolicy": "forbid",
+    "surroundingWhitespacePolicy": "forbid",
+    "note": "publish_runtime.rs's and inbox_read_model.rs's consumer_finding_key both build this string, and the Maintenance Inbox and the Attention store both look Findings up by it, so the pair must round-trip. consumerKind carries no colon precisely so the first colon is the unambiguous separator; consumerKey may carry colons because a durable identity can be a compound key (a semantic-index index_key, a future namespaced id). emptyComponentPolicy and surroundingWhitespacePolicy apply to consumerKind and consumerKey alike: an empty or whitespace-padded component would make two different Consumers collide on one finding_key."
+  },
+  "freshnessAuthority": {
+    "canonicalTable": "narrative_consumer_freshness",
+    "canonicalKey": ["project_id", "consumer_kind", "consumer_key"],
+    "compatibilityMirror": "narrative_projection_freshness",
+    "compatibilityMirrorRole": "compatibility-only",
+    "secondaryFreshnessAuthorityPolicy": "forbid",
+    "cutoverGate": "C2-Z",
+    "note": "Matches semantic-core-authorities.json's evidence-freshness row (canonicalAuthority: the C2 consumer freshness evaluator, compatibilityMirror: legacy projection freshness, writePolicy: canonical-only) and narrative-finding-contract.json's currentFreshnessLookup. narrative_projection_freshness is keyed by application_id alone and cannot express any other Consumer kind; per narrative-run-kind-policy.json's cutover block it still serves reads until C2-Z, which does not make it a second authority -- it is the mirror, and no third Freshness store may be created."
+  },
+  "dependencySetDigest": {
+    "column": "narrative_consumer_freshness.dependency_set_digest",
+    "computedOver": "the set of narrative_dependency_edges.source_object_identity values declared under the Consumer's (project_id, consumer_kind, consumer_key)",
+    "nullMeaning": "not-yet-evaluated",
+    "nullIsInconsistency": false,
+    "verifyChecks": [
+      "dependency-set-digest",
+      "consumer-freshness-dependency-set-digest"
+    ],
+    "note": "The digest is over the Consumer's whole Dependency set, so adding or removing one Edge changes it even when every surviving Edge's own state is unchanged -- that is what lets Verify tell 'evaluated against a different dependency set' apart from 'evaluated against the same set and still fresh'. The column is nullable and NULL for every row written before SCHEMA 24 added it; a NULL means this Consumer has not been evaluated since, and Verify must report it as not-yet-evaluated rather than as a graph inconsistency."
+  },
+  "negativeFixture": "a finding_key must never be split on its last colon: 'semantic-index:embeddings:v2' parses to consumerKind 'semantic-index' and consumerKey 'embeddings:v2', while last-colon parsing would silently mint the unregistered consumer kind 'semantic-index:embeddings'"
+}

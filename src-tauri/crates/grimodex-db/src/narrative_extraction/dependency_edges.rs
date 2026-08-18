@@ -39,6 +39,9 @@
 
 use rusqlite::{params, Connection, Row};
 
+use super::consumer_identity::validate_consumer_identity;
+use super::semantic_index_diagnostics::compute_dependency_set_digest;
+
 /// The Dependency Edge Consumer identity a Run's own declared Edges are
 /// stored under: `consumer_kind = RUN_CONSUMER_KIND`, `consumer_key =
 /// run_id`. `narrative_dependency_edges` has no separate `run_id` column --
@@ -46,7 +49,11 @@ use rusqlite::{params, Connection, Row};
 /// Run-scoped caller (Producer-time recording in `repository.rs`,
 /// Rebuild-time lookup in `restore_rebuild.rs`) shares this one constant
 /// rather than each fixing its own literal.
-pub(crate) const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
+///
+/// Defined in `consumer_identity.rs` (Gate C2-2 moved the whole Consumer
+/// vocabulary there) and re-exported here so the call sites that already
+/// import it from this module keep working.
+pub(crate) use super::consumer_identity::RUN_CONSUMER_KIND;
 
 /// Builds a `source_object_identity` string from a Source's `(kind, key)`
 /// pair. The prefixes are the same ones `restore_rebuild.rs`'s
@@ -202,6 +209,14 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
 /// source_object_identity)` key upserts in place rather than accumulating
 /// duplicate Edge rows.
 ///
+/// The Consumer identity is validated here too
+/// ([`validate_consumer_identity`]), because the table's own `CHECK`s only
+/// require non-empty strings. A `consumer_kind` carrying the `finding_key`
+/// separator would silently collide two unrelated Consumers onto one
+/// Maintenance Attention row, which no constraint SQLite can express would
+/// catch. This is the Producer-time gate; the read side stays tolerant of
+/// whatever is already stored.
+///
 /// Returns the Edge's `id` (stable across upserts of the same key).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_dependency_edge_in_tx(
@@ -214,6 +229,7 @@ pub(crate) fn record_dependency_edge_in_tx(
     generated_by_transaction_id: Option<&str>,
     created_at: &str,
 ) -> anyhow::Result<String> {
+    validate_consumer_identity(consumer_kind, consumer_key)?;
     serde_json::from_str::<Vec<serde_json::Value>>(read_set_json).map_err(|error| {
         anyhow::anyhow!(
             "NEX_DEPENDENCY_READ_SET_INVALID: readSetJson must be a JSON array: {error}"
@@ -245,6 +261,46 @@ pub(crate) fn record_dependency_edge_in_tx(
         |row| row.get(0),
     )?;
     Ok(id)
+}
+
+/// The digest of the identity set `(project_id, consumer_kind,
+/// consumer_key)` currently depends on: `compute_dependency_set_digest`
+/// over every one of the Consumer's Dependency Edges'
+/// `source_object_identity`.
+///
+/// This is the Consumer-grained counterpart of
+/// `narrative_semantic_index_metadata.dependency_set_digest`, and it is a
+/// *set* digest, not a content digest: it changes when the Consumer starts
+/// or stops depending on a Source, not when a Source it already depends on
+/// is edited (that is what Edge State and the rolled-up Freshness are for).
+/// Together they answer the two questions a Verify has to separate -- "is
+/// what this Consumer read still current?" and "is this Consumer still
+/// reading the same things?" -- which the Run Kind Policy names
+/// `consumer-freshness-dependency-set-digest`.
+///
+/// Returns the digest of the empty set for a Consumer with no Edges. That
+/// is a real, distinguishable value rather than `None`: "this Consumer
+/// depends on nothing" and "this Consumer's dependency set was never
+/// computed" are different facts, and only the latter is NULL.
+pub(crate) fn consumer_dependency_set_digest(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+) -> anyhow::Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT source_object_identity
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+    )?;
+    let identities = statement
+        .query_map(params![project_id, consumer_kind, consumer_key], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // `compute_dependency_set_digest` sorts and length-prefixes internally,
+    // so no ORDER BY is needed for determinism here.
+    Ok(compute_dependency_set_digest(&identities))
 }
 
 /// Mutation-time Reverse Dependency Lookup: every Consumer that declared a

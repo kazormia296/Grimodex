@@ -19,32 +19,33 @@
 //!
 //! ## `finding_key` convention
 //!
-//! Every other Lane keyed off `finding_key` so far (`publish_runtime`'s
-//! diagnostic Finding Observation writer, `attention`'s durable disposition
-//! store) treats it as an opaque string the caller derives consistently.
-//! `publish_runtime::edge_finding_key` derives one **per Dependency Edge**
-//! (`edge:{edge_id}`) because that Lane's diagnostic snapshot is itself
-//! per-Edge. This Lane's Inbox entry, by contrast, is one row **per
-//! Consumer** (`narrative_consumer_freshness`'s own primary-key grain,
-//! `(project_id, consumer_kind, consumer_key)`) -- a Consumer may aggregate
-//! several Edges behind one rolled-up Freshness value
-//! (`publish_runtime::freshness_severity_rank`), and the Inbox surfaces that
-//! rolled-up unit, not individual Edges. So this module mints its own,
-//! deliberately distinct, **Consumer-grained** key:
+//! Every Lane keyed off `finding_key` (`publish_runtime`'s diagnostic
+//! Finding Observation writer, `attention`'s durable disposition store,
+//! this Read Model) treats it as an opaque string, so they only agree if
+//! they all derive it the same way. They do not derive it at all any more:
+//! `consumer_identity::consumer_finding_key` is the single implementation
+//! and this module imports it.
 //!
 //! ```text
 //! finding_key = "{consumer_kind}:{consumer_key}"
 //! ```
 //!
-//! via [`consumer_finding_key`]. This key is stable across repeated
-//! evaluations of the same Consumer (consumer_kind/consumer_key never
-//! change once a Consumer exists) and is used consistently as the lookup
-//! key against both `list_observations_for_epoch` and `get_attention` in
-//! [`build_maintenance_inbox`] below. Reconciling this Consumer-grained key
-//! with Lane J's per-Edge `edge:{edge_id}` diagnostic key (so a human's
-//! Attention on one automatically covers every Edge behind a Consumer, or
-//! vice versa) is out of scope here and left to a later Lane; this Read
-//! Model only guarantees internal consistency of its own key within itself.
+//! The grain is the **Consumer** -- `narrative_consumer_freshness`'s own
+//! primary-key grain, `(project_id, consumer_kind, consumer_key)`. A
+//! Consumer may aggregate several Edges behind one rolled-up Freshness
+//! value (`publish_runtime::freshness_severity_rank`), and the Inbox
+//! surfaces that rolled-up unit, not individual Edges.
+//!
+//! This module used to mint its own copy, and `publish_runtime` used to
+//! mint a *per-Edge* one (`edge:{edge_id}`). Nothing errored when they
+//! disagreed -- the Observations simply failed to match, and every
+//! diagnostic Finding became invisible to the Inbox. Gate C2-2 collapsed
+//! both onto one function for that reason; see `consumer_identity.rs`.
+//!
+//! The key is stable across repeated evaluations of the same Consumer
+//! (`consumer_kind`/`consumer_key` never change once a Consumer exists) and
+//! is used as the lookup key against both `list_observations_for_epoch` and
+//! `get_attention` in [`build_maintenance_inbox`] below.
 //!
 //! ## Snooze expiry ("resurfacing") rule
 //!
@@ -109,6 +110,7 @@ use serde::Serialize;
 use super::attention::{
     get_attention, is_attention_applicable, AttentionDisposition, AttentionRow,
 };
+use super::consumer_identity::consumer_finding_key;
 use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::finding_observation::{list_observations_for_epoch, FindingObservationRow};
 use super::semantic_epoch::get_current_epoch;
@@ -202,13 +204,6 @@ pub struct InboxEntry {
     pub latest_observation: Option<FindingObservationRow>,
     pub attention: Option<AttentionRow>,
     pub is_snoozed_and_active: bool,
-}
-
-/// Derive this module's Consumer-grained `finding_key`. See the module doc
-/// ("`finding_key` convention") for why this is deliberately distinct from
-/// `publish_runtime`'s per-Edge `edge:{edge_id}` key.
-fn consumer_finding_key(consumer_kind: &str, consumer_key: &str) -> String {
-    format!("{consumer_kind}:{consumer_key}")
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:

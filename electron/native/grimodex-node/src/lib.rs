@@ -5168,6 +5168,12 @@ impl Backend {
                     "runId": run_id,
                     "consumersEvaluated": summary.consumers_evaluated,
                     "edgesEvaluated": summary.edges_evaluated,
+                    // Nonzero only under version skew: a Consumer declared
+                    // under a kind this build does not implement is skipped
+                    // rather than failing the Run, so the count has to reach
+                    // the surface or the pass would read as complete.
+                    "consumersSkippedUnresolvableScope":
+                        summary.consumers_skipped_unresolvable_scope,
                 }),
             };
             Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)

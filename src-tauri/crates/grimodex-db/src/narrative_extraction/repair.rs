@@ -41,7 +41,7 @@
 //! categories. Only one is implemented end-to-end here --
 //! `deactivate-duplicate-edge` -- because it is the only category
 //! `restore_rebuild.rs`'s current `dependency-verify` coverage
-//! (`DependencyGraphVerifyReport`, 6 of the policy's 13 named checks) can
+//! (`DependencyGraphVerifyReport`, 7 of the policy's 13 named checks) can
 //! actually surface: `edge-fully-reconstructible-from-durable-ledger`,
 //! `artifact-with-explicit-dependency-manifest`,
 //! `proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set`,

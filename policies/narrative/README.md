@@ -923,6 +923,116 @@ does not implement yet), and the crash-recovery gap for a Run stuck
 `running` after a terminated process (a Lane B / execution-state-model
 concern spanning every Run Kind, not specific to any one of these).
 
+## C2-2 Consumer contract (vocabulary ratified, Producers pending)
+
+`policies/narrative/narrative-consumer-contract.json` (schema:
+`schemas/narrative-consumer-contract.schema.json`, validated by
+`scripts/quality/validate-semantic-core-boundary.mjs`'s `schemaContracts`
+list, `pnpm test:narrative:semantic-contract`) fixes the first C2-2
+deliverable — the canonical `(consumer_kind, consumer_key)` vocabulary —
+so the remaining three (Producer-time declaration at the smallest safe
+durable unit, Backfill re-keying, reverse lookup) have one registry to be
+written against instead of each inventing its own literals. The
+per-Consumer dependency digest landed alongside it; see below.
+
+`narrative_extraction/consumer_identity.rs` is the Rust counterpart, and
+it is deliberately the *only* place the pair means anything: a fail-closed
+`ConsumerKind`, the `RUN_CONSUMER_KIND` literal (moved there from
+`dependency_edges.rs`, which re-exports it), `validate_consumer_identity`
+for the shape rules SQLite cannot express, the single
+`consumer_finding_key`, and `owning_run_id_for_consumer` — the one seam
+that answers "which Run is this Consumer's `snapshot:<runId>` Source
+expected to name?". That seam is why the vocabulary landed before any
+Producer moved off Run grain: `restore_rebuild.rs` had been passing
+`consumer_key` straight through as a `run_id`, and because
+`build_edge_comparison_input` collapses every resolver error into
+`current_source_exists = false`, a Consumer that stopped being a Run would
+have reported `source-missing` for Sources that are present rather than
+raising anything.
+
+Every Consumer kind carries a `status` that says what is true today, not
+what is planned:
+
+- **`declared`** — a production Producer writes Edges under it now. There
+  is exactly one: `narrative-extraction-run` (`consumer_key =
+  narrative_extraction_runs.id`), the `RUN_CONSUMER_KIND` constant
+  `dependency_edges.rs` owns and `repository.rs`/`legacy_backfill.rs`
+  both write through. It is also precisely the Run granularity C2-2 exists
+  to replace, so it is registered as the current reality, not endorsed as
+  the target.
+- **`reserved`** — the roadmap's Consumer class already has a durable row
+  that could carry its identity, but nothing declares Edges under it yet:
+  `proposal-revision` (`narrative_proposal_revisions.id`),
+  `extraction-artifact` (`narrative_extraction_artifacts.id`),
+  `application` (`narrative_proposal_applications.id`),
+  `application-contribution` (`narrative_application_contributions.id`),
+  `derived-projection` (`narrative_temporal_projections.id` — the one
+  Projection this codebase recomputes rather than applies directly), and
+  `semantic-index` (`narrative_semantic_index_metadata.index_key`; only
+  `index_key`, because `narrative_consumer_freshness` already carries
+  `project_id` as its own column and a Consumer key must never repeat the
+  project scope).
+- **`not-yet-modelled`** — the roadmap asks for it and there is no durable
+  table to key it from: `narrative-ir-revision` (Interpreter output lives
+  inside `payload_json`/`reconciliation_envelope_json`, never as its own
+  addressable row), `related-scenes-materialization` and
+  `chat-context-materialization` (both computed per query and kept
+  nowhere), and `structure-health-diagnostic` (still the Gate C0
+  placeholder panel). Each entry says so in its own `notes` rather than
+  being quietly omitted: deriving a key for one of these from payload
+  content would be exactly the heuristic identity C2-2's exit criteria
+  forbid.
+
+`keyFormat` fixes `finding_key = "{consumerKind}:{consumerKey}"` with
+`findingKeyParseRule: "split-on-first-colon"` — the shape
+`publish_runtime.rs` and `inbox_read_model.rs` already have to agree on
+(Lane P caught them disagreeing once, which made every diagnostic Finding
+Observation invisible to the Maintenance Inbox). A `consumerKind` may not
+contain a colon so the first one is an unambiguous separator; a
+`consumerKey` may, because a durable identity can legitimately be a
+compound key. Both components forbid the empty string and surrounding
+whitespace, since either would let two different Consumers collide on one
+`finding_key`.
+
+`freshnessAuthority` restates, in Consumer terms, what
+`semantic-core-authorities.json` already fixes: `narrative_consumer_freshness`'s
+`(project_id, consumer_kind, consumer_key)` is the one canonical Consumer
+Freshness authority and `narrative_projection_freshness` — keyed by
+`application_id` alone, so structurally unable to express any other
+Consumer kind — is compatibility-only. Legacy still serves reads until the
+C2-Z cutover per `narrative-run-kind-policy.json`; that makes it the
+mirror, not a second authority. `dependencySetDigest` fixes
+`narrative_consumer_freshness.dependency_set_digest` as a digest over the
+set of `source_object_identity` values declared under the Consumer, and
+records that `NULL` means "not evaluated since SCHEMA 24 added the
+column", never "inconsistent".
+
+That column now has a writer and a check. Publishing a Freshness
+evaluation stamps the digest, and
+`verify_narrative_dependency_graph_for_project` gained
+`consumer-freshness-dependency-set-digest` — the "is this Consumer still
+reading the same things?" question no per-Edge Freshness value can answer,
+since a Consumer that stopped depending on a Source has no Edge left to go
+stale. Verify coverage is therefore **7 of the 13 named checks**, not 6,
+and `VERIFY_CONTRACT_VERSION` moved to `"2"`: a stored version-`"1"`
+result is refused by `seal_repair_plan`, so an in-flight Verify has to be
+re-run before a Repair can be sealed from it. The Semantic Index half of
+`dependency-set-digest` is still unimplemented — nothing writes
+`narrative_semantic_index_metadata` yet.
+
+The `keyFormat` shape rules are enforced by the typed writers
+(`record_dependency_edge_in_tx` and `write_consumer_freshness_in_tx` both
+call `validate_consumer_identity`). Registry *membership* is reported
+rather than refused: `ConsumerKind::try_from` fails closed, and Verify
+lists Edges under an unregistered kind as
+`edge_ids_with_unresolvable_consumer_scope` — deliberately not as
+`edge_ids_with_missing_source`, whose Sources are present.
+`narrative_dependency_edges.consumer_kind` still carries only a
+`length > 0` CHECK at the SQL layer, and the writer still accepts a
+reserved kind, which is intentional while those kinds have no readers.
+Refusing at the writer, and re-keying any Producer off
+`narrative-extraction-run`, are the rest of C2-2 and are not started here.
+
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`
 `contributionTargetStates`/`maintenanceOwnershipStates`), M

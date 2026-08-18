@@ -50,7 +50,8 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | Gate C2 foundation | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts. |
 | C2 identity normalization | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows. |
 | Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers. |
-| Remaining C2-T2 runtime | **Blocked / Planned** | Consumer granularity, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain. |
+| C2-2 Consumer contract and identity seam | **Complete** | The canonical `(consumer_kind, consumer_key)` vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), the Consumer identity seam is single-sourced, and per-Consumer dependency-set digests are written and verified. |
+| Remaining C2-T2 runtime | **Blocked / Planned** | Producer-time declaration at the finer Consumer grain, Backfill re-keying, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain. |
 | C2-Z canonical cutover | **Blocked** | Generic Consumer Freshness remains shadow until parity and cutover criteria pass. |
 | First Retrieval Vertical Slice | **Planned** | Begins after C2-Z and the minimum shared Narrative IR contract are ready. |
 | Living Story Bible product Epics | **Planned** | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below. |
@@ -81,7 +82,7 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 is intentional: **Consumer granularity → Finding identity**, while the Change-Feed-driven runtime may proceed alongside Consumer granularity once object identity and publish contracts are stable.
+The ordering after PR #536 is intentional: **Consumer granularity → Finding identity**, while the Change-Feed-driven runtime may proceed alongside Consumer granularity once object identity and publish contracts are stable. C2-2 itself is split: the Consumer contract and the identity seams landed first, because the three places Run grain was load-bearing all failed silently rather than loudly (see C2-2 below).
 
 ---
 
@@ -107,11 +108,11 @@ The ordering after PR #536 is intentional: **Consumer granularity → Finding id
 
 ### Follow-up hardening
 
-- Add an end-to-end `migrate()` upgrade-path test from a seeded SCHEMA 23–28 workspace.
+- **Complete.** `src-tauri/crates/grimodex-db/tests/narrative_c2_upgrade_path.rs` drives `migrate()` and the shadow migration supervisor over a seeded workspace at every marker from SCHEMA 23 to 28. It covers the three hazards only a real upgrade can reach: the Contribution `commit_id` index that a SCHEMA 23–28 workspace cannot carry before the rebuild, the `narrative_c2_schema_29` savepoint unwinding without leaving the scratch rebuild table behind, and `NEX_CONTRIBUTION_ORPHAN` refusing before any step that discards derived state.
 
 ## C2-2: Consumer granularity
 
-**State:** Planned
+**State:** Foundation complete; Producer-side re-keying planned
 
 ### Goal
 
@@ -132,11 +133,19 @@ Replace Run-grained freshness with durable identities for the actual Consumers t
 
 ### Deliverables
 
-- Canonical `(consumer_kind, consumer_key)` vocabulary and validation.
-- Producer-time declaration of Dependencies at the smallest safe durable unit.
-- Migration and Backfill from Run-grained Edges without fabricating cross-run identity.
-- Reverse lookup that returns only affected Consumers.
-- Dependency-set digest per Consumer.
+- **Complete** — Canonical `(consumer_kind, consumer_key)` vocabulary and validation. [`narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json) registers every Consumer class with a `status` that states what is true today (`declared` / `reserved` / `not-yet-modelled`) rather than what is planned, fixes the `finding_key` format and its split-on-first-colon parse rule, and names `narrative_consumer_freshness` as the single Freshness authority. `narrative_extraction/consumer_identity.rs` is the Rust counterpart: a fail-closed `ConsumerKind`, one `consumer_finding_key`, and the `owning_run_id_for_consumer` seam.
+- **Complete** — Dependency-set digest per Consumer. Publishing writes `narrative_consumer_freshness.dependency_set_digest`, and Verify's `consumer-freshness-dependency-set-digest` check reports drift. NULL keeps meaning "not yet evaluated"; it is not an inconsistency.
+- **Planned** — Producer-time declaration of Dependencies at the smallest safe durable unit.
+- **Planned** — Migration and Backfill from Run-grained Edges without fabricating cross-run identity.
+- **Planned** — Reverse lookup that returns only affected Consumers. `dependency_edges::find_edges_by_source` exists and is still unwired.
+
+### Why the identity seam landed first
+
+Run grain is not merely coarse — it is load-bearing in three places that fail *silently* rather than loudly when it changes, so re-keying Producers before closing them would have produced plausible, fabricated Findings instead of errors:
+
+- `restore_rebuild` passed `consumer_key` wherever a `run_id` was wanted. `resolve_snapshot_document` requires a `snapshot:<runId>` Source's key to equal that id, and the resolver's error was swallowed into `current_source_exists = false` — so a Consumer that is no longer a Run would have reported `source-missing` for Sources that are present. Both call sites now go through `owning_run_id_for_consumer` and fail closed on `None`; Verify reports such Edges under their own heading rather than as missing Sources.
+- Consumer Freshness was rolled up over the Edges the *caller passed*. A partial publish — which is the entire point of C2-1's incremental evaluation — would have dropped the Edges it did not re-evaluate and rolled the Consumer back to `fresh` while their own Edge State still said otherwise. The rollup now reads the Consumer's stored Edge States at the current Semantic Epoch.
+- `finding_key` had three implementations (`publish_runtime`, `inbox_read_model`, and SQL in `migrate.rs`). Two of them had already disagreed once, making every diagnostic Finding invisible to the Maintenance Inbox without any error. There is now one function; the frozen migration SQL is pinned to it by test.
 
 ### Exit criteria
 
