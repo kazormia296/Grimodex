@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -50,7 +50,7 @@ ${rows}
 export async function runGenericImportRecordReconcileTask(
   input: RunGenericImportRecordReconcileTaskInput,
 ): Promise<GenericImportRecordReconcileResult | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockNarrativeAiTask()) return null;
   if (input.candidates.length === 0) return { groups: [] };
 
   const projectId = requireAuditProjectId(

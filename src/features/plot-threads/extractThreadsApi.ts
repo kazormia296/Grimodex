@@ -2,6 +2,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { getPromptCatalog } from "@/prompts/index";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { getProject } from "@/features/project/api";
@@ -109,7 +110,7 @@ export async function proposePlotThreads(
   req: ProposeThreadsRequest,
 ): Promise<PlotThreadProposal[]> {
   if (isNewPlotThreadExtractionPipelinePreferred()) return [];
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
 
   const nonEmpty = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmpty.length === 0) return [];

@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -107,7 +107,7 @@ function parseResult(
 export async function runPlotMarkerAssignTask(
   input: RunPlotMarkerAssignTaskInput,
 ): Promise<PlotMarkerAssignAiResult | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockNarrativeAiTask()) return null;
   const projectId = requireAuditProjectId(
     input.projectId ?? useTreeStore.getState().projectId,
   );

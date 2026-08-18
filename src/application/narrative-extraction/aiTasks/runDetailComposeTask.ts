@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -110,7 +110,7 @@ export async function runDetailComposeTask(
     if (!(error instanceof DetailComposeError)) throw error;
   }
 
-  if (blockIfPolicyOff("analysis")) return deterministic;
+  if (blockNarrativeAiTask()) return deterministic;
   // Dropdown / clear stay deterministic — never let AI invent option labels.
   if (
     input.definition.fieldType === "dropdown" ||

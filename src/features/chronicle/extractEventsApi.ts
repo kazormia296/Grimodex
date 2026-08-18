@@ -2,6 +2,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { createEvent, deleteEvent, linkScenesToEvent, listEvents } from "./api";
@@ -157,7 +158,7 @@ ${custom}
 export async function proposeEvents(
   req: ExtractEventsRequest,
 ): Promise<EventProposal[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   const nonEmpty = req.scenes.filter((s) => s.bodyText.trim().length > 0);
   if (nonEmpty.length === 0) return [];
   const allowedSceneIds = new Set(nonEmpty.map((s) => s.sceneId));
