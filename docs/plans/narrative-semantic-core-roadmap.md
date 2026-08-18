@@ -103,7 +103,11 @@ The ordering after PR #536 is intentional: **Consumer granularity → Finding id
 
 - Human edits, Undo/Redo, later Applications, and missing targets produce deterministic Contribution state.
 - A later AI Projection cannot silently retake a human-owned field.
-- Upgrade-path tests cover existing SCHEMA 23–28 workspaces, not only fresh databases.
+- The SCHEMA 29 rebuild is tested against a representative pre-29 schema fixture.
+
+### Follow-up hardening
+
+- Add an end-to-end `migrate()` upgrade-path test from a seeded SCHEMA 23–28 workspace.
 
 ## C2-2: Consumer granularity
 
