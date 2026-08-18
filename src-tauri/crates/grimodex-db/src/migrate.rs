@@ -5181,10 +5181,19 @@ impl Database {
     /// single canonical event corresponds to it" was simply wrong. Every
     /// Apply appends exactly one `narrative.commit.apply` row to
     /// `change_events` carrying its `commit_id`, and `commit.rs` stores that
-    /// row's `sequence` as the live path's baseline -- so the subquery below
+    /// row's `sequence` as the live path's baseline -- so the join below
     /// reads the same number the live path would have written, on the same
     /// scale the projection compares against (`narrative_change_events.
     /// canonical_sequence` is the source change event's `sequence`).
+    ///
+    /// It is a grouped derived table rather than the correlated subquery this
+    /// first used. `change_events` is the canonical audit log and grows with
+    /// every edit a person makes; it carries no index on `entity_id` or
+    /// `op_type`, so a correlated lookup rescans the whole project's history
+    /// once per Contribution row. On a workspace with a long history that is
+    /// minutes of work at open time. The derived table scans it once.
+    /// `MIN` is a formality -- a commit has exactly one apply event -- that
+    /// keeps the aggregate well defined.
     ///
     /// Writing NULL here was not a missing nicety. The projection admits an
     /// event when `COALESCE(baseline_sequence, -1) < sequence`, so NULL means
@@ -5272,14 +5281,17 @@ impl Database {
              SELECT c.id, c.project_id, c.application_id,
                     a.commit_id, a.proposal_id, a.revision_id,
                     NULL, c.target_object_identity, c.field_path, c.target_state,
-                    'maintained',
-                    (SELECT e.sequence FROM change_events e
-                      WHERE e.project_id = c.project_id
-                        AND e.op_type = 'narrative.commit.apply'
-                        AND e.entity_id = a.commit_id),
-                    NULL, NULL, c.created_at
+                    'maintained', apply_event.sequence, NULL, NULL, c.created_at
                FROM narrative_application_contributions c
-               JOIN narrative_proposal_applications a ON a.id = c.application_id;
+               JOIN narrative_proposal_applications a ON a.id = c.application_id
+               LEFT JOIN (
+                    SELECT project_id, entity_id, MIN(sequence) AS sequence
+                      FROM change_events
+                     WHERE op_type = 'narrative.commit.apply'
+                     GROUP BY project_id, entity_id
+               ) apply_event
+                 ON apply_event.project_id = c.project_id
+                AND apply_event.entity_id = a.commit_id;
              DROP TABLE narrative_application_contributions;
              ALTER TABLE narrative_application_contributions_v29
                 RENAME TO narrative_application_contributions;
