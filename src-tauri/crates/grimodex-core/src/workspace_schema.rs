@@ -605,7 +605,10 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // `has_c2_identity_data_migration_marker`. This supersedes the
         // row-shape probe this branch briefly carried -- see that function
         // for why current rows cannot answer the question.
-        && has_c2_identity_data_migration_marker(conn)?)
+        && has_c2_identity_data_migration_marker(conn)?
+        // Gate C2-2's Consumer grain re-key is a data migration too, and the
+        // same fast paths would skip it.
+        && has_c2_consumer_grain_data_migration_marker(conn)?)
 }
 
 /// SCHEMA 30: a Dependency Edge records the Run that declared it. Nullable by
@@ -1390,6 +1393,30 @@ fn has_c2_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bo
         .optional()?;
     Ok(applied.is_some_and(|version| version >= C2_IDENTITY_CONTRACT_VERSION))
 }
+
+/// Gate C2-2 moved the live Producer's Dependency Edges from Run grain onto
+/// the Proposal Revisions that declared them. Like SCHEMA 28's identity
+/// repair this changes rows rather than shape, so nothing physical
+/// distinguishes a workspace it has run on from one it has not -- only the
+/// marker does.
+fn has_c2_consumer_grain_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_CONSUMER_GRAIN_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(applied.is_some_and(|version| version >= C2_CONSUMER_GRAIN_CONTRACT_VERSION))
+}
+
+/// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
+pub const C2_CONSUMER_GRAIN_MIGRATION_ID: &str = "narrative-c2-consumer-grain-v30";
+/// See [`C2_CONSUMER_GRAIN_MIGRATION_ID`].
+pub const C2_CONSUMER_GRAIN_CONTRACT_VERSION: i64 = 1;
 
 /// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
 pub const C2_IDENTITY_MIGRATION_ID: &str = "narrative-c2-identity-v28";

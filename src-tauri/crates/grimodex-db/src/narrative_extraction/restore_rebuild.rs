@@ -11,7 +11,7 @@ use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::consumer_identity::owning_run_id_for_consumer;
+use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
 use super::dependency_edges::{
     consumer_dependency_set_digest, find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND,
 };
@@ -436,43 +436,41 @@ fn rebuild_derived_state_edges_in_project(
                 if edges.is_empty() {
                     return Ok(());
                 }
-                // NOT `run_id` (the Rebuild Run's own id): a
-                // `snapshot-document` Source's key embeds the Run that
-                // originally produced it (`resolve_snapshot_document`
-                // requires an exact match), which is this Edge's *owning
-                // Consumer*, not whichever Run is doing the rebuilding.
-                // `owning_run_id_for_consumer` is where that translation
-                // lives now -- passing `consumer_key` straight through was
-                // correct only for as long as every Consumer was a Run, and
-                // wrong silently rather than loudly once one is not (see
-                // `consumer_identity.rs`). `run_id` (the Rebuild Run) stays
-                // the right id for `publish_freshness_evaluation_edges_only_in_tx`
-                // below: it records which Run *observed* this Finding,
-                // correctly the Rebuild Run itself.
-                let Some(consumer_owning_run) =
-                    owning_run_id_for_consumer(&consumer_kind, &consumer_key)
-                else {
+                // Two separate questions, deliberately not one. Whether the
+                // *kind* is one this build implements decides if the Consumer
+                // is evaluable at all; which *Run* an Edge's
+                // `snapshot:<runId>` Source must name is per-Edge and comes
+                // from the Edge itself.
+                if !is_declared_consumer_kind(&consumer_kind) {
                     tracing::warn!(
                         target: "narrative.rebuild",
                         consumer_kind = %consumer_kind,
                         consumer_key = %consumer_key,
-                        "NEX_CONSUMER_OWNING_RUN_UNKNOWN: skipping a Consumer whose kind is \
-                         outside this build's declared vocabulary"
+                        "NEX_CONSUMER_KIND_INVALID: skipping a Consumer whose kind is outside \
+                         this build's declared vocabulary"
                     );
                     skipped += 1;
                     return Ok(());
-                };
+                }
                 let mut edges_and_observations = Vec::with_capacity(edges.len());
                 for edge in &edges {
-                    // SCHEMA 30: the Edge's own declaration wins. The
-                    // Consumer-derived answer above is the compatibility
-                    // path for a row written before the column existed --
-                    // the migration backfills every Run-declared Edge, so
-                    // this falls back only on a row nothing wrote.
+                    // SCHEMA 30: the Edge's own declaration wins.
+                    // `owning_run_id_for_consumer` is the compatibility path
+                    // for a row written before that column existed and never
+                    // re-declared since -- and it answers only for a Run
+                    // Consumer, because only there is the key a Run id.
+                    //
+                    // `""` when neither answers. `run_id` (the Rebuild Run)
+                    // would be worse than nothing: it is a real Run id, so
+                    // `resolve_snapshot_document` would compare against the
+                    // wrong Run and call a present snapshot missing. An empty
+                    // id matches no `snapshot:<runId>` key and leaves every
+                    // other Source kind -- which never reads it -- unaffected.
                     let owning_run_id = edge
                         .owning_run_id
                         .as_deref()
-                        .unwrap_or(consumer_owning_run);
+                        .or_else(|| owning_run_id_for_consumer(&consumer_kind, &consumer_key))
+                        .unwrap_or("");
                     let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
                     edges_and_observations.push((edge.id.clone(), observation));
                 }
@@ -569,7 +567,7 @@ pub(crate) fn rebuild_verify_dependency_edges(
 /// predates the Run Kind Policy and stays scoped to a single Run's own
 /// declared Edges for that narrower diagnostic's own callers).
 ///
-/// Covers 7 of the policy's 13 named checks
+/// Covers 7 of the policy's 13 named checks, plus one this Gate added
 /// (`narrative-run-kind-policy.json`'s `verifiesDurableGraph`/
 /// `verifiesRebuildableState`); see [`verify_narrative_dependency_graph_for_project`]'s
 /// doc comment for exactly which, and which 6 remain unimplemented.
@@ -656,6 +654,24 @@ pub struct DependencyGraphVerifyReport {
     /// NULL and means "never computed", which is not a defect --
     /// `dependency-rebuild-derived` fills it in on the next pass.
     pub consumer_keys_with_stale_dependency_set_digest: Vec<(String, String)>,
+    /// `narrative_maintenance_attention.finding_key` values that name no
+    /// Consumer this project currently declares an Edge for.
+    ///
+    /// A human's snooze / dismiss / flag is durable state
+    /// (`maintenance-attention-contract.json`: `epochBinding: none`,
+    /// `backflowPolicy: forbid`), so Gate C2-2's Consumer re-key does not
+    /// delete it -- but `finding_key` is `{consumer_kind}:{consumer_key}`,
+    /// and re-keying a Consumer changes it. The disposition survives and
+    /// stops matching anything.
+    ///
+    /// Reporting it is the honest middle: deleting would discard a human
+    /// decision the roadmap explicitly protects, and re-pointing one Run's
+    /// disposition at each of its Revisions would *broaden* it -- "I
+    /// dismissed this Run's problem" is not "I dismissed each of these
+    /// twelve Revisions' problems", and the difference is exactly a new
+    /// problem going unseen. Re-homing them is Gate C2-3's Finding identity
+    /// work, which the roadmap already sequences after this.
+    pub orphaned_attention_finding_keys: Vec<String>,
 }
 
 impl DependencyGraphVerifyReport {
@@ -677,6 +693,7 @@ impl DependencyGraphVerifyReport {
             && self
                 .consumer_keys_with_stale_dependency_set_digest
                 .is_empty()
+            && self.orphaned_attention_finding_keys.is_empty()
     }
 }
 
@@ -811,7 +828,7 @@ pub fn run_dependency_verify_for_project(
 /// clean bill of health over a strictly smaller set of checks. The
 /// operational consequence is that an in-flight Verify result does not
 /// survive this upgrade: re-run Verify before sealing a Repair.
-pub(crate) const VERIFY_CONTRACT_VERSION: &str = "2";
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "3";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
 /// under. Shared with `repair.rs` so the writer and the reader that
@@ -845,8 +862,8 @@ pub fn verify_narrative_dependency_graph_for_project(
         // the Consumer identity, and an unresolvable one disqualifies the
         // Consumer's whole Source-resolution pass rather than any single
         // Edge (see `consumer_identity::owning_run_id_for_consumer`).
-        let owning_run_id = owning_run_id_for_consumer(consumer_kind, consumer_key);
-        if owning_run_id.is_none() {
+        let kind_is_declared = is_declared_consumer_kind(consumer_kind);
+        if !kind_is_declared {
             report
                 .edge_ids_with_unresolvable_consumer_scope
                 .extend(edges.iter().map(|edge| edge.id.clone()));
@@ -863,13 +880,14 @@ pub fn verify_narrative_dependency_graph_for_project(
             // to an error, which `edge_source_is_missing` reports as
             // `true` -- a Source that is present being filed as gone. The
             // Consumer is reported under its own heading above instead.
-            let Some(consumer_owning_run) = owning_run_id else {
+            if !kind_is_declared {
                 continue;
-            };
+            }
             let owning_run_id = edge
                 .owning_run_id
                 .as_deref()
-                .unwrap_or(consumer_owning_run);
+                .or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key))
+                .unwrap_or("");
             if edge_source_is_missing(conn, project_id, owning_run_id, edge) {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
@@ -878,6 +896,7 @@ pub fn verify_narrative_dependency_graph_for_project(
 
     report.consumer_keys_with_stale_dependency_set_digest =
         consumer_keys_with_stale_dependency_set_digest(conn, project_id)?;
+    report.orphaned_attention_finding_keys = orphaned_attention_finding_keys(conn, project_id)?;
 
     if let Some(current_epoch_id) = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id) {
         report.edge_state_ids_outside_current_epoch =
@@ -959,6 +978,51 @@ pub(crate) fn duplicate_edge_ids_to_deactivate(
                       OR (e2.created_at = e1.created_at AND e2.id > e1.id))
             )
           ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Attention rows whose `finding_key` names no Consumer this project still
+/// declares an Edge for.
+///
+/// Compares by *building* `{consumer_kind}:{consumer_key}` from the Consumer
+/// side rather than by splitting the stored key. A `consumer_key` may contain
+/// the separator (`narrative-consumer-contract.json` permits it, and
+/// `finding_key` is parsed on the first one only), so composing is exact
+/// where splitting would have to re-implement that rule.
+///
+/// Scoped to Edges because Edges are what defines a Consumer here --
+/// `list_distinct_consumers` reads the same table, and a Freshness row
+/// without one is itself the stale leftover `dependency-rebuild-derived`
+/// clears.
+fn orphaned_attention_finding_keys(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let attention_exists: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'narrative_maintenance_attention'
+         )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !attention_exists {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare(
+        "SELECT a.finding_key
+           FROM narrative_maintenance_attention a
+          WHERE a.project_id = ?1
+            AND NOT EXISTS (
+                SELECT 1 FROM narrative_dependency_edges e
+                 WHERE e.project_id = a.project_id
+                   AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
+            )
+          ORDER BY a.finding_key ASC",
     )?;
     let rows = statement
         .query_map(params![project_id], |row| row.get::<_, String>(0))?
@@ -1814,8 +1878,8 @@ mod tests {
             record_dependency_edge_in_tx(
                 conn,
                 "project-1",
-                "proposal-revision",
-                "revision-1",
+                "application-contribution",
+                "contribution-1",
                 "project:scene:scene-live",
                 r#"["/body"]"#,
                 None,
@@ -1865,8 +1929,8 @@ mod tests {
                     "project-1",
                     // Reserved in narrative-consumer-contract.json, with no
                     // Producer and no reader in this build.
-                    "proposal-revision",
-                    "revision-1",
+                    "application-contribution",
+                    "contribution-1",
                     "project:scene:scene-live",
                     r#"["/body"]"#,
                     None,
@@ -1939,6 +2003,44 @@ mod tests {
             vec![(RUN_CONSUMER_KIND.to_string(), "run-1".to_string())]
         );
         assert!(!after.is_clean());
+    }
+
+    /// Gate C2-2's Consumer re-key changes `finding_key`, so a human's
+    /// disposition stops matching. It must not be deleted -- Attention is
+    /// durable human state -- so Verify has to be the thing that says it is
+    /// no longer attached to anything.
+    #[test]
+    fn project_verify_reports_an_attention_row_whose_consumer_no_longer_exists() {
+        let db = test_db();
+        seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        db.with_conn(|conn| {
+            for (finding_key, disposition) in [
+                ("narrative-extraction-run:run-1", "dismissed"),
+                ("proposal-revision:revision-gone", "snoozed"),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_maintenance_attention
+                        (project_id, finding_key, disposition, material_basis_digest, set_at,
+                         actor_id, request_id, payload_digest, version)
+                     VALUES ('project-1', ?1, ?2, 'sha256:basis',
+                             '2026-08-15T00:00:00.000Z', 'author-1', ?1, 'sha256:payload', 1)",
+                    params![finding_key, disposition],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed two dispositions");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+
+        assert_eq!(
+            report.orphaned_attention_finding_keys,
+            vec!["proposal-revision:revision-gone".to_string()],
+            "only the disposition whose Consumer declares no Edge is orphaned"
+        );
+        assert!(!report.is_clean());
     }
 
     /// A workspace upgraded from before Gate C2-2 has NULL in every

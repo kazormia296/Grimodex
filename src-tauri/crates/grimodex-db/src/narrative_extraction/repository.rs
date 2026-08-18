@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+    canonical_source_object_identity, record_dependency_edge_in_tx,
+    PROPOSAL_REVISION_CONSUMER_KIND,
 };
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
@@ -1060,10 +1061,11 @@ fn insert_proposal_seed(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
-    record_run_dependency_edges_in_tx(
+    record_revision_dependency_edges_in_tx(
         conn,
         project_id,
         run_id,
+        &revision_id,
         validated_envelope
             .as_ref()
             .map(|envelope| envelope.source_basis.as_slice())
@@ -1105,15 +1107,29 @@ fn insert_source_basis_rows(
 }
 
 /// Producer-time Dependency Edge declaration (ADR 005 Amendment /
-/// `dependency_edges.rs`, C2-T1): for every `SourceBasisRow` a Proposal's
-/// validated Reconciliation Envelope carries, declares that this Proposal's
-/// owning Run read that Source. Consumer identity is always
-/// `(RUN_CONSUMER_KIND, run_id)`, never the individual Proposal -- Edges
-/// accumulate across every Proposal/Revision the Run produces (an upsert
-/// per Source, see `record_dependency_edge_in_tx`'s own doc comment), so
-/// this never deletes a Run's existing Edges; it only adds/refreshes the
-/// ones this Proposal's current envelope declares. `rows` empty (a
-/// legacy-unbound Proposal/Revision with no envelope) is a no-op.
+/// `dependency_edges.rs`): for every `SourceBasisRow` a Proposal's validated
+/// Reconciliation Envelope carries, declares that *this Revision* read that
+/// Source.
+///
+/// Consumer identity is `(PROPOSAL_REVISION_CONSUMER_KIND, revision_id)`
+/// (Gate C2-2). It used to be `(RUN_CONSUMER_KIND, run_id)`, which is the
+/// grain C2-2 exists to replace: every Proposal a Run produced shared one
+/// Consumer, so editing one Scene staled all of them. A Revision is the
+/// smallest durable unit that already exists here -- the row is immutable
+/// once written and carries this same Source Basis in
+/// `narrative_revision_source_basis`, so nothing has to be invented to key
+/// an Edge to it.
+///
+/// The Run is still recorded, as `owning_run_id` (SCHEMA 30): it is what a
+/// `snapshot:<runId>` Source of this Revision must name, and it stays true
+/// after the Proposal is gone.
+///
+/// One Revision's Edges are its own, so unlike the Run-grained version this
+/// no longer accumulates across siblings. It is still an upsert per Source
+/// rather than a delete-then-redeclare: a Revision is immutable, so its
+/// declared set does not shrink, and re-running the same Producer for the
+/// same Revision must stay idempotent. `rows` empty (a legacy-unbound
+/// Proposal/Revision with no envelope) is a no-op.
 ///
 /// `read_set_json` per Edge is a one-element JSON array holding the
 /// `SourceBasisRow`'s own `revision_token` -- the Reconciliation Envelope
@@ -1132,10 +1148,11 @@ fn insert_source_basis_rows(
 /// fully-qualified identity `source_object_identity_for` would build --
 /// re-deriving it here would prepend the prefix a second time and produce
 /// an Edge no later resolver could ever match back to its real Source.
-fn record_run_dependency_edges_in_tx(
+fn record_revision_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
+    revision_id: &str,
     rows: &[SourceBasisRow],
     created_at: &str,
 ) -> anyhow::Result<()> {
@@ -1146,8 +1163,8 @@ fn record_run_dependency_edges_in_tx(
         record_dependency_edge_in_tx(
             conn,
             project_id,
-            RUN_CONSUMER_KIND,
-            run_id,
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            revision_id,
             &source_object_identity,
             &read_set_json,
             None,
@@ -1311,10 +1328,11 @@ fn append_revision_on_conn(
     if let Some(envelope) = validated_envelope.as_ref() {
         insert_source_basis_rows(conn, &revision_id, &envelope.source_basis)?;
     }
-    record_run_dependency_edges_in_tx(
+    record_revision_dependency_edges_in_tx(
         conn,
         &payload.project_id,
         &payload.run_id,
+        &revision_id,
         validated_envelope
             .as_ref()
             .map(|envelope| envelope.source_basis.as_slice())
@@ -2096,7 +2114,7 @@ mod unit_tests {
         // `readSet[].inputRef` (`validate_reconciliation_envelope`'s
         // NEX_ENVELOPE_SOURCE_BASIS_NOT_READ check), and `resolve_scene_body`
         // requires that shared value to already carry the `project:scene:`
-        // prefix -- `record_run_dependency_edges_in_tx` uses it verbatim as
+        // prefix -- `record_revision_dependency_edges_in_tx` uses it verbatim as
         // the Edge's `source_object_identity`, so one prefixed value serves
         // both fields.
         let source_key = format!("project:scene:{scene_id}");
@@ -2127,9 +2145,14 @@ mod unit_tests {
         })
     }
 
+    /// Gate C2-2's exit criterion, as a test. This deliberately replaces
+    /// `saving_proposals_declares_dependency_edges_under_the_owning_run`,
+    /// which asserted the opposite -- that two sibling Proposals' Edges land
+    /// under one Run Consumer -- and so pinned the very grain C2-2 exists to
+    /// replace.
     #[test]
-    fn saving_proposals_declares_dependency_edges_under_the_owning_run() {
-        use super::super::dependency_edges::find_edges_by_consumer;
+    fn saving_proposals_declares_dependency_edges_per_revision_not_per_run() {
+        use super::super::dependency_edges::{find_edges_by_consumer, PROPOSAL_REVISION_CONSUMER_KIND};
 
         let db = full_migrated_db();
         create_run(
@@ -2189,25 +2212,71 @@ mod unit_tests {
         )
         .expect("save proposal set");
 
-        let edges = db
+        // Nothing is declared under the Run any more.
+        let run_edges = db
             .with_conn(|conn| {
                 find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
             })
-            .expect("find edges by consumer");
-        assert_eq!(
-            edges.len(),
-            2,
-            "sibling Proposals' Edges must both survive under the same Run consumer"
+            .expect("find edges by run consumer");
+        assert!(
+            run_edges.is_empty(),
+            "the Run is no longer the Consumer of its Proposals' reads"
         );
-        let identities: Vec<&str> = edges
-            .iter()
-            .map(|edge| edge.source_object_identity.as_str())
-            .collect();
-        assert!(identities.contains(&"project:scene:scene-1"));
-        assert!(identities.contains(&"project:scene:scene-2"));
-        assert!(edges
-            .iter()
-            .all(|edge| edge.read_set_json.starts_with(r#"["v0@"#)));
+
+        // Each sibling's read belongs to its own Revision, so staling one
+        // cannot reach the other -- the whole point of the re-key.
+        let revisions = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT p.id, r.id FROM narrative_proposals p
+                       JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
+                      WHERE p.proposal_set_id = 'set-1'
+                      ORDER BY p.id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read the two Revisions");
+        assert_eq!(revisions.len(), 2);
+
+        let mut seen = Vec::new();
+        for (proposal_id, revision_id) in &revisions {
+            let edges = db
+                .with_conn(|conn| {
+                    find_edges_by_consumer(
+                        conn,
+                        "project-1",
+                        PROPOSAL_REVISION_CONSUMER_KIND,
+                        revision_id,
+                    )
+                })
+                .expect("find edges by revision consumer");
+            assert_eq!(
+                edges.len(),
+                1,
+                "{proposal_id}'s Revision must declare exactly its own read"
+            );
+            assert_eq!(
+                edges[0].owning_run_id.as_deref(),
+                Some("run-1"),
+                "the declaring Run is still recorded, as provenance"
+            );
+            assert!(edges[0].read_set_json.starts_with(r#"["v0@"#));
+            seen.push(edges[0].source_object_identity.clone());
+        }
+        seen.sort();
+        assert_eq!(
+            seen,
+            vec![
+                "project:scene:scene-1".to_string(),
+                "project:scene:scene-2".to_string()
+            ],
+            "between them the two Revisions still cover both Sources"
+        );
 
         // A legacy-unbound Proposal (no envelope) in the same Run must not
         // fail or declare any Edge.
@@ -2230,15 +2299,20 @@ mod unit_tests {
         )
         .expect("save legacy-unbound proposal set");
 
-        let edges_after = db
+        let total_after: i64 = db
             .with_conn(|conn| {
-                find_edges_by_consumer(conn, "project-1", "narrative-extraction-run", "run-1")
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
             })
-            .expect("find edges by consumer after legacy-unbound proposal");
+            .expect("count edges after the legacy-unbound proposal");
         assert_eq!(
-            edges_after.len(),
-            2,
-            "a legacy-unbound Proposal must not add or remove the Run's existing Edges"
+            total_after, 2,
+            "a legacy-unbound Proposal has no envelope, so it declares nothing and \
+             disturbs no sibling Revision's Edges"
         );
     }
 

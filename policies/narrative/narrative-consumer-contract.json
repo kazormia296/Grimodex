@@ -7,14 +7,14 @@
       "status": "declared",
       "consumerKeyMeaning": "narrative_extraction_runs.id -- the Run whose Proposals and Artifacts the declared Sources were read for.",
       "durableIdentitySource": "narrative_extraction_runs.id",
-      "notes": "The only Consumer kind a production Producer declares Edges under today: dependency_edges.rs's RUN_CONSUMER_KIND, written by repository.rs's insert_proposal_seed/append_revision_on_conn and mirrored by legacy_backfill.rs. It is also exactly the Run granularity C2-2 exists to replace -- editing one Scene stales every Proposal from the same Run -- so it stays declared until finer-grained Producers exist and Backfill can re-key without fabricating cross-run identity. This contract does not deprecate it; a Run remains a legitimate Consumer of its own Run-wide Sources."
+      "notes": "Still declared after the Proposal Revision re-key, and not a legacy value: legacy_backfill.rs's record_legacy_dependency_edges_in_tx declares Edges for Applications that have no Revision to attribute a read to, and a Run remains a legitimate Consumer of its own Run-wide Sources. Re-keying the Backfill to the reserved 'application' kind is C2-Z's legacy/Generic parity work, not this slice's."
     },
     {
       "kind": "proposal-revision",
-      "status": "reserved",
+      "status": "declared",
       "consumerKeyMeaning": "narrative_proposal_revisions.id -- one immutable Revision of one Proposal.",
       "durableIdentitySource": "narrative_proposal_revisions.id",
-      "notes": "The Revision row already carries its own Source Basis (reconciliation_envelope_json, narrative_revision_source_basis), so the Edges a Producer currently declares under the owning Run are re-keyable to it without inventing identity. No Producer declares Edges under this kind yet."
+      "notes": "Declared by repository.rs's record_revision_dependency_edges_in_tx: insert_proposal_seed and append_revision_on_conn key every Edge a Revision's Reconciliation Envelope declares under the Revision itself. This is the grain C2-2 exists to reach -- editing one Scene stales the Revisions that actually read it rather than every Proposal from the same Run. The Revision row is immutable once written and already carries the same Source Basis in narrative_revision_source_basis, so nothing had to be invented to key an Edge to it; the owning Run is kept separately as narrative_dependency_edges.owning_run_id."
     },
     {
       "kind": "extraction-artifact",

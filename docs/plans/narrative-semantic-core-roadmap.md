@@ -50,8 +50,8 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | Gate C2 foundation | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts. |
 | C2 identity normalization | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows. |
 | Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers. |
-| C2-2 Consumer contract and identity seam | **Complete** | The canonical `(consumer_kind, consumer_key)` vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), the Consumer identity seam is single-sourced, and per-Consumer dependency-set digests are written and verified. |
-| Remaining C2-T2 runtime | **Blocked / Planned** | Producer-time declaration at the finer Consumer grain, Backfill re-keying, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain. |
+| C2-2 Consumer granularity | **Complete** | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis. |
+| Remaining C2-T2 runtime | **Blocked / Planned** | Reverse lookup wiring, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain. |
 | C2-Z canonical cutover | **Blocked** | Generic Consumer Freshness remains shadow until parity and cutover criteria pass. |
 | First Retrieval Vertical Slice | **Planned** | Begins after C2-Z and the minimum shared Narrative IR contract are ready. |
 | Living Story Bible product Epics | **Planned** | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below. |
@@ -112,7 +112,7 @@ The ordering after PR #536 is intentional: **Consumer granularity → Finding id
 
 ## C2-2: Consumer granularity
 
-**State:** Foundation complete; Producer-side re-keying planned
+**State:** Complete
 
 ### Goal
 
@@ -135,9 +135,9 @@ Replace Run-grained freshness with durable identities for the actual Consumers t
 
 - **Complete** — Canonical `(consumer_kind, consumer_key)` vocabulary and validation. [`narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json) registers every Consumer class with a `status` that states what is true today (`declared` / `reserved` / `not-yet-modelled`) rather than what is planned, fixes the `finding_key` format and its split-on-first-colon parse rule, and names `narrative_consumer_freshness` as the single Freshness authority. `narrative_extraction/consumer_identity.rs` is the Rust counterpart: a fail-closed `ConsumerKind`, one `consumer_finding_key`, and the `owning_run_id_for_consumer` seam.
 - **Complete** — Dependency-set digest per Consumer. Publishing writes `narrative_consumer_freshness.dependency_set_digest`, and Verify's `consumer-freshness-dependency-set-digest` check reports drift. NULL keeps meaning "not yet evaluated"; it is not an inconsistency.
-- **Planned** — Producer-time declaration of Dependencies at the smallest safe durable unit.
-- **Planned** — Migration and Backfill from Run-grained Edges without fabricating cross-run identity.
-- **Planned** — Reverse lookup that returns only affected Consumers. `dependency_edges::find_edges_by_source` exists and is still unwired.
+- **Complete** — Producer-time declaration of Dependencies at the smallest safe durable unit. `repository.rs`'s `record_revision_dependency_edges_in_tx` keys every Edge under `(proposal-revision, revision_id)`. A Revision is the smallest unit that is already durable and immutable, and it already carries the same Source Basis, so nothing had to be invented to key an Edge to it.
+- **Complete** — Migration from Run-grained Edges without fabricating cross-run identity. The re-key reads the finer attribution out of `narrative_revision_source_basis`, which stores per Revision the exact `(source_kind, source_key, revision_token)` list each Edge was built from. Edges with no Source Basis row stay under the Run: those are the Legacy Backfill's, which have no Revision to attribute a read to. Re-keying *those* to the reserved `application` kind is C2-Z's legacy/Generic parity work.
+- **Planned** — Reverse lookup that returns only affected Consumers. `dependency_edges::find_edges_by_source` exists and is still unwired; C2-1 is what wires it.
 
 ### Why the identity seam landed first
 
@@ -149,9 +149,15 @@ Run grain is not merely coarse — it is load-bearing in three places that fail 
 
 ### Exit criteria
 
-- Editing one Scene can stale one Proposal Revision or one Index generation without staling every Proposal from the same Run.
-- A Consumer key remains stable across retry and idempotent replay.
-- Deterministic Core never uses heuristic semantic matching to invent identity.
+- **Met** — Editing one Scene can stale one Proposal Revision without staling every Proposal from the same Run. Gated by `saving_proposals_declares_dependency_edges_per_revision_not_per_run`, which replaced the test that pinned the opposite. Index generation is a separate reserved Consumer kind and remains future work.
+- **Met** — A Consumer key remains stable across retry and idempotent replay: a Revision id is immutable, and declaration stays an upsert per Source.
+- **Met** — Deterministic Core never uses heuristic semantic matching to invent identity. The re-key joins on stored Source Basis keys, and the one shape difference it accounts for is the single prefix `canonical_source_object_identity` ever adds.
+
+### Known consequence: orphaned Attention
+
+`finding_key` is `{consumer_kind}:{consumer_key}`, so re-keying a Consumer changes it and a human's snooze / dismiss / flag stops matching. Those rows are **not** deleted — Attention is durable human state (`epochBinding: none`, `backflowPolicy: forbid`) and the roadmap protects author decisions from silent discard. Re-pointing one Run's disposition at each of its Revisions was rejected as the opposite error: it would *broaden* a decision, and a real new problem could hide behind it.
+
+Verify reports them as `orphaned_attention_finding_keys` instead, so the state is visible rather than silent. Re-homing them is C2-3's Finding identity work, which this roadmap already sequences next.
 
 ## C2-1: Change-Feed-driven incremental Freshness runtime
 

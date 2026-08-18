@@ -3551,6 +3551,14 @@ impl Database {
         // so rather than name a wrong one.
         Self::migrate_narrative_dependency_edge_owning_run_v30(&conn)?;
 
+        // Gate C2-2: with every Edge naming its declaring Run, the Edges the
+        // live Producer declared under a Run can move onto the Revisions that
+        // actually read those Sources. Runs after the column exists, and
+        // after the SCHEMA 29 savepoint below, because it only reads and
+        // rewrites Consumer identity -- nothing it touches is what that
+        // savepoint protects.
+        Self::migrate_narrative_consumer_grain_v30(&conn)?;
+
         // SCHEMA 29's rebuild and SCHEMA 28's completion marker both write
         // `narrative_application_contributions`, and `migrate_impl` otherwise
         // runs in autocommit -- so without this savepoint a failure between
@@ -5121,6 +5129,183 @@ impl Database {
         }
         Ok(())
     }
+
+    /// The Consumer kind `repository.rs` declares Proposal Revision Edges
+    /// under. Frozen here for the same reason `RUN_CONSUMER_KIND_V28` is: a
+    /// migration must keep meaning what it meant when it ran.
+    const PROPOSAL_REVISION_CONSUMER_KIND_V30: &'static str = "proposal-revision";
+
+    /// The only prefix `canonical_source_object_identity` ever *adds* to a
+    /// `source_key`. Every other Source kind rejects a bare key outright, so
+    /// a stored identity either equals its Source Basis key or is that key
+    /// with this in front. The re-key below matches on exactly those two
+    /// shapes rather than re-implementing the canonicaliser.
+    const DECORATED_SOURCE_PREFIX_V30: &'static str = "projection:";
+
+    /// Gate C2-2: move the Edges the live Producer declared under a Run onto
+    /// the Revisions that actually read those Sources.
+    ///
+    /// Not a re-derivation from nothing. `narrative_revision_source_basis`
+    /// already stores, per Revision, the exact `(source_kind, source_key,
+    /// revision_token)` list the Producer built each Edge from -- so the
+    /// finer attribution is read out of durable data rather than guessed.
+    /// That is what the roadmap's "without fabricating cross-run identity"
+    /// requires, and it is why the re-key is possible at all: nothing here
+    /// has to decide which Proposal of a Run "probably" read a Source.
+    ///
+    /// One Run Edge can become several Revision Edges. The Run-grained
+    /// writer upserted per Source, so two Revisions reading the same Scene
+    /// collapsed into one row; both get their own now.
+    ///
+    /// Edges with no matching Source Basis row are left under the Run. Those
+    /// are `legacy_backfill.rs`'s, declared for Applications that have no
+    /// Revision to attribute a read to -- a Run is still their legitimate
+    /// Consumer, and the contract keeps `narrative-extraction-run` declared
+    /// for exactly them.
+    ///
+    /// Derived state for the touched Consumers is discarded rather than
+    /// re-pointed: it was evaluated against a Consumer identity that no
+    /// longer exists, and re-evaluating needs a Run and an Epoch that a
+    /// migration has no business minting. Absent rows are the "not yet
+    /// evaluated" state `dependency-rebuild-derived` exists to fill.
+    fn migrate_narrative_consumer_grain_v30(conn: &Connection) -> anyhow::Result<()> {
+        if Self::has_c2_consumer_grain_data_migration_marker(conn)? {
+            return Ok(());
+        }
+        if !Self::table_exists_for_v28(conn, "narrative_dependency_edges")?
+            || !Self::table_exists_for_v28(conn, "narrative_revision_source_basis")?
+        {
+            Self::record_c2_consumer_grain_marker_v30(conn)?;
+            return Ok(());
+        }
+
+        // (edge_id, project_id, identity, owning_run_id, revision_id, token)
+        let matches: Vec<(String, String, String, String, String, String)> = conn
+            .prepare(
+                "SELECT e.id, e.project_id, e.source_object_identity, e.owning_run_id,
+                        sb.revision_id, sb.revision_token
+                   FROM narrative_dependency_edges e
+                   JOIN narrative_proposal_sets ps
+                     ON ps.run_id = e.owning_run_id AND ps.project_id = e.project_id
+                   JOIN narrative_proposals p ON p.proposal_set_id = ps.id
+                   JOIN narrative_proposal_revisions r ON r.proposal_id = p.id
+                   JOIN narrative_revision_source_basis sb ON sb.revision_id = r.id
+                  WHERE e.consumer_kind = ?1
+                    AND e.owning_run_id IS NOT NULL
+                    AND (e.source_object_identity = sb.source_key
+                         OR e.source_object_identity = ?2 || sb.source_key)
+                  ORDER BY e.id ASC, sb.revision_id ASC",
+            )?
+            .query_map(
+                params![
+                    Self::RUN_CONSUMER_KIND_V28,
+                    Self::DECORATED_SOURCE_PREFIX_V30
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )?
+            .collect::<Result<_, _>>()?;
+
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
+        let mut touched_runs: std::collections::BTreeSet<(String, String)> =
+            std::collections::BTreeSet::new();
+        let mut rekeyed_edge_ids: std::collections::BTreeSet<String> =
+            std::collections::BTreeSet::new();
+
+        for (edge_id, project_id, identity, owning_run_id, revision_id, token) in matches {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges (
+                     id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, generated_by_transaction_id, created_at, owning_run_id
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, ?8)
+                 ON CONFLICT(project_id, consumer_kind, consumer_key, source_object_identity)
+                 DO NOTHING",
+                params![
+                    uuid::Uuid::new_v4().to_string(),
+                    project_id,
+                    Self::PROPOSAL_REVISION_CONSUMER_KIND_V30,
+                    revision_id,
+                    identity,
+                    serde_json::to_string(&[token])?,
+                    now,
+                    owning_run_id,
+                ],
+            )
+            .context("re-keying a Dependency Edge onto its Proposal Revision")?;
+            touched_runs.insert((project_id, owning_run_id));
+            rekeyed_edge_ids.insert(edge_id);
+        }
+
+        for edge_id in &rekeyed_edge_ids {
+            conn.execute(
+                "DELETE FROM narrative_dependency_edges WHERE id = ?1",
+                params![edge_id],
+            )
+            .context("removing a Run-grained Edge that was re-keyed")?;
+        }
+
+        let consumers: std::collections::BTreeSet<(String, String, String)> = touched_runs
+            .into_iter()
+            .map(|(project_id, run_id)| {
+                (
+                    project_id,
+                    Self::RUN_CONSUMER_KIND_V28.to_string(),
+                    run_id,
+                )
+            })
+            .collect();
+        Self::invalidate_derived_freshness_for_consumers_v28(conn, &consumers)?;
+
+        Self::record_c2_consumer_grain_marker_v30(conn)
+    }
+
+    fn record_c2_consumer_grain_marker_v30(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_CONSUMER_GRAIN_MIGRATION_ID,
+                Self::C2_CONSUMER_GRAIN_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )
+        .context("recording the C2 Consumer grain data migration marker")?;
+        Ok(())
+    }
+
+    fn has_c2_consumer_grain_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+        if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
+            return Ok(false);
+        }
+        let applied: Option<i64> = conn
+            .query_row(
+                "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+                [Self::C2_CONSUMER_GRAIN_MIGRATION_ID],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(applied.is_some_and(|version| version >= Self::C2_CONSUMER_GRAIN_CONTRACT_VERSION))
+    }
+
+    /// Mirrors `grimodex_core::workspace_schema`'s constants of the same
+    /// name; a test pins them.
+    const C2_CONSUMER_GRAIN_MIGRATION_ID: &'static str = "narrative-c2-consumer-grain-v30";
+    const C2_CONSUMER_GRAIN_CONTRACT_VERSION: i64 = 1;
 
     /// SCHEMA 30: `narrative_dependency_edges.owning_run_id` -- the Run that
     /// declared this Edge.
@@ -10434,6 +10619,202 @@ mod tests {
         assert_eq!(
             grimodex_core::workspace_schema::C2_IDENTITY_CONTRACT_VERSION,
             Database::C2_IDENTITY_CONTRACT_VERSION
+        );
+    }
+
+    /// A workspace whose live Producer declared Edges under a Run, plus the
+    /// per-Revision Source Basis the re-key reads the finer attribution out
+    /// of.
+    ///
+    /// `scene-1` is read by *both* Revisions, which is the case the old
+    /// Run-grained upsert collapsed into one row; `scene-2` by only the
+    /// second. `capture:cap-1` has no Source Basis anywhere -- it stands in
+    /// for a Legacy Backfill Edge, which has no Revision to attribute a read
+    /// to and must stay under the Run.
+    fn seed_run_grained_edges_with_revisions(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE narrative_dependency_edges (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                consumer_kind TEXT NOT NULL, consumer_key TEXT NOT NULL,
+                source_object_identity TEXT NOT NULL, read_set_json TEXT NOT NULL,
+                generated_by_transaction_id TEXT, created_at TEXT NOT NULL,
+                owning_run_id TEXT,
+                UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity)
+             );
+             CREATE TABLE narrative_proposal_sets (
+                id TEXT PRIMARY KEY, run_id TEXT NOT NULL, project_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposals (
+                id TEXT PRIMARY KEY, proposal_set_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_proposal_revisions (
+                id TEXT PRIMARY KEY, proposal_id TEXT NOT NULL
+             );
+             CREATE TABLE narrative_revision_source_basis (
+                revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
+                source_kind TEXT NOT NULL, source_key TEXT NOT NULL,
+                revision_token TEXT NOT NULL,
+                PRIMARY KEY(revision_id, ordinal)
+             );
+             CREATE TABLE schema_data_migrations (
+                migration_id TEXT PRIMARY KEY, contract_version INTEGER NOT NULL,
+                applied_at TEXT NOT NULL
+             );
+             CREATE TABLE narrative_consumer_freshness (
+                project_id TEXT NOT NULL, consumer_kind TEXT NOT NULL,
+                consumer_key TEXT NOT NULL, evidence_freshness TEXT NOT NULL
+             );
+             CREATE TABLE narrative_dependency_edge_states (
+                edge_id TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+                evidence_freshness TEXT NOT NULL
+             );
+             CREATE TABLE narrative_maintenance_finding_observations (
+                id TEXT PRIMARY KEY, project_id TEXT NOT NULL, finding_key TEXT NOT NULL
+             );
+
+             INSERT INTO narrative_proposal_sets VALUES ('set-1', 'run-1', 'proj-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-1', 'set-1');
+             INSERT INTO narrative_proposals VALUES ('proposal-2', 'set-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('rev-1', 'proposal-1');
+             INSERT INTO narrative_proposal_revisions VALUES ('rev-2', 'proposal-2');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-1', 0, 'scene-body', 'project:scene:scene-1', 'v1@a');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-2', 0, 'scene-body', 'project:scene:scene-1', 'v1@a');
+             INSERT INTO narrative_revision_source_basis
+                VALUES ('rev-2', 1, 'scene-body', 'project:scene:scene-2', 'v3@b');
+
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-scene-1', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'project:scene:scene-1', '[\"v1@a\"]', NULL, '2026-08-15T00:00:00.000Z',
+                 'run-1');
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-scene-2', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'project:scene:scene-2', '[\"v3@b\"]', NULL, '2026-08-15T00:00:00.000Z',
+                 'run-1');
+             INSERT INTO narrative_dependency_edges VALUES
+                ('edge-backfill', 'proj-1', 'narrative-extraction-run', 'run-1',
+                 'capture:cap-1', '[\"v9@z\"]', NULL, '2026-08-15T00:00:00.000Z', 'run-1');
+             INSERT INTO narrative_consumer_freshness
+                VALUES ('proj-1', 'narrative-extraction-run', 'run-1', 'fresh');
+             INSERT INTO narrative_dependency_edge_states
+                VALUES ('edge-scene-1', 'proj-1', 'fresh');
+             INSERT INTO narrative_maintenance_finding_observations
+                VALUES ('obs-1', 'proj-1', 'narrative-extraction-run:run-1');",
+        )
+        .expect("seed run-grained edges with revisions");
+    }
+
+    fn edge_consumers(conn: &Connection) -> Vec<(String, String, String)> {
+        conn.prepare(
+            "SELECT consumer_kind, consumer_key, source_object_identity
+               FROM narrative_dependency_edges
+              ORDER BY consumer_kind, consumer_key, source_object_identity",
+        )
+        .expect("prepare")
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .expect("query")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("collect")
+    }
+
+    #[test]
+    fn consumer_grain_v30_rekeys_run_edges_onto_the_revisions_that_read_them() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_run_grained_edges_with_revisions(&conn);
+
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("consumer grain re-key");
+
+        assert_eq!(
+            edge_consumers(&conn),
+            vec![
+                (
+                    "narrative-extraction-run".to_string(),
+                    "run-1".to_string(),
+                    "capture:cap-1".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-1".to_string(),
+                    "project:scene:scene-1".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-2".to_string(),
+                    "project:scene:scene-1".to_string()
+                ),
+                (
+                    "proposal-revision".to_string(),
+                    "rev-2".to_string(),
+                    "project:scene:scene-2".to_string()
+                ),
+            ],
+            "each Revision takes the reads its own Source Basis records, and the Edge with \
+             no Source Basis stays under the Run"
+        );
+
+        let owning: Vec<Option<String>> = conn
+            .prepare(
+                "SELECT owning_run_id FROM narrative_dependency_edges
+                  WHERE consumer_kind = 'proposal-revision'",
+            )
+            .expect("prepare")
+            .query_map([], |row| row.get(0))
+            .expect("query")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect");
+        assert!(
+            owning.iter().all(|run| run.as_deref() == Some("run-1")),
+            "the declaring Run survives the re-key as provenance"
+        );
+
+        let freshness: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM narrative_consumer_freshness",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count freshness");
+        assert_eq!(
+            freshness, 0,
+            "Freshness decided against the old Consumer identity must be discarded, not \
+             re-pointed at a Consumer it was never evaluated for"
+        );
+    }
+
+    #[test]
+    fn consumer_grain_v30_is_idempotent() {
+        let conn = Connection::open_in_memory().expect("open scratch connection");
+        seed_run_grained_edges_with_revisions(&conn);
+
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("first pass");
+        let once = edge_consumers(&conn);
+        Database::migrate_narrative_consumer_grain_v30(&conn).expect("second pass");
+        assert_eq!(once, edge_consumers(&conn));
+    }
+
+    /// Same pact as `the_checkpoint_and_the_migration_name_the_same_marker`,
+    /// for the Consumer grain re-key. Without it the checkpoint would report
+    /// a workspace healthy while the re-key had never run on it.
+    #[test]
+    fn the_checkpoint_and_the_consumer_grain_migration_name_the_same_marker() {
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_CONSUMER_GRAIN_MIGRATION_ID,
+            Database::C2_CONSUMER_GRAIN_MIGRATION_ID
+        );
+        assert_eq!(
+            grimodex_core::workspace_schema::C2_CONSUMER_GRAIN_CONTRACT_VERSION,
+            Database::C2_CONSUMER_GRAIN_CONTRACT_VERSION
+        );
+    }
+
+    /// The re-key writes this literal into `consumer_kind`, and the live
+    /// Producer has to keep reading it back as the same Consumer.
+    #[test]
+    fn the_frozen_v30_revision_consumer_kind_matches_the_live_constant() {
+        assert_eq!(
+            Database::PROPOSAL_REVISION_CONSUMER_KIND_V30,
+            crate::narrative_extraction::PROPOSAL_REVISION_CONSUMER_KIND,
         );
     }
 

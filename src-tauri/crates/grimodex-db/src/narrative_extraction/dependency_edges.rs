@@ -23,19 +23,28 @@
 //! `BEGIN IMMEDIATE` / commit block. Wiring those call sites is out of scope
 //! for this Lane; see Gate C2-T1.
 //!
-//! C2-T1 wires the Producer side in: `repository.rs`'s `insert_proposal_seed`
-//! and `append_revision_on_conn` call [`record_dependency_edge_in_tx`] for
-//! every `SourceBasisRow` a Proposal's Reconciliation Envelope carries,
-//! keyed under [`RUN_CONSUMER_KIND`]/the owning Run's id -- the same
-//! Consumer identity `restore_rebuild.rs`'s Lane N diagnostics already
-//! queried by convention before any Producer declared Edges under it.
-//! Edges accumulate per Run across every Proposal/Revision it produces
-//! (an upsert per Source, never a delete-then-redeclare at this
-//! granularity): deleting a Run's whole Edge set on one Proposal's revision
-//! would erase sibling Proposals' Edges from the same Run. When a Run's
-//! Edge set as a whole should be cleared (a full re-run/redo) is a
-//! separate, not-yet-wired question left to Run/Task/Attempt lifecycle
-//! code (Lane B, `execution_state.rs`).
+//! The Producer side is wired in `repository.rs`: `insert_proposal_seed` and
+//! `append_revision_on_conn` call [`record_dependency_edge_in_tx`] for every
+//! `SourceBasisRow` a Proposal's Reconciliation Envelope carries.
+//!
+//! Those Edges are keyed under [`PROPOSAL_REVISION_CONSUMER_KIND`]/the
+//! Revision's own id (Gate C2-2). They were keyed under
+//! [`RUN_CONSUMER_KIND`]/the Run until then, which made every Proposal a Run
+//! produced share one Consumer -- so editing one Scene staled all of them.
+//! The Run is still recorded, as `owning_run_id` (SCHEMA 30): it is what a
+//! `snapshot:<runId>` Source of that Revision must name, and it stays true
+//! after the Proposal is gone.
+//!
+//! [`RUN_CONSUMER_KIND`] is not a legacy value. `legacy_backfill.rs` still
+//! declares Edges under it for Applications that have no Revision to
+//! attribute a read to; re-keying those to the reserved `application` kind
+//! is Gate C2-Z's legacy/Generic parity work.
+//!
+//! Declaration is an upsert per Source, never a delete-then-redeclare. Under
+//! Run grain that was a hard constraint -- clearing a Run's Edge set on one
+//! Proposal's revision would erase its siblings'. Under Revision grain it is
+//! a property instead: a Revision is immutable, so its declared set never
+//! shrinks, and re-running the same Producer for it stays idempotent.
 
 use rusqlite::{params, Connection, Row};
 
@@ -54,6 +63,12 @@ use super::semantic_index_diagnostics::compute_dependency_set_digest;
 /// vocabulary there) and re-exported here so the call sites that already
 /// import it from this module keep working.
 pub(crate) use super::consumer_identity::RUN_CONSUMER_KIND;
+
+/// The Consumer identity a Proposal Revision's declared Edges are stored
+/// under. Defined in `consumer_identity.rs` alongside the rest of the
+/// vocabulary and re-exported here for the same reason as
+/// [`RUN_CONSUMER_KIND`].
+pub(crate) use super::consumer_identity::PROPOSAL_REVISION_CONSUMER_KIND;
 
 /// Builds a `source_object_identity` string from a Source's `(kind, key)`
 /// pair. The prefixes are the same ones `restore_rebuild.rs`'s
@@ -117,7 +132,7 @@ fn starts_with_any_source_prefix(value: &str) -> bool {
 ///
 /// Idempotent by construction: a key that already carries its own kind's
 /// prefix is returned unchanged, so running it twice cannot double-prefix
-/// the way `record_run_dependency_edges_in_tx` once did.
+/// the way `record_revision_dependency_edges_in_tx` once did.
 ///
 /// The bare-key rule is not a style choice, it mirrors what
 /// `source_revision.rs`'s resolvers actually accept.

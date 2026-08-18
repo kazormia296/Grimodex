@@ -923,7 +923,7 @@ does not implement yet), and the crash-recovery gap for a Run stuck
 `running` after a terminated process (a Lane B / execution-state-model
 concern spanning every Run Kind, not specific to any one of these).
 
-## C2-2 Consumer contract (vocabulary ratified, Producers pending)
+## C2-2 Consumer contract and the Proposal Revision grain
 
 `policies/narrative/narrative-consumer-contract.json` (schema:
 `schemas/narrative-consumer-contract.schema.json`, validated by
@@ -954,15 +954,17 @@ Every Consumer kind carries a `status` that says what is true today, not
 what is planned:
 
 - **`declared`** — a production Producer writes Edges under it now. There
-  is exactly one: `narrative-extraction-run` (`consumer_key =
-  narrative_extraction_runs.id`), the `RUN_CONSUMER_KIND` constant
-  `dependency_edges.rs` owns and `repository.rs`/`legacy_backfill.rs`
-  both write through. It is also precisely the Run granularity C2-2 exists
-  to replace, so it is registered as the current reality, not endorsed as
-  the target.
+  are two. `proposal-revision` (`consumer_key =
+  narrative_proposal_revisions.id`) is what `repository.rs` declares every
+  Edge under: the grain C2-2 exists to reach, where editing one Scene stales
+  the Revisions that actually read it rather than every Proposal from the
+  same Run. `narrative-extraction-run` stays declared and is not a legacy
+  value — `legacy_backfill.rs` declares Edges for Applications that have no
+  Revision to attribute a read to, and a Run remains a legitimate Consumer
+  of its own Run-wide Sources. Re-keying the Backfill to the reserved
+  `application` kind is C2-Z's legacy/Generic parity work.
 - **`reserved`** — the roadmap's Consumer class already has a durable row
   that could carry its identity, but nothing declares Edges under it yet:
-  `proposal-revision` (`narrative_proposal_revisions.id`),
   `extraction-artifact` (`narrative_extraction_artifacts.id`),
   `application` (`narrative_proposal_applications.id`),
   `application-contribution` (`narrative_application_contributions.id`),

@@ -52,24 +52,38 @@
 /// change without revisiting that migration.
 pub(crate) const RUN_CONSUMER_KIND: &str = ConsumerKind::Run.as_str();
 
+/// The Consumer identity a Proposal Revision's own declared Edges are stored
+/// under: `consumer_key = narrative_proposal_revisions.id`.
+pub(crate) const PROPOSAL_REVISION_CONSUMER_KIND: &str =
+    ConsumerKind::ProposalRevision.as_str();
+
 /// The Consumer kinds this crate declares and reads today.
 ///
-/// One variant, because one variant is what has a writer:
-/// `repository.rs`'s `record_run_dependency_edges_in_tx` and
-/// `legacy_backfill.rs`'s `record_legacy_dependency_edges_in_tx` both key
-/// every Edge under `(RUN_CONSUMER_KIND, run_id)`.
+/// A variant here is a promise backed by code: something writes it, and
+/// something can evaluate, publish and resolve a Source for it.
 /// `policies/narrative/narrative-consumer-contract.json` additionally
-/// *reserves* the finer-grained kinds Gate C2-2 will introduce
-/// (`proposal-revision`, `application`, `application-contribution`, ...).
-/// They are intentionally absent here: adding a variant with no Producer
-/// and no reader would make `TryFrom` accept a kind that nothing in this
-/// crate can evaluate, publish, or resolve a Source for -- which is exactly
-/// the silent-wrong-answer failure this module exists to prevent.
+/// *reserves* the kinds Gate C2-2's later slices will introduce
+/// (`application`, `application-contribution`, `semantic-index`, ...), and
+/// those stay absent until they have both. `ConsumerKind::try_from`
+/// accepting a kind nothing can act on is exactly the silent-wrong-answer
+/// failure this module exists to prevent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ConsumerKind {
     /// One Narrative Extraction Run. `consumer_key` is
     /// `narrative_extraction_runs.id`.
+    ///
+    /// Still declared after the Proposal Revision re-key, and not a legacy
+    /// value: `legacy_backfill.rs` declares Edges for Applications that have
+    /// no Revision to attribute a read to, and a Run remains a legitimate
+    /// Consumer of its own Run-wide Sources.
     Run,
+    /// One immutable Revision of one Proposal. `consumer_key` is
+    /// `narrative_proposal_revisions.id`.
+    ///
+    /// The grain Gate C2-2 exists to reach: editing one Scene stales the
+    /// Revisions that actually read it, instead of every Proposal the same
+    /// Run produced.
+    ProposalRevision,
 }
 
 impl ConsumerKind {
@@ -80,6 +94,7 @@ impl ConsumerKind {
     pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Run => "narrative-extraction-run",
+            Self::ProposalRevision => "proposal-revision",
         }
     }
 }
@@ -95,6 +110,7 @@ impl TryFrom<&str> for ConsumerKind {
     fn try_from(value: &str) -> anyhow::Result<Self> {
         match value {
             RUN_CONSUMER_KIND => Ok(Self::Run),
+            PROPOSAL_REVISION_CONSUMER_KIND => Ok(Self::ProposalRevision),
             other => Err(anyhow::anyhow!(
                 "NEX_CONSUMER_KIND_INVALID: unknown consumer kind '{other}'"
             )),
@@ -188,25 +204,41 @@ pub(crate) fn parse_finding_key(finding_key: &str) -> Option<(&str, &str)> {
     finding_key.split_once(FINDING_KEY_SEPARATOR)
 }
 
-/// The Run that owns this Consumer, when the Consumer *is* a Run.
+/// Whether `consumer_kind` names a Consumer class this build implements.
 ///
-/// The single seam replacing `restore_rebuild.rs`'s two unnamed casts. It
-/// answers a question only the Consumer vocabulary can answer -- "which Run
-/// is this Consumer's `snapshot:<runId>` Source expected to name?" -- and
-/// returns `None` rather than a plausible-looking wrong id when the
-/// Consumer is not a Run.
+/// Separate from [`owning_run_id_for_consumer`] because they answer different
+/// questions and, since the Proposal Revision re-key, have different answers:
+/// a `proposal-revision` Consumer is fully evaluable and has no Run id in its
+/// key. Collapsing the two would skip every Revision Consumer.
+pub(crate) fn is_declared_consumer_kind(consumer_kind: &str) -> bool {
+    ConsumerKind::try_from(consumer_kind).is_ok()
+}
+
+/// The Run this Consumer's key names, when the key *is* a Run id.
 ///
-/// `None` is unreachable today (`ConsumerKind` has one variant, and both
-/// Producers use it). It becomes reachable the moment Gate C2-2 declares an
-/// Edge under a finer Consumer, which is the point: the callers below fail
-/// closed on it, so that change surfaces as a named error attributable to
-/// this seam instead of as a fabricated `source-missing` Finding.
+/// The compatibility half of the "which Run is this Edge's `snapshot:<runId>`
+/// Source expected to name?" question. Since SCHEMA 30 the primary answer is
+/// `narrative_dependency_edges.owning_run_id`, recorded by the Producer that
+/// declared the Edge; this is what `restore_rebuild` falls back to for a row
+/// written before that column existed and never re-declared since.
+///
+/// It stays a function rather than being deleted because it is also the
+/// vocabulary check: an unrecognised `consumer_kind` returns `None`, and the
+/// callers report that Consumer rather than evaluating it.
+///
+/// `ProposalRevision` returns `None` deliberately -- its key is a Revision
+/// id, and a Revision id is not a Run id. Returning the key here would
+/// reintroduce exactly the silent mis-resolution SCHEMA 30 removed:
+/// `resolve_snapshot_document` would compare a Revision id against a
+/// `snapshot:<runId>` key, fail, and have that failure collapsed into
+/// `source-missing` for a Source that is present.
 pub(crate) fn owning_run_id_for_consumer<'a>(
     consumer_kind: &str,
     consumer_key: &'a str,
 ) -> Option<&'a str> {
     match ConsumerKind::try_from(consumer_kind) {
         Ok(ConsumerKind::Run) => Some(consumer_key),
+        Ok(ConsumerKind::ProposalRevision) => None,
         // An unrecognised kind has no owning Run either. Reported as
         // "unknown", never guessed at.
         Err(_) => None,
@@ -234,13 +266,32 @@ mod tests {
             ConsumerKind::try_from(RUN_CONSUMER_KIND).unwrap(),
             ConsumerKind::Run
         );
+        assert_eq!(
+            ConsumerKind::try_from(PROPOSAL_REVISION_CONSUMER_KIND).unwrap(),
+            ConsumerKind::ProposalRevision
+        );
         // Reserved in the policy contract, deliberately not implemented here.
-        let error = ConsumerKind::try_from("proposal-revision").unwrap_err();
+        let error = ConsumerKind::try_from("application-contribution").unwrap_err();
         assert!(
             error.to_string().contains("NEX_CONSUMER_KIND_INVALID"),
             "unexpected error: {error}"
         );
         assert!(ConsumerKind::try_from("").is_err());
+    }
+
+    /// The two questions are separate, and since the re-key they have
+    /// different answers for the same Consumer. Collapsing them would skip
+    /// every Revision Consumer in Rebuild-Derived and Verify.
+    #[test]
+    fn a_proposal_revision_is_declared_but_has_no_run_in_its_key() {
+        assert!(is_declared_consumer_kind(PROPOSAL_REVISION_CONSUMER_KIND));
+        assert_eq!(
+            owning_run_id_for_consumer(PROPOSAL_REVISION_CONSUMER_KIND, "revision-1"),
+            None,
+            "a Revision id is not a Run id; the Edge's own owning_run_id is the answer"
+        );
+        assert!(is_declared_consumer_kind(RUN_CONSUMER_KIND));
+        assert!(!is_declared_consumer_kind("application-contribution"));
     }
 
     #[test]
@@ -327,13 +378,43 @@ mod tests {
     /// adding a `declared` entry to the contract leaves
     /// `pnpm test:narrative:semantic-contract` green while the "single owner
     /// of the Consumer vocabulary" claim quietly stops being true.
+    /// Every variant of `ConsumerKind`, so the cross-check below compares two
+    /// full sets rather than a set against a hand-written list that silently
+    /// stops being complete.
+    const ALL_CONSUMER_KINDS: &[ConsumerKind] =
+        &[ConsumerKind::Run, ConsumerKind::ProposalRevision];
+
+    /// `ALL_CONSUMER_KINDS` is hand-maintained, so it needs its own guard: a
+    /// variant added without extending it would silently drop out of the
+    /// contract cross-check.
+    #[test]
+    fn all_consumer_kinds_covers_every_variant() {
+        // Exhaustive match -- a new variant fails to compile here first.
+        for kind in ALL_CONSUMER_KINDS {
+            match kind {
+                ConsumerKind::Run | ConsumerKind::ProposalRevision => {}
+            }
+        }
+        assert_eq!(
+            ALL_CONSUMER_KINDS.len(),
+            2,
+            "extend ALL_CONSUMER_KINDS when a variant is added"
+        );
+    }
+
     #[test]
     fn every_declared_contract_kind_has_a_consumer_kind_variant_and_vice_versa() {
-        let declared = contract_kinds_with_status("declared");
+        let mut declared = contract_kinds_with_status("declared");
+        declared.sort();
+        let mut implemented: Vec<String> = ALL_CONSUMER_KINDS
+            .iter()
+            .map(|kind| kind.as_str().to_string())
+            .collect();
+        implemented.sort();
         assert_eq!(
-            declared,
-            vec![RUN_CONSUMER_KIND.to_string()],
-            "the contract's `declared` set and this enum must name the same kinds;              add the variant in the same change that declares the kind"
+            declared, implemented,
+            "the contract's `declared` set and this enum must name the same kinds; add the \
+             variant in the same change that declares the kind"
         );
         for kind in &declared {
             ConsumerKind::try_from(kind.as_str())
