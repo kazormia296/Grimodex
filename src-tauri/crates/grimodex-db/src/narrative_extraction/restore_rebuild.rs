@@ -18,7 +18,9 @@ use super::dependency_edges::{
     RUN_CONSUMER_KIND,
 };
 use super::digest_plan;
-use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
+use super::evaluator::{
+    evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
+};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
@@ -258,7 +260,9 @@ pub enum RebuildDerivedStateOutcome {
     /// A Rebuild-Derived Run for this project was already `running`; this
     /// call did nothing further (`sameWorkKeyReuse: "reuse-running-only"`).
     AlreadyRunning { run_id: String },
-    /// This call created a fresh Run and evaluated every Edge under it.
+    /// This call created a fresh Run and processed every supported Edge
+    /// under it, publishing `Unknown` for any Edge it could not evaluate
+    /// safely.
     Ran {
         run_id: String,
         summary: RebuildDerivedStateSummary,
@@ -283,14 +287,17 @@ pub struct RebuildDerivedStateSummary {
     /// unreadable Consumer stop the project's entire derived-state rebuild,
     /// including every Consumer this build understands perfectly well.
     /// `verify_narrative_dependency_graph_for_project` reports the same
-    /// Edges under `edge_ids_with_unresolvable_consumer_scope`, so skipping
-    /// them here is not the same as hiding them.
+    /// Edges under `edge_ids_with_unresolvable_consumer_scope`. For a
+    /// declared Consumer, Rebuild also publishes explicit `Unknown` Edge
+    /// State and Consumer Freshness so a verdict from an earlier pass in the
+    /// same Epoch cannot remain authoritative.
     pub consumers_skipped_unresolvable_scope: usize,
     /// Individual Edges skipped because their Snapshot Source cannot be
     /// matched to one trustworthy declaring Run -- see
-    /// [`resolve_edge_consumer_scope`]. Counted rather than evaluated with
-    /// a stand-in or inconsistent Run, which is how a present Source gets
-    /// called missing.
+    /// [`resolve_edge_consumer_scope`]. Counted rather than source-evaluated
+    /// with a stand-in or inconsistent Run, which is how a present Source
+    /// gets called missing. The Edge still receives an explicit `Unknown`
+    /// state for authority invalidation.
     pub edges_skipped_unresolvable_scope: usize,
 }
 
@@ -324,8 +331,9 @@ pub struct RebuildDerivedStateSummary {
 ///      silently minting one for a project that has never had Producer
 ///      activity.
 ///   2. For every distinct `(consumer_kind, consumer_key)` this project's
-///      Edges declare, evaluate every one of that Consumer's Edges
-///      (`evaluate_edge_from_db`) and publish the batch
+///      Edges declare, evaluate every Edge whose scope can be resolved
+///      (`evaluate_edge_from_db`), represent an unresolvable Edge as
+///      `Unknown`/`Manual`, and publish the whole batch
 ///      (`publish_freshness_evaluation_edges_only_in_tx`), in its own
 ///      transaction per Consumer -- so one Consumer's publish failure
 ///      does not roll back every other Consumer already rebuilt in this
@@ -460,7 +468,8 @@ fn rebuild_derived_state_edges_in_project(
                     skipped += 1;
                     return Ok(());
                 }
-                let mut edges_and_observations = Vec::with_capacity(edges.len());
+                let mut publish_observations = Vec::with_capacity(edges.len());
+                let mut evaluated_edges = 0usize;
                 let mut skipped_edges = 0usize;
                 for edge in &edges {
                     let owning_run_id = match resolve_edge_consumer_scope(
@@ -478,37 +487,46 @@ fn rebuild_derived_state_edges_in_project(
                                 edge_id = %edge.id,
                                 consumer_kind = %consumer_kind,
                                 consumer_key = %consumer_key,
-                                "NEX_CONSUMER_OWNING_RUN_UNRESOLVABLE: skipping a \
-                                 snapshot-document Edge whose declaring Run is missing, \
-                                 malformed, or inconsistent"
+                                "NEX_CONSUMER_OWNING_RUN_UNRESOLVABLE: skipping source \
+                                 evaluation and publishing Unknown for a snapshot-document \
+                                 Edge whose declaring Run is missing, malformed, or inconsistent"
                             );
                             skipped_edges += 1;
+                            publish_observations.push((
+                                edge.id.clone(),
+                                EdgeObservation {
+                                    freshness: EvidenceFreshness::Unknown,
+                                    reason_code: None,
+                                    build_action: BuildAction::Manual,
+                                },
+                            ));
                             continue;
                         }
                     };
                     let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
-                    edges_and_observations.push((edge.id.clone(), observation));
+                    publish_observations.push((edge.id.clone(), observation));
+                    evaluated_edges += 1;
                 }
                 summary.edges_skipped_unresolvable_scope += skipped_edges;
-                if edges_and_observations.is_empty() {
-                    // Every Edge was skipped. Publishing nothing is right:
-                    // the runtime refuses an empty batch, and a Consumer with
-                    // no evaluable Edge has no Freshness to assert.
-                    skipped += 1;
-                    return Ok(());
-                }
                 publish_freshness_evaluation_edges_only_in_tx(
                     conn,
                     project_id,
                     run_id,
                     &consumer_kind,
                     &consumer_key,
-                    &edges_and_observations,
+                    &publish_observations,
                     semantic_epoch_id,
                     now,
                 )?;
-                summary.consumers_evaluated += 1;
-                summary.edges_evaluated += edges_and_observations.len();
+                summary.edges_evaluated += evaluated_edges;
+                if evaluated_edges == 0 {
+                    // The explicit Unknown Edge States above invalidate any
+                    // verdicts from an earlier pass in the same Epoch, but
+                    // do not turn an unresolvable scope into an evaluation.
+                    skipped += 1;
+                } else {
+                    summary.consumers_evaluated += 1;
+                }
                 Ok(())
             })
         })?;
@@ -2148,6 +2166,309 @@ mod tests {
         assert_eq!(summary.edges_evaluated, 1);
         assert_eq!(summary.consumers_skipped_unresolvable_scope, 0);
         assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+    }
+
+    #[test]
+    fn rebuild_replaces_old_fresh_authority_when_every_edge_becomes_unresolvable() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_sealed_snapshot_run(&db, "project-1", "run-2");
+        let edge_id = db
+            .with_conn(|conn| {
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-stale-authority",
+                    "snapshot:run-1",
+                    r#"["sha256:snap"]"#,
+                    None,
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record a valid snapshot Edge");
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+
+        let first = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("publish the initial Fresh authority");
+        let first_run_id = match first {
+            RebuildDerivedStateOutcome::Ran { run_id, summary } => {
+                assert_eq!(summary.consumers_evaluated, 1);
+                assert_eq!(summary.edges_evaluated, 1);
+                run_id
+            }
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("first rebuild must create a fresh Run")
+            }
+        };
+        let initial: (String, String, String, String, Option<String>) = db
+            .with_conn(|conn| {
+                let (edge_freshness, edge_action) = conn.query_row(
+                    "SELECT evidence_freshness, build_action
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id = ?1",
+                    params![edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let (consumer_freshness, consumer_action, last_run_id) = conn.query_row(
+                    "SELECT evidence_freshness, build_action, last_evaluated_run_id
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = ?1
+                        AND consumer_key = 'revision-stale-authority'",
+                    params![PROPOSAL_REVISION_CONSUMER_KIND],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                Ok((
+                    edge_freshness,
+                    edge_action,
+                    consumer_freshness,
+                    consumer_action,
+                    last_run_id,
+                ))
+            })
+            .expect("read the initial Fresh authority");
+        assert_eq!(
+            initial,
+            (
+                "fresh".to_string(),
+                "none".to_string(),
+                "fresh".to_string(),
+                "none".to_string(),
+                Some(first_run_id),
+            )
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET owning_run_id = 'run-2'
+                  WHERE id = ?1",
+                params![edge_id],
+            )?;
+            Ok(())
+        })
+        .expect("simulate a historical Edge with an inconsistent owner");
+
+        let second = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must invalidate the old Fresh authority");
+        let (second_run_id, summary) = match second {
+            RebuildDerivedStateOutcome::Ran { run_id, summary } => (run_id, summary),
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("completed rebuild must not be reused")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+
+        let rebuilt: (
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+        ) = db
+            .with_conn(|conn| {
+                let edge_state = conn.query_row(
+                    "SELECT evidence_freshness, reason_code, build_action,
+                            evaluated_at_epoch_id
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id = ?1",
+                    params![edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let consumer_state = conn.query_row(
+                    "SELECT evidence_freshness, build_action, last_evaluated_run_id
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = ?1
+                        AND consumer_key = 'revision-stale-authority'",
+                    params![PROPOSAL_REVISION_CONSUMER_KIND],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                Ok((
+                    edge_state.0,
+                    edge_state.1,
+                    edge_state.2,
+                    edge_state.3,
+                    consumer_state.0,
+                    consumer_state.1,
+                    consumer_state.2,
+                ))
+            })
+            .expect("read the rebuilt authority");
+        assert_eq!(
+            rebuilt,
+            (
+                "unknown".to_string(),
+                None,
+                "manual".to_string(),
+                epoch_id,
+                "unknown".to_string(),
+                "manual".to_string(),
+                Some(second_run_id.clone()),
+            )
+        );
+        let second_status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![second_run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read the second Run status");
+        assert_eq!(second_status, "completed");
+    }
+
+    #[test]
+    fn rebuild_keeps_an_unresolvable_edge_unknown_when_evaluable_edges_are_mixed_in() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_sealed_snapshot_run(&db, "project-1", "run-2");
+        let current_token = current_scene_revision_token(&db, "scene-live");
+        let (scene_edge_id, snapshot_edge_id) = db
+            .with_conn(|conn| {
+                let scene_edge_id = record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-mixed-authority",
+                    "project:scene:scene-live",
+                    &format!(r#"["{current_token}"]"#),
+                    None,
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                let snapshot_edge_id = record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-mixed-authority",
+                    "snapshot:run-1",
+                    r#"["sha256:snap"]"#,
+                    None,
+                    Some("run-1"),
+                    "2026-08-15T00:00:00.000Z",
+                )?;
+                Ok((scene_edge_id, snapshot_edge_id))
+            })
+            .expect("record valid mixed Edges");
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+
+        rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("publish the initial Fresh mixed Consumer");
+        let initial_freshness: Vec<String> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT evidence_freshness
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id IN (?1, ?2)
+                      ORDER BY edge_id ASC",
+                )?;
+                let rows = statement
+                    .query_map(params![scene_edge_id, snapshot_edge_id], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read initial mixed Edge states");
+        assert_eq!(
+            initial_freshness,
+            vec!["fresh".to_string(), "fresh".to_string()]
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET owning_run_id = 'run-2'
+                  WHERE id = ?1",
+                params![snapshot_edge_id],
+            )?;
+            Ok(())
+        })
+        .expect("make only the snapshot Edge owner inconsistent");
+
+        let second = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild the mixed Consumer");
+        let (second_run_id, summary) = match second {
+            RebuildDerivedStateOutcome::Ran { run_id, summary } => (run_id, summary),
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("completed rebuild must not be reused")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 1);
+        assert_eq!(summary.edges_evaluated, 1);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 0);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+
+        let (scene_state, snapshot_state, consumer_state): (
+            (String, Option<String>, String, String),
+            (String, Option<String>, String, String),
+            (String, String, String, Option<String>),
+        ) = db
+            .with_conn(|conn| {
+                let scene_state = conn.query_row(
+                    "SELECT evidence_freshness, reason_code, build_action,
+                            evaluated_at_epoch_id
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id = ?1",
+                    params![scene_edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let snapshot_state = conn.query_row(
+                    "SELECT evidence_freshness, reason_code, build_action,
+                            evaluated_at_epoch_id
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id = ?1",
+                    params![snapshot_edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let consumer_state = conn.query_row(
+                    "SELECT evidence_freshness, build_action, semantic_epoch_id,
+                            last_evaluated_run_id
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = ?1
+                        AND consumer_key = 'revision-mixed-authority'",
+                    params![PROPOSAL_REVISION_CONSUMER_KIND],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                Ok((scene_state, snapshot_state, consumer_state))
+            })
+            .expect("read the mixed rebuilt authority");
+        assert_eq!(
+            scene_state,
+            (
+                "fresh".to_string(),
+                None,
+                "none".to_string(),
+                epoch_id.clone(),
+            )
+        );
+        assert_eq!(
+            snapshot_state,
+            (
+                "unknown".to_string(),
+                None,
+                "manual".to_string(),
+                epoch_id.clone(),
+            )
+        );
+        assert_eq!(
+            consumer_state,
+            (
+                "unknown".to_string(),
+                "manual".to_string(),
+                epoch_id,
+                Some(second_run_id),
+            )
+        );
     }
 
     #[test]

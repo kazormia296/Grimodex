@@ -1,7 +1,9 @@
 //! Publish Runtime (Gate C2 Wave 2 Lane J): the single integrated
-//! transaction that turns a batch of already-evaluated Dependency Edge
-//! outcomes (`evaluator::EdgeObservation`, Lane F -- pure, no DB I/O) into
-//! every durable write a completed Freshness-evaluation Run must make.
+//! transaction that turns a batch of Dependency Edge outcomes
+//! (`evaluator::EdgeObservation`, Lane F -- pure, no DB I/O) into every
+//! durable write a completed Freshness-evaluation Run must make. Outcomes
+//! normally come from evaluation; callers may also publish an explicit
+//! `Unknown` when an Edge cannot be evaluated safely.
 //!
 //! ADR 005 Amendment, "Mutation-time" flow (`docs/adr/005-narrative-semantic-core-boundary.md`):
 //!
@@ -248,8 +250,8 @@ pub(crate) fn write_consumer_freshness_in_tx(
 /// `restore_rebuild`'s Verify reports as
 /// `edge_state_ids_outside_current_epoch` -- would be rolled into the
 /// Consumer's *current* Freshness. The caller has just written a row at
-/// `semantic_epoch_id` for every Edge it evaluated. A declared Edge that was
-/// not evaluated in this Epoch remains in scope and contributes `Unknown`,
+/// `semantic_epoch_id` for every Edge outcome it received. A declared Edge
+/// with no state in this Epoch remains in scope and contributes `Unknown`,
 /// as detailed below.
 ///
 /// Ordering is `source_object_identity` then `edge_id`, which is the order
@@ -378,7 +380,7 @@ fn freshness_severity_rank(freshness: EvidenceFreshness) -> u8 {
 /// Deterministic `sha256:`-prefixed digest standing in for
 /// `narrative_maintenance_finding_observations.material_basis_digest`.
 /// [`publish_freshness_evaluation_in_tx`]'s fixed signature receives only
-/// already-evaluated `EdgeObservation`s, not the raw
+/// publishable `EdgeObservation`s, not the raw
 /// `evaluator::EdgeComparisonInput` signals that produced them (that
 /// comparison happens upstream, before this module is ever called), so the
 /// material basis this function can attest to is exactly what it has in
@@ -499,10 +501,9 @@ fn verify_publish_reservation_in_tx(
 ///    (`freshness_severity_rank`) as the Consumer's rolled-up current
 ///    value.
 /// d. [`record_finding_observation_in_tx`] for every Edge whose
-///    `observation.reason_code` is `Some` -- `evaluator::evaluate_edge`'s
-///    own doc comment: "a Finding row is only worth recording when there
-///    is something to explain", so a Fresh Edge with `reason_code: None`
-///    produces no Finding.
+///    `observation.reason_code` is `Some`. A Fresh Edge, or a synthetic
+///    `Unknown` with no registered explanation, has `reason_code: None`
+///    and produces no Finding.
 /// e. [`transition_run_status_in_tx`] to `Completed`.
 /// f. [`acknowledge_cursor_reservation_in_tx`] through `through_sequence`,
 ///    releasing the Change Feed cursor reservation this Run held -- itself
