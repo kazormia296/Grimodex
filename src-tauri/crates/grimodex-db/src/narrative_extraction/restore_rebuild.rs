@@ -1337,6 +1337,9 @@ mod tests {
     use rusqlite::params;
     use std::path::Path;
 
+    type StoredEdgeState = (String, Option<String>, String, String);
+    type StoredConsumerState = (String, String, String, Option<String>);
+
     fn test_db() -> Database {
         let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
         db.migrate().expect("migrate");
@@ -2408,9 +2411,9 @@ mod tests {
         assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
 
         let (scene_state, snapshot_state, consumer_state): (
-            (String, Option<String>, String, String),
-            (String, Option<String>, String, String),
-            (String, String, String, Option<String>),
+            StoredEdgeState,
+            StoredEdgeState,
+            StoredConsumerState,
         ) = db
             .with_conn(|conn| {
                 let scene_state = conn.query_row(
