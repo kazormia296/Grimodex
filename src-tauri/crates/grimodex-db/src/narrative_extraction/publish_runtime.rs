@@ -248,9 +248,9 @@ pub(crate) fn write_consumer_freshness_in_tx(
 /// `restore_rebuild`'s Verify reports as
 /// `edge_state_ids_outside_current_epoch` -- would be rolled into the
 /// Consumer's *current* Freshness. The caller has just written a row at
-/// `semantic_epoch_id` for every Edge it evaluated, so its own Edges are
-/// always in scope; an Edge not yet evaluated in this Epoch contributes
-/// nothing, which is the honest answer for it.
+/// `semantic_epoch_id` for every Edge it evaluated. A declared Edge that was
+/// not evaluated in this Epoch remains in scope and contributes `Unknown`,
+/// as detailed below.
 ///
 /// Ordering is `source_object_identity` then `edge_id`, which is the order
 /// `dependency_edges::find_edges_by_consumer` returns Edges in. Combined

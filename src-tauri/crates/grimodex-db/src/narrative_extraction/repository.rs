@@ -7,7 +7,8 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, PROPOSAL_REVISION_CONSUMER_KIND,
+    canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
+    PROPOSAL_REVISION_CONSUMER_KIND,
 };
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
@@ -126,6 +127,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
         .run_id
         .clone()
         .unwrap_or_else(|| Uuid::new_v4().to_string());
+    validate_run_id(&run_id)?;
     let coverage_json = serde_json::to_string(
         payload
             .coverage_json
@@ -2075,6 +2077,46 @@ mod unit_tests {
         assert_eq!(loaded["run"]["status"], "running");
         assert_eq!(loaded["tasks"].as_array().map(|v| v.len()), Some(1));
         assert_eq!(loaded["taskCounts"]["queued"], 1);
+    }
+
+    #[test]
+    fn create_run_rejects_noncanonical_run_ids_before_persisting() {
+        let db = test_db();
+        for run_id in ["", "   ", " run-1", "run-1 ", "snapshot:run-1"] {
+            let error = create_run(
+                &db,
+                CreateRunPayload {
+                    run_id: Some(run_id.to_string()),
+                    project_id: "project-1".to_string(),
+                    surface_path_id: "chronicle.extract".to_string(),
+                    scope_json: json!({}),
+                    spec_json: json!({}),
+                    spec_digest: "digest-1".to_string(),
+                    snapshot_digest: None,
+                    catalog_digest: None,
+                    registry_digest: None,
+                    coverage_json: None,
+                    tasks: vec![],
+                },
+            )
+            .expect_err("a noncanonical runId must fail closed");
+            assert!(
+                error.to_string().contains("NEX_RUN_ID_INVALID"),
+                "unexpected error for {run_id:?}: {error}"
+            );
+        }
+
+        let persisted: i64 = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("count persisted Runs");
+        assert_eq!(persisted, 0);
     }
 
     /// Inserts a minimal `tree_nodes` scene row so `scene_body_envelope`

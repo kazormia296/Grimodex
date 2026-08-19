@@ -13,7 +13,9 @@ use serde_json::json;
 
 use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
 use super::dependency_edges::{
-    consumer_dependency_set_digest, find_edges_by_consumer, DependencyEdge, RUN_CONSUMER_KIND,
+    consumer_dependency_set_digest, find_edges_by_consumer,
+    parse_snapshot_run_id_from_source_identity, run_id_belongs_to_another_project, DependencyEdge,
+    RUN_CONSUMER_KIND,
 };
 use super::digest_plan;
 use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
@@ -270,24 +272,25 @@ pub struct RebuildDerivedStateSummary {
     pub consumers_evaluated: usize,
     pub edges_evaluated: usize,
     /// Consumers this pass could not evaluate because their
-    /// `consumer_kind` is outside the declared vocabulary, so
-    /// `consumer_identity::owning_run_id_for_consumer` cannot resolve the
-    /// Run a `snapshot:<runId>` Source of theirs would name.
+    /// `consumer_kind` is outside the declared vocabulary, or because every
+    /// one of their Snapshot Edges had an unresolvable Run scope.
     ///
     /// Counted rather than folded into `consumers_evaluated`, and skipped
     /// rather than fatal. The reachable case is version skew -- a newer
     /// build declared Edges under a Consumer class this one does not
-    /// implement -- and failing the whole Run there would let one
-    /// unreadable Consumer stop the project's entire derived-state
-    /// rebuild, including every Consumer this build understands perfectly
-    /// well. `verify_narrative_dependency_graph_for_project` reports the
-    /// same Edges under `edge_ids_with_unresolvable_consumer_scope`, so
-    /// skipping them here is not the same as hiding them.
+    /// implement, or an older/corrupt row violates SCHEMA 30's owner
+    /// invariants -- and failing the whole Run there would let one
+    /// unreadable Consumer stop the project's entire derived-state rebuild,
+    /// including every Consumer this build understands perfectly well.
+    /// `verify_narrative_dependency_graph_for_project` reports the same
+    /// Edges under `edge_ids_with_unresolvable_consumer_scope`, so skipping
+    /// them here is not the same as hiding them.
     pub consumers_skipped_unresolvable_scope: usize,
-    /// Individual Edges skipped because their Source can only be resolved
-    /// against a declaring Run and none was available -- see
-    /// [`edge_needs_an_owning_run`]. Counted rather than evaluated with a
-    /// stand-in Run, which is how a present Source gets called missing.
+    /// Individual Edges skipped because their Snapshot Source cannot be
+    /// matched to one trustworthy declaring Run -- see
+    /// [`resolve_edge_consumer_scope`]. Counted rather than evaluated with
+    /// a stand-in or inconsistent Run, which is how a present Source gets
+    /// called missing.
     pub edges_skipped_unresolvable_scope: usize,
 }
 
@@ -460,36 +463,33 @@ fn rebuild_derived_state_edges_in_project(
                 let mut edges_and_observations = Vec::with_capacity(edges.len());
                 let mut skipped_edges = 0usize;
                 for edge in &edges {
-                    // SCHEMA 30: the Edge's own declaration wins.
-                    // `owning_run_id_for_consumer` is the compatibility path
-                    // for a row written before that column existed and never
-                    // re-declared since -- and it answers only for a Run
-                    // Consumer, because only there is the key a Run id.
-                    let owning_run_id = edge
-                        .owning_run_id
-                        .as_deref()
-                        .or_else(|| owning_run_id_for_consumer(&consumer_kind, &consumer_key));
-                    // Only a `snapshot:<runId>` Source reads the Run, and
-                    // substituting a stand-in for it is how a present Source
-                    // gets reported missing. Skip and count instead; Verify
-                    // reports the same Edges under
-                    // `edge_ids_with_unresolvable_consumer_scope`.
-                    if edge_needs_an_owning_run(edge, owning_run_id) {
-                        tracing::warn!(
-                            target: "narrative.rebuild",
-                            edge_id = %edge.id,
-                            consumer_kind = %consumer_kind,
-                            consumer_key = %consumer_key,
-                            "NEX_CONSUMER_OWNING_RUN_UNKNOWN: skipping a snapshot-document Edge \
-                             whose declaring Run is unknown"
-                        );
-                        skipped_edges += 1;
-                        continue;
-                    }
-                    let observation =
-                        evaluate_edge_from_db(conn, project_id, owning_run_id.unwrap_or(""), edge)?;
+                    let owning_run_id = match resolve_edge_consumer_scope(
+                        conn,
+                        project_id,
+                        edge,
+                        &consumer_kind,
+                        &consumer_key,
+                    )? {
+                        EdgeConsumerScope::NotRequired => "",
+                        EdgeConsumerScope::Resolved(owning_run_id) => owning_run_id,
+                        EdgeConsumerScope::Unresolvable => {
+                            tracing::warn!(
+                                target: "narrative.rebuild",
+                                edge_id = %edge.id,
+                                consumer_kind = %consumer_kind,
+                                consumer_key = %consumer_key,
+                                "NEX_CONSUMER_OWNING_RUN_UNRESOLVABLE: skipping a \
+                                 snapshot-document Edge whose declaring Run is missing, \
+                                 malformed, or inconsistent"
+                            );
+                            skipped_edges += 1;
+                            continue;
+                        }
+                    };
+                    let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
                     edges_and_observations.push((edge.id.clone(), observation));
                 }
+                summary.edges_skipped_unresolvable_scope += skipped_edges;
                 if edges_and_observations.is_empty() {
                     // Every Edge was skipped. Publishing nothing is right:
                     // the runtime refuses an empty batch, and a Consumer with
@@ -509,7 +509,6 @@ fn rebuild_derived_state_edges_in_project(
                 )?;
                 summary.consumers_evaluated += 1;
                 summary.edges_evaluated += edges_and_observations.len();
-                summary.edges_skipped_unresolvable_scope += skipped_edges;
                 Ok(())
             })
         })?;
@@ -648,15 +647,16 @@ pub struct DependencyGraphVerifyReport {
     /// refuses to seal from a live re-derivation.
     pub duplicate_edge_ids_to_deactivate: Vec<String>,
     /// Edge whose Consumer's `consumer_kind` is outside the declared
-    /// vocabulary (`consumer_identity::ConsumerKind`), so
-    /// `owning_run_id_for_consumer` cannot say which Run a
-    /// `snapshot:<runId>` Source of that Consumer should name.
+    /// vocabulary (`consumer_identity::ConsumerKind`), or whose Snapshot
+    /// key, stored `owning_run_id`, and Run Consumer key cannot be reconciled
+    /// to one trustworthy Run id.
     ///
     /// Part of `consumer-and-source-key-format`, reported separately from
     /// `edge_ids_with_malformed_keys` because the shape is different: the
-    /// key is well formed, it just names a Consumer class this build does
-    /// not implement (a newer build wrote the row, or a Gate C2-2 Producer
-    /// landed ahead of its readers). Kept out of
+    /// key can be well formed while its kind is not implemented (a newer
+    /// build wrote the row, or a Gate C2-2 Producer landed ahead of its
+    /// readers), or while its non-key owner provenance is inconsistent.
+    /// Kept out of
     /// `edge_ids_with_missing_source` deliberately -- an unresolvable
     /// Consumer scope says nothing about whether the Sources exist, and
     /// filing it there would report healthy Sources as gone.
@@ -890,10 +890,9 @@ pub fn verify_narrative_dependency_graph_for_project(
         let edges = find_edges_by_consumer(conn, project_id, consumer_kind, consumer_key)?;
         report.total_edges += edges.len();
 
-        // Resolved once per Consumer, not once per Edge: it is a property of
-        // the Consumer identity, and an unresolvable one disqualifies the
-        // Consumer's whole Source-resolution pass rather than any single
-        // Edge (see `consumer_identity::owning_run_id_for_consumer`).
+        // Consumer-kind support is resolved once per Consumer. Snapshot Run
+        // scope is resolved per Edge below because SCHEMA 30 records the
+        // declaring Run on each Edge independently.
         let kind_is_declared = is_declared_consumer_kind(consumer_kind);
         if !kind_is_declared {
             report
@@ -915,17 +914,23 @@ pub fn verify_narrative_dependency_graph_for_project(
             if !kind_is_declared {
                 continue;
             }
-            let owning_run_id = edge
-                .owning_run_id
-                .as_deref()
-                .or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key));
-            if edge_needs_an_owning_run(edge, owning_run_id) {
-                report
-                    .edge_ids_with_unresolvable_consumer_scope
-                    .push(edge.id.clone());
-                continue;
-            }
-            if edge_source_is_missing(conn, project_id, owning_run_id.unwrap_or(""), edge) {
+            let owning_run_id = match resolve_edge_consumer_scope(
+                conn,
+                project_id,
+                edge,
+                consumer_kind,
+                consumer_key,
+            )? {
+                EdgeConsumerScope::NotRequired => "",
+                EdgeConsumerScope::Resolved(owning_run_id) => owning_run_id,
+                EdgeConsumerScope::Unresolvable => {
+                    report
+                        .edge_ids_with_unresolvable_consumer_scope
+                        .push(edge.id.clone());
+                    continue;
+                }
+            };
+            if edge_source_is_missing(conn, project_id, owning_run_id, edge) {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
         }
@@ -1022,25 +1027,62 @@ pub(crate) fn duplicate_edge_ids_to_deactivate(
     Ok(rows)
 }
 
-/// `true` when this Edge's Source can only be resolved against a declaring
-/// Run and none is available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgeConsumerScope<'a> {
+    /// Every current Source kind except `snapshot-document` ignores Run
+    /// scope, so no owner has to be supplied to its resolver.
+    NotRequired,
+    /// The Snapshot key, stored owner (or safe Run-Consumer fallback), and
+    /// Run Consumer key all agree on this exact Run id.
+    Resolved(&'a str),
+    /// A Snapshot Edge lacks one trustworthy Run id. It must be diagnosed
+    /// and skipped, never passed to a resolver whose scope error is folded
+    /// into `source-missing`.
+    Unresolvable,
+}
+
+/// Resolves the Run scope a Source resolver may safely receive for one Edge.
 ///
-/// Only `snapshot-document` reads the Run at all: `resolve_snapshot_document`
-/// requires the id embedded in `snapshot:<runId>` to equal the one it is
-/// handed. Every other Source kind ignores it, so a missing owning Run is no
-/// obstacle to evaluating them and must not be treated as one.
-///
-/// Without this the fallback substitutes `""`, `resolve_snapshot_document`
-/// compares a real Run id against it, fails, and
-/// `build_edge_comparison_input` collapses that error into
-/// `current_source_exists = false` -- reporting a Source that is present as
-/// missing. That is the exact failure Gate C2-2 set out to remove, so
-/// reintroducing it for a `NULL` `owning_run_id` would be a poor trade.
-/// `owning_run_id` is nullable by design, so this shape is permitted by the
-/// schema even though no writer produces it today.
-fn edge_needs_an_owning_run(edge: &DependencyEdge, owning_run_id: Option<&str>) -> bool {
-    owning_run_id.is_none()
-        && infer_source_kind(&edge.source_object_identity) == Some("snapshot-document")
+/// SCHEMA 30's stored `owning_run_id` is primary. Empty/whitespace-only
+/// historical values are treated as absent so a Run Consumer can still use
+/// its exact `consumer_key` compatibility fallback; a non-empty malformed or
+/// mismatched stored value is never hidden by that fallback. Snapshot Edges
+/// additionally require the `snapshot:<runId>` suffix, effective owner, and
+/// (for Run Consumers) `consumer_key` to agree byte-for-byte. A persisted Run
+/// owned by another project is unresolvable scope; an absent Run remains a
+/// resolved scope so the Source resolver can diagnose it as genuinely
+/// missing.
+fn resolve_edge_consumer_scope<'a>(
+    conn: &Connection,
+    project_id: &str,
+    edge: &'a DependencyEdge,
+    consumer_kind: &str,
+    consumer_key: &'a str,
+) -> anyhow::Result<EdgeConsumerScope<'a>> {
+    let snapshot_run_id =
+        match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
+            Ok(Some(run_id)) => run_id,
+            Ok(None) => return Ok(EdgeConsumerScope::NotRequired),
+            Err(_) => return Ok(EdgeConsumerScope::Unresolvable),
+        };
+
+    let stored_owning_run_id = match edge.owning_run_id.as_deref() {
+        Some(value) if value.trim().is_empty() => None,
+        Some(value) if value.trim() != value => return Ok(EdgeConsumerScope::Unresolvable),
+        value => value,
+    };
+    let Some(owning_run_id) =
+        stored_owning_run_id.or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key))
+    else {
+        return Ok(EdgeConsumerScope::Unresolvable);
+    };
+    if owning_run_id != snapshot_run_id
+        || (consumer_kind == RUN_CONSUMER_KIND && consumer_key != snapshot_run_id)
+        || run_id_belongs_to_another_project(conn, project_id, owning_run_id)?
+    {
+        return Ok(EdgeConsumerScope::Unresolvable);
+    }
+    Ok(EdgeConsumerScope::Resolved(owning_run_id))
 }
 
 /// Attention rows whose `finding_key` names no Consumer this project still
@@ -1414,6 +1456,50 @@ mod tests {
             )
         })
         .expect("record run-scoped edge")
+    }
+
+    fn seed_sealed_snapshot_run(db: &Database, project_id: &str, run_id: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES (?1, ?2, 'x', '{}', '{}', 'd',
+                         'completed', '{}', 'sha256:snap',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                params![run_id, project_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed a real sealed snapshot Run");
+    }
+
+    fn seed_raw_snapshot_edge(
+        db: &Database,
+        edge_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+        source_run_id: &str,
+        owning_run_id: Option<&str>,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES (?1, 'project-1', ?2, ?3, ?4, '[\"sha256:snap\"]',
+                         '2026-08-15T00:00:00.000Z', ?5)",
+                params![
+                    edge_id,
+                    consumer_kind,
+                    consumer_key,
+                    format!("snapshot:{source_run_id}"),
+                    owning_run_id,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed a raw snapshot Edge fixture");
     }
 
     #[test]
@@ -1986,6 +2072,203 @@ mod tests {
     }
 
     #[test]
+    fn a_blank_snapshot_owner_is_unresolvable_and_counted_when_every_edge_is_skipped() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-blank-owner",
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-1",
+            "run-1",
+            Some(""),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-blank-owner".to_string()]
+        );
+        assert!(
+            !report
+                .edge_ids_with_missing_source
+                .contains(&"edge-blank-owner".to_string()),
+            "a real sealed snapshot must not be reported missing because its owner is blank"
+        );
+
+        seed_epoch_for_rebuild(&db, "project-1");
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must skip the unresolvable Edge without failing");
+        let RebuildDerivedStateOutcome::Ran { summary, .. } = outcome else {
+            panic!("expected a fresh Rebuild-Derived Run");
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+    }
+
+    #[test]
+    fn a_partial_skip_counts_the_edge_once_without_skipping_the_consumer() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-mixed",
+                "project:scene:scene-live",
+                r#"["/body"]"#,
+                None,
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z",
+            )?;
+            Ok(())
+        })
+        .expect("seed one evaluable Edge");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-mixed-blank-owner",
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-mixed",
+            "run-1",
+            Some(""),
+        );
+
+        seed_epoch_for_rebuild(&db, "project-1");
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must publish the evaluable Edge and skip only the malformed one");
+        let RebuildDerivedStateOutcome::Ran { summary, .. } = outcome else {
+            panic!("expected a fresh Rebuild-Derived Run");
+        };
+        assert_eq!(summary.consumers_evaluated, 1);
+        assert_eq!(summary.edges_evaluated, 1);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 0);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+    }
+
+    #[test]
+    fn a_run_snapshot_edge_with_a_different_stored_owner_is_unresolvable_not_missing() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_sealed_snapshot_run(&db, "project-1", "run-2");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-owner-mismatch",
+            RUN_CONSUMER_KIND,
+            "run-1",
+            "run-1",
+            Some("run-2"),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-owner-mismatch".to_string()]
+        );
+        assert!(
+            !report
+                .edge_ids_with_missing_source
+                .contains(&"edge-owner-mismatch".to_string()),
+            "a mismatched owner is a malformed scope, not proof that the snapshot is gone"
+        );
+    }
+
+    #[test]
+    fn a_blank_stored_owner_does_not_hide_a_run_consumers_exact_fallback() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-run-fallback",
+            RUN_CONSUMER_KIND,
+            "run-1",
+            "run-1",
+            Some(""),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert!(
+            report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+            "the Run consumer key is the exact compatibility fallback"
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "the real sealed snapshot resolves through that fallback"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_owner_from_another_project_is_unresolvable_not_missing() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-2", "foreign-run");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-cross-project-owner",
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-cross-project",
+            "foreign-run",
+            Some("foreign-run"),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-cross-project-owner".to_string()]
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "a foreign-project owner is invalid scope, not proof that the snapshot is gone"
+        );
+
+        seed_epoch_for_rebuild(&db, "project-1");
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must skip the foreign-project scope");
+        let RebuildDerivedStateOutcome::Ran { summary, .. } = outcome else {
+            panic!("expected a fresh Rebuild-Derived Run");
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+    }
+
+    #[test]
+    fn a_double_prefixed_snapshot_identity_is_unresolvable_not_missing() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-double-prefix",
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-double-prefix",
+            "snapshot:run-1",
+            Some("snapshot:run-1"),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-double-prefix".to_string()]
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "a malformed double prefix must not be translated into source-missing"
+        );
+    }
+
+    #[test]
     fn project_verify_names_an_unresolvable_consumer_scope_without_calling_the_source_missing() {
         let db = test_db();
         let run_scoped = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
@@ -2081,38 +2364,20 @@ mod tests {
     fn a_snapshot_edge_with_no_declaring_run_is_unresolvable_not_missing() {
         let db = test_db();
         // A real, sealed Run whose snapshot the Edge names.
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE narrative_extraction_runs SET snapshot_digest = 'sha256:snap'
-                  WHERE id = 'run-1'",
-                [],
-            )?;
-            Ok(())
-        })
-        .ok();
+        seed_sealed_snapshot_run(&db, "project-1", "run-1");
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
-        let orphan = db
-            .with_conn(|conn| {
-                conn.execute(
-                    "UPDATE narrative_extraction_runs SET snapshot_digest = 'sha256:snap'
-                      WHERE id = 'run-1'",
-                    [],
-                )?;
-                record_dependency_edge_in_tx(
-                    conn,
-                    "project-1",
-                    PROPOSAL_REVISION_CONSUMER_KIND,
-                    "revision-1",
-                    "snapshot:run-1",
-                    r#"["sha256:snap"]"#,
-                    None,
-                    // No declaring Run: nullable by design, and the shape this
-                    // guard is about.
-                    None,
-                    "2026-08-15T00:00:00.000Z",
-                )
-            })
-            .expect("record a snapshot edge with no declaring run");
+        let orphan = "edge-null-owner".to_string();
+        // The typed writer rejects new Snapshot Edges without an owner. Raw
+        // SQL represents an upgraded/corrupted historical row the tolerant
+        // read side still has to diagnose honestly.
+        seed_raw_snapshot_edge(
+            &db,
+            &orphan,
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-1",
+            "run-1",
+            None,
+        );
 
         let report = db
             .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
@@ -2324,12 +2589,23 @@ mod tests {
             Ok(())
         })
         .expect("seed a run belonging to project-2");
-        let crossing_id = seed_run_edge(
-            &db,
-            "project-1",
-            "run-in-project-2",
-            "project:scene:scene-live",
-        );
+        let crossing_id = "edge-cross-project-consumer".to_string();
+        // The typed writer now rejects this known foreign owner. Raw SQL
+        // represents an upgraded/corrupted historical row the read-only
+        // verifier must continue to diagnose.
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES (?1, 'project-1', ?2, 'run-in-project-2',
+                         'project:scene:scene-live', '[\"/body\"]',
+                         '2026-08-15T00:00:00.000Z', 'run-in-project-2')",
+                params![crossing_id, RUN_CONSUMER_KIND],
+            )?;
+            Ok(())
+        })
+        .expect("seed a raw cross-project Edge fixture");
 
         let report = db
             .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))

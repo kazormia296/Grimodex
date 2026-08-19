@@ -127,6 +127,60 @@ fn starts_with_any_source_prefix(value: &str) -> bool {
         .any(|prefix| value.starts_with(prefix))
 }
 
+/// Validates the Run id grammar required for an unambiguous
+/// `snapshot:<runId>` Source identity. Source identity prefixes are reserved:
+/// accepting one at the start of a Run id would make its Snapshot identity
+/// indistinguishable from the malformed historical double-prefix shape.
+pub(crate) fn validate_run_id(run_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !run_id.trim().is_empty() && run_id.trim() == run_id,
+        "NEX_RUN_ID_INVALID: runId must be non-empty and must not contain surrounding whitespace"
+    );
+    anyhow::ensure!(
+        !starts_with_any_source_prefix(run_id),
+        "NEX_RUN_ID_INVALID: runId '{run_id}' must not start with a reserved Source identity prefix"
+    );
+    Ok(())
+}
+
+/// Parses the Run id embedded in a canonical Snapshot Source identity.
+///
+/// `Ok(None)` means the identity is not a Snapshot Source. Snapshot-shaped
+/// identities fail closed when the suffix is blank, padded, or itself starts
+/// with a Source prefix. The last case is the historical double-prefix shape
+/// (`snapshot:snapshot:<runId>`) that must never be treated as a Run id.
+pub(crate) fn parse_snapshot_run_id_from_source_identity(
+    source_object_identity: &str,
+) -> anyhow::Result<Option<&str>> {
+    let Some(run_id) = source_object_identity.strip_prefix("snapshot:") else {
+        return Ok(None);
+    };
+    validate_run_id(run_id).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_SOURCE_KEY_INVALID: snapshot-document sourceKey '{source_object_identity}' has an invalid Run id: {error}"
+        )
+    })?;
+    Ok(Some(run_id))
+}
+
+/// `true` only when `run_id` names a persisted Run owned by another project.
+/// A missing Run is deliberately not rejected here: for an otherwise
+/// well-formed Snapshot Edge that is genuine Source-missing evidence.
+pub(crate) fn run_id_belongs_to_another_project(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM narrative_extraction_runs
+              WHERE id = ?1 AND project_id <> ?2
+         )",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// The one place a `(source_kind, source_key)` pair becomes a
 /// `source_object_identity`, for every writer and for SCHEMA 28's repair.
 ///
@@ -168,6 +222,11 @@ pub(crate) fn canonical_source_object_identity(
             !starts_with_any_source_prefix(rest),
             "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
         );
+        if source_kind == "snapshot-document" {
+            // Keep the writer-facing Snapshot parser and the general
+            // canonicalizer on one exact grammar.
+            parse_snapshot_run_id_from_source_identity(source_key)?;
+        }
         return Ok(source_key.to_string());
     }
 
@@ -238,6 +297,14 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
 /// catch. This is the Producer-time gate; the read side stays tolerant of
 /// whatever is already stored.
 ///
+/// `owning_run_id` is provenance, not an arbitrary resolver hint. A supplied
+/// value must be an exact, non-blank id; for a Run Consumer it must equal the
+/// Consumer key, and for a `snapshot:<runId>` Source it is required to equal
+/// the embedded Run id. If that Run exists, it must belong to the Edge's
+/// project. Historical/corrupt rows can still bypass these code-only
+/// invariants, so `restore_rebuild` validates them again before it calls the
+/// Snapshot resolver.
+///
 /// Returns the Edge's `id` (stable across upserts of the same key).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_dependency_edge_in_tx(
@@ -252,6 +319,14 @@ pub(crate) fn record_dependency_edge_in_tx(
     created_at: &str,
 ) -> anyhow::Result<String> {
     validate_consumer_identity(consumer_kind, consumer_key)?;
+    validate_owning_run_identity(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        source_object_identity,
+        owning_run_id,
+    )?;
     serde_json::from_str::<Vec<serde_json::Value>>(read_set_json).map_err(|error| {
         anyhow::anyhow!(
             "NEX_DEPENDENCY_READ_SET_INVALID: readSetJson must be a JSON array: {error}"
@@ -285,6 +360,48 @@ pub(crate) fn record_dependency_edge_in_tx(
         |row| row.get(0),
     )?;
     Ok(id)
+}
+
+fn validate_owning_run_identity(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    source_object_identity: &str,
+    owning_run_id: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(owning_run_id) = owning_run_id {
+        anyhow::ensure!(
+            !owning_run_id.trim().is_empty() && owning_run_id.trim() == owning_run_id,
+            "NEX_DEPENDENCY_OWNING_RUN_INVALID: owningRunId must be non-empty and must not contain surrounding whitespace"
+        );
+        if consumer_kind == RUN_CONSUMER_KIND {
+            anyhow::ensure!(
+                consumer_key == owning_run_id,
+                "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: Run consumerKey '{consumer_key}' does not match owningRunId '{owning_run_id}'"
+            );
+        }
+        anyhow::ensure!(
+            !run_id_belongs_to_another_project(conn, project_id, owning_run_id)?,
+            "NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH: owningRunId '{owning_run_id}' belongs to another project"
+        );
+    }
+
+    if let Some(snapshot_run_id) =
+        parse_snapshot_run_id_from_source_identity(source_object_identity)?
+    {
+        let owning_run_id = owning_run_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: snapshot-document Edge must record its declaring Run"
+            )
+        })?;
+        anyhow::ensure!(
+            snapshot_run_id == owning_run_id,
+            "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: snapshot Run '{snapshot_run_id}' does not match owningRunId '{owning_run_id}'"
+        );
+    }
+
+    Ok(())
 }
 
 /// The digest of the identity set `(project_id, consumer_kind,
@@ -571,6 +688,151 @@ mod tests {
     }
 
     #[test]
+    fn invalid_owning_run_identity_fails_closed_at_the_writer() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            for (label, consumer_kind, consumer_key, source, owning_run_id) in [
+                (
+                    "empty owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-empty",
+                    "snapshot:run-1",
+                    Some(""),
+                ),
+                (
+                    "whitespace owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-whitespace",
+                    "snapshot:run-1",
+                    Some("   "),
+                ),
+                (
+                    "padded owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-padded",
+                    "snapshot:run-1",
+                    Some(" run-1 "),
+                ),
+                (
+                    "missing snapshot owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-missing",
+                    "snapshot:run-1",
+                    None,
+                ),
+                (
+                    "snapshot owner mismatch",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-mismatch",
+                    "snapshot:run-1",
+                    Some("run-2"),
+                ),
+                (
+                    "double-prefixed snapshot",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-double-prefix",
+                    "snapshot:snapshot:run-1",
+                    Some("snapshot:run-1"),
+                ),
+                (
+                    "Run consumer mismatch",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-1",
+                    Some("run-2"),
+                ),
+            ] {
+                let result = record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    consumer_kind,
+                    consumer_key,
+                    source,
+                    r#"["/body"]"#,
+                    None,
+                    owning_run_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                assert!(result.is_err(), "{label} must be refused");
+            }
+
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Project Two')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('foreign-run', 'project-2', 'x', '{}', '{}', 'd',
+                         'completed', '{}', 'sha256:snap',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
+            let cross_project = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-cross-project",
+                "snapshot:foreign-run",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("foreign-run"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("a known foreign-project owner must be refused");
+            assert!(
+                cross_project
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH"),
+                "unexpected error: {cross_project}"
+            );
+            let cross_project_non_snapshot = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-cross-project-scene",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                Some("foreign-run"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("foreign-project provenance must be refused for every Source kind");
+            assert!(
+                cross_project_non_snapshot
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH"),
+                "unexpected error: {cross_project_non_snapshot}"
+            );
+
+            let valid = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-valid",
+                "snapshot:run-1",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z",
+            )?;
+            assert!(!valid.is_empty());
+            let persisted: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                persisted, 1,
+                "only the one valid Edge may survive the writer gate"
+            );
+            Ok(())
+        })
+        .expect("owning Run writer gate");
+    }
+
+    #[test]
     fn non_array_read_set_json_fails_closed() {
         let db = test_db();
         db.with_conn(|conn| {
@@ -736,6 +998,20 @@ mod tests {
                 canonical_source_object_identity(kind, key).unwrap(),
                 key,
                 "{kind} must be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn run_ids_reserve_every_source_identity_prefix() {
+        validate_run_id("run-1").expect("ordinary Run id");
+        for prefix in SOURCE_IDENTITY_PREFIXES {
+            let run_id = format!("{prefix}run-1");
+            let error = validate_run_id(&run_id)
+                .expect_err("a Source-prefixed Run id would make snapshot identity ambiguous");
+            assert!(
+                error.to_string().contains("NEX_RUN_ID_INVALID"),
+                "unexpected error for {run_id}: {error}"
             );
         }
     }
