@@ -165,13 +165,13 @@ fn schema_20_shadow_migrates_through_21_to_22_and_preserves_existing_rows() {
             ..
         } => {
             assert_eq!(from_schema, 20);
-            assert_eq!(to_schema, 29);
+            assert_eq!(to_schema, SCHEMA_VERSION);
             drop(opened);
         }
         other => panic!("expected Migrated for SCHEMA 20, got {other:?}"),
     }
 
-    assert_eq!(live_user_version(&ws), 29);
+    assert_eq!(live_user_version(&ws), SCHEMA_VERSION);
     for table in [
         "narrative_change_transactions",
         "narrative_change_events",
@@ -308,7 +308,7 @@ fn schema_21_shadow_migrates_to_22_and_backfills_transaction_origins() {
             ..
         } => {
             assert_eq!(from_schema, 21);
-            assert_eq!(to_schema, 29);
+            assert_eq!(to_schema, SCHEMA_VERSION);
             drop(opened);
         }
         other => panic!("expected Migrated for SCHEMA 21, got {other:?}"),
