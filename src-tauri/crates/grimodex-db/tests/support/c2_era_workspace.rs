@@ -51,7 +51,7 @@ pub const REVISION_ID: &str = "c2-upgrade-revision";
 /// one it leaves alone. Two are needed because the repair invalidates derived
 /// state only for the Consumers it touched, while the SCHEMA 28 completion
 /// marker discards *all* of it — so only an untouched Consumer can tell the
-/// two apart, and only it can witness the SCHEMA 29 savepoint unwinding.
+/// two apart, and only it can witness the Gate C2 savepoint unwinding.
 pub const REPAIRED_RUN_ID: &str = "c2-upgrade-run-repaired";
 pub const UNTOUCHED_RUN_ID: &str = "c2-upgrade-run-untouched";
 pub const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
@@ -60,6 +60,20 @@ pub const REPAIRED_EDGE_ID: &str = "c2-upgrade-edge-doubled";
 pub const UNTOUCHED_EDGE_ID: &str = "c2-upgrade-edge-canonical";
 pub const CANONICAL_EDGE_IDENTITY: &str = "project:scene:c2-upgrade-scene";
 pub const UNTOUCHED_EDGE_IDENTITY: &str = "project:codex-catalog:c2-upgrade-project";
+
+/// A third Consumer, and the only one SCHEMA 30's re-key can act on: it owns
+/// a Proposal Revision whose durable Source Basis names the Source its Edge
+/// reads. The other two have no Revision to attribute a read to, so they stay
+/// Run-grained -- which is what makes this one able to witness the re-key
+/// happening, and the safety tests able to witness it *not* happening.
+pub const REKEYED_RUN_ID: &str = "c2-upgrade-run-rekeyed";
+pub const REKEYED_EDGE_ID: &str = "c2-upgrade-edge-rekeyed";
+pub const REKEYED_PROPOSAL_SET_ID: &str = "c2-upgrade-set-rekeyed";
+pub const REKEYED_PROPOSAL_ID: &str = "c2-upgrade-proposal-rekeyed";
+pub const REKEYED_REVISION_ID: &str = "c2-upgrade-revision-rekeyed";
+pub const REKEYED_EDGE_IDENTITY: &str = "project:scene:c2-upgrade-scene-rekeyed";
+pub const REKEYED_REVISION_TOKEN: &str = "c2-upgrade-token-rekeyed";
+pub const REVISION_CONSUMER_KIND: &str = "proposal-revision";
 
 /// A field the Field Authority ledger already records as the author's, so the
 /// SCHEMA 29 ownership re-projection has something to move, and one nobody
@@ -166,6 +180,17 @@ pub fn seed_c2_era_workspace(label: &str, era: i32) -> EraWorkspace {
                     [],
                 )?;
             }
+            // Likewise SCHEMA 30's, for every era on this path: the fixture is
+            // built by migrating to the current schema and rewinding, so it
+            // inherits a marker no real SCHEMA 23-29 workspace can carry --
+            // and the marker is precisely what makes the re-key a no-op, so
+            // leaving it would make every assertion about the re-key pass
+            // against a migration that never ran.
+            conn.execute(
+                "DELETE FROM schema_data_migrations
+                  WHERE migration_id = 'narrative-c2-consumer-grain-v30'",
+                [],
+            )?;
             conn.pragma_update(None, "user_version", era)?;
             Ok(())
         })
@@ -204,9 +229,7 @@ fn rewind_schema_to_era(conn: &Connection, era: i32) -> anyhow::Result<()> {
 /// constraint and is last in the table, which is exactly the shape SQLite can
 /// drop in place.
 fn rewind_dependency_edge_owning_run(conn: &Connection) -> anyhow::Result<()> {
-    conn.execute_batch(
-        "ALTER TABLE narrative_dependency_edges DROP COLUMN owning_run_id;",
-    )?;
+    conn.execute_batch("ALTER TABLE narrative_dependency_edges DROP COLUMN owning_run_id;")?;
     Ok(())
 }
 
@@ -365,6 +388,7 @@ fn seed_era_rows(conn: &Connection, era: i32) -> anyhow::Result<()> {
     seed_field_authority(conn)?;
     seed_contributions(conn, era)?;
     seed_dependency_graph(conn, era)?;
+    seed_rekeyable_consumer(conn)?;
     seed_attention(conn, era)?;
     if era >= 24 {
         seed_v24_rows(conn)?;
@@ -373,7 +397,7 @@ fn seed_era_rows(conn: &Connection, era: i32) -> anyhow::Result<()> {
 }
 
 fn seed_runs(conn: &Connection) -> anyhow::Result<()> {
-    for run_id in [REPAIRED_RUN_ID, UNTOUCHED_RUN_ID] {
+    for run_id in [REPAIRED_RUN_ID, UNTOUCHED_RUN_ID, REKEYED_RUN_ID] {
         conn.execute(
             "INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -594,6 +618,98 @@ fn seed_dependency_graph(conn: &Connection, era: i32) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The Proposal chain and durable Source Basis SCHEMA 30's re-key reads its
+/// finer attribution out of, plus the one Edge it can therefore move.
+///
+/// Seeded for every era: `narrative_revision_source_basis` predates Gate C2
+/// entirely, so a SCHEMA 23 workspace can already hold this and a real one
+/// does. Without it the re-key is a no-op on this fixture, and every
+/// assertion about the re-key -- including the two that assert it was
+/// *unwound* -- would pass on a workspace where it never ran.
+fn seed_rekeyable_consumer(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute(
+        "INSERT INTO narrative_proposal_sets
+            (id, run_id, project_id, set_kind, created_at, updated_at)
+         VALUES (?1, ?2, ?3, 'extraction', ?4, ?4)",
+        params![
+            REKEYED_PROPOSAL_SET_ID,
+            REKEYED_RUN_ID,
+            PROJECT_ID,
+            SEEDED_AT
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_proposals
+            (id, proposal_set_id, proposal_key, kind, payload_json, created_at, updated_at)
+         VALUES (?1, ?2, 'c2-upgrade-key-rekeyed', 'codex-entry', '{}', ?3, ?3)",
+        params![REKEYED_PROPOSAL_ID, REKEYED_PROPOSAL_SET_ID, SEEDED_AT],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_proposal_revisions
+            (id, proposal_id, revision_number, payload_json, created_at, created_by)
+         VALUES (?1, ?2, 1, '{}', ?3, 'c2-upgrade-actor')",
+        params![REKEYED_REVISION_ID, REKEYED_PROPOSAL_ID, SEEDED_AT],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_revision_source_basis
+            (revision_id, ordinal, source_kind, source_key, revision_token)
+         VALUES (?1, 0, 'scene-body', ?2, ?3)",
+        params![
+            REKEYED_REVISION_ID,
+            REKEYED_EDGE_IDENTITY,
+            REKEYED_REVISION_TOKEN
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_dependency_edges
+            (id, project_id, consumer_kind, consumer_key, source_object_identity,
+             read_set_json, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            REKEYED_EDGE_ID,
+            PROJECT_ID,
+            RUN_CONSUMER_KIND,
+            REKEYED_RUN_ID,
+            REKEYED_EDGE_IDENTITY,
+            format!("[\"{REKEYED_REVISION_TOKEN}\"]"),
+            SEEDED_AT
+        ],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_dependency_edge_states
+            (edge_id, project_id, evidence_freshness, reason_code, build_action,
+             evaluated_at_epoch_id, evaluated_at)
+         VALUES (?1, ?2, 'source-missing', 'source-missing', 'rebuild-required',
+                 'c2-upgrade-epoch', ?3)",
+        params![REKEYED_EDGE_ID, PROJECT_ID, SEEDED_AT],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_consumer_freshness
+            (project_id, consumer_kind, consumer_key, evidence_freshness,
+             build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+         VALUES (?1, ?2, ?3, 'source-missing', 'rebuild-required',
+                 'c2-upgrade-epoch', ?3, ?4)",
+        params![PROJECT_ID, RUN_CONSUMER_KIND, REKEYED_RUN_ID, SEEDED_AT],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_maintenance_finding_observations
+            (id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
+             reason_code, evidence_freshness_snapshot, material_basis_digest,
+             observed_at)
+         VALUES ('observation-' || ?1, ?2, ?3, 'c2-upgrade-epoch', ?1,
+                 ?4 || ':' || ?3, 'source-missing', 'source-missing',
+                 'c2-upgrade-basis-digest', ?5)",
+        params![
+            REKEYED_EDGE_ID,
+            PROJECT_ID,
+            REKEYED_RUN_ID,
+            RUN_CONSUMER_KIND,
+            SEEDED_AT
+        ],
+    )?;
+    Ok(())
+}
+
 /// Two dispositions: one a person signed, and one an older build left
 /// unattributed. SCHEMA 25 has to keep the first and give the second the
 /// explicit legacy sentinel rather than dropping it or claiming it.
@@ -685,7 +801,9 @@ pub fn table_has_column(conn: &Connection, table: &str, column: &str) -> bool {
 pub fn table_column_ordinals(conn: &Connection, table: &str) -> Vec<(i64, String)> {
     conn.prepare(&format!("PRAGMA table_info({table})"))
         .expect("prepare table_info")
-        .query_map([], |row| Ok((row.get::<_, i64>("cid")?, row.get::<_, String>("name")?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>("cid")?, row.get::<_, String>("name")?))
+        })
         .expect("query table_info")
         .collect::<Result<Vec<_>, _>>()
         .expect("collect table_info")
@@ -779,6 +897,67 @@ pub fn edge_owning_run(conn: &Connection, edge_id: &str) -> Option<String> {
         |row| row.get(0),
     )
     .expect("read the Edge's owning run")
+}
+
+/// Every `(consumer_kind, consumer_key, source_object_identity)` in the
+/// project, ordered. The re-key is observable only as a change to this whole
+/// set -- a per-Edge lookup would miss both the Revision Edge it adds and the
+/// Run Edge it removes.
+pub fn edge_consumers(conn: &Connection) -> Vec<(String, String, String)> {
+    conn.prepare(
+        "SELECT consumer_kind, consumer_key, source_object_identity
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+          ORDER BY consumer_kind, consumer_key, source_object_identity",
+    )
+    .expect("prepare")
+    .query_map(params![PROJECT_ID], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })
+    .expect("query")
+    .collect::<Result<Vec<_>, _>>()
+    .expect("collect the project's Edge Consumers")
+}
+
+/// `(edges, edge states, consumer freshness, finding observations)` for one
+/// Run-grained Consumer -- the four derived tables the Gate C2 migration
+/// block deletes from, counted together so a partial unwind cannot hide
+/// behind a table that happened to survive.
+///
+/// Scoped to a Consumer rather than counted project-wide, because the SCHEMA
+/// 28 identity repair runs *before* the block's savepoint and legitimately
+/// invalidates the derived state of the Consumers whose identities it
+/// rewrote. A project-wide count would fold that intended deletion into the
+/// same number as an unintended one. Pass a Consumer the repair does not
+/// touch.
+pub fn c2_derived_state_counts(conn: &Connection, consumer_key: &str) -> (i64, i64, i64, i64) {
+    let scoped = |sql: &str| -> i64 {
+        conn.query_row(
+            sql,
+            params![PROJECT_ID, RUN_CONSUMER_KIND, consumer_key],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|error| panic!("count for '{consumer_key}': {error}"))
+    };
+    (
+        scoped(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+        ),
+        scoped(
+            "SELECT COUNT(*) FROM narrative_dependency_edge_states s
+               JOIN narrative_dependency_edges e ON e.id = s.edge_id
+              WHERE e.project_id = ?1 AND e.consumer_kind = ?2 AND e.consumer_key = ?3",
+        ),
+        scoped(
+            "SELECT COUNT(*) FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+        ),
+        scoped(
+            "SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+              WHERE project_id = ?1 AND finding_key = ?2 || ':' || ?3",
+        ),
+    )
 }
 
 pub fn consumer_freshness_rows(conn: &Connection, consumer_key: &str) -> i64 {

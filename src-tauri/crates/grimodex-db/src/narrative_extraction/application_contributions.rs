@@ -482,7 +482,11 @@ pub(crate) fn record_contribution_in_tx(
         Some(coordinate) => field_is_user_owned(conn, project_id, coordinate, field_path)?,
         None => false,
     };
-    let initial_ownership = if user_owned { "user-owned" } else { "maintained" };
+    let initial_ownership = if user_owned {
+        "user-owned"
+    } else {
+        "maintained"
+    };
 
     conn.query_row(
         "INSERT INTO narrative_application_contributions

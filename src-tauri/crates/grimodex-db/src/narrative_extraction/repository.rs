@@ -7,8 +7,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx,
-    PROPOSAL_REVISION_CONSUMER_KIND,
+    canonical_source_object_identity, record_dependency_edge_in_tx, PROPOSAL_REVISION_CONSUMER_KIND,
 };
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
@@ -2152,7 +2151,9 @@ mod unit_tests {
     /// replace.
     #[test]
     fn saving_proposals_declares_dependency_edges_per_revision_not_per_run() {
-        use super::super::dependency_edges::{find_edges_by_consumer, PROPOSAL_REVISION_CONSUMER_KIND};
+        use super::super::dependency_edges::{
+            find_edges_by_consumer, PROPOSAL_REVISION_CONSUMER_KIND,
+        };
 
         let db = full_migrated_db();
         create_run(

@@ -1731,7 +1731,8 @@ mod tests {
                 r#"["v1@t"]"#,
                 None,
                 Some("run-1"),
-                "2026-08-14T00:00:00.000Z")
+                "2026-08-14T00:00:00.000Z",
+            )
         })
         .expect("seed first edge");
         // `narrative_dependency_edges`'s own UNIQUE(project_id, consumer_kind,
@@ -1832,7 +1833,8 @@ mod tests {
                 r#"["v1@t"]"#,
                 None,
                 Some("run-1"),
-                "2026-08-14T00:00:00.000Z")
+                "2026-08-14T00:00:00.000Z",
+            )
         })
         .expect("seed a single healthy edge");
 

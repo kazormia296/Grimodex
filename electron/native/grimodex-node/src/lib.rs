@@ -5174,6 +5174,8 @@ impl Backend {
                     // the surface or the pass would read as complete.
                     "consumersSkippedUnresolvableScope":
                         summary.consumers_skipped_unresolvable_scope,
+                    "edgesSkippedUnresolvableScope":
+                        summary.edges_skipped_unresolvable_scope,
                 }),
             };
             Ok(serde_json::to_string(&wire).map_err(anyhow::Error::from)?)

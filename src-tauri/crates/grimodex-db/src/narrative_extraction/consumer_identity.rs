@@ -54,8 +54,7 @@ pub(crate) const RUN_CONSUMER_KIND: &str = ConsumerKind::Run.as_str();
 
 /// The Consumer identity a Proposal Revision's own declared Edges are stored
 /// under: `consumer_key = narrative_proposal_revisions.id`.
-pub(crate) const PROPOSAL_REVISION_CONSUMER_KIND: &str =
-    ConsumerKind::ProposalRevision.as_str();
+pub(crate) const PROPOSAL_REVISION_CONSUMER_KIND: &str = ConsumerKind::ProposalRevision.as_str();
 
 /// The Consumer kinds this crate declares and reads today.
 ///
@@ -460,9 +459,11 @@ mod tests {
             (RUN_CONSUMER_KIND, "run:with:colons"),
         ] {
             let from_sql: String = conn
-                .query_row("SELECT ?1 || ':' || ?2", rusqlite::params![kind, key], |row| {
-                    row.get(0)
-                })
+                .query_row(
+                    "SELECT ?1 || ':' || ?2",
+                    rusqlite::params![kind, key],
+                    |row| row.get(0),
+                )
                 .expect("concatenate in sqlite");
             assert_eq!(
                 from_sql,

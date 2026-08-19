@@ -284,6 +284,11 @@ pub struct RebuildDerivedStateSummary {
     /// same Edges under `edge_ids_with_unresolvable_consumer_scope`, so
     /// skipping them here is not the same as hiding them.
     pub consumers_skipped_unresolvable_scope: usize,
+    /// Individual Edges skipped because their Source can only be resolved
+    /// against a declaring Run and none was available -- see
+    /// [`edge_needs_an_owning_run`]. Counted rather than evaluated with a
+    /// stand-in Run, which is how a present Source gets called missing.
+    pub edges_skipped_unresolvable_scope: usize,
 }
 
 /// `dependency-rebuild-derived` (Run Kind Policy): discards and recomputes
@@ -453,26 +458,44 @@ fn rebuild_derived_state_edges_in_project(
                     return Ok(());
                 }
                 let mut edges_and_observations = Vec::with_capacity(edges.len());
+                let mut skipped_edges = 0usize;
                 for edge in &edges {
                     // SCHEMA 30: the Edge's own declaration wins.
                     // `owning_run_id_for_consumer` is the compatibility path
                     // for a row written before that column existed and never
                     // re-declared since -- and it answers only for a Run
                     // Consumer, because only there is the key a Run id.
-                    //
-                    // `""` when neither answers. `run_id` (the Rebuild Run)
-                    // would be worse than nothing: it is a real Run id, so
-                    // `resolve_snapshot_document` would compare against the
-                    // wrong Run and call a present snapshot missing. An empty
-                    // id matches no `snapshot:<runId>` key and leaves every
-                    // other Source kind -- which never reads it -- unaffected.
                     let owning_run_id = edge
                         .owning_run_id
                         .as_deref()
-                        .or_else(|| owning_run_id_for_consumer(&consumer_kind, &consumer_key))
-                        .unwrap_or("");
-                    let observation = evaluate_edge_from_db(conn, project_id, owning_run_id, edge)?;
+                        .or_else(|| owning_run_id_for_consumer(&consumer_kind, &consumer_key));
+                    // Only a `snapshot:<runId>` Source reads the Run, and
+                    // substituting a stand-in for it is how a present Source
+                    // gets reported missing. Skip and count instead; Verify
+                    // reports the same Edges under
+                    // `edge_ids_with_unresolvable_consumer_scope`.
+                    if edge_needs_an_owning_run(edge, owning_run_id) {
+                        tracing::warn!(
+                            target: "narrative.rebuild",
+                            edge_id = %edge.id,
+                            consumer_kind = %consumer_kind,
+                            consumer_key = %consumer_key,
+                            "NEX_CONSUMER_OWNING_RUN_UNKNOWN: skipping a snapshot-document Edge \
+                             whose declaring Run is unknown"
+                        );
+                        skipped_edges += 1;
+                        continue;
+                    }
+                    let observation =
+                        evaluate_edge_from_db(conn, project_id, owning_run_id.unwrap_or(""), edge)?;
                     edges_and_observations.push((edge.id.clone(), observation));
+                }
+                if edges_and_observations.is_empty() {
+                    // Every Edge was skipped. Publishing nothing is right:
+                    // the runtime refuses an empty batch, and a Consumer with
+                    // no evaluable Edge has no Freshness to assert.
+                    skipped += 1;
+                    return Ok(());
                 }
                 publish_freshness_evaluation_edges_only_in_tx(
                     conn,
@@ -486,6 +509,7 @@ fn rebuild_derived_state_edges_in_project(
                 )?;
                 summary.consumers_evaluated += 1;
                 summary.edges_evaluated += edges_and_observations.len();
+                summary.edges_skipped_unresolvable_scope += skipped_edges;
                 Ok(())
             })
         })?;
@@ -816,18 +840,26 @@ pub fn run_dependency_verify_for_project(
 /// checks behind it changes in a way that makes an older stored report
 /// unsafe to seal a Repair plan from.
 ///
-/// `"2"` (Gate C2-2): the report gained
-/// `edge_ids_with_unresolvable_consumer_scope` and
-/// `consumer_keys_with_stale_dependency_set_digest`, and
-/// `edge_ids_with_missing_source` no longer absorbs Edges whose Consumer
-/// scope could not be resolved. A stored `"1"` report is refused by
-/// `repair.rs`'s `NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH` gate, which
-/// runs before the report is deserialized at all -- correct twice over
-/// here, since a `"1"` report both omits the two new fields (neither is
-/// `#[serde(default)]`, so it would not deserialize either) and asserts a
-/// clean bill of health over a strictly smaller set of checks. The
-/// operational consequence is that an in-flight Verify result does not
-/// survive this upgrade: re-run Verify before sealing a Repair.
+/// `"3"` is what Gate C2-2 ships. The report gained
+/// `edge_ids_with_unresolvable_consumer_scope`,
+/// `consumer_keys_with_stale_dependency_set_digest` and
+/// `orphaned_attention_finding_keys`, and `edge_ids_with_missing_source` no
+/// longer absorbs Edges whose Consumer scope could not be resolved.
+///
+/// `"2"` existed only on the branch that built this Gate, as the state after
+/// the first two fields and before the third. No build carrying it was
+/// released, so no stored report can be at `"2"` -- it is skipped rather than
+/// preserved, and the single step `"1"` -> `"3"` is the whole story a
+/// workspace can experience.
+///
+/// A stored `"1"` report is refused by `repair.rs`'s
+/// `NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH` gate, which runs before the
+/// report is deserialized at all -- correct twice over here, since a `"1"`
+/// report both omits the new fields (none is `#[serde(default)]`, so it would
+/// not deserialize either) and asserts a clean bill of health over a strictly
+/// smaller set of checks. The operational consequence is that an in-flight
+/// Verify result does not survive this upgrade: re-run Verify before sealing
+/// a Repair.
 pub(crate) const VERIFY_CONTRACT_VERSION: &str = "3";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
@@ -886,9 +918,14 @@ pub fn verify_narrative_dependency_graph_for_project(
             let owning_run_id = edge
                 .owning_run_id
                 .as_deref()
-                .or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key))
-                .unwrap_or("");
-            if edge_source_is_missing(conn, project_id, owning_run_id, edge) {
+                .or_else(|| owning_run_id_for_consumer(consumer_kind, consumer_key));
+            if edge_needs_an_owning_run(edge, owning_run_id) {
+                report
+                    .edge_ids_with_unresolvable_consumer_scope
+                    .push(edge.id.clone());
+                continue;
+            }
+            if edge_source_is_missing(conn, project_id, owning_run_id.unwrap_or(""), edge) {
                 report.edge_ids_with_missing_source.push(edge.id.clone());
             }
         }
@@ -983,6 +1020,27 @@ pub(crate) fn duplicate_edge_ids_to_deactivate(
         .query_map(params![project_id], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
+}
+
+/// `true` when this Edge's Source can only be resolved against a declaring
+/// Run and none is available.
+///
+/// Only `snapshot-document` reads the Run at all: `resolve_snapshot_document`
+/// requires the id embedded in `snapshot:<runId>` to equal the one it is
+/// handed. Every other Source kind ignores it, so a missing owning Run is no
+/// obstacle to evaluating them and must not be treated as one.
+///
+/// Without this the fallback substitutes `""`, `resolve_snapshot_document`
+/// compares a real Run id against it, fails, and
+/// `build_edge_comparison_input` collapses that error into
+/// `current_source_exists = false` -- reporting a Source that is present as
+/// missing. That is the exact failure Gate C2-2 set out to remove, so
+/// reintroducing it for a `NULL` `owning_run_id` would be a poor trade.
+/// `owning_run_id` is nullable by design, so this shape is permitted by the
+/// schema even though no writer produces it today.
+fn edge_needs_an_owning_run(edge: &DependencyEdge, owning_run_id: Option<&str>) -> bool {
+    owning_run_id.is_none()
+        && infer_source_kind(&edge.source_object_identity) == Some("snapshot-document")
 }
 
 /// Attention rows whose `finding_key` names no Consumer this project still
@@ -1213,6 +1271,7 @@ mod tests {
     };
     use crate::narrative_extraction::{
         get_current_epoch, list_epochs, record_dependency_edge_in_tx,
+        PROPOSAL_REVISION_CONSUMER_KIND,
     };
     use crate::Database;
     use rusqlite::params;
@@ -1351,7 +1410,8 @@ mod tests {
                 r#"["/body"]"#,
                 None,
                 Some(run_id),
-                "2026-08-15T00:00:00.000Z")
+                "2026-08-15T00:00:00.000Z",
+            )
         })
         .expect("record run-scoped edge")
     }
@@ -1543,7 +1603,8 @@ mod tests {
                     &format!(r#"["{current_token}"]"#),
                     None,
                     Some("run-1"),
-                    "2026-08-15T00:00:00.000Z")
+                    "2026-08-15T00:00:00.000Z",
+                )
             })
             .expect("record edge with current token");
 
@@ -1574,7 +1635,8 @@ mod tests {
                     r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
                     None,
                     Some("run-1"),
-                    "2026-08-15T00:00:00.000Z")
+                    "2026-08-15T00:00:00.000Z",
+                )
             })
             .expect("record edge with a stale token");
 
@@ -1608,7 +1670,8 @@ mod tests {
                     r#"["v0@2026-01-01T00:00:00.000Z"]"#,
                     None,
                     Some("run-1"),
-                    "2026-08-15T00:00:00.000Z")
+                    "2026-08-15T00:00:00.000Z",
+                )
             })
             .expect("record edge pointing at a nonexistent scene");
 
@@ -1642,7 +1705,8 @@ mod tests {
                     r#"["v0@2026-01-01T00:00:00.000Z"]"#,
                     None,
                     Some("run-1"),
-                    "2026-08-15T00:00:00.000Z")
+                    "2026-08-15T00:00:00.000Z",
+                )
             })
             .expect("record edge with an unrecognized source identity");
 
@@ -1720,7 +1784,8 @@ mod tests {
                 &format!(r#"["{current_token}"]"#),
                 None,
                 Some("run-1"),
-                "2026-08-15T00:00:00.000Z")
+                "2026-08-15T00:00:00.000Z",
+            )
         })
         .expect("record fresh edge for run-1");
 
@@ -1735,7 +1800,8 @@ mod tests {
                 r#"["v-100@1999-01-01T00:00:00.000Z"]"#,
                 None,
                 Some("run-2"),
-                "2026-08-15T00:00:00.000Z")
+                "2026-08-15T00:00:00.000Z",
+            )
         })
         .expect("record stale edge for run-2");
 
@@ -1884,7 +1950,8 @@ mod tests {
                 r#"["/body"]"#,
                 None,
                 None,
-                "2026-08-15T00:00:00.000Z")
+                "2026-08-15T00:00:00.000Z",
+            )
         })
         .expect("record an edge under an unimplemented consumer kind");
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -2003,6 +2070,65 @@ mod tests {
             vec![(RUN_CONSUMER_KIND.to_string(), "run-1".to_string())]
         );
         assert!(!after.is_clean());
+    }
+
+    /// The regression the whole seam exists to prevent, in the one shape the
+    /// schema still permits: a Revision Consumer whose Edge names a
+    /// `snapshot:<runId>` Source that really exists, with no declaring Run
+    /// recorded. It must be reported as unresolvable scope -- reporting it as
+    /// a missing Source would be a fabricated Finding about a present Source.
+    #[test]
+    fn a_snapshot_edge_with_no_declaring_run_is_unresolvable_not_missing() {
+        let db = test_db();
+        // A real, sealed Run whose snapshot the Edge names.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET snapshot_digest = 'sha256:snap'
+                  WHERE id = 'run-1'",
+                [],
+            )?;
+            Ok(())
+        })
+        .ok();
+        seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        let orphan = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs SET snapshot_digest = 'sha256:snap'
+                      WHERE id = 'run-1'",
+                    [],
+                )?;
+                record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-1",
+                    "snapshot:run-1",
+                    r#"["sha256:snap"]"#,
+                    None,
+                    // No declaring Run: nullable by design, and the shape this
+                    // guard is about.
+                    None,
+                    "2026-08-15T00:00:00.000Z",
+                )
+            })
+            .expect("record a snapshot edge with no declaring run");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+
+        assert!(
+            report
+                .edge_ids_with_unresolvable_consumer_scope
+                .contains(&orphan),
+            "a snapshot Edge with no declaring Run must be named as unresolvable"
+        );
+        assert!(
+            !report.edge_ids_with_missing_source.contains(&orphan),
+            "the snapshot Source exists; calling it missing is the fabricated Finding \
+             this seam was built to stop"
+        );
     }
 
     /// Gate C2-2's Consumer re-key changes `finding_key`, so a human's
@@ -2249,7 +2375,8 @@ mod tests {
                 r#"["sha256:snapshot-digest-1"]"#,
                 None,
                 Some("owning-run"),
-                "2026-08-15T00:00:00.000Z")
+                "2026-08-15T00:00:00.000Z",
+            )
         })
         .expect("record an edge over the snapshot source");
 
