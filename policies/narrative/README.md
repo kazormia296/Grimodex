@@ -138,11 +138,45 @@ Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
-  Wave 1 Transport Assembly (C2-T1):          in progress (see below)
+  Wave 1 Transport Assembly (C2-T1):          complete
   Wave 2 runtime / read-model lanes:          complete
-  Wave 2 Transport / Quality Assembly (C2-T2): blocked (see below)
+  C2-1 incremental Freshness runtime:         complete (see below)
+  C2-3 Finding identity / Attention re-home:  planned
+  C2-5 shared triggers / lifecycle recovery:  planned
   Canonical Authority Cutover (C2-Z):         blocked (see below)
 ```
+
+### C2-1 Change-Feed-driven incremental Freshness runtime
+
+The production runtime is
+`src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs`.
+It reserves a bounded canonical Change Feed range, resolves event object keys
+to Source identities, performs reverse Dependency lookup, evaluates the
+affected Edges, and publishes every affected Consumer before one cursor
+acknowledgement in the same transaction. Ratified component-schema and
+restore/Epoch-reset markers conservatively fan out to the full graph. Semantic
+Epoch, Task lease, cursor reservation, evaluated Source state, and Edge
+declaration checks guard publication. Only running work is resumable; a
+completed Run cannot acknowledge an unacknowledged range, and bounded
+Run/Task/Attempt recovery stops after three failed Attempts until a canonical
+Epoch rotation releases the held range for a new runtime-owned Run.
+
+`electron/native/grimodex-node/src/lib.rs` exposes this as a main-only Native
+cycle. `electron/main/narrativeFreshness.ts` owns the single-flight scheduler
+and bounded backlog pacing; it deliberately adds no renderer IPC or preload
+surface. Contract-level fixtures live in
+`src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`
+and `electron/main/narrativeFreshness.test.ts`.
+
+This completion is intentionally narrower than the remaining Gate work. C2-3
+still owns three-layer Finding identity and orphaned Attention re-homing. C2-5
+still owns automatic Backfill / Verify / Rebuild-Derived scheduling and shared
+cross-Run-Kind lifecycle recovery. C2-Z remains blocked, and Generic Consumer
+Freshness remains shadow rather than the canonical read authority.
+
+The paragraphs below preserve the landing rationale for earlier C2 slices;
+their historical environment-specific validation caveats are not the current
+Gate status.
 
 C2-T1 has wired its first slice end-to-end: Lane D's Attention typed writer
 (`narrative_maintenance_attention_set`/`_clear`) and Lane O's Maintenance
@@ -1147,20 +1181,9 @@ it), and a `finding_key` convention mismatch between Lane J's writer and
 Lane O's reader that made every real diagnostic Finding Observation
 invisible to the Inbox. Both are now regression-tested.
 
-**C2-T1 / C2-T2 / C2-Z are blocked on this environment's Rust toolchain**,
-not on design or implementation gaps. `cargo check`/`cargo test` fail with
-a `libsqlite3-sys` build-script error (`cfg_select` unstable library
-feature) that reproduces identically on an unmodified checkout — a
-toolchain/dependency incompatibility, not something introduced by Gate C2.
-Writing N-API bindings (`electron/native/grimodex-node/src/lib.rs`) or
-Electron IPC entries without any way to compile-check them carries a
-materially higher risk than the pure-Rust-logic work above (a wrong type
-signature would break the whole crate's build, and rustfmt/Python-sqlite3
-verification — the substitute used throughout C2-00/C2-01/Wave 1/Wave 2 —
-cannot catch that class of error). All 15 Wave 1+2 lane modules are
-therefore complete, integrated, and tested, but reachable only from their
-own `#[cfg(test)]` modules until a working toolchain allows Transport
-Assembly to proceed.
+The earlier C2 lane's environment-specific Rust toolchain block is historical,
+not a current dependency for C2-1 or C2-T1. Current implementation evidence is
+the production and fixture paths recorded in the status section above.
 
 Wave 1 landed 7 new core Rust modules under
 `src-tauri/crates/grimodex-db/src/narrative_extraction/` — Lane A

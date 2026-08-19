@@ -48,6 +48,7 @@ pub(crate) fn resolve_source_revision(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CurrentSourceState {
     pub exists: bool,
+    pub usable: bool,
     pub revision_token: Option<String>,
     pub content_digest: Option<String>,
     pub version: Option<i64>,
@@ -55,11 +56,13 @@ pub(crate) struct CurrentSourceState {
 }
 
 /// Resolves the current state of a source the way [`resolve_source_revision`]
-/// does, except a missing source becomes `exists: false` instead of an
-/// `Err`. This is the Lazy Text entry point: routine freshness checks (does
-/// my bound source still exist, and if so under what token) should call this
-/// instead of `resolve_source_revision` directly, so "the source was
-/// deleted" does not have to be special-cased by every caller as an error.
+/// does, except a missing source becomes `exists: false` and a durable but
+/// non-current source becomes `usable: false` instead of either outcome being
+/// an `Err`. This is the Lazy Text entry point: routine freshness checks (does
+/// my bound source still exist as an addressable current Source, and if so
+/// under what token) should call this instead of `resolve_source_revision`
+/// directly, so deterministic domain unavailability does not have to be
+/// special-cased by every caller as an infrastructure error.
 ///
 /// This function never reads scene/document body content -- `version` and
 /// `content_digest` are derived by parsing the already-resolved
@@ -83,6 +86,17 @@ pub(crate) fn resolve_current_source_state(
         Err(error) if is_source_missing_error(&error) => {
             return Ok(CurrentSourceState {
                 exists: false,
+                usable: false,
+                revision_token: None,
+                content_digest: None,
+                version: None,
+                normalizer_version: None,
+            });
+        }
+        Err(error) if is_source_stale_error(&error) => {
+            return Ok(CurrentSourceState {
+                exists: true,
+                usable: false,
                 revision_token: None,
                 content_digest: None,
                 version: None,
@@ -100,6 +114,7 @@ pub(crate) fn resolve_current_source_state(
         .then(|| change_feed::CANONICAL_TEXT_NORMALIZER_VERSION.to_string());
     Ok(CurrentSourceState {
         exists: true,
+        usable: true,
         revision_token: Some(revision_token),
         content_digest,
         version,
@@ -172,6 +187,10 @@ fn load_scene_canonical_text(
 
 fn is_source_missing_error(error: &anyhow::Error) -> bool {
     error.to_string().contains("NEX_SOURCE_MISSING")
+}
+
+fn is_source_stale_error(error: &anyhow::Error) -> bool {
+    error.to_string().contains("NEX_SOURCE_STALE")
 }
 
 /// Parses the `v<version>@...` token shape shared by scene-body,
@@ -288,6 +307,28 @@ fn resolve_codex_catalog(
     project_id: &str,
     source_key: &str,
 ) -> anyhow::Result<CurrentSourceRevision> {
+    conn.execute_batch("SAVEPOINT narrative_codex_catalog_snapshot")?;
+    let result = resolve_codex_catalog_in_snapshot(conn, project_id, source_key);
+    match result {
+        Ok(resolved) => {
+            conn.execute_batch("RELEASE SAVEPOINT narrative_codex_catalog_snapshot")?;
+            Ok(resolved)
+        }
+        Err(error) => {
+            let _ = conn.execute_batch(
+                "ROLLBACK TO SAVEPOINT narrative_codex_catalog_snapshot;
+                 RELEASE SAVEPOINT narrative_codex_catalog_snapshot;",
+            );
+            Err(error)
+        }
+    }
+}
+
+fn resolve_codex_catalog_in_snapshot(
+    conn: &Connection,
+    project_id: &str,
+    source_key: &str,
+) -> anyhow::Result<CurrentSourceRevision> {
     let catalog_project_id = source_key
         .strip_prefix("project:codex-catalog:")
         .filter(|value| !value.is_empty())
@@ -303,43 +344,206 @@ fn resolve_codex_catalog(
 
     let entries = conn
         .prepare(
-            "SELECT id, version
+            "SELECT id, parent_id, type, name, aliases, excluded_aliases, readings,
+                    summary, content, icon, context_mode, children_budget, notes, version
                FROM codex_entries
               WHERE project_id = ?1
               ORDER BY id ASC",
         )?
         .query_map(params![project_id], |row| {
             Ok(json!({
-                "sourceKey": row.get::<_, String>(0)?,
-                "version": row.get::<_, i64>(1)?,
+                "id": row.get::<_, String>(0)?,
+                "parentId": row.get::<_, Option<String>>(1)?,
+                "type": row.get::<_, String>(2)?,
+                "name": row.get::<_, String>(3)?,
+                "aliases": row.get::<_, Option<String>>(4)?,
+                "excludedAliases": row.get::<_, Option<String>>(5)?,
+                "readings": row.get::<_, Option<String>>(6)?,
+                "summary": row.get::<_, Option<String>>(7)?,
+                "content": row.get::<_, String>(8)?,
+                "icon": row.get::<_, Option<String>>(9)?,
+                "contextMode": row.get::<_, String>(10)?,
+                "childrenBudget": row.get::<_, String>(11)?,
+                "notes": row.get::<_, Option<String>>(12)?,
+                "version": row.get::<_, i64>(13)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let relations = conn
         .prepare(
-            "SELECT id, version
+            "SELECT id, from_codex_id, to_codex_id, relation_type, label,
+                    directionality, inverse_label, semantic_key, depth_hint,
+                    source_map_edge_id, version
                FROM codex_relations
               WHERE project_id = ?1
               ORDER BY id ASC",
         )?
         .query_map(params![project_id], |row| {
             Ok(json!({
-                "sourceKey": row.get::<_, String>(0)?,
-                "version": row.get::<_, i64>(1)?,
+                "id": row.get::<_, String>(0)?,
+                "fromCodexId": row.get::<_, String>(1)?,
+                "toCodexId": row.get::<_, String>(2)?,
+                "relationType": row.get::<_, String>(3)?,
+                "label": row.get::<_, Option<String>>(4)?,
+                "directionality": row.get::<_, String>(5)?,
+                "inverseLabel": row.get::<_, Option<String>>(6)?,
+                "semanticKey": row.get::<_, String>(7)?,
+                "depthHint": row.get::<_, Option<i64>>(8)?,
+                "sourceMapEdgeId": row.get::<_, Option<String>>(9)?,
+                "version": row.get::<_, i64>(10)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let phases = conn
+        .prepare(
+            "SELECT phase.id, phase.entry_id, phase.anchor_node_id, phase.label,
+                    phase.summary_override, phase.content_override,
+                    phase.context_mode_override, phase.version
+               FROM codex_entry_phases phase
+               INNER JOIN codex_entries entry ON entry.id = phase.entry_id
+              WHERE entry.project_id = ?1
+              ORDER BY phase.id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "entryId": row.get::<_, String>(1)?,
+                "anchorNodeId": row.get::<_, Option<String>>(2)?,
+                "label": row.get::<_, String>(3)?,
+                "summaryOverride": row.get::<_, Option<String>>(4)?,
+                "contentOverride": row.get::<_, Option<String>>(5)?,
+                "contextModeOverride": row.get::<_, Option<String>>(6)?,
+                "version": row.get::<_, i64>(7)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let detail_definitions = conn
+        .prepare(
+            "SELECT id, type_slug, name, field_type, field_config, sort_order,
+                    include_in_context, version
+               FROM codex_detail_definitions
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "typeSlug": row.get::<_, String>(1)?,
+                "name": row.get::<_, String>(2)?,
+                "fieldType": row.get::<_, String>(3)?,
+                "fieldConfig": row.get::<_, Option<String>>(4)?,
+                "sortOrder": row.get::<_, f64>(5)?,
+                "includeInContext": row.get::<_, i64>(6)?,
+                "version": row.get::<_, i64>(7)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let detail_values = conn
+        .prepare(
+            "SELECT value.id, value.entry_id, value.definition_id, value.value,
+                    value.version
+               FROM codex_detail_values value
+               INNER JOIN codex_entries entry ON entry.id = value.entry_id
+              WHERE entry.project_id = ?1
+              ORDER BY value.id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "entryId": row.get::<_, String>(1)?,
+                "definitionId": row.get::<_, String>(2)?,
+                "value": row.get::<_, Option<String>>(3)?,
+                "version": row.get::<_, i64>(4)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let types = conn
         .prepare(
-            "SELECT slug
+            "SELECT id, slug, label, color, palette_index, icon, is_builtin, sort_order
                FROM codex_types
               WHERE project_id = ?1
-              ORDER BY slug ASC",
+              ORDER BY id ASC",
         )?
         .query_map(params![project_id], |row| {
             Ok(json!({
-                "sourceKey": row.get::<_, String>(0)?,
-                "version": 1,
+                "id": row.get::<_, String>(0)?,
+                "slug": row.get::<_, String>(1)?,
+                "label": row.get::<_, String>(2)?,
+                "color": row.get::<_, String>(3)?,
+                "paletteIndex": row.get::<_, Option<i64>>(4)?,
+                "icon": row.get::<_, Option<String>>(5)?,
+                "isBuiltin": row.get::<_, i64>(6)?,
+                "sortOrder": row.get::<_, f64>(7)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let tags = conn
+        .prepare(
+            "SELECT id, name, color, type_filter
+               FROM codex_tags
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "name": row.get::<_, String>(1)?,
+                "color": row.get::<_, Option<String>>(2)?,
+                "typeFilter": row.get::<_, Option<String>>(3)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let entry_tags = conn
+        .prepare(
+            "SELECT association.entry_id, association.tag_id
+               FROM codex_entry_tags association
+               INNER JOIN codex_entries entry ON entry.id = association.entry_id
+               INNER JOIN codex_tags tag ON tag.id = association.tag_id
+              WHERE entry.project_id = ?1 AND tag.project_id = ?1
+              ORDER BY association.entry_id ASC, association.tag_id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "entryId": row.get::<_, String>(0)?,
+                "tagId": row.get::<_, String>(1)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let semantic_bindings = conn
+        .prepare(
+            "SELECT id, definition_id, facet_key, projection_kind, temporal_policy,
+                    source, confirmed, version
+               FROM codex_detail_semantic_bindings
+              WHERE project_id = ?1
+              ORDER BY id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "id": row.get::<_, String>(0)?,
+                "definitionId": row.get::<_, String>(1)?,
+                "facetKey": row.get::<_, String>(2)?,
+                "projectionKind": row.get::<_, String>(3)?,
+                "temporalPolicy": row.get::<_, String>(4)?,
+                "source": row.get::<_, String>(5)?,
+                "confirmed": row.get::<_, i64>(6)?,
+                "version": row.get::<_, i64>(7)?,
+            }))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let phase_detail_overrides = conn
+        .prepare(
+            "SELECT detail_override.phase_id, detail_override.definition_id, detail_override.value
+               FROM codex_phase_detail_overrides detail_override
+               INNER JOIN codex_entry_phases phase ON phase.id = detail_override.phase_id
+               INNER JOIN codex_entries entry ON entry.id = phase.entry_id
+              WHERE entry.project_id = ?1
+              ORDER BY detail_override.phase_id ASC, detail_override.definition_id ASC",
+        )?
+        .query_map(params![project_id], |row| {
+            Ok(json!({
+                "phaseId": row.get::<_, String>(0)?,
+                "definitionId": row.get::<_, String>(1)?,
+                "value": row.get::<_, Option<String>>(2)?,
             }))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -348,7 +552,14 @@ fn resolve_codex_catalog(
         digest_json(&json!({
             "entries": entries,
             "relations": relations,
+            "phases": phases,
+            "detailDefinitions": detail_definitions,
+            "detailValues": detail_values,
             "types": types,
+            "tags": tags,
+            "entryTags": entry_tags,
+            "semanticBindings": semantic_bindings,
+            "phaseDetailOverrides": phase_detail_overrides,
         }))?
     ))
 }
@@ -549,6 +760,7 @@ mod tests {
         // the design calls for, rather than a timing-based proxy.
         let state = CurrentSourceState {
             exists: true,
+            usable: true,
             revision_token: Some("v0@2026-08-15T00:00:00.000Z".to_string()),
             content_digest: None,
             version: Some(0),
@@ -556,12 +768,14 @@ mod tests {
         };
         let CurrentSourceState {
             exists,
+            usable,
             revision_token,
             content_digest,
             version,
             normalizer_version,
         } = state;
         assert!(exists);
+        assert!(usable);
         assert!(revision_token.is_some());
         assert!(content_digest.is_none());
         assert_eq!(version, Some(0));
@@ -583,6 +797,7 @@ mod tests {
                 state,
                 CurrentSourceState {
                     exists: false,
+                    usable: false,
                     revision_token: None,
                     content_digest: None,
                     version: None,
@@ -634,12 +849,14 @@ mod tests {
             )?;
             let CurrentSourceState {
                 exists,
+                usable,
                 revision_token,
                 content_digest,
                 version,
                 normalizer_version,
             } = state;
             assert!(exists);
+            assert!(usable);
             let token = revision_token.expect("token present for existing source");
             assert!(
                 token.len() < 128,
@@ -723,5 +940,54 @@ mod tests {
             Ok(())
         })
         .expect("run missing scene check");
+    }
+
+    #[test]
+    fn codex_catalog_digest_tracks_unversioned_and_same_version_semantic_content() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO codex_types (id, project_id, slug, label)
+                 VALUES ('type-custom', 'p1', 'custom', 'Before')",
+                [],
+            )?;
+            let source_key = "project:codex-catalog:p1";
+            let before_type = resolve_codex_catalog(conn, "p1", source_key)?.revision_token;
+            conn.execute(
+                "UPDATE codex_types SET label = 'After' WHERE id = 'type-custom'",
+                [],
+            )?;
+            let after_type = resolve_codex_catalog(conn, "p1", source_key)?.revision_token;
+            assert_ne!(before_type, after_type, "type rows have no OCC version");
+
+            let before_tag = after_type;
+            conn.execute(
+                "INSERT INTO codex_tags (id, project_id, name)
+                 VALUES ('tag-1', 'p1', 'Hero')",
+                [],
+            )?;
+            let after_tag = resolve_codex_catalog(conn, "p1", source_key)?.revision_token;
+            assert_ne!(before_tag, after_tag, "tags must contribute to the catalog");
+
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, content, version)
+                 VALUES ('entry-reused', 'p1', 'character', 'Before', '{}', 7)",
+                [],
+            )?;
+            let before_recreate = resolve_codex_catalog(conn, "p1", source_key)?.revision_token;
+            conn.execute("DELETE FROM codex_entries WHERE id = 'entry-reused'", [])?;
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, content, version)
+                 VALUES ('entry-reused', 'p1', 'character', 'After', '{}', 7)",
+                [],
+            )?;
+            let after_recreate = resolve_codex_catalog(conn, "p1", source_key)?.revision_token;
+            assert_ne!(
+                before_recreate, after_recreate,
+                "same id/version with different semantic content must not collide"
+            );
+            Ok(())
+        })
+        .expect("compare Codex aggregate revisions");
     }
 }

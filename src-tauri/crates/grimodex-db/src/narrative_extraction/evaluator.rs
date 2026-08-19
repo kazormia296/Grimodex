@@ -225,6 +225,16 @@ pub struct EdgeComparisonInput {
     /// Whether the current Source resolves at all (a deleted Scene, a
     /// deleted Codex field, a removed Import Package member, ...).
     pub current_source_exists: bool,
+    /// Whether the resolved Source is currently usable as a comparison
+    /// authority. A durable row can still exist while its domain lifecycle
+    /// makes it non-current (for example an invalidated projection). Such a
+    /// Source is Unknown, not missing and not safely comparable.
+    pub comparison_available: bool,
+    /// Whether an Evidence anchor still resolves unambiguously in the
+    /// current Source. Whole-Source Dependencies have no anchor and leave
+    /// this `true`; range-aware callers set it to `false` only after a
+    /// deterministic anchor lookup fails.
+    pub anchor_matches: bool,
     /// Whether the Consumer's declared Read Set still overlaps the current
     /// Source's addressable range/identity. `false` reads as drift in what
     /// the Consumer actually depends on, not a plain content edit.
@@ -249,6 +259,8 @@ impl Default for EdgeComparisonInput {
             stored_digest: None,
             current_digest: None,
             current_source_exists: true,
+            comparison_available: true,
+            anchor_matches: true,
             read_set_overlaps: true,
             normalizer_version_matches: true,
             component_version_matches: true,
@@ -281,6 +293,14 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
         return EdgeObservation {
             freshness: EvidenceFreshness::SourceMissing,
             reason_code: Some(FindingReasonCode::SourceMissing),
+            build_action: BuildAction::Manual,
+        };
+    }
+
+    if !input.comparison_available {
+        return EdgeObservation {
+            freshness: EvidenceFreshness::Unknown,
+            reason_code: None,
             build_action: BuildAction::Manual,
         };
     }
@@ -318,11 +338,22 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
         };
     }
 
+    // 4. A Source may still exist while the exact Evidence anchor that made
+    //    the Dependency addressable no longer resolves. This is distinct
+    //    from a missing Source and from a changed whole-Source revision.
+    if !input.anchor_matches {
+        return EdgeObservation {
+            freshness: EvidenceFreshness::AnchorMismatch,
+            reason_code: Some(FindingReasonCode::QuoteNotFound),
+            build_action: BuildAction::ReanchorCandidate,
+        };
+    }
+
     let revision_token_matches =
         matches_when_both_present(&input.stored_revision_token, &input.current_revision_token);
     let digest_matches = matches_when_both_present(&input.stored_digest, &input.current_digest);
 
-    // 4. An unchanged revision token, present on both sides, is the
+    // 5. An unchanged revision token, present on both sides, is the
     //    cheapest and strongest Freshness signal available: the Source's
     //    own version marker did not move, so there is nothing to
     //    reconcile and no Finding worth recording (`reason_code: None`).
@@ -334,7 +365,7 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
         };
     }
 
-    // 5. The revision token moved but the content digest, present on both
+    // 6. The revision token moved but the content digest, present on both
     //    sides, did not: a harmless revision bump (metadata-only save,
     //    relocation, re-serialization) over byte-identical content.
     //    Evidence is still Fresh, but the Edge's stored token is now
@@ -349,7 +380,7 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
         };
     }
 
-    // 6. Token and digest both failed to match (including "never observed
+    // 7. Token and digest both failed to match (including "never observed
     //    on one side", e.g. a brand-new Edge's first evaluation), and the
     //    Consumer's Read Set no longer overlaps the current Source at all.
     //    This reads as drift in *what the Consumer depends on* (its anchor
@@ -364,7 +395,7 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
         };
     }
 
-    // 7. Default case: token and digest both failed to match and the Read
+    // 8. Default case: token and digest both failed to match and the Read
     //    Set still overlaps the Source. This is the ordinary "the Source
     //    materially changed under the Consumer" case with no cheaper
     //    recovery path available, so Freshness is Stale and the Build
@@ -408,6 +439,22 @@ mod tests {
             EdgeObservation {
                 freshness: EvidenceFreshness::SourceMissing,
                 reason_code: Some(FindingReasonCode::SourceMissing),
+                build_action: BuildAction::Manual,
+            }
+        );
+    }
+
+    #[test]
+    fn durable_but_unusable_source_is_unknown_instead_of_missing() {
+        let input = EdgeComparisonInput {
+            comparison_available: false,
+            ..base_input()
+        };
+        assert_eq!(
+            evaluate_edge(&input),
+            EdgeObservation {
+                freshness: EvidenceFreshness::Unknown,
+                reason_code: None,
                 build_action: BuildAction::Manual,
             }
         );
@@ -499,6 +546,26 @@ mod tests {
                 freshness: EvidenceFreshness::Fresh,
                 reason_code: Some(FindingReasonCode::ExactContentRelocated),
                 build_action: BuildAction::RevalidateExact,
+            }
+        );
+    }
+
+    #[test]
+    fn missing_anchor_is_distinct_from_source_missing_and_read_set_drift() {
+        let input = EdgeComparisonInput {
+            current_revision_token: Some("rev-2".to_string()),
+            current_digest: Some("digest-2".to_string()),
+            anchor_matches: false,
+            read_set_overlaps: false,
+            ..base_input()
+        };
+        let observation = evaluate_edge(&input);
+        assert_eq!(
+            observation,
+            EdgeObservation {
+                freshness: EvidenceFreshness::AnchorMismatch,
+                reason_code: Some(FindingReasonCode::QuoteNotFound),
+                build_action: BuildAction::ReanchorCandidate,
             }
         );
     }

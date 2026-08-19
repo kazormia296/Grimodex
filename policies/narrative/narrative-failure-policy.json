@@ -54,6 +54,30 @@
       "policyVersion": "v1"
     },
     {
+      "failureCode": "NEX_INCREMENTAL_FRESHNESS_RETRYABLE",
+      "retryDisposition": "retryable",
+      "maxAttempts": 3,
+      "backoffPolicy": "immediate",
+      "nextAttemptPolicy": "requeue-same-sealed-range",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_INCREMENTAL_FRESHNESS_INTERRUPTED",
+      "retryDisposition": "retryable",
+      "maxAttempts": 3,
+      "backoffPolicy": "after-lease-expiry",
+      "nextAttemptPolicy": "reclaim-same-sealed-range",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+      "retryDisposition": "terminal",
+      "maxAttempts": 3,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
       "failureCode": "NEX_LEGACY_UNCLASSIFIED",
       "retryDisposition": "terminal",
       "maxAttempts": 0,

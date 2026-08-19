@@ -9,7 +9,7 @@
 
 use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
 use super::dependency_edges::{
@@ -161,21 +161,53 @@ fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
 /// separate digest concept, so this is not a loss of a distinct signal
 /// this crate tracks elsewhere.
 ///
-/// `read_set_overlaps` / `normalizer_version_matches` /
-/// `component_version_matches` are not backed by any stored per-Edge state
-/// anywhere in this crate yet -- no Wave has added the columns those
-/// checks would need -- so this always reports them healthy
-/// (`EdgeComparisonInput::default()`'s baseline). That means
-/// `evaluate_edge`'s `ReadSetDrift`/`Unknown` (normalizer/component)
-/// branches are not yet reachable through this builder; only
-/// `SourceMissing`/`Fresh`/`ExactContentRelocated`/`Stale` are. Documented
-/// here rather than silently pretended otherwise; widening this is future
-/// scope, not a correctness bug in what it does cover.
-pub(crate) fn build_edge_comparison_input(
+/// This generic builder supplies a healthy baseline for range/normalizer/
+/// component signals because rebuild callers have no mutation-local mapping
+/// to compare. Gate C2-1's incremental runtime enriches that baseline from
+/// the sealed Change Feed event and optional structured range metadata before
+/// calling `evaluate_edge`, making `AnchorMismatch`/`ReadSetDrift` and the
+/// compatibility `Unknown` branches reachable on the mutation path without
+/// changing full-rebuild semantics.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ResolvedEdgeSourceState {
+    current_source_exists: bool,
+    comparison_available: bool,
+    current_revision_token: Option<String>,
+    current_digest: Option<String>,
+}
+
+pub(crate) fn resolve_edge_source_state(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     edge: &DependencyEdge,
+) -> anyhow::Result<ResolvedEdgeSourceState> {
+    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
+        return Ok(ResolvedEdgeSourceState {
+            current_source_exists: false,
+            comparison_available: true,
+            current_revision_token: None,
+            current_digest: None,
+        });
+    };
+    let state = resolve_current_source_state(
+        conn,
+        project_id,
+        run_id,
+        source_kind,
+        &edge.source_object_identity,
+    )?;
+    Ok(ResolvedEdgeSourceState {
+        current_source_exists: state.exists,
+        comparison_available: state.usable,
+        current_revision_token: state.revision_token,
+        current_digest: state.content_digest,
+    })
+}
+
+pub(crate) fn build_edge_comparison_input_from_source_state(
+    edge: &DependencyEdge,
+    source_state: &ResolvedEdgeSourceState,
 ) -> anyhow::Result<EdgeComparisonInput> {
     let stored_revision_token = first_read_set_token(&edge.read_set_json)?;
     let stored_digest = stored_revision_token
@@ -183,33 +215,25 @@ pub(crate) fn build_edge_comparison_input(
         .filter(|token| token.starts_with("sha256:"))
         .map(str::to_string);
 
-    let mut input = EdgeComparisonInput {
+    Ok(EdgeComparisonInput {
         stored_revision_token,
         stored_digest,
+        current_source_exists: source_state.current_source_exists,
+        comparison_available: source_state.comparison_available,
+        current_revision_token: source_state.current_revision_token.clone(),
+        current_digest: source_state.current_digest.clone(),
         ..EdgeComparisonInput::default()
-    };
+    })
+}
 
-    let Some(source_kind) = infer_source_kind(&edge.source_object_identity) else {
-        input.current_source_exists = false;
-        return Ok(input);
-    };
-    match resolve_current_source_state(
-        conn,
-        project_id,
-        run_id,
-        source_kind,
-        &edge.source_object_identity,
-    ) {
-        Ok(state) => {
-            input.current_source_exists = state.exists;
-            input.current_revision_token = state.revision_token;
-            input.current_digest = state.content_digest;
-        }
-        Err(_) => {
-            input.current_source_exists = false;
-        }
-    }
-    Ok(input)
+pub(crate) fn build_edge_comparison_input(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    edge: &DependencyEdge,
+) -> anyhow::Result<EdgeComparisonInput> {
+    let source_state = resolve_edge_source_state(conn, project_id, run_id, edge)?;
+    build_edge_comparison_input_from_source_state(edge, &source_state)
 }
 
 /// The one revision token `record_run_dependency_edges_in_tx` records per
@@ -217,12 +241,22 @@ pub(crate) fn build_edge_comparison_input(
 /// that function's own doc comment on why `read_set_json` is a
 /// one-element array rather than a real multi-entry read set.
 fn first_read_set_token(read_set_json: &str) -> anyhow::Result<Option<String>> {
-    let values: Vec<String> = serde_json::from_str(read_set_json).map_err(|error| {
+    let values: Vec<Value> = serde_json::from_str(read_set_json).map_err(|error| {
         anyhow::anyhow!(
-            "NEX_DEPENDENCY_READ_SET_INVALID: read_set_json must be a JSON array of strings: {error}"
+            "NEX_DEPENDENCY_READ_SET_INVALID: read_set_json must be a JSON array: {error}"
         )
     })?;
-    Ok(values.into_iter().next())
+    values
+        .into_iter()
+        .next()
+        .map(|value| {
+            value.as_str().map(str::to_string).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_DEPENDENCY_READ_SET_INVALID: the first read_set_json item must be a revision token string"
+                )
+            })
+        })
+        .transpose()
 }
 
 /// Combines [`build_edge_comparison_input`] and `evaluator::evaluate_edge`:

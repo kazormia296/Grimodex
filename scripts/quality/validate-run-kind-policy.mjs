@@ -4,10 +4,11 @@
  * (`policies/narrative/narrative-run-kind-policy.json`).
  *
  * This is the Lane K/N design decision ratified after C2-T1: which of
- * Legacy Backfill, Dependency Verify, Rebuild Derived State, and Repair
- * Durable Declarations run automatically versus require a human trigger,
- * and what each is and is not allowed to write. This validator checks the
- * contract is internally consistent, matches its JSON Schema, and that
+ * Legacy Backfill, Dependency Verify, Rebuild Derived State, Incremental
+ * Freshness, and Repair Durable Declarations run automatically versus require
+ * a human trigger, and what each is and is not allowed to write. This
+ * validator checks the contract is internally consistent, matches its JSON
+ * Schema, and that
  * every `existingRunKindColumnValue` it claims actually appears in the
  * real `narrative_extraction_runs.run_kind` CHECK constraint in
  * `migrate.rs` — so this policy document cannot silently drift from the
@@ -17,6 +18,9 @@
  * real Rust call graph, in both directions: a Run Kind that declares an
  * automatic trigger as `wired` must have a production caller for its
  * `triggerSymbol`, and one that declares `unwired-blocked` must have none.
+ * Incremental Freshness additionally proves that Electron main creates and
+ * starts its scheduler, while its main-only N-API method remains outside both
+ * renderer command allowlists.
  * That check exists because this contract previously declared
  * `dependency-backfill` as `automatic-once-after-schema-upgrade` while the
  * post-open trigger had been removed from the runtime, and the validator
@@ -39,6 +43,9 @@ const REPO_ROOT = path.resolve(
 );
 
 const MIGRATE_RS_PATH = "src-tauri/crates/grimodex-db/src/migrate.rs";
+const ELECTRON_MAIN_INDEX_PATH = "electron/main/index.ts";
+const IPC_CONTRACT_PATH = "electron/shared/ipcContract.ts";
+const FAILURE_POLICY_PATH = "policies/narrative/narrative-failure-policy.json";
 const RUN_KIND_CHECK_PATTERN = /CHECK\(run_kind IN \(([^)]*)\)\)/g;
 
 // Rust sources scanned for automatic trigger call sites.
@@ -47,9 +54,62 @@ const RUST_SOURCE_ROOTS = [
   "electron/native/grimodex-node/src",
 ];
 
-// Calls from the N-API boundary are the *manual* Admin IPC surface by
-// construction, so they never count as an automatic trigger.
+// Most calls from the N-API boundary are the manual Admin IPC surface and must
+// not count as an automatic trigger. A main-process-only automatic entrypoint
+// can opt in only when its exact Rust method is both declared in
+// implementationStatus.productionEntryPoints and listed in the validator-owned
+// main-only allowlist below. Renderer-facing Admin methods remain excluded even
+// if a policy edit starts naming their snake_case Rust implementation.
 const MANUAL_IPC_FILE = "electron/native/grimodex-node/src/lib.rs";
+const MAIN_ONLY_NAPI_PRODUCTION_ENTRY_POINTS = new Set([
+  "run_narrative_freshness_cycle",
+]);
+
+const REQUIRED_RUN_KINDS = [
+  "dependency-backfill",
+  "dependency-verify",
+  "dependency-rebuild-derived",
+  "incremental-freshness",
+  "dependency-repair",
+];
+
+const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID =
+  "narrative-incremental-freshness/v1";
+const INCREMENTAL_FRESHNESS_BATCH_SIZE = 32;
+const INCREMENTAL_FRESHNESS_WRITES_ALLOWED = [
+  "run-task-attempt-state",
+  "narrative-change-set",
+  "freshness-evaluator-cursor",
+  "dependency-edge-state",
+  "consumer-freshness",
+  "finding-observation",
+];
+const INCREMENTAL_FRESHNESS_RESUME_SEMANTICS = [
+  "reuse-sealed-change-set",
+  "reclaim-expired-cursor-reservation",
+  "resume-running-run-task-attempt",
+];
+const INCREMENTAL_FRESHNESS_COMPLETED_UNACKED_INVARIANT =
+  "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run";
+const INCREMENTAL_FRESHNESS_RETRY_POLICY = {
+  maxAttemptsPerTask: 3,
+  exhaustedFailureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+  exhaustedRetryDisposition: "terminal",
+  failurePolicyVersion: "v1",
+  taskAndRunStatusAfterExhaustion: "failed",
+  cursorAfterExhaustion: "reserved-lease-free",
+  schedulerAfterExhaustion: "idle-until-new-semantic-epoch",
+  newEpochReservationRecovery: "release-and-reprocess-under-new-run",
+  exhaustedRunAfterNewEpoch: "remains-terminal-failed",
+};
+
+function sameStringArray(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((value, index) => value === expected[index])
+  );
+}
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -75,6 +135,80 @@ function readJson(repoRoot, relativePath, errors, label) {
   }
 }
 
+function readSource(repoRoot, relativePath, errors, label) {
+  const absolute = path.join(repoRoot, relativePath);
+  if (!existsSync(absolute)) {
+    errors.push(`${label} is missing: ${relativePath}`);
+    return null;
+  }
+  return readFileSync(absolute, "utf8");
+}
+
+function sourceSection(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  if (start < 0) return null;
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) return null;
+  return source.slice(start, end);
+}
+
+function stripJavaScriptComments(source, { stripStrings = false } = {}) {
+  let output = "";
+  let quote = null;
+  for (let index = 0; index < source.length; index += 1) {
+    const current = source[index];
+    const next = source[index + 1];
+
+    if (quote !== null) {
+      if (current === "\\") {
+        output += stripStrings ? " " : current;
+        if (next !== undefined) {
+          output += stripStrings ? (next === "\n" ? "\n" : " ") : next;
+          index += 1;
+        }
+      } else {
+        output += stripStrings ? (current === "\n" ? "\n" : " ") : current;
+        if (current === quote) quote = null;
+      }
+      continue;
+    }
+
+    if (current === "/" && next === "/") {
+      output += "  ";
+      index += 2;
+      while (index < source.length && source[index] !== "\n") {
+        output += " ";
+        index += 1;
+      }
+      if (index < source.length) output += "\n";
+      continue;
+    }
+    if (current === "/" && next === "*") {
+      output += "  ";
+      index += 2;
+      while (
+        index < source.length &&
+        !(source[index] === "*" && source[index + 1] === "/")
+      ) {
+        output += source[index] === "\n" ? "\n" : " ";
+        index += 1;
+      }
+      if (index < source.length) {
+        output += "  ";
+        index += 1;
+      }
+      continue;
+    }
+    if (current === '"' || current === "'" || current === "`") {
+      quote = current;
+      output += stripStrings ? " " : current;
+      continue;
+    }
+    output += current;
+  }
+  return output;
+}
+
 function collectRustFiles(repoRoot) {
   const files = [];
   const walk = (absolute) => {
@@ -87,8 +221,17 @@ function collectRustFiles(repoRoot) {
     for (const entry of entries) {
       const child = path.join(absolute, entry.name);
       if (entry.isDirectory()) {
-        // `target/` is build output, not source anyone wires a trigger in.
-        if (entry.name === "target" || entry.name === "node_modules") continue;
+        // Build output and non-production Rust targets cannot wire a shipping
+        // trigger. Integration tests are compiled as standalone binaries, so
+        // treating a call there as production would let a test for an unwired
+        // symbol satisfy the very gate that is meant to detect the omission.
+        if (
+          ["target", "node_modules", "tests", "benches", "examples"].includes(
+            entry.name,
+          )
+        ) {
+          continue;
+        }
         walk(child);
       } else if (entry.isFile() && entry.name.endsWith(".rs")) {
         files.push(child);
@@ -137,11 +280,37 @@ function productionLineNumbers(source) {
 }
 
 /**
- * Production (non-test, non-comment, non-definition) call sites of `symbol`,
- * excluding the manual Admin IPC boundary.
+ * Production (non-test, non-comment, non-definition) call sites of `symbol`.
+ * The N-API boundary is counted only for an exact declared main-only method.
  */
-function findAutomaticCallSites(rustFiles, repoRoot, symbol) {
+function nearestRustFunction(lines, lineIndex) {
+  for (let index = lineIndex; index >= 0; index -= 1) {
+    const match = lines[index].match(
+      /^\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+([a-zA-Z0-9_]+)\b/u,
+    );
+    if (match) return { name: match[1], lineIndex: index };
+  }
+  return null;
+}
+
+function hasNapiMethodAttribute(lines, functionLineIndex) {
+  for (let index = functionLineIndex - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed === "") continue;
+    if (!trimmed.startsWith("#[")) return false;
+    if (/^#\[napi(?:\([^\]]*\))?\]$/u.test(trimmed)) return true;
+  }
+  return false;
+}
+
+function findAutomaticCallSites(
+  rustFiles,
+  repoRoot,
+  symbol,
+  productionEntryPoints = [],
+) {
   const callSites = [];
+  const declaredEntryPoints = new Set(productionEntryPoints);
   const callPattern = new RegExp(`\\b${symbol}\\s*\\(`, "u");
   const definitionPattern = new RegExp(`\\bfn\\s+${symbol}\\b`, "u");
   for (const absolute of rustFiles) {
@@ -149,7 +318,6 @@ function findAutomaticCallSites(rustFiles, repoRoot, symbol) {
       .relative(repoRoot, absolute)
       .split(path.sep)
       .join("/");
-    if (relative === MANUAL_IPC_FILE) continue;
     let source;
     try {
       source = readFileSync(absolute, "utf8");
@@ -164,6 +332,17 @@ function findAutomaticCallSites(rustFiles, repoRoot, symbol) {
       if (trimmed.startsWith("//") || trimmed.startsWith("*")) continue;
       if (definitionPattern.test(line)) continue;
       if (!callPattern.test(line)) continue;
+      if (relative === MANUAL_IPC_FILE) {
+        const enclosingFunction = nearestRustFunction(lines, lineNumber - 1);
+        if (
+          !enclosingFunction ||
+          !declaredEntryPoints.has(enclosingFunction.name) ||
+          !MAIN_ONLY_NAPI_PRODUCTION_ENTRY_POINTS.has(enclosingFunction.name) ||
+          !hasNapiMethodAttribute(lines, enclosingFunction.lineIndex)
+        ) {
+          continue;
+        }
+      }
       callSites.push(`${relative}:${lineNumber}`);
     }
   }
@@ -238,17 +417,167 @@ function validateImplementationStatus(entry, rustFiles, repoRoot, errors) {
     rustFiles,
     repoRoot,
     status.triggerSymbol,
+    status.productionEntryPoints,
   );
 
   if (status.state === "wired" && callSites.length === 0) {
     errors.push(
-      `${entry.runKind} declares implementationStatus.state 'wired', but no production caller of '${status.triggerSymbol}' exists outside ${MANUAL_IPC_FILE} and test modules — the automatic trigger this contract promises is not actually wired`,
+      `${entry.runKind} declares implementationStatus.state 'wired', but no production caller of '${status.triggerSymbol}' exists outside test modules (calls in ${MANUAL_IPC_FILE} count only from an exact declared productionEntryPoint) — the automatic trigger this contract promises is not actually wired`,
     );
   }
 
   if (status.state === "unwired-blocked" && callSites.length > 0) {
     errors.push(
       `${entry.runKind} declares implementationStatus.state 'unwired-blocked', but '${status.triggerSymbol}' now has ${callSites.length} production call site(s) (${callSites.join(", ")}) — the trigger was wired without updating this contract`,
+    );
+  }
+}
+
+function validateIncrementalFreshnessElectronWiring(policy, repoRoot, errors) {
+  if (!isObject(policy) || !Array.isArray(policy.runKinds)) return;
+  const incremental = policy.runKinds.find(
+    (entry) => entry?.runKind === "incremental-freshness",
+  );
+  if (!isObject(incremental)) return;
+
+  if (incremental.implementationStatus?.state === "wired") {
+    const mainIndex = readSource(
+      repoRoot,
+      ELECTRON_MAIN_INDEX_PATH,
+      errors,
+      "Electron main entrypoint",
+    );
+    if (mainIndex !== null) {
+      const mainWithoutComments = stripJavaScriptComments(mainIndex);
+      const mainCode = stripJavaScriptComments(mainIndex, {
+        stripStrings: true,
+      });
+      const importsCanonicalScheduler =
+        /import\s*\{[^}]*\bcreateNarrativeFreshnessScheduler\b[^}]*\}\s*from\s*["']\.\/narrativeFreshness\.js["']/su.test(
+          mainWithoutComments,
+        );
+      if (!importsCanonicalScheduler) {
+        errors.push(
+          `incremental-freshness is wired but ${ELECTRON_MAIN_INDEX_PATH} does not import createNarrativeFreshnessScheduler from './narrativeFreshness.js'`,
+        );
+      }
+
+      const creations = [
+        ...mainCode.matchAll(
+          /\b(?:const|let)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*createNarrativeFreshnessScheduler\s*\(/gu,
+        ),
+      ];
+      if (creations.length === 0) {
+        errors.push(
+          `incremental-freshness is wired but ${ELECTRON_MAIN_INDEX_PATH} does not create the Narrative Freshness scheduler`,
+        );
+      } else {
+        const started = creations.some((creation) => {
+          const variable = creation[1].replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+          return new RegExp(`\\b${variable}\\.start\\s*\\(`, "u").test(
+            mainCode,
+          );
+        });
+        if (!started) {
+          errors.push(
+            `incremental-freshness is wired but ${ELECTRON_MAIN_INDEX_PATH} creates its scheduler without calling start()`,
+          );
+        }
+      }
+    }
+  }
+
+  const ipcContract = readSource(
+    repoRoot,
+    IPC_CONTRACT_PATH,
+    errors,
+    "Electron IPC contract",
+  );
+  if (ipcContract === null) return;
+
+  const napiCommands = sourceSection(
+    stripJavaScriptComments(ipcContract),
+    "export const NAPI_COMMANDS",
+    "export const SHELL_COMMAND_NAMES",
+  );
+  if (napiCommands === null) {
+    errors.push(
+      `${IPC_CONTRACT_PATH} does not expose the NAPI_COMMANDS section needed to verify the main-only Freshness boundary`,
+    );
+  } else if (
+    /\b(?:run_narrative_freshness_cycle|runNarrativeFreshnessCycle)\b/u.test(
+      napiCommands,
+    )
+  ) {
+    errors.push(
+      `incremental-freshness main-only N-API method must not be registered in ${IPC_CONTRACT_PATH}'s renderer NAPI_COMMANDS`,
+    );
+  }
+
+  const shellCommands = sourceSection(
+    stripJavaScriptComments(ipcContract),
+    "export const SHELL_COMMAND_NAMES",
+    "export interface DispatchDeps",
+  );
+  if (shellCommands === null) {
+    errors.push(
+      `${IPC_CONTRACT_PATH} does not expose the renderer shell command allowlist needed to verify the main-only Freshness boundary`,
+    );
+  } else if (
+    /["'](?:run_narrative_freshness_cycle|runNarrativeFreshnessCycle)["']/u.test(
+      shellCommands,
+    )
+  ) {
+    errors.push(
+      `incremental-freshness main-only N-API method must not be registered in ${IPC_CONTRACT_PATH}'s renderer shell command allowlist`,
+    );
+  }
+}
+
+function validateIncrementalFreshnessFailurePolicy(policy, repoRoot, errors) {
+  if (!isObject(policy) || !Array.isArray(policy.runKinds)) return;
+  const incremental = policy.runKinds.find(
+    (entry) => entry?.runKind === "incremental-freshness",
+  );
+  if (!isObject(incremental) || !isObject(incremental.retryPolicy)) return;
+
+  const failurePolicy = readJson(
+    repoRoot,
+    FAILURE_POLICY_PATH,
+    errors,
+    "Narrative failure policy",
+  );
+  if (!isObject(failurePolicy) || !Array.isArray(failurePolicy.policies)) {
+    return;
+  }
+  const registered = failurePolicy.policies.find(
+    (entry) =>
+      entry?.failureCode === incremental.retryPolicy.exhaustedFailureCode,
+  );
+  if (!isObject(registered)) {
+    errors.push(
+      `incremental-freshness.retryPolicy.exhaustedFailureCode '${incremental.retryPolicy.exhaustedFailureCode}' is not registered in ${FAILURE_POLICY_PATH}`,
+    );
+    return;
+  }
+  if (
+    registered.retryDisposition !==
+    incremental.retryPolicy.exhaustedRetryDisposition
+  ) {
+    errors.push(
+      `incremental-freshness retry exhaustion disposition '${incremental.retryPolicy.exhaustedRetryDisposition}' disagrees with ${FAILURE_POLICY_PATH} ('${registered.retryDisposition}')`,
+    );
+  }
+  if (
+    registered.policyVersion !== incremental.retryPolicy.failurePolicyVersion
+  ) {
+    errors.push(
+      `incremental-freshness retry failure policy version '${incremental.retryPolicy.failurePolicyVersion}' disagrees with ${FAILURE_POLICY_PATH} ('${registered.policyVersion}')`,
+    );
+  }
+  if (registered.maxAttempts !== incremental.retryPolicy.maxAttemptsPerTask) {
+    errors.push(
+      `incremental-freshness retry max attempts '${incremental.retryPolicy.maxAttemptsPerTask}' disagrees with ${FAILURE_POLICY_PATH} ('${registered.maxAttempts}')`,
     );
   }
 }
@@ -352,6 +681,117 @@ function validateRunKinds(policy, sqlRunKindValues, errors, repoRoot) {
       }
     }
 
+    if (entry.runKind === "incremental-freshness") {
+      if (entry.existingRunKindColumnValue !== "freshness-evaluation") {
+        errors.push(
+          "incremental-freshness.existingRunKindColumnValue must be 'freshness-evaluation'",
+        );
+      }
+      if (entry.cursorBound !== true) {
+        errors.push("incremental-freshness.cursorBound must be true");
+      }
+      if (entry.cursorConsumerId !== INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID) {
+        errors.push(
+          `incremental-freshness.cursorConsumerId must be '${INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID}'`,
+        );
+      }
+      if (
+        entry.maxCanonicalSequencesPerBatch !== INCREMENTAL_FRESHNESS_BATCH_SIZE
+      ) {
+        errors.push(
+          `incremental-freshness.maxCanonicalSequencesPerBatch must be ${INCREMENTAL_FRESHNESS_BATCH_SIZE}`,
+        );
+      }
+      if (entry.executionAuthority !== "serialized-live-workspace-authority") {
+        errors.push(
+          "incremental-freshness.executionAuthority must be 'serialized-live-workspace-authority'",
+        );
+      }
+      if (
+        entry.missingSemanticEpochBehavior !==
+        "wait-for-canonical-epoch-authority"
+      ) {
+        errors.push(
+          "incremental-freshness.missingSemanticEpochBehavior must be 'wait-for-canonical-epoch-authority'",
+        );
+      }
+      for (const [field, expected] of Object.entries(
+        INCREMENTAL_FRESHNESS_RETRY_POLICY,
+      )) {
+        if (entry.retryPolicy?.[field] !== expected) {
+          errors.push(
+            `incremental-freshness.retryPolicy.${field} must be '${expected}'`,
+          );
+        }
+      }
+      if (entry.writes !== "rebuildable-state-only") {
+        errors.push(
+          "incremental-freshness.writes must be 'rebuildable-state-only'",
+        );
+      }
+      if (entry.sameWorkKeyReuse !== "reuse-running-only") {
+        errors.push(
+          "incremental-freshness.sameWorkKeyReuse must be 'reuse-running-only'",
+        );
+      }
+      if (
+        !sameStringArray(
+          entry.resumeSemantics,
+          INCREMENTAL_FRESHNESS_RESUME_SEMANTICS,
+        )
+      ) {
+        errors.push(
+          "incremental-freshness.resumeSemantics must pin only sealed-range reclaim and running Run/Task/Attempt resume; completed replay reuse is forbidden",
+        );
+      }
+      if (
+        entry.completedWithUnackedRangeInvariant !==
+        INCREMENTAL_FRESHNESS_COMPLETED_UNACKED_INVARIANT
+      ) {
+        errors.push(
+          `incremental-freshness.completedWithUnackedRangeInvariant must be '${INCREMENTAL_FRESHNESS_COMPLETED_UNACKED_INVARIANT}'`,
+        );
+      }
+      if (
+        !sameStringArray(
+          entry.writesAllowed,
+          INCREMENTAL_FRESHNESS_WRITES_ALLOWED,
+        )
+      ) {
+        errors.push(
+          "incremental-freshness.writesAllowed must contain only its declared operational and rebuildable-state writes",
+        );
+      }
+      for (const forbiddenWrite of ["domain-state", "attention"]) {
+        if (!entry.forbiddenWrites?.includes(forbiddenWrite)) {
+          errors.push(
+            `incremental-freshness.forbiddenWrites must include '${forbiddenWrite}'`,
+          );
+        }
+      }
+      if (
+        entry.implementationStatus?.triggerSymbol !==
+        "run_incremental_freshness_cycle"
+      ) {
+        errors.push(
+          "incremental-freshness.implementationStatus.triggerSymbol must be 'run_incremental_freshness_cycle'",
+        );
+      }
+      if (
+        !sameStringArray(entry.implementationStatus?.productionEntryPoints, [
+          "run_narrative_freshness_cycle",
+        ])
+      ) {
+        errors.push(
+          "incremental-freshness.implementationStatus.productionEntryPoints must name only 'run_narrative_freshness_cycle'",
+        );
+      }
+    } else if (entry.cursorBound !== false) {
+      errors.push(
+        `${entry.runKind}.cursorBound must be false; only incremental-freshness may bind a Run to a Change Feed cursor`,
+      );
+    }
+
     // Every automatic trigger must say when it fires; every manual-only
     // Run Kind must say so via trigger, not bury it in prose only.
     if (
@@ -429,16 +869,17 @@ function validateRunKinds(policy, sqlRunKindValues, errors, repoRoot) {
     }
   }
 
-  const required = [
-    "dependency-backfill",
-    "dependency-verify",
-    "dependency-rebuild-derived",
-    "dependency-repair",
-  ];
-  for (const runKind of required) {
+  for (const runKind of REQUIRED_RUN_KINDS) {
     if (!seen.has(runKind)) {
       errors.push(
         `narrative-run-kind-policy.json is missing runKind: ${runKind}`,
+      );
+    }
+  }
+  for (const runKind of seen) {
+    if (!REQUIRED_RUN_KINDS.includes(runKind)) {
+      errors.push(
+        `narrative-run-kind-policy.json declares unexpected runKind: ${runKind}`,
       );
     }
   }
@@ -472,6 +913,8 @@ export function validateRunKindPolicy({ repoRoot = REPO_ROOT } = {}) {
 
   validateRunKinds(policy, sqlRunKindValues, errors, repoRoot);
   validateApiSplitCoversAdminCommands(policy, errors);
+  validateIncrementalFreshnessElectronWiring(policy, repoRoot, errors);
+  validateIncrementalFreshnessFailurePolicy(policy, repoRoot, errors);
 
   return { errors };
 }

@@ -21,6 +21,44 @@ function writeJson(root, relativePath, value) {
 const RUN_KIND_CHECK_LINE =
   "CHECK(run_kind IN ('interpretation','freshness-evaluation','semantic-index-rebuild','manual-rebuild','backfill'))";
 
+const VALID_ELECTRON_MAIN_INDEX = [
+  'import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";',
+  "const narrativeFreshness = createNarrativeFreshnessScheduler(backend);",
+  "narrativeFreshness.start();",
+  "",
+].join("\n");
+
+const VALID_IPC_CONTRACT = [
+  "export const NAPI_COMMANDS = {",
+  "  db_execute: { run: async () => undefined },",
+  "};",
+  'export const SHELL_COMMAND_NAMES = ["export_save_text"];',
+  "export interface DispatchDeps {}",
+  "",
+].join("\n");
+
+const VALID_FAILURE_POLICY = {
+  policies: [
+    {
+      failureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+      retryDisposition: "terminal",
+      maxAttempts: 3,
+      policyVersion: "v1",
+    },
+  ],
+};
+
+const WIRED_INCREMENTAL_NAPI = [
+  "#[napi]",
+  "impl Backend {",
+  "    #[napi]",
+  "    pub async fn run_narrative_freshness_cycle(&self) {",
+  "        narrative_extraction::run_incremental_freshness_cycle(&database);",
+  "    }",
+  "}",
+  "",
+].join("\n");
+
 function writeFakeMigrateRs(
   root,
   { checkLines = [RUN_KIND_CHECK_LINE, RUN_KIND_CHECK_LINE] } = {},
@@ -111,6 +149,57 @@ function baseRunKindPolicy(overrides = {}) {
         },
       },
       {
+        runKind: "incremental-freshness",
+        existingRunKindColumnValue: "freshness-evaluation",
+        purpose: "test",
+        trigger: "automatic-on-change-feed",
+        sameWorkKeyReuse: "reuse-running-only",
+        resumeSemantics: [
+          "reuse-sealed-change-set",
+          "reclaim-expired-cursor-reservation",
+          "resume-running-run-task-attempt",
+        ],
+        completedWithUnackedRangeInvariant:
+          "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run",
+        epochBound: true,
+        cursorBound: true,
+        cursorConsumerId: "narrative-incremental-freshness/v1",
+        maxCanonicalSequencesPerBatch: 32,
+        executionAuthority: "serialized-live-workspace-authority",
+        missingSemanticEpochBehavior: "wait-for-canonical-epoch-authority",
+        retryPolicy: {
+          maxAttemptsPerTask: 3,
+          exhaustedFailureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+          exhaustedRetryDisposition: "terminal",
+          failurePolicyVersion: "v1",
+          taskAndRunStatusAfterExhaustion: "failed",
+          cursorAfterExhaustion: "reserved-lease-free",
+          schedulerAfterExhaustion: "idle-until-new-semantic-epoch",
+          newEpochReservationRecovery: "release-and-reprocess-under-new-run",
+          exhaustedRunAfterNewEpoch: "remains-terminal-failed",
+        },
+        periodic: false,
+        manualRetry: false,
+        writes: "rebuildable-state-only",
+        writesAllowed: [
+          "run-task-attempt-state",
+          "narrative-change-set",
+          "freshness-evaluator-cursor",
+          "dependency-edge-state",
+          "consumer-freshness",
+          "finding-observation",
+        ],
+        forbiddenWrites: ["domain-state", "attention"],
+        adminCommands: [],
+        implementationStatus: {
+          state: "unwired-blocked",
+          triggerSymbol: "run_incremental_freshness_cycle",
+          productionEntryPoints: ["run_narrative_freshness_cycle"],
+          blockedReason: "test",
+          blockedOn: ["test"],
+        },
+      },
+      {
         runKind: "dependency-repair",
         existingRunKindColumnValue: null,
         purpose: "test",
@@ -162,6 +251,9 @@ function writeFixtureRoot({
   runKindPolicy = baseRunKindPolicy(),
   migrateRsOptions = {},
   extraRustFiles = {},
+  electronMainIndex = VALID_ELECTRON_MAIN_INDEX,
+  ipcContract = VALID_IPC_CONTRACT,
+  failurePolicy = VALID_FAILURE_POLICY,
 } = {}) {
   const root = mkdtempSync(path.join(tmpdir(), "run-kind-policy-"));
   cpSync(
@@ -175,6 +267,17 @@ function writeFixtureRoot({
     runKindPolicy,
   );
   writeFakeMigrateRs(root, migrateRsOptions);
+  writeJson(
+    root,
+    "policies/narrative/narrative-failure-policy.json",
+    failurePolicy,
+  );
+  const electronMainIndexPath = path.join(root, "electron/main/index.ts");
+  mkdirSync(path.dirname(electronMainIndexPath), { recursive: true });
+  writeFileSync(electronMainIndexPath, electronMainIndex);
+  const ipcContractPath = path.join(root, "electron/shared/ipcContract.ts");
+  mkdirSync(path.dirname(ipcContractPath), { recursive: true });
+  writeFileSync(ipcContractPath, ipcContract);
   for (const [relativePath, contents] of Object.entries(extraRustFiles)) {
     const absolute = path.join(root, relativePath);
     mkdirSync(path.dirname(absolute), { recursive: true });
@@ -184,12 +287,27 @@ function writeFixtureRoot({
 }
 
 const BACKFILL_SYMBOL = "fixture_backfill_trigger_symbol_that_is_never_called";
+const INCREMENTAL_SYMBOL = "run_incremental_freshness_cycle";
 
 function setBackfillStatus(runKindPolicy, patch) {
   const backfill = runKindPolicy.runKinds.find(
     (entry) => entry.runKind === "dependency-backfill",
   );
   Object.assign(backfill.implementationStatus, patch);
+  return runKindPolicy;
+}
+
+function incrementalFreshness(runKindPolicy) {
+  return runKindPolicy.runKinds.find(
+    (entry) => entry.runKind === "incremental-freshness",
+  );
+}
+
+function setIncrementalFreshnessWired(runKindPolicy) {
+  const incremental = incrementalFreshness(runKindPolicy);
+  incremental.implementationStatus.state = "wired";
+  delete incremental.implementationStatus.blockedReason;
+  delete incremental.implementationStatus.blockedOn;
   return runKindPolicy;
 }
 
@@ -205,7 +323,7 @@ describe("validate-run-kind-policy", () => {
     assert.deepEqual(result.errors, []);
   });
 
-  it("rejects a policy missing one of the four required run kinds", () => {
+  it("rejects a policy missing one of the five required run kinds", () => {
     const runKindPolicy = baseRunKindPolicy();
     runKindPolicy.runKinds = runKindPolicy.runKinds.filter(
       (entry) => entry.runKind !== "dependency-repair",
@@ -215,6 +333,20 @@ describe("validate-run-kind-policy", () => {
     assert.ok(
       result.errors.some((error) =>
         error.includes("is missing runKind: dependency-repair"),
+      ),
+    );
+  });
+
+  it("requires incremental-freshness as the fifth exact run kind", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    runKindPolicy.runKinds = runKindPolicy.runKinds.filter(
+      (entry) => entry.runKind !== "incremental-freshness",
+    );
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("is missing runKind: incremental-freshness"),
       ),
     );
   });
@@ -233,6 +365,35 @@ describe("validate-run-kind-policy", () => {
           error.includes("not actually wired"),
       ),
       `expected a wired-but-uncalled error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("does not count an integration-test call as a production trigger", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const incremental = incrementalFreshness(runKindPolicy);
+    incremental.implementationStatus.state = "wired";
+    delete incremental.implementationStatus.blockedReason;
+    delete incremental.implementationStatus.blockedOn;
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      extraRustFiles: {
+        "src-tauri/crates/grimodex-db/tests/incremental_freshness.rs": [
+          "#[test]",
+          "fn exercises_cycle() {",
+          `    ${INCREMENTAL_SYMBOL}(&database);`,
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("incremental-freshness") &&
+          error.includes("not actually wired"),
+      ),
+      `expected an integration-test-only call to remain unwired, got: ${JSON.stringify(result.errors)}`,
     );
   });
 
@@ -303,6 +464,255 @@ describe("validate-run-kind-policy", () => {
     });
     const result = validateRunKindPolicy({ repoRoot: root });
     assert.deepEqual(result.errors, []);
+  });
+
+  it("does not let a declared Admin N-API method satisfy automatic wiring", () => {
+    const runKindPolicy = setBackfillStatus(baseRunKindPolicy(), {
+      state: "wired",
+      productionEntryPoints: ["retry_narrative_legacy_backfill"],
+    });
+    const backfill = runKindPolicy.runKinds.find(
+      (entry) => entry.runKind === "dependency-backfill",
+    );
+    delete backfill.implementationStatus.blockedReason;
+    delete backfill.implementationStatus.blockedOn;
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": [
+          "pub async fn retry_narrative_legacy_backfill() {",
+          `    ${BACKFILL_SYMBOL}(&database);`,
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("dependency-backfill") &&
+          error.includes("not actually wired"),
+      ),
+      `expected the Admin N-API call to remain excluded, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("counts an exact declared main-only N-API method as an automatic trigger", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const incremental = incrementalFreshness(runKindPolicy);
+    incremental.implementationStatus.state = "wired";
+    delete incremental.implementationStatus.blockedReason;
+    delete incremental.implementationStatus.blockedOn;
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": [
+          "#[napi]",
+          "impl Backend {",
+          "    #[napi]",
+          "    pub async fn run_narrative_freshness_cycle(&self) {",
+          `        narrative_extraction::${INCREMENTAL_SYMBOL}(&database);`,
+          "    }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("does not count a declared main-only method that is not exported through N-API", () => {
+    const runKindPolicy = setIncrementalFreshnessWired(baseRunKindPolicy());
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": [
+          "#[napi]",
+          "impl Backend {",
+          "    pub async fn run_narrative_freshness_cycle(&self) {",
+          `        narrative_extraction::${INCREMENTAL_SYMBOL}(&database);`,
+          "    }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("incremental-freshness") &&
+          error.includes("not actually wired"),
+      ),
+      `expected a non-N-API method to remain unwired, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("does not count a main-only N-API call from an undeclared method", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const incremental = incrementalFreshness(runKindPolicy);
+    incremental.implementationStatus.state = "wired";
+    delete incremental.implementationStatus.blockedReason;
+    delete incremental.implementationStatus.blockedOn;
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": [
+          "#[napi]",
+          "impl Backend {",
+          "    #[napi]",
+          "    pub async fn some_manual_admin_method(&self) {",
+          `        narrative_extraction::${INCREMENTAL_SYMBOL}(&database);`,
+          "    }",
+          "}",
+          "",
+        ].join("\n"),
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("incremental-freshness") &&
+          error.includes("not actually wired"),
+      ),
+      `expected an undeclared-entrypoint error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects wired incremental Freshness when Electron main never creates the scheduler", () => {
+    const runKindPolicy = setIncrementalFreshnessWired(baseRunKindPolicy());
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      electronMainIndex:
+        'import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";\n',
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": WIRED_INCREMENTAL_NAPI,
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("does not create the Narrative Freshness scheduler"),
+      ),
+      `expected a missing scheduler creation error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects wired incremental Freshness when Electron main creates but never starts the scheduler", () => {
+    const runKindPolicy = setIncrementalFreshnessWired(baseRunKindPolicy());
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      electronMainIndex: [
+        'import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";',
+        "const narrativeFreshness = createNarrativeFreshnessScheduler(backend);",
+        "// narrativeFreshness.start(); comments are not production wiring",
+        "",
+      ].join("\n"),
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": WIRED_INCREMENTAL_NAPI,
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("creates its scheduler without calling start()"),
+      ),
+      `expected a missing scheduler start error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects a lookalike scheduler that is not imported from the canonical Electron main module", () => {
+    const runKindPolicy = setIncrementalFreshnessWired(baseRunKindPolicy());
+    const root = writeFixtureRoot({
+      runKindPolicy,
+      electronMainIndex: [
+        "function createNarrativeFreshnessScheduler() { return scheduler; }",
+        "const narrativeFreshness = createNarrativeFreshnessScheduler(backend);",
+        "narrativeFreshness.start();",
+        "",
+      ].join("\n"),
+      extraRustFiles: {
+        "electron/native/grimodex-node/src/lib.rs": WIRED_INCREMENTAL_NAPI,
+      },
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "does not import createNarrativeFreshnessScheduler from './narrativeFreshness.js'",
+        ),
+      ),
+      `expected a non-canonical scheduler import error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects exposing the main-only Freshness method through renderer NAPI_COMMANDS", () => {
+    const root = writeFixtureRoot({
+      ipcContract: [
+        "export const NAPI_COMMANDS = {",
+        "  run_narrative_freshness_cycle: {",
+        "    run: async (backend) => backend.runNarrativeFreshnessCycle(),",
+        "  },",
+        "};",
+        "export const SHELL_COMMAND_NAMES = [];",
+        "export interface DispatchDeps {}",
+        "",
+      ].join("\n"),
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("must not be registered") &&
+          error.includes("renderer NAPI_COMMANDS"),
+      ),
+      `expected a renderer NAPI_COMMANDS exposure error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects a renderer NAPI_COMMANDS alias that reaches the main-only Freshness method", () => {
+    const root = writeFixtureRoot({
+      ipcContract: [
+        "export const NAPI_COMMANDS = {",
+        '  freshness_alias: { run: async (backend) => backend["runNarrativeFreshnessCycle"]() },',
+        "};",
+        "export const SHELL_COMMAND_NAMES = [];",
+        "export interface DispatchDeps {}",
+        "",
+      ].join("\n"),
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("must not be registered") &&
+          error.includes("renderer NAPI_COMMANDS"),
+      ),
+      `expected an aliased renderer NAPI_COMMANDS exposure error, got: ${JSON.stringify(result.errors)}`,
+    );
+  });
+
+  it("rejects exposing the main-only Freshness method through the renderer shell allowlist", () => {
+    const root = writeFixtureRoot({
+      ipcContract: [
+        "export const NAPI_COMMANDS = {};",
+        'export const SHELL_COMMAND_NAMES = ["run_narrative_freshness_cycle"];',
+        "export interface DispatchDeps {}",
+        "",
+      ].join("\n"),
+    });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some(
+        (error) =>
+          error.includes("must not be registered") &&
+          error.includes("renderer shell command allowlist"),
+      ),
+      `expected a renderer shell allowlist exposure error, got: ${JSON.stringify(result.errors)}`,
+    );
   });
 
   // dependency-repair is manual-only, so it has no triggerSymbol and never
@@ -444,6 +854,204 @@ describe("validate-run-kind-policy", () => {
         ),
       ),
     );
+  });
+
+  it("accepts cursorBound only for incremental-freshness", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    const backfill = runKindPolicy.runKinds.find(
+      (entry) => entry.runKind === "dependency-backfill",
+    );
+    backfill.cursorBound = true;
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "dependency-backfill.cursorBound must be false; only incremental-freshness",
+        ),
+      ),
+    );
+  });
+
+  it("requires incremental-freshness to remain cursor-bound", () => {
+    const runKindPolicy = baseRunKindPolicy();
+    incrementalFreshness(runKindPolicy).cursorBound = false;
+    const root = writeFixtureRoot({ runKindPolicy });
+    const result = validateRunKindPolicy({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("incremental-freshness.cursorBound must be true"),
+      ),
+    );
+  });
+
+  it("pins the incremental Freshness cursor, batch, authority, and write boundary", () => {
+    const cases = [
+      [
+        { cursorConsumerId: "unstable" },
+        "cursorConsumerId must be 'narrative-incremental-freshness/v1'",
+      ],
+      [
+        { maxCanonicalSequencesPerBatch: 31 },
+        "maxCanonicalSequencesPerBatch must be 32",
+      ],
+      [
+        { executionAuthority: "detached-workspace-connection" },
+        "executionAuthority must be 'serialized-live-workspace-authority'",
+      ],
+      [
+        { missingSemanticEpochBehavior: "create-an-epoch" },
+        "missingSemanticEpochBehavior must be 'wait-for-canonical-epoch-authority'",
+      ],
+      [{ writes: "durable-graph" }, "writes must be 'rebuildable-state-only'"],
+      [
+        { sameWorkKeyReuse: "reuse-running-and-completed" },
+        "sameWorkKeyReuse must be 'reuse-running-only'",
+      ],
+      [
+        {
+          resumeSemantics: [
+            "reuse-sealed-change-set",
+            "reclaim-expired-cursor-reservation",
+            "resume-running-run-task-attempt",
+            "reuse-completed-publication-on-replay",
+          ],
+        },
+        "completed replay reuse is forbidden",
+      ],
+      [
+        {
+          completedWithUnackedRangeInvariant:
+            "ack-completed-range-without-publication",
+        },
+        "completedWithUnackedRangeInvariant must be 'never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run'",
+      ],
+      [
+        { writesAllowed: ["consumer-freshness", "domain-state"] },
+        "writesAllowed must contain only its declared operational and rebuildable-state writes",
+      ],
+      [
+        { forbiddenWrites: ["attention"] },
+        "forbiddenWrites must include 'domain-state'",
+      ],
+      [
+        { forbiddenWrites: ["domain-state"] },
+        "forbiddenWrites must include 'attention'",
+      ],
+    ];
+
+    for (const [patch, expectedError] of cases) {
+      const runKindPolicy = baseRunKindPolicy();
+      Object.assign(incrementalFreshness(runKindPolicy), patch);
+      const root = writeFixtureRoot({ runKindPolicy });
+      const result = validateRunKindPolicy({ repoRoot: root });
+      assert.ok(
+        result.errors.some((error) => error.includes(expectedError)),
+        `expected '${expectedError}', got: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  it("pins bounded retry exhaustion and reserved cursor recovery semantics", () => {
+    const cases = [
+      ["maxAttemptsPerTask", 4, "must be '3'"],
+      [
+        "exhaustedFailureCode",
+        "NEX_OTHER",
+        "must be 'NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED'",
+      ],
+      ["exhaustedRetryDisposition", "retryable", "must be 'terminal'"],
+      ["failurePolicyVersion", "v2", "must be 'v1'"],
+      ["taskAndRunStatusAfterExhaustion", "queued", "must be 'failed'"],
+      ["cursorAfterExhaustion", "released", "must be 'reserved-lease-free'"],
+      [
+        "schedulerAfterExhaustion",
+        "retry-immediately",
+        "must be 'idle-until-new-semantic-epoch'",
+      ],
+      [
+        "newEpochReservationRecovery",
+        "supersede-failed-run",
+        "must be 'release-and-reprocess-under-new-run'",
+      ],
+      [
+        "exhaustedRunAfterNewEpoch",
+        "superseded",
+        "must be 'remains-terminal-failed'",
+      ],
+    ];
+
+    for (const [field, value, expectedError] of cases) {
+      const runKindPolicy = baseRunKindPolicy();
+      incrementalFreshness(runKindPolicy).retryPolicy[field] = value;
+      const root = writeFixtureRoot({ runKindPolicy });
+      const result = validateRunKindPolicy({ repoRoot: root });
+      assert.ok(
+        result.errors.some(
+          (error) =>
+            error.includes(`incremental-freshness.retryPolicy.${field}`) &&
+            error.includes(expectedError),
+        ),
+        `expected ${field} lifecycle error, got: ${JSON.stringify(result.errors)}`,
+      );
+    }
+  });
+
+  it("requires retry exhaustion to be registered as terminal under failure policy v1", () => {
+    const cases = [
+      [
+        { policies: [] },
+        "is not registered in policies/narrative/narrative-failure-policy.json",
+      ],
+      [
+        {
+          policies: [
+            {
+              failureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+              retryDisposition: "retryable",
+              maxAttempts: 3,
+              policyVersion: "v1",
+            },
+          ],
+        },
+        "retry exhaustion disposition 'terminal' disagrees",
+      ],
+      [
+        {
+          policies: [
+            {
+              failureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+              retryDisposition: "terminal",
+              maxAttempts: 3,
+              policyVersion: "v2",
+            },
+          ],
+        },
+        "retry failure policy version 'v1' disagrees",
+      ],
+      [
+        {
+          policies: [
+            {
+              failureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+              retryDisposition: "terminal",
+              maxAttempts: 4,
+              policyVersion: "v1",
+            },
+          ],
+        },
+        "retry max attempts '3' disagrees",
+      ],
+    ];
+
+    for (const [failurePolicy, expectedError] of cases) {
+      const root = writeFixtureRoot({ failurePolicy });
+      const result = validateRunKindPolicy({ repoRoot: root });
+      assert.ok(
+        result.errors.some((error) => error.includes(expectedError)),
+        `expected '${expectedError}', got: ${JSON.stringify(result.errors)}`,
+      );
+    }
   });
 
   it("rejects a non-repair run kind that declares a repair-only field", () => {

@@ -16,7 +16,42 @@
     "principle": { "type": "string", "minLength": 1 },
     "runKinds": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 5,
+      "maxItems": 5,
+      "allOf": [
+        {
+          "contains": {
+            "properties": { "runKind": { "const": "dependency-backfill" } },
+            "required": ["runKind"]
+          }
+        },
+        {
+          "contains": {
+            "properties": { "runKind": { "const": "dependency-verify" } },
+            "required": ["runKind"]
+          }
+        },
+        {
+          "contains": {
+            "properties": {
+              "runKind": { "const": "dependency-rebuild-derived" }
+            },
+            "required": ["runKind"]
+          }
+        },
+        {
+          "contains": {
+            "properties": { "runKind": { "const": "incremental-freshness" } },
+            "required": ["runKind"]
+          }
+        },
+        {
+          "contains": {
+            "properties": { "runKind": { "const": "dependency-repair" } },
+            "required": ["runKind"]
+          }
+        }
+      ],
       "items": { "$ref": "#/$defs/runKindPolicy" }
     },
     "apiSplit": {
@@ -103,6 +138,7 @@
             "dependency-backfill",
             "dependency-verify",
             "dependency-rebuild-derived",
+            "incremental-freshness",
             "dependency-repair"
           ]
         },
@@ -115,6 +151,7 @@
             "automatic-once-after-schema-upgrade",
             "automatic-on-trigger-event",
             "automatic-when-derived-state-absent-or-invalid",
+            "automatic-on-change-feed",
             "manual-only"
           ]
         },
@@ -138,7 +175,72 @@
         "completedRunReuseNote": { "type": "string", "minLength": 1 },
         "skipReRunWhen": { "type": "string", "minLength": 1 },
         "epochBound": { "const": true },
-        "cursorBound": { "const": false },
+        "cursorBound": { "type": "boolean" },
+        "cursorConsumerId": { "type": "string", "minLength": 1 },
+        "maxCanonicalSequencesPerBatch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "executionAuthority": {
+          "enum": ["serialized-live-workspace-authority"]
+        },
+        "missingSemanticEpochBehavior": {
+          "enum": ["wait-for-canonical-epoch-authority"]
+        },
+        "retryPolicy": {
+          "type": "object",
+          "required": [
+            "maxAttemptsPerTask",
+            "exhaustedFailureCode",
+            "exhaustedRetryDisposition",
+            "failurePolicyVersion",
+            "taskAndRunStatusAfterExhaustion",
+            "cursorAfterExhaustion",
+            "schedulerAfterExhaustion",
+            "newEpochReservationRecovery",
+            "exhaustedRunAfterNewEpoch"
+          ],
+          "properties": {
+            "maxAttemptsPerTask": { "type": "integer", "minimum": 1 },
+            "exhaustedFailureCode": {
+              "type": "string",
+              "pattern": "^NEX_[A-Z0-9_]+$"
+            },
+            "exhaustedRetryDisposition": {
+              "enum": ["retryable", "terminal", "superseded", "manual"]
+            },
+            "failurePolicyVersion": { "type": "string", "minLength": 1 },
+            "taskAndRunStatusAfterExhaustion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "cursorAfterExhaustion": { "type": "string", "minLength": 1 },
+            "schedulerAfterExhaustion": {
+              "type": "string",
+              "minLength": 1
+            },
+            "newEpochReservationRecovery": {
+              "type": "string",
+              "minLength": 1
+            },
+            "exhaustedRunAfterNewEpoch": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "resumeSemantics": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "completedWithUnackedRangeInvariant": {
+          "type": "string",
+          "minLength": 1
+        },
         "periodic": { "const": false },
         "manualRetry": {
           "anyOf": [{ "type": "boolean" }, { "type": "string", "minLength": 1 }]
@@ -252,7 +354,6 @@
         },
         "adminCommands": {
           "type": "array",
-          "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
@@ -285,6 +386,101 @@
           "additionalProperties": false
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "runKind": { "const": "incremental-freshness" } },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": [
+              "cursorConsumerId",
+              "maxCanonicalSequencesPerBatch",
+              "executionAuthority",
+              "missingSemanticEpochBehavior",
+              "retryPolicy",
+              "resumeSemantics",
+              "completedWithUnackedRangeInvariant",
+              "writesAllowed",
+              "forbiddenWrites"
+            ],
+            "properties": {
+              "sameWorkKeyReuse": { "const": "reuse-running-only" },
+              "cursorBound": { "const": true },
+              "trigger": { "const": "automatic-on-change-feed" },
+              "cursorConsumerId": {
+                "const": "narrative-incremental-freshness/v1"
+              },
+              "maxCanonicalSequencesPerBatch": { "const": 32 },
+              "executionAuthority": {
+                "const": "serialized-live-workspace-authority"
+              },
+              "missingSemanticEpochBehavior": {
+                "const": "wait-for-canonical-epoch-authority"
+              },
+              "retryPolicy": {
+                "const": {
+                  "maxAttemptsPerTask": 3,
+                  "exhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+                  "exhaustedRetryDisposition": "terminal",
+                  "failurePolicyVersion": "v1",
+                  "taskAndRunStatusAfterExhaustion": "failed",
+                  "cursorAfterExhaustion": "reserved-lease-free",
+                  "schedulerAfterExhaustion": "idle-until-new-semantic-epoch",
+                  "newEpochReservationRecovery": "release-and-reprocess-under-new-run",
+                  "exhaustedRunAfterNewEpoch": "remains-terminal-failed"
+                }
+              },
+              "resumeSemantics": {
+                "const": [
+                  "reuse-sealed-change-set",
+                  "reclaim-expired-cursor-reservation",
+                  "resume-running-run-task-attempt"
+                ]
+              },
+              "completedWithUnackedRangeInvariant": {
+                "const": "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run"
+              },
+              "manualRetry": { "const": false },
+              "writes": { "const": "rebuildable-state-only" },
+              "writesAllowed": {
+                "const": [
+                  "run-task-attempt-state",
+                  "narrative-change-set",
+                  "freshness-evaluator-cursor",
+                  "dependency-edge-state",
+                  "consumer-freshness",
+                  "finding-observation"
+                ]
+              },
+              "forbiddenWrites": {
+                "allOf": [
+                  { "contains": { "const": "domain-state" } },
+                  { "contains": { "const": "attention" } }
+                ]
+              },
+              "adminCommands": { "maxItems": 0 },
+              "implementationStatus": {
+                "required": ["triggerSymbol", "productionEntryPoints"],
+                "properties": {
+                  "triggerSymbol": {
+                    "const": "run_incremental_freshness_cycle"
+                  },
+                  "productionEntryPoints": {
+                    "const": ["run_narrative_freshness_cycle"]
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "cursorBound": { "const": false },
+              "adminCommands": { "minItems": 1 }
+            }
+          }
+        }
+      ],
       "additionalProperties": false
     }
   }

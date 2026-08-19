@@ -1617,6 +1617,40 @@ impl Backend {
             .transpose()
     }
 
+    /// Electron main scheduler 専用の Change Feed freshness cycle。
+    /// renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
+    /// 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+    #[napi]
+    pub async fn run_narrative_freshness_cycle(&self) -> Result<Option<String>> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            match narrative_extraction::run_incremental_freshness_cycle(authority.db())? {
+                narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
+                narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
+                    Ok(Some(
+                        serde_json::json!({
+                            "projectId": summary.project_id,
+                            "fromSequenceExclusive": summary.from_sequence_exclusive,
+                            "throughSequenceInclusive": summary.through_sequence_inclusive,
+                            "affectedEdgeCount": summary.affected_edge_count,
+                            "affectedConsumerCount": summary.affected_consumer_count,
+                            "hasMore": summary.has_more,
+                        })
+                        .to_string(),
+                    ))
+                }
+            }
+        })
+        .await
+    }
+
     /// drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
     /// CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
     /// は "run" | "get" | "all" | "values"。

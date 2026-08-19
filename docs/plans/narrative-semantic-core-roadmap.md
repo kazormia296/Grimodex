@@ -3,7 +3,7 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-08-18
+- **Last updated:** 2026-08-19
 - **Current focus:** Gate C2 completion and canonical Semantic Build Graph cutover
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
@@ -44,28 +44,28 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 
 ## Current snapshot
 
-| Area                               | State                 | Evidence / next condition                                                                                                                                                                                                                                                                                                                       |
-| ---------------------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gate B2, C0, C1, C1.5              | **Complete**          | Writer authority, Change Feed, semantic contracts, and authority routes are ratified.                                                                                                                                                                                                                                                           |
-| Gate C2 foundation                 | **Complete**          | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts.                                                                                                                            |
-| C2 identity normalization          | **Complete**          | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows.                                                                                                                                                                                     |
-| Application Contribution ownership | **Complete**          | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                         |
-| C2-2 Consumer granularity          | **Complete**          | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis. |
-| Remaining C2-T2 runtime            | **Blocked / Planned** | Reverse lookup wiring, Change-Feed-driven incremental evaluation, Finding identity, and automatic triggers remain.                                                                                                                                                                                                                              |
-| C2-Z canonical cutover             | **Blocked**           | Generic Consumer Freshness remains shadow until parity and cutover criteria pass.                                                                                                                                                                                                                                                               |
-| First Retrieval Vertical Slice     | **Planned**           | Begins after C2-Z and the minimum shared Narrative IR contract are ready.                                                                                                                                                                                                                                                                       |
-| Living Story Bible product Epics   | **Planned**           | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                       |
+| Area                               | State        | Evidence / next condition                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gate B2, C0, C1, C1.5              | **Complete** | Writer authority, Change Feed, semantic contracts, and authority routes are ratified.                                                                                                                                                                                                                                                                                            |
+| Gate C2 foundation                 | **Complete** | [PR #534](https://github.com/kazormia296/Grimodex/pull/534) landed the shadow Semantic Build Graph, evaluator, publish runtime, maintenance ledger, Verify/Rebuild/Backfill/Repair primitives, and policy contracts.                                                                                                                                                             |
+| C2 identity normalization          | **Complete** | [PR #535](https://github.com/kazormia296/Grimodex/pull/535) canonicalized Dependency Edge and Application Contribution identities and repaired stored rows.                                                                                                                                                                                                                      |
+| Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                                                          |
+| C2-2 Consumer granularity          | **Complete** | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis.                                  |
+| C2-1 incremental Freshness runtime | **Complete** | [`incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs) owns the bounded Feed range, reverse lookup, evaluation, atomic multi-Consumer publication, replay/recovery, and single acknowledgement; [`narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts) supplies the main-only single-flight scheduler. |
+| Remaining C2 work                  | **Planned**  | C2-3 Finding identity and orphaned Attention re-homing, then C2-5's shared automatic triggers and cross-Run-Kind lifecycle recovery, remain pending.                                                                                                                                                                                                                             |
+| C2-Z canonical cutover             | **Blocked**  | Generic Consumer Freshness remains shadow until parity and cutover criteria pass.                                                                                                                                                                                                                                                                                                |
+| First Retrieval Vertical Slice     | **Planned**  | Begins after C2-Z and the minimum shared Narrative IR contract are ready.                                                                                                                                                                                                                                                                                                        |
+| Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
 
 ## Critical path
 
 ```text
-C2-T2: Consumer granularity ───────────────┐
-  ↓                                       │
-Finding three-layer identity              ├─ in parallel where safe
-                                          │
-Change Feed → reverse lookup → evaluator ─┘
+C2-2: Consumer granularity ── complete
+C2-1: Change Feed → reverse lookup → evaluator → publish/ack ── complete
   ↓
-Automatic triggers and interrupted-run recovery
+C2-3: Finding three-layer identity + orphaned Attention re-home
+  ↓
+C2-5: Shared automatic triggers and interrupted-run recovery
   ↓
 C2-Z: Generic Consumer Freshness becomes canonical
   ↓
@@ -137,7 +137,7 @@ Replace Run-grained freshness with durable identities for the actual Consumers t
 - **Complete** — Dependency-set digest per Consumer. Publishing writes `narrative_consumer_freshness.dependency_set_digest`, and Verify's `consumer-freshness-dependency-set-digest` check reports drift. NULL keeps meaning "not yet evaluated"; it is not an inconsistency.
 - **Complete** — Producer-time declaration of Dependencies at the smallest safe durable unit. `repository.rs`'s `record_revision_dependency_edges_in_tx` keys every Edge under `(proposal-revision, revision_id)`. A Revision is the smallest unit that is already durable and immutable, and it already carries the same Source Basis, so nothing had to be invented to key an Edge to it.
 - **Complete** — Migration from Run-grained Edges without fabricating cross-run identity. The re-key reads the finer attribution out of `narrative_revision_source_basis`, which stores per Revision the exact `(source_kind, source_key, revision_token)` list each Edge was built from. Edges with no Source Basis row stay under the Run: those are the Legacy Backfill's, which have no Revision to attribute a read to. Re-keying _those_ to the reserved `application` kind is C2-Z's legacy/Generic parity work. An Edge that an Application _also_ declares stays under the Run as well, and the Revision Edges are added beside it — both Producers upsert on the same unique key, so one row could carry two declarations, and deleting it because a Revision matched would silently drop the Application's dependency. The whole step runs inside one savepoint, so a workspace that cannot finish the upgrade is left exactly as it was found rather than stripped of the derived state the block discards on the way in.
-- **Planned** — Reverse lookup that returns only affected Consumers. `dependency_edges::find_edges_by_source` exists and is still unwired; C2-1 is what wires it.
+- **Complete** — Reverse lookup returns only affected Consumers. C2-1's bounded runtime resolves Feed events to canonical Source identities and wires `dependency_edges::find_edges_by_source` into evaluation and publication. Ratified component-schema and restore/Epoch-reset markers deliberately fan out project-wide because they invalidate compatibility or the prior producer Epoch rather than one Source object; prior-Epoch Edges publish conservative `unknown` until a Producer re-declares them.
 
 ### Why the identity seam landed first
 
@@ -161,7 +161,7 @@ Verify reports them as `orphaned_attention_finding_keys` instead, so the state i
 
 ## C2-1: Change-Feed-driven incremental Freshness runtime
 
-**State:** Planned; may run in parallel with C2-2 after the Consumer contract is fixed
+**State:** Complete
 
 ### Canonical path
 
@@ -178,12 +178,26 @@ Narrative Change Feed event
 
 ### Deliverables
 
-- A production trigger owned by one serialized runtime, not a second uncontrolled writer on Workspace open.
-- Idempotent cursor reservation, replay, publication, and acknowledgement.
-- Epoch and cursor compare-and-swap at publication time.
-- Bounded work scheduling and backpressure that never blocks ordinary editing.
-- Explicit handling of source deletion, anchor mismatch, exact relocation, read-set drift, and unknown component compatibility.
-- Crash recovery for interrupted Runs, Tasks, Attempts, and cursor reservations.
+- **Complete** — A main-process-only, single-flight scheduler in [`electron/main/narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts) calls the Native runtime without adding a renderer IPC or preload surface.
+- **Complete** — [`incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs) reserves at most 32 canonical sequences per cycle, yields the live Database authority between phases, and accelerates only while `hasMore` reports backlog.
+- **Complete** — Feed-to-Source resolution and reverse lookup evaluate only affected Edges. Every affected Consumer is published in one transaction, followed by one cursor acknowledgement in that same transaction.
+- **Complete** — Publication verifies the Semantic Epoch, Task lease, cursor reservation, evaluated Source state, and Edge declaration by compare-and-swap. Only a still-running work key can be resumed; a completed Run never authorizes acknowledgement of an unacknowledged range, which is reprocessed under a new runtime-owned Run. An acknowledged range becomes idle.
+- **Complete** — Source deletion, anchor mismatch, exact relocation, read-set drift, normalizer incompatibility, and component-schema compatibility changes have explicit deterministic comparison paths.
+- **Complete** — Expired Attempts are terminalized before a replacement claim; interrupted Runs, Tasks, Attempts, stale-Epoch reservations, and retryable failures retain or recover the same bounded range without skipping it. Retry exhaustion fails the Task and Run after three Attempts, keeps the range reserved without a lease, and waits for a canonical Epoch rotation to release and reprocess it under a new Run.
+
+### Implementation evidence
+
+- Shared runtime: [`src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs)
+- Native entrypoint and Electron scheduler: [`electron/native/grimodex-node/src/lib.rs`](../../electron/native/grimodex-node/src/lib.rs), [`electron/main/narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts)
+- Runtime acceptance fixtures: [`src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`](../../src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs), [`electron/main/narrativeFreshness.test.ts`](../../electron/main/narrativeFreshness.test.ts)
+
+### Scope boundary
+
+C2-1 owns automatic scheduling and lifecycle recovery only for the bounded
+`freshness-evaluation` Feed consumer. It does not introduce C2-3's
+three-layer Finding identity or re-home orphaned Attention, does not schedule
+Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
+(C2-5), and does not change the canonical Freshness read authority (C2-Z).
 
 ### Exit criteria
 
@@ -194,7 +208,7 @@ Narrative Change Feed event
 
 ## C2-3: Finding three-layer identity
 
-**State:** Blocked on Consumer granularity
+**State:** Planned — Consumer granularity is complete; Finding identity and orphaned Attention re-homing remain pending
 
 ### Required identities
 
@@ -218,7 +232,7 @@ Narrative Change Feed event
 
 ## C2-5: Automatic triggers and lifecycle recovery
 
-**State:** Blocked on the incremental runtime and Finding identity
+**State:** Planned — C2-1's Freshness-only scheduler/recovery is complete; the shared multi-Run-Kind trigger and lifecycle work remains pending after C2-3
 
 ### Deliverables
 

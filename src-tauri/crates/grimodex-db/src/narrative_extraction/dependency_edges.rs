@@ -448,10 +448,9 @@ pub(crate) fn consumer_dependency_set_digest(
 /// read of `source_object_identity` in this project. This is the core query
 /// the Freshness re-evaluation flow uses after a Source mutation lands on
 /// the Change Feed.
-/// No production caller yet -- the Change Feed-driven Freshness
-/// re-evaluation flow this Reverse Dependency Lookup is designed for
-/// (see `publish_runtime.rs`'s module doc pipeline diagram) has not
-/// landed.
+/// Gate C2-1's Change Feed-driven incremental Freshness runtime is the
+/// production caller; rebuild/diagnostic paths continue to use forward
+/// Consumer lookup.
 #[allow(dead_code)]
 pub(crate) fn find_edges_by_source(
     conn: &Connection,

@@ -50,6 +50,70 @@ test("the Narrative Extraction suite executes the deterministic Human Gold gate"
   assert.match(commandText, /eval:narrative/);
 });
 
+test("the Narrative runtime suite executes incremental Freshness integration", () => {
+  const commands = LIGHT_SUITE_DEFINITIONS["narrative-runtime"].commands;
+  const commandLines = commands.map((command) => command.join(" "));
+  const commandText = JSON.stringify(commands);
+  assert.match(commandText, /test:narrative:run-kind-policy/);
+  assert.match(commandText, /test:narrative:execution-state/);
+  assert.match(commandText, /electron\/main\/narrativeFreshness\.test\.ts/);
+  assert.match(commandText, /electron\/tsconfig\.json/);
+  assert.match(commandText, /narrative_runtime_authority/);
+  assert.match(commandText, /narrative_incremental_freshness_runtime/);
+  assert.match(commandText, /electron\/native\/grimodex-node\/Cargo\.toml/);
+  assert.ok(
+    commandLines.includes(
+      "pnpm test:electron --run electron/main/narrativeFreshness.test.ts",
+    ),
+  );
+  assert.ok(
+    commandLines.includes("pnpm exec tsc -p electron/tsconfig.json --noEmit"),
+  );
+  assert.ok(
+    commandLines.includes(
+      "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml",
+    ),
+  );
+});
+
+test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+
+  for (const changedPath of [
+    "policies/narrative/narrative-run-kind-policy.json",
+    "policies/narrative/schemas/narrative-run-kind-policy.schema.json",
+    "scripts/quality/validate-run-kind-policy.mjs",
+    "scripts/quality/validate-run-kind-policy.test.mjs",
+    "scripts/quality/validate-execution-state-authority.mjs",
+    "scripts/quality/validate-execution-state-authority.test.mjs",
+    "policies/narrative/narrative-failure-policy.json",
+    "electron/main/index.ts",
+    "electron/main/narrativeFreshness.ts",
+    "electron/main/narrativeFreshness.test.ts",
+    "electron/shared/ipcContract.ts",
+    "electron/shared/ipcContract.test.ts",
+    "electron/native/grimodex-node/Cargo.toml",
+    "electron/native/grimodex-node/index.d.ts",
+    "electron/native/grimodex-node/src/lib.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-runtime-authority"),
+      changedPath,
+    );
+    assert.ok(selection.requirementIds.includes("GDX-POLICY-001"));
+    assert.ok(selection.requirementIds.includes("GDX-TRACE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-runtime"));
+    assert.equal(selection.fallback, false);
+  }
+});
+
 test("the Narrative Extraction command includes deterministic Detail contracts", async () => {
   const packageJson = JSON.parse(
     await readFile(new URL("../../package.json", import.meta.url), "utf8"),

@@ -173,6 +173,61 @@
       }
     },
     {
+      "runKind": "incremental-freshness",
+      "existingRunKindColumnValue": "freshness-evaluation",
+      "purpose": "Consume a bounded canonical Change Feed range, reverse-resolve only affected Consumers, and publish their rebuildable Freshness state without mutating Domain data or human Attention.",
+      "trigger": "automatic-on-change-feed",
+      "triggerDetail": "The Electron main scheduler coalesces wakeups and calls the main-process-only N-API entrypoint. Each cycle waits for the canonical Semantic Epoch authority, runs on the serialized live Workspace Database authority rather than a detached post-open writer, and consumes at most 32 canonical sequences before yielding to foreground editing.",
+      "sameWorkKeyReuse": "reuse-running-only",
+      "resumeSemantics": [
+        "reuse-sealed-change-set",
+        "reclaim-expired-cursor-reservation",
+        "resume-running-run-task-attempt"
+      ],
+      "completedWithUnackedRangeInvariant": "never-reuse-completed-run-and-reprocess-under-new-runtime-owned-run",
+      "epochBound": true,
+      "cursorBound": true,
+      "cursorConsumerId": "narrative-incremental-freshness/v1",
+      "maxCanonicalSequencesPerBatch": 32,
+      "executionAuthority": "serialized-live-workspace-authority",
+      "missingSemanticEpochBehavior": "wait-for-canonical-epoch-authority",
+      "retryPolicy": {
+        "maxAttemptsPerTask": 3,
+        "exhaustedFailureCode": "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
+        "exhaustedRetryDisposition": "terminal",
+        "failurePolicyVersion": "v1",
+        "taskAndRunStatusAfterExhaustion": "failed",
+        "cursorAfterExhaustion": "reserved-lease-free",
+        "schedulerAfterExhaustion": "idle-until-new-semantic-epoch",
+        "newEpochReservationRecovery": "release-and-reprocess-under-new-run",
+        "exhaustedRunAfterNewEpoch": "remains-terminal-failed"
+      },
+      "periodic": false,
+      "manualRetry": false,
+      "writes": "rebuildable-state-only",
+      "writesAllowed": [
+        "run-task-attempt-state",
+        "narrative-change-set",
+        "freshness-evaluator-cursor",
+        "dependency-edge-state",
+        "consumer-freshness",
+        "finding-observation"
+      ],
+      "forbiddenWrites": [
+        "domain-state",
+        "durable-dependency-graph",
+        "attention",
+        "semantic-retraction",
+        "domain-undo-journal"
+      ],
+      "adminCommands": [],
+      "implementationStatus": {
+        "state": "wired",
+        "triggerSymbol": "run_incremental_freshness_cycle",
+        "productionEntryPoints": ["run_narrative_freshness_cycle"]
+      }
+    },
+    {
       "runKind": "dependency-repair",
       "existingRunKindColumnValue": null,
       "purpose": "Human-triggered correction of Durable Dependency/Provenance declarations: narrative_dependency_edges, narrative_application_contributions, Producer generation, Application-to-Dependency correspondence, and an Artifact/Proposal-Revision Dependency Manifest.",

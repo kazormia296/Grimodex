@@ -41,6 +41,12 @@ export declare class Backend {
    */
   runLicenseValidateCycle(): Promise<string | null>
   /**
+   * Electron main scheduler 専用の Change Feed freshness cycle。
+   * renderer IPC には登録せず、1 call で共有runtimeの有界batchを最大1件だけ
+   * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
+   */
+  runNarrativeFreshnessCycle(): Promise<string | null>
+  /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。

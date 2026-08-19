@@ -133,7 +133,16 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
   "narrative-runtime": {
     failureClasses: ["policy", "quality"],
     commands: [
+      ["pnpm", "test:narrative:run-kind-policy"],
+      ["pnpm", "test:narrative:execution-state"],
       ["pnpm", "test:narrative:writers"],
+      [
+        "pnpm",
+        "test:electron",
+        "--run",
+        "electron/main/narrativeFreshness.test.ts",
+      ],
+      ["pnpm", "exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
       [
         "pnpm",
         "test:node",
@@ -150,6 +159,22 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "grimodex-db",
         "--test",
         "narrative_runtime_authority",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--test",
+        "narrative_incremental_freshness_runtime",
+      ],
+      [
+        "cargo",
+        "check",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
       ],
     ],
   },
