@@ -14,12 +14,38 @@ use grimodex_db::narrative_extraction::{
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 const PROJECT_ID: &str = "project-c2-1";
 const EPOCH_ID: &str = "epoch-c2-1";
 const OCCURRED_AT: &str = "2026-08-19T00:00:00.000Z";
 const CURRENT_UPDATED_AT: &str = "2026-08-19T00:00:02.000Z";
 const STORED_REVISION_TOKEN: &str = "v1@2026-08-19T00:00:01.000Z";
+
+type TerminalHoldLifecycle = (
+    String,
+    Option<String>,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
+type RetryableHoldLifecycle = (
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+);
 
 fn fixture_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
@@ -1591,6 +1617,542 @@ fn deterministic_failure_stops_after_three_attempts_with_a_lease_free_dead_lette
 }
 
 #[test]
+fn invalid_minimum_object_key_is_terminally_held_without_starving_another_project() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-poison")?;
+        seed_scene_change(conn, "scene-poison", 1)?;
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = '{\"kind\":\"outside-canonical-vocabulary\"}'
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+        )?;
+
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES ('project-other', 'Other')",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-other', 'project-other', 0, 'initial', ?1)",
+            [OCCURRED_AT],
+        )?;
+        conn.execute(
+            "INSERT INTO tree_nodes
+                (id, project_id, node_type, title, content, version, updated_at)
+             VALUES ('scene-other', 'project-other', 'scene', 'Other', '{}', 2, ?1)",
+            [CURRENT_UPDATED_AT],
+        )?;
+        seed_scene_change_for_project(
+            conn,
+            "project-other",
+            "scene-other",
+            1,
+            "update",
+            "sha256:other-before",
+            "sha256:other-after",
+            &serde_json::json!({ "normalizerVersion": "gdx-canonical-text/1" }),
+        )?;
+        Ok(())
+    })
+    .expect("seed poison and healthy pending projects");
+
+    for attempt in 1..=3 {
+        let error = match run_incremental_freshness_cycle(&db) {
+            Err(error) => error,
+            Ok(outcome) => panic!("poison attempt {attempt} must fail closed, got {outcome:?}"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_CHANGE_FEED_OBJECT_KEY_UNSUPPORTED"),
+            "poison attempt {attempt}: {error:#}"
+        );
+    }
+
+    let IncrementalFreshnessCycleOutcome::Processed(other) =
+        run_incremental_freshness_cycle(&db).expect("healthy project remains runnable")
+    else {
+        panic!("terminally held poison range must not starve the healthy project")
+    };
+    assert_eq!(other.project_id, "project-other");
+    assert_eq!(other.through_sequence_inclusive, 1);
+
+    db.with_conn(|conn| {
+        let poison_run: (String, Option<String>) = conn.query_row(
+            "SELECT status, terminal_reason_code
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = 'freshness-evaluation'",
+            [PROJECT_ID],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(
+            poison_run,
+            (
+                "failed".to_string(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED".to_string()),
+            )
+        );
+
+        let poison_task: (String, i64, Option<String>, Option<String>) = conn.query_row(
+            "SELECT task.status, task.attempt_count, task.lease_owner, task.lease_expires_at
+               FROM narrative_extraction_tasks task
+               JOIN narrative_extraction_runs run ON run.id = task.run_id
+              WHERE run.project_id = ?1
+                AND task.task_kind = 'incremental-freshness-batch'",
+            [PROJECT_ID],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(poison_task, ("failed".to_string(), 3, None, None));
+
+        let poison_attempts: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_extraction_attempts attempt
+               JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+               JOIN narrative_extraction_runs run ON run.id = task.run_id
+              WHERE run.project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(poison_attempts, 3);
+
+        let poison_cursor: (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT acknowledged_through_sequence, lease_owner, lease_expires_at,
+                    reserved_through_sequence, active_run_id
+               FROM narrative_change_cursors
+              WHERE project_id = ?1
+                AND consumer_id = 'narrative-incremental-freshness/v1'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            poison_cursor.0, 0,
+            "poison range must never be acknowledged"
+        );
+        assert_eq!(poison_cursor.1, None, "terminal hold must be lease-free");
+        assert_eq!(poison_cursor.2, None, "terminal hold must be lease-free");
+        assert_eq!(poison_cursor.3, Some(1));
+        assert!(poison_cursor.4.is_some(), "terminal hold retains its Run");
+
+        let healthy_cursor: (i64, Option<String>, Option<i64>) = conn.query_row(
+            "SELECT acknowledged_through_sequence, active_run_id,
+                    reserved_through_sequence
+               FROM narrative_change_cursors
+              WHERE project_id = 'project-other'
+                AND consumer_id = 'narrative-incremental-freshness/v1'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(healthy_cursor, (1, None, None));
+        Ok(())
+    })
+    .expect("inspect poison hold and healthy acknowledgement");
+}
+
+#[test]
+fn malformed_object_key_json_uses_the_bounded_terminal_hold_without_acknowledgement() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-poison")?;
+        seed_scene_change(conn, "scene-poison", 1)?;
+        // The production schema rejects new malformed JSON. Temporarily
+        // bypass CHECKs to model an already-corrupt/legacy durable row that
+        // the runtime must still bound instead of retrying before reservation.
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = ?1
+              WHERE project_id = ?2 AND canonical_sequence = 1",
+            params![r#"{"kind":"scene""#, PROJECT_ID],
+        )?;
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+        Ok(())
+    })
+    .expect("seed syntactically malformed object_key_json");
+
+    for attempt in 1..=3 {
+        let error = match run_incremental_freshness_cycle(&db) {
+            Err(error) => error,
+            Ok(outcome) => panic!("malformed attempt {attempt} must fail, got {outcome:?}"),
+        };
+        assert!(
+            error.to_string().contains("invalid object_key_json"),
+            "malformed attempt {attempt}: {error:#}"
+        );
+    }
+    assert!(matches!(
+        run_incremental_freshness_cycle(&db).expect("terminal hold makes the next cycle idle"),
+        IncrementalFreshnessCycleOutcome::Idle
+    ));
+
+    db.with_conn(|conn| {
+        let lifecycle: TerminalHoldLifecycle = conn.query_row(
+            "SELECT run.status, run.terminal_reason_code,
+                    task.status, task.attempt_count,
+                    task.lease_owner, task.lease_expires_at,
+                    cursor.acknowledged_through_sequence,
+                    cursor.lease_owner, cursor.lease_expires_at,
+                    cursor.reserved_through_sequence, cursor.active_run_id
+               FROM narrative_extraction_runs run
+               JOIN narrative_extraction_tasks task ON task.run_id = run.id
+               JOIN narrative_change_cursors cursor
+                 ON cursor.project_id = run.project_id
+                AND cursor.active_run_id = run.id
+              WHERE run.project_id = ?1
+                AND run.run_kind = 'freshness-evaluation'
+                AND task.task_kind = 'incremental-freshness-batch'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                ))
+            },
+        )?;
+        assert_eq!(lifecycle.0, "failed");
+        assert_eq!(
+            lifecycle.1.as_deref(),
+            Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED")
+        );
+        assert_eq!(lifecycle.2, "failed");
+        assert_eq!(lifecycle.3, 3);
+        assert_eq!((lifecycle.4, lifecycle.5), (None, None));
+        assert_eq!(lifecycle.6, 0, "malformed range must remain unacknowledged");
+        assert_eq!((lifecycle.7, lifecycle.8), (None, None));
+        assert_eq!(lifecycle.9, Some(1));
+        assert!(lifecycle.10.is_some(), "terminal hold retains its Run");
+
+        let attempts: i64 = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_extraction_attempts attempt
+               JOIN narrative_extraction_tasks task ON task.id = attempt.task_id
+               JOIN narrative_extraction_runs run ON run.id = task.run_id
+              WHERE run.project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(attempts, 3);
+        Ok(())
+    })
+    .expect("inspect malformed Feed terminal hold");
+}
+
+#[test]
+fn resumed_batch_rejects_a_missing_live_event_against_its_sealed_change_set() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-poison")?;
+        seed_scene_change(conn, "scene-poison", 1)?;
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = '{\"kind\":\"outside-canonical-vocabulary\"}'
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed a deterministic first-attempt locator failure");
+
+    let first = run_incremental_freshness_cycle(&db)
+        .expect_err("the first Attempt must seal the range before locator failure");
+    assert!(
+        first
+            .to_string()
+            .contains("NEX_CHANGE_FEED_OBJECT_KEY_UNSUPPORTED"),
+        "unexpected first failure: {first:#}"
+    );
+
+    db.with_conn(|conn| {
+        let sealed_event_ids: String = conn.query_row(
+            "SELECT event_ids_json
+               FROM narrative_change_sets
+              WHERE project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_ne!(sealed_event_ids, "[]");
+        conn.execute(
+            "DELETE FROM narrative_change_events
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("simulate a missing durable Feed row after reservation");
+
+    for attempt in 2..=3 {
+        let error = run_incremental_freshness_cycle(&db)
+            .expect_err("resume must reject live Feed drift instead of acknowledging it");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH"),
+            "resume attempt {attempt}: {error:#}"
+        );
+    }
+    assert!(matches!(
+        run_incremental_freshness_cycle(&db).expect("retry exhaustion holds the sealed range"),
+        IncrementalFreshnessCycleOutcome::Idle
+    ));
+
+    db.with_conn(|conn| {
+        let lifecycle: (String, i64, i64, Option<i64>, Option<String>) = conn.query_row(
+            "SELECT task.status, task.attempt_count,
+                    cursor.acknowledged_through_sequence,
+                    cursor.reserved_through_sequence, cursor.active_run_id
+               FROM narrative_extraction_tasks task
+               JOIN narrative_extraction_runs run ON run.id = task.run_id
+               JOIN narrative_change_cursors cursor
+                 ON cursor.project_id = run.project_id
+                AND cursor.active_run_id = run.id
+              WHERE run.project_id = ?1
+                AND task.task_kind = 'incremental-freshness-batch'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(lifecycle.0, "failed");
+        assert_eq!(lifecycle.1, 3);
+        assert_eq!(lifecycle.2, 0, "a drifted range must never be acknowledged");
+        assert_eq!(lifecycle.3, Some(1));
+        assert!(lifecycle.4.is_some(), "terminal hold retains its Run");
+        Ok(())
+    })
+    .expect("inspect the terminally held sealed range");
+}
+
+#[test]
+fn resumed_batch_rejects_same_id_payload_replacement_against_its_sealed_change_set() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-poison")?;
+        seed_scene_change(conn, "scene-poison", 1)?;
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = '{\"kind\":\"outside-canonical-vocabulary\"}'
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed a deterministic first-attempt locator failure");
+
+    let first = run_incremental_freshness_cycle(&db)
+        .expect_err("the first Attempt must seal the payload before locator failure");
+    assert!(
+        first
+            .to_string()
+            .contains("NEX_CHANGE_FEED_OBJECT_KEY_UNSUPPORTED"),
+        "unexpected first failure: {first:#}"
+    );
+
+    db.with_conn(|conn| {
+        let event_id_before: String = conn.query_row(
+            "SELECT id FROM narrative_change_events
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = '{\"kind\":\"scene\",\"sceneId\":\"scene-poison\"}'
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+        )?;
+        let event_id_after: String = conn.query_row(
+            "SELECT id FROM narrative_change_events
+              WHERE project_id = ?1 AND canonical_sequence = 1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(event_id_after, event_id_before, "only the payload changed");
+        Ok(())
+    })
+    .expect("replace the payload while retaining the sealed event ID");
+
+    for attempt in 2..=3 {
+        let error = run_incremental_freshness_cycle(&db)
+            .expect_err("resume must reject payload drift instead of acknowledging it");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH"),
+            "resume attempt {attempt}: {error:#}"
+        );
+    }
+    assert!(matches!(
+        run_incremental_freshness_cycle(&db).expect("retry exhaustion holds the sealed range"),
+        IncrementalFreshnessCycleOutcome::Idle
+    ));
+
+    db.with_conn(|conn| {
+        let lifecycle: (String, i64, i64, Option<i64>, Option<String>) = conn.query_row(
+            "SELECT task.status, task.attempt_count,
+                    cursor.acknowledged_through_sequence,
+                    cursor.reserved_through_sequence, cursor.active_run_id
+               FROM narrative_extraction_tasks task
+               JOIN narrative_extraction_runs run ON run.id = task.run_id
+               JOIN narrative_change_cursors cursor
+                 ON cursor.project_id = run.project_id
+                AND cursor.active_run_id = run.id
+              WHERE run.project_id = ?1
+                AND task.task_kind = 'incremental-freshness-batch'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(lifecycle.0, "failed");
+        assert_eq!(lifecycle.1, 3);
+        assert_eq!(
+            lifecycle.2, 0,
+            "a drifted payload must never be acknowledged"
+        );
+        assert_eq!(lifecycle.3, Some(1));
+        assert!(lifecycle.4.is_some(), "terminal hold retains its Run");
+        Ok(())
+    })
+    .expect("inspect the terminally held payload-drift range");
+}
+
+#[test]
+fn invalid_persisted_origin_enters_a_lease_free_retryable_hold_after_one_attempt() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-poison")?;
+        seed_scene_change(conn, "scene-poison", 1)?;
+        conn.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+        conn.execute(
+            "UPDATE narrative_change_transactions
+                SET origin = 'outside-origin-vocabulary'
+              WHERE project_id = ?1",
+            [PROJECT_ID],
+        )?;
+        conn.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+        Ok(())
+    })
+    .expect("seed invalid persisted transaction origin");
+
+    let error = run_incremental_freshness_cycle(&db)
+        .expect_err("invalid persisted origin must fail its first Attempt");
+    assert!(
+        error
+            .to_string()
+            .contains("invalid persisted origin 'outside-origin-vocabulary'"),
+        "unexpected transaction decode failure: {error:#}"
+    );
+
+    db.with_conn(|conn| {
+        let lifecycle: RetryableHoldLifecycle = conn.query_row(
+            "SELECT run.status,
+                    task.status, task.attempt_count,
+                    task.lease_owner, task.lease_expires_at,
+                    attempt.status, attempt.failure_code, attempt.retry_disposition
+               FROM narrative_extraction_runs run
+               JOIN narrative_extraction_tasks task ON task.run_id = run.id
+               JOIN narrative_extraction_attempts attempt ON attempt.task_id = task.id
+              WHERE run.project_id = ?1
+                AND run.run_kind = 'freshness-evaluation'
+                AND task.task_kind = 'incremental-freshness-batch'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                ))
+            },
+        )?;
+        assert_eq!(lifecycle.0, "running");
+        assert_eq!(lifecycle.1, "queued");
+        assert_eq!(lifecycle.2, 1);
+        assert_eq!((lifecycle.3, lifecycle.4), (None, None));
+        assert_eq!(lifecycle.5, "failed");
+        assert_eq!(
+            lifecycle.6.as_deref(),
+            Some("NEX_INCREMENTAL_FRESHNESS_RETRYABLE")
+        );
+        assert_eq!(lifecycle.7.as_deref(), Some("retryable"));
+
+        let cursor: (
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = conn.query_row(
+            "SELECT acknowledged_through_sequence, lease_owner, lease_expires_at,
+                        reserved_through_sequence, active_run_id
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1
+                    AND consumer_id = 'narrative-incremental-freshness/v1'",
+            [PROJECT_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )?;
+        assert_eq!(
+            cursor.0, 0,
+            "invalid-origin range must remain unacknowledged"
+        );
+        assert_eq!((cursor.1, cursor.2), (None, None));
+        assert_eq!(cursor.3, Some(1));
+        assert!(cursor.4.is_some(), "retryable hold retains its active Run");
+        Ok(())
+    })
+    .expect("inspect retryable transaction-decode lifecycle");
+}
+
+#[test]
 fn cancelled_freshness_run_releases_its_range_for_a_new_run() {
     let db = fixture_db();
     db.with_conn(|conn| {
@@ -1745,14 +2307,70 @@ fn seed_interrupted_freshness_run(
                  'narrative-incremental-freshness/v1', ?4, ?1)",
         params![run_id, PROJECT_ID, OCCURRED_AT, epoch_id],
     )?;
+    let event_ids = conn
+        .prepare(
+            "SELECT id FROM narrative_change_events
+              WHERE project_id = ?1 AND canonical_sequence > 0
+                AND canonical_sequence <= ?2
+              ORDER BY canonical_sequence, event_ordinal, id",
+        )?
+        .query_map(params![PROJECT_ID, through_sequence], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        !event_ids.is_empty(),
+        "interrupted fixture needs Feed events"
+    );
+    let affected_objects = Vec::<String>::new();
+    let feed_page_digest = fixture_feed_page_digest(conn, 0, through_sequence)?;
+    let sealed = serde_json::json!({
+        "projectId": PROJECT_ID,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": through_sequence,
+        "eventIds": event_ids,
+        "affectedObjects": affected_objects,
+        "feedPageDigest": feed_page_digest,
+    });
+    let digest = format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(serde_json::to_vec(&sealed)?))
+    );
+    conn.execute(
+        "UPDATE narrative_extraction_runs
+            SET spec_json = ?1, spec_digest = ?2
+          WHERE id = ?3",
+        params![serde_json::to_string(&sealed)?, digest, run_id],
+    )?;
+    let change_set_id = format!("{run_id}:change-set");
+    conn.execute(
+        "INSERT INTO narrative_change_sets
+            (id, project_id, from_sequence_exclusive, through_sequence_inclusive,
+             event_ids_json, affected_objects_json, digest, created_at)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7)",
+        params![
+            change_set_id,
+            PROJECT_ID,
+            through_sequence,
+            serde_json::to_string(&event_ids)?,
+            serde_json::to_string(&affected_objects)?,
+            digest,
+            OCCURRED_AT,
+        ],
+    )?;
+    let task_input = serde_json::to_string(&serde_json::json!({
+        "changeSetId": change_set_id,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": through_sequence,
+    }))?;
     conn.execute(
         "INSERT INTO narrative_extraction_tasks
             (id, run_id, task_kind, status, input_json, priority, attempt_count,
              lease_owner, lease_expires_at, heartbeat_at, created_at, started_at, version)
-         VALUES ('interrupted-task', ?1, 'incremental-freshness-batch', 'running', '{}',
+         VALUES ('interrupted-task', ?1, 'incremental-freshness-batch', 'running', ?2,
                  100, 1, 'dead-worker', '2000-01-01T00:00:00.000Z',
-                 '2000-01-01T00:00:00.000Z', ?2, ?2, 0)",
-        params![run_id, OCCURRED_AT],
+                 '2000-01-01T00:00:00.000Z', ?3, ?3, 0)",
+        params![run_id, task_input, OCCURRED_AT],
     )?;
     conn.execute(
         "INSERT INTO narrative_extraction_attempts
@@ -1770,6 +2388,56 @@ fn seed_interrupted_freshness_run(
         params![PROJECT_ID, OCCURRED_AT, epoch_id, through_sequence, run_id],
     )?;
     Ok(())
+}
+
+fn fixture_feed_page_digest(
+    conn: &Connection,
+    after_sequence: i64,
+    through_sequence_inclusive: i64,
+) -> anyhow::Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT json_array(
+                  event.id, event.project_id, event.transaction_id,
+                  event.canonical_change_event_uid, event.canonical_sequence,
+                  event.event_ordinal, event.object_key_json, event.change_kind,
+                  event.mutation_kind, event.before_version, event.before_digest,
+                  event.after_version, event.after_digest,
+                  event.changed_paths_json, event.text_impact_json,
+                  event.structural_impact_json, event.occurred_at,
+                  feed_transaction.id, feed_transaction.project_id,
+                  feed_transaction.request_id, feed_transaction.source_domain,
+                  feed_transaction.source_change_event_uid,
+                  feed_transaction.source_change_event_sequence,
+                  feed_transaction.cause_kind, feed_transaction.origin,
+                  feed_transaction.original_transaction_id,
+                  feed_transaction.commit_id, feed_transaction.journal_id,
+                  feed_transaction.undo_journal_id,
+                  feed_transaction.application_ids_json,
+                  feed_transaction.payload_digest, feed_transaction.created_at
+                )
+           FROM narrative_change_events event
+           LEFT JOIN narrative_change_transactions feed_transaction
+             ON feed_transaction.project_id = event.project_id
+            AND feed_transaction.id = event.transaction_id
+          WHERE event.project_id = ?1
+            AND event.canonical_sequence > ?2
+            AND event.canonical_sequence <= ?3
+          ORDER BY event.canonical_sequence, event.event_ordinal, event.id",
+    )?;
+    let raw_rows = statement
+        .query_map(
+            params![PROJECT_ID, after_sequence, through_sequence_inclusive],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|raw_row| serde_json::from_str::<Value>(&raw_row))
+        .collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(!raw_rows.is_empty(), "fixture Feed page must not be empty");
+    Ok(format!(
+        "sha256:{}",
+        hex::encode(Sha256::digest(serde_json::to_vec(&Value::Array(raw_rows))?))
+    ))
 }
 
 #[test]

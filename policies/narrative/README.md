@@ -1041,7 +1041,8 @@ mirror, not a second authority. `dependencySetDigest` fixes
 `narrative_consumer_freshness.dependency_set_digest` as a digest over the
 set of `source_object_identity` values declared under the Consumer, and
 records that `NULL` means "not evaluated since SCHEMA 24 added the
-column", never "inconsistent".
+column", never "inconsistent". Verify reports that state separately as
+incomplete evidence; it does not disappear into a clean result.
 
 That column now has a writer and a check. Publishing a Freshness
 evaluation stamps the digest, and
@@ -1049,23 +1050,27 @@ evaluation stamps the digest, and
 `consumer-freshness-dependency-set-digest` — the "is this Consumer still
 reading the same things?" question no per-Edge Freshness value can answer,
 since a Consumer that stopped depending on a Source has no Edge left to go
-stale. Verify coverage is therefore **7 of the 13 named checks**, not 6,
-and `VERIFY_CONTRACT_VERSION` moved to `"3"`: a stored version-`"1"`
-result is refused by `seal_repair_plan`, so an in-flight Verify has to be
-re-run before a Repair can be sealed from it. The Semantic Index half of
+stale. Verify coverage is therefore **7 of the 13 named checks**, not 6.
+The Semantic Index half of
 `dependency-set-digest` is still unimplemented — nothing writes
 `narrative_semantic_index_metadata` yet.
 
-`"3"` rather than `"2"` because the report gained three fields in one
-Gate, not one: `consumer_keys_with_stale_dependency_set_digest` (the check
-above), `edge_ids_with_unresolvable_consumer_scope`, and
-`orphaned_attention_finding_keys`. None of the three is a _new_ named
-check — the 13 are unchanged — but each is a field a version-`"1"` report
-does not carry, and none is `#[serde(default)]`, so an older stored report
-cannot be deserialized rather than being read as a clean bill of health
-over a smaller set of questions. `"2"` existed only mid-branch, between the
-second field and the third, and was never released; a real workspace only
-ever experiences `"1"` → `"3"`.
+Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
+`"2"` because the report gained three fields in one Gate, not one:
+`consumer_keys_with_stale_dependency_set_digest`,
+`edge_ids_with_unresolvable_consumer_scope`, and
+`orphaned_attention_finding_keys`. `"2"` existed only mid-branch and was
+never released.
+
+The current version is `"4"`. It adds
+`consumer_keys_with_uncomputed_dependency_set_digest`, keeping a NULL
+digest out of the inconsistency list while making the incomplete check
+visible. `DependencyGraphVerifyReport::is_consistent()` answers whether the
+covered checks found a defect, `is_complete()` answers whether every
+Consumer had a computed dependency-set baseline, and `is_clean()` requires
+both. A stored version-`"3"` result lacks that field and could otherwise
+false-PASS, so `seal_repair_plan` refuses older versions and an in-flight
+Verify must be re-run before Repair can be sealed.
 
 The `keyFormat` shape rules are enforced by the typed writers
 (`record_dependency_edge_in_tx` and `write_consumer_freshness_in_tx` both
@@ -1105,6 +1110,14 @@ SCHEMA 29 made for Contribution provenance: it is a _provenance_ fact, so
 it stays true after the Proposal it came from is deleted. Rows whose
 declaring Run cannot be identified keep `NULL` rather than being given a
 wrong one.
+
+For a `proposal-revision` Edge, current Producers can always identify that
+Run. The writer therefore requires `owning_run_id` to be nonblank and to
+name a persisted Run in the same project for every Source kind, not only
+`snapshot-document`. Verify applies the same rule to historical/corrupt
+rows; Rebuild publishes `unknown` and skips Source evaluation when the
+provenance is absent, dangling, or cross-project. Run Consumers retain their
+compatibility fallback from `consumer_key` for older rows.
 
 The re-key reads its finer attribution out of
 `narrative_revision_source_basis`, which already records, per Revision,

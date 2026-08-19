@@ -14,7 +14,8 @@ use serde_json::{json, Value};
 use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
 use super::dependency_edges::{
     consumer_dependency_set_digest, find_edges_by_consumer,
-    parse_snapshot_run_id_from_source_identity, run_id_belongs_to_another_project, DependencyEdge,
+    parse_snapshot_run_id_from_source_identity, project_id_for_run,
+    run_id_belongs_to_another_project, DependencyEdge, PROPOSAL_REVISION_CONSUMER_KIND,
     RUN_CONSUMER_KIND,
 };
 use super::digest_plan;
@@ -311,7 +312,7 @@ pub struct RebuildDerivedStateSummary {
     pub edges_evaluated: usize,
     /// Consumers this pass could not evaluate because their
     /// `consumer_kind` is outside the declared vocabulary, or because every
-    /// one of their Snapshot Edges had an unresolvable Run scope.
+    /// one of their Edges had unresolvable Consumer provenance.
     ///
     /// Counted rather than folded into `consumers_evaluated`, and skipped
     /// rather than fatal. The reachable case is version skew -- a newer
@@ -326,8 +327,8 @@ pub struct RebuildDerivedStateSummary {
     /// State and Consumer Freshness so a verdict from an earlier pass in the
     /// same Epoch cannot remain authoritative.
     pub consumers_skipped_unresolvable_scope: usize,
-    /// Individual Edges skipped because their Snapshot Source cannot be
-    /// matched to one trustworthy declaring Run -- see
+    /// Individual Edges skipped because their Consumer cannot be matched to
+    /// one trustworthy declaring Run -- see
     /// [`resolve_edge_consumer_scope`]. Counted rather than source-evaluated
     /// with a stand-in or inconsistent Run, which is how a present Source
     /// gets called missing. The Edge still receives an explicit `Unknown`
@@ -522,8 +523,8 @@ fn rebuild_derived_state_edges_in_project(
                                 consumer_kind = %consumer_kind,
                                 consumer_key = %consumer_key,
                                 "NEX_CONSUMER_OWNING_RUN_UNRESOLVABLE: skipping source \
-                                 evaluation and publishing Unknown for a snapshot-document \
-                                 Edge whose declaring Run is missing, malformed, or inconsistent"
+                                 evaluation and publishing Unknown for an Edge whose declaring \
+                                 Run is missing, malformed, or inconsistent"
                             );
                             skipped_edges += 1;
                             publish_observations.push((
@@ -661,11 +662,10 @@ pub struct DependencyGraphVerifyReport {
     /// this crate's own writers; a nonzero count here means something
     /// wrote around that writer.
     pub duplicate_edge_keys: Vec<(String, String, String, String)>,
-    /// A `RUN_CONSUMER_KIND`-declared Edge whose Consumer (Run) belongs to
-    /// a *different* project than the Edge's own `project_id` -- the
-    /// Edge's `source_object_identity` has no embedded project scope of
-    /// its own, so this is the one place that boundary could silently
-    /// slip.
+    /// An Edge whose stored declaring Run belongs to a *different* project
+    /// than the Edge's own `project_id` -- the Edge's
+    /// `source_object_identity` has no embedded project scope of its own, so
+    /// this is the one place that boundary could silently slip.
     pub edge_ids_with_cross_project_consumer: Vec<String>,
     /// Edge with an empty `consumer_key` or a `source_object_identity`
     /// matching no recognized prefix (`infer_source_kind`) -- the latter
@@ -699,9 +699,9 @@ pub struct DependencyGraphVerifyReport {
     /// refuses to seal from a live re-derivation.
     pub duplicate_edge_ids_to_deactivate: Vec<String>,
     /// Edge whose Consumer's `consumer_kind` is outside the declared
-    /// vocabulary (`consumer_identity::ConsumerKind`), or whose Snapshot
-    /// key, stored `owning_run_id`, and Run Consumer key cannot be reconciled
-    /// to one trustworthy Run id.
+    /// vocabulary (`consumer_identity::ConsumerKind`), or whose stored
+    /// `owning_run_id`, optional Snapshot key, and Run Consumer key cannot be
+    /// reconciled to one trustworthy Run id.
     ///
     /// Part of `consumer-and-source-key-format`, reported separately from
     /// `edge_ids_with_malformed_keys` because the shape is different: the
@@ -725,11 +725,16 @@ pub struct DependencyGraphVerifyReport {
     /// stale, so its rolled-up Freshness stays clean while the Freshness
     /// row describes a dependency set that no longer exists.
     ///
-    /// A NULL stored digest is **not** reported. The column arrived in
-    /// SCHEMA 24 with no writer, so every row written before Gate C2-2 has
-    /// NULL and means "never computed", which is not a defect --
-    /// `dependency-rebuild-derived` fills it in on the next pass.
+    /// A NULL stored digest is not stale and is reported separately as
+    /// incomplete below. The distinction prevents "not inconsistent" from
+    /// becoming a false claim that Verify completed this check.
     pub consumer_keys_with_stale_dependency_set_digest: Vec<(String, String)>,
+    /// `(consumer_kind, consumer_key)` whose stored dependency-set digest is
+    /// NULL. SCHEMA 24 made the column nullable before it had a writer, so NULL
+    /// means `not-yet-evaluated`, not graph inconsistency. It is still an
+    /// incomplete Verify input and must remain visible until
+    /// `dependency-rebuild-derived` publishes a computed digest.
+    pub consumer_keys_with_uncomputed_dependency_set_digest: Vec<(String, String)>,
     /// `narrative_maintenance_attention.finding_key` values that name no
     /// Consumer this project currently declares an Edge for.
     ///
@@ -751,11 +756,10 @@ pub struct DependencyGraphVerifyReport {
 }
 
 impl DependencyGraphVerifyReport {
-    /// Whether every check this report covers came back clean. Does not
-    /// mean the Durable Graph is fully healthy -- only that the 7 checks
-    /// this report actually runs found nothing; see the struct's own doc
-    /// comment on the 6 it does not.
-    pub fn is_clean(&self) -> bool {
+    /// Whether every consistency check this report covers found no defect.
+    /// A NULL dependency-set digest is deliberately excluded: it is
+    /// incomplete evidence, not proof of inconsistency.
+    pub fn is_consistent(&self) -> bool {
         self.edge_ids_with_missing_source.is_empty()
             && self.duplicate_edge_keys.is_empty()
             && self.edge_ids_with_cross_project_consumer.is_empty()
@@ -770,6 +774,22 @@ impl DependencyGraphVerifyReport {
                 .consumer_keys_with_stale_dependency_set_digest
                 .is_empty()
             && self.orphaned_attention_finding_keys.is_empty()
+    }
+
+    /// Whether every Consumer Freshness row had enough stored evidence to run
+    /// the covered dependency-set check. This does not claim the six policy
+    /// checks outside this report are implemented.
+    pub fn is_complete(&self) -> bool {
+        self.consumer_keys_with_uncomputed_dependency_set_digest
+            .is_empty()
+    }
+
+    /// Whether the covered checks are both consistent and complete. Does not
+    /// mean the entire Durable Graph is healthy -- only that the 7 checks this
+    /// report actually runs found no defect and no not-yet-evaluated input;
+    /// see the struct's doc comment on the 6 checks it does not implement.
+    pub fn is_clean(&self) -> bool {
+        self.is_consistent() && self.is_complete()
     }
 }
 
@@ -892,7 +912,13 @@ pub fn run_dependency_verify_for_project(
 /// checks behind it changes in a way that makes an older stored report
 /// unsafe to seal a Repair plan from.
 ///
-/// `"3"` is what Gate C2-2 ships. The report gained
+/// `"4"` separates a NULL dependency-set digest from a stale non-NULL digest
+/// through `consumer_keys_with_uncomputed_dependency_set_digest`, and makes
+/// `is_clean()` require both consistency and complete evidence. A stored
+/// version-`"3"` report omitted that field and could therefore look clean while
+/// hiding Consumers that had never been evaluated.
+///
+/// `"3"` was Gate C2-2's original shape. The report gained
 /// `edge_ids_with_unresolvable_consumer_scope`,
 /// `consumer_keys_with_stale_dependency_set_digest` and
 /// `orphaned_attention_finding_keys`, and `edge_ids_with_missing_source` no
@@ -901,18 +927,16 @@ pub fn run_dependency_verify_for_project(
 /// `"2"` existed only on the branch that built this Gate, as the state after
 /// the first two fields and before the third. No build carrying it was
 /// released, so no stored report can be at `"2"` -- it is skipped rather than
-/// preserved, and the single step `"1"` -> `"3"` is the whole story a
-/// workspace can experience.
+/// preserved. Released workspaces therefore move `"1"` -> `"3"` -> `"4"`;
+/// `"2"` remains a branch-only value.
 ///
-/// A stored `"1"` report is refused by `repair.rs`'s
+/// A stored report under an older version is refused by `repair.rs`'s
 /// `NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH` gate, which runs before the
-/// report is deserialized at all -- correct twice over here, since a `"1"`
-/// report both omits the new fields (none is `#[serde(default)]`, so it would
-/// not deserialize either) and asserts a clean bill of health over a strictly
-/// smaller set of checks. The operational consequence is that an in-flight
-/// Verify result does not survive this upgrade: re-run Verify before sealing
-/// a Repair.
-pub(crate) const VERIFY_CONTRACT_VERSION: &str = "3";
+/// report is deserialized at all. Older reports omit required fields (none is
+/// `#[serde(default)]`) and may assert a clean bill of health over less
+/// evidence. The operational consequence is that an in-flight Verify result
+/// does not survive this upgrade: re-run Verify before sealing a Repair.
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "4";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
 /// under. Shared with `repair.rs` so the writer and the reader that
@@ -958,11 +982,11 @@ pub fn verify_narrative_dependency_graph_for_project(
             {
                 report.edge_ids_with_malformed_keys.push(edge.id.clone());
             }
-            // Only ask "is the Source missing?" when the question can be
-            // answered. Without an owning Run a `snapshot:` Source resolves
-            // to an error, which `edge_source_is_missing` reports as
-            // `true` -- a Source that is present being filed as gone. The
-            // Consumer is reported under its own heading above instead.
+            // Only ask "is the Source missing?" when the Consumer provenance
+            // is trustworthy. Otherwise a live Source can be filed as gone,
+            // or a Proposal Revision whose declaring Run is absent can be
+            // certified through a Run-independent Source. The Consumer is
+            // reported under its own heading instead.
             if !kind_is_declared {
                 continue;
             }
@@ -990,6 +1014,8 @@ pub fn verify_narrative_dependency_graph_for_project(
 
     report.consumer_keys_with_stale_dependency_set_digest =
         consumer_keys_with_stale_dependency_set_digest(conn, project_id)?;
+    report.consumer_keys_with_uncomputed_dependency_set_digest =
+        consumer_keys_with_uncomputed_dependency_set_digest(conn, project_id)?;
     report.orphaned_attention_finding_keys = orphaned_attention_finding_keys(conn, project_id)?;
 
     if let Some(current_epoch_id) = get_current_epoch(conn, project_id)?.map(|epoch| epoch.id) {
@@ -1081,8 +1107,9 @@ pub(crate) fn duplicate_edge_ids_to_deactivate(
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EdgeConsumerScope<'a> {
-    /// Every current Source kind except `snapshot-document` ignores Run
-    /// scope, so no owner has to be supplied to its resolver.
+    /// The Source resolver does not consume Run scope. Any Consumer kind that
+    /// requires stored owner provenance has already had it validated before
+    /// this variant is returned.
     NotRequired,
     /// The Snapshot key, stored owner (or safe Run-Consumer fallback), and
     /// Run Consumer key all agree on this exact Run id.
@@ -1095,15 +1122,15 @@ enum EdgeConsumerScope<'a> {
 
 /// Resolves the Run scope a Source resolver may safely receive for one Edge.
 ///
-/// SCHEMA 30's stored `owning_run_id` is primary. Empty/whitespace-only
-/// historical values are treated as absent so a Run Consumer can still use
-/// its exact `consumer_key` compatibility fallback; a non-empty malformed or
-/// mismatched stored value is never hidden by that fallback. Snapshot Edges
+/// SCHEMA 30's stored `owning_run_id` is primary. A Proposal Revision's key
+/// cannot recover its declaring Run, so every one of its Edges requires a
+/// nonblank stored owner naming a persisted Run in the same project, even when
+/// the Source resolver itself does not consume Run scope. Empty/whitespace-only
+/// historical values are treated as absent only for the Run-Consumer
+/// compatibility fallback to its exact `consumer_key`; a non-empty malformed
+/// or mismatched stored value is never hidden by that fallback. Snapshot Edges
 /// additionally require the `snapshot:<runId>` suffix, effective owner, and
-/// (for Run Consumers) `consumer_key` to agree byte-for-byte. A persisted Run
-/// owned by another project is unresolvable scope; an absent Run remains a
-/// resolved scope so the Source resolver can diagnose it as genuinely
-/// missing.
+/// (for Run Consumers) `consumer_key` to agree byte-for-byte.
 fn resolve_edge_consumer_scope<'a>(
     conn: &Connection,
     project_id: &str,
@@ -1113,10 +1140,32 @@ fn resolve_edge_consumer_scope<'a>(
 ) -> anyhow::Result<EdgeConsumerScope<'a>> {
     let snapshot_run_id =
         match parse_snapshot_run_id_from_source_identity(&edge.source_object_identity) {
-            Ok(Some(run_id)) => run_id,
-            Ok(None) => return Ok(EdgeConsumerScope::NotRequired),
+            Ok(run_id) => run_id,
             Err(_) => return Ok(EdgeConsumerScope::Unresolvable),
         };
+
+    if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+        let Some(owning_run_id) = edge.owning_run_id.as_deref() else {
+            return Ok(EdgeConsumerScope::Unresolvable);
+        };
+        if owning_run_id.trim().is_empty()
+            || owning_run_id.trim() != owning_run_id
+            || project_id_for_run(conn, owning_run_id)?.as_deref() != Some(project_id)
+        {
+            return Ok(EdgeConsumerScope::Unresolvable);
+        }
+        return Ok(match snapshot_run_id {
+            Some(snapshot_run_id) if owning_run_id == snapshot_run_id => {
+                EdgeConsumerScope::Resolved(owning_run_id)
+            }
+            Some(_) => EdgeConsumerScope::Unresolvable,
+            None => EdgeConsumerScope::NotRequired,
+        });
+    }
+
+    let Some(snapshot_run_id) = snapshot_run_id else {
+        return Ok(EdgeConsumerScope::NotRequired);
+    };
 
     let stored_owning_run_id = match edge.owning_run_id.as_deref() {
         Some(value) if value.trim().is_empty() => None,
@@ -1191,13 +1240,10 @@ fn orphaned_attention_finding_keys(
 /// of date, so comparing it against another stored value would prove
 /// nothing.
 ///
-/// Rows with a NULL digest are skipped, not reported. NULL means "never
-/// computed" -- the column landed in SCHEMA 24 with no writer, so every
-/// workspace that predates Gate C2-2 has NULL for every Consumer, and
-/// reporting those would turn a Verify on an ordinary upgraded workspace
-/// into a wall of false findings. They converge on the next
-/// `dependency-rebuild-derived`, which writes the digest for every Consumer
-/// it publishes.
+/// Rows with a NULL digest are skipped here because NULL is not a stale
+/// comparison. [`consumer_keys_with_uncomputed_dependency_set_digest`] reports
+/// them as incomplete instead, preserving the contract distinction between a
+/// graph inconsistency and evidence that has never been computed.
 ///
 /// A Consumer that has a Freshness row but no Edges at all *is* compared:
 /// `consumer_dependency_set_digest` returns the digest of the empty set for
@@ -1233,6 +1279,27 @@ fn consumer_keys_with_stale_dependency_set_digest(
         }
     }
     Ok(stale)
+}
+
+/// Consumers whose dependency-set digest has never been computed. Kept
+/// separate from stale digests because NULL is not an inconsistency, but a
+/// Verify result that hides it is incomplete and must not return `is_clean()`.
+fn consumer_keys_with_uncomputed_dependency_set_digest(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    let mut statement = conn.prepare(
+        "SELECT consumer_kind, consumer_key
+           FROM narrative_consumer_freshness
+          WHERE project_id = ?1 AND dependency_set_digest IS NULL
+          ORDER BY consumer_kind ASC, consumer_key ASC",
+    )?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }
 
 /// Edges whose declaring Run belongs to a different project than the Edge's
@@ -1555,6 +1622,34 @@ mod tests {
             Ok(())
         })
         .expect("seed a raw snapshot Edge fixture");
+    }
+
+    fn seed_raw_edge(
+        db: &Database,
+        edge_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+        source_object_identity: &str,
+        owning_run_id: Option<&str>,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, created_at, owning_run_id)
+                 VALUES (?1, 'project-1', ?2, ?3, ?4, '[\"/body\"]',
+                         '2026-08-15T00:00:00.000Z', ?5)",
+                params![
+                    edge_id,
+                    consumer_kind,
+                    consumer_key,
+                    source_object_identity,
+                    owning_run_id,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed a raw Dependency Edge fixture");
     }
 
     #[test]
@@ -2065,6 +2160,8 @@ mod tests {
             .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
             .expect("verify project");
         assert_eq!(report.total_edges, 1);
+        assert!(report.is_consistent());
+        assert!(report.is_complete());
         assert!(report.is_clean());
     }
 
@@ -2710,6 +2807,8 @@ mod tests {
             after.consumer_keys_with_stale_dependency_set_digest,
             vec![(RUN_CONSUMER_KIND.to_string(), "run-1".to_string())]
         );
+        assert!(!after.is_consistent());
+        assert!(after.is_complete());
         assert!(!after.is_clean());
     }
 
@@ -2754,6 +2853,110 @@ mod tests {
         );
     }
 
+    #[test]
+    fn proposal_revision_owner_failures_are_unresolvable_for_non_snapshot_sources() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-2", "foreign-run");
+        for (edge_id, consumer_key, owning_run_id) in [
+            ("edge-scene-owner-blank", "revision-blank", Some("")),
+            (
+                "edge-scene-owner-cross-project",
+                "revision-cross-project",
+                Some("foreign-run"),
+            ),
+            (
+                "edge-scene-owner-dangling",
+                "revision-dangling",
+                Some("run-does-not-exist"),
+            ),
+            ("edge-scene-owner-null", "revision-null", None),
+        ] {
+            seed_raw_edge(
+                &db,
+                edge_id,
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                consumer_key,
+                "project:scene:scene-live",
+                owning_run_id,
+            );
+        }
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        let mut unresolvable = report.edge_ids_with_unresolvable_consumer_scope.clone();
+        unresolvable.sort();
+        assert_eq!(
+            unresolvable,
+            vec![
+                "edge-scene-owner-blank".to_string(),
+                "edge-scene-owner-cross-project".to_string(),
+                "edge-scene-owner-dangling".to_string(),
+                "edge-scene-owner-null".to_string(),
+            ],
+            "a Proposal Revision's declaring Run is required provenance even when the Source resolver itself does not consume Run scope"
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "the live Scene is not missing merely because its Consumer provenance is invalid"
+        );
+
+        seed_epoch_for_rebuild(&db, "project-1");
+        let outcome = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must quarantine invalid owner provenance");
+        let RebuildDerivedStateOutcome::Ran { summary, .. } = outcome else {
+            panic!("expected a fresh Rebuild-Derived Run");
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 4);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 4);
+
+        let states: Vec<(String, String, String)> = db
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT edge_id, evidence_freshness, build_action
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id LIKE 'edge-scene-owner-%'
+                      ORDER BY edge_id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                Ok(rows)
+            })
+            .expect("read quarantined Edge States");
+        assert_eq!(states.len(), 4);
+        assert!(states
+            .iter()
+            .all(|(_, freshness, action)| freshness == "unknown" && action == "manual"));
+    }
+
+    #[test]
+    fn a_dangling_snapshot_owner_is_unresolvable_not_missing() {
+        let db = test_db();
+        seed_raw_snapshot_edge(
+            &db,
+            "edge-dangling-owner",
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            "revision-dangling-owner",
+            "run-does-not-exist",
+            Some("run-does-not-exist"),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.edge_ids_with_unresolvable_consumer_scope,
+            vec!["edge-dangling-owner".to_string()]
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "a dangling declaring-Run reference is invalid Consumer provenance, not a trustworthy Source-missing observation"
+        );
+    }
+
     /// Gate C2-2's Consumer re-key changes `finding_key`, so a human's
     /// disposition stops matching. It must not be deleted -- Attention is
     /// durable human state -- so Verify has to be the thing that says it is
@@ -2793,10 +2996,10 @@ mod tests {
     }
 
     /// A workspace upgraded from before Gate C2-2 has NULL in every
-    /// `dependency_set_digest`, which means "never computed" -- reporting
-    /// those would turn an ordinary Verify into a wall of false findings.
+    /// `dependency_set_digest`, which means "never computed". It is reported
+    /// as incomplete rather than stale: not a defect, but not a clean Verify.
     #[test]
-    fn project_verify_ignores_a_consumer_whose_dependency_set_digest_was_never_computed() {
+    fn project_verify_is_not_clean_when_a_dependency_set_digest_was_never_computed() {
         let db = test_db();
         seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
         let epoch_id = db
@@ -2824,9 +3027,18 @@ mod tests {
             report
                 .consumer_keys_with_stale_dependency_set_digest
                 .is_empty(),
-            "NULL means not-yet-computed, which is not a defect"
+            "NULL means not-yet-computed, not stale"
         );
-        assert!(report.is_clean());
+        assert_eq!(
+            report.consumer_keys_with_uncomputed_dependency_set_digest,
+            vec![(RUN_CONSUMER_KIND.to_string(), "run-1".to_string())]
+        );
+        assert!(report.is_consistent());
+        assert!(!report.is_complete());
+        assert!(
+            !report.is_clean(),
+            "not inconsistent is not the same as completely verified"
+        );
     }
 
     #[test]
@@ -2871,6 +3083,11 @@ mod tests {
         assert_eq!(
             stored["verifyContractVersion"].as_str(),
             Some(VERIFY_CONTRACT_VERSION)
+        );
+        assert_eq!(
+            stored["report"]["consumerKeysWithUncomputedDependencySetDigest"],
+            json!([]),
+            "the version-4 stored report must carry the completeness field even when empty"
         );
         assert_eq!(
             stored["reportDigest"].as_str(),

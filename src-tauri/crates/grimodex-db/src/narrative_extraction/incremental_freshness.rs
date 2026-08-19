@@ -86,13 +86,35 @@ struct ClaimedBatch {
     from_sequence_exclusive: i64,
     through_sequence_inclusive: i64,
     events: Vec<NarrativeChangeEventRecord>,
+    preparation_error: Option<String>,
     has_more: bool,
+}
+
+#[derive(Debug)]
+struct ChangeBatchEnvelope {
+    event_ids: Vec<String>,
+    through_sequence_inclusive: i64,
+    feed_page_digest: String,
+}
+
+#[derive(Debug)]
+struct SealedChangeSet {
+    event_ids: Vec<String>,
+    affected_objects: Vec<String>,
+    digest: String,
+}
+
+#[derive(Debug)]
+struct PreparedChangeEvents {
+    events: Vec<NarrativeChangeEventRecord>,
+    affected_objects: Vec<String>,
+    error: Option<String>,
 }
 
 #[derive(Debug)]
 enum ReservationOutcome {
     Idle,
-    Claimed(ClaimedBatch),
+    Claimed(Box<ClaimedBatch>),
 }
 
 #[derive(Debug)]
@@ -347,6 +369,400 @@ fn select_next_project(conn: &Connection) -> anyhow::Result<Option<String>> {
     .map_err(Into::into)
 }
 
+fn load_change_batch_envelope(
+    conn: &Connection,
+    project_id: &str,
+    after_sequence: i64,
+    limit: i64,
+) -> anyhow::Result<Option<ChangeBatchEnvelope>> {
+    // Read only the durable page identity here. Persisted JSON and vocabulary
+    // are decoded after a Run/Task/Attempt exists, so one corrupt or
+    // forward-version Feed row consumes the same bounded failure budget as an
+    // evaluation error instead of starving every project before reservation.
+    let mut statement = conn.prepare(
+        "SELECT event.id, event.canonical_sequence
+           FROM narrative_change_events event
+          WHERE event.project_id = ?1
+            AND event.canonical_sequence IN (
+              SELECT page.canonical_sequence
+                FROM narrative_change_events page
+               WHERE page.project_id = ?1
+                 AND page.canonical_sequence > ?2
+               GROUP BY page.canonical_sequence
+               ORDER BY page.canonical_sequence
+               LIMIT ?3
+            )
+          ORDER BY event.canonical_sequence, event.event_ordinal, event.id",
+    )?;
+    let rows = statement
+        .query_map(params![project_id, after_sequence, limit], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(through_sequence_inclusive) = rows.iter().map(|(_, sequence)| *sequence).max() else {
+        return Ok(None);
+    };
+    let selected_event_ids = rows
+        .into_iter()
+        .map(|(event_id, _)| event_id)
+        .collect::<Vec<_>>();
+    let envelope = load_change_feed_range_envelope(
+        conn,
+        project_id,
+        after_sequence,
+        through_sequence_inclusive,
+    )?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH: selected Feed page disappeared"
+        )
+    })?;
+    anyhow::ensure!(
+        envelope.event_ids == selected_event_ids,
+        "NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH: selected Feed page changed while reserving"
+    );
+    Ok(Some(envelope))
+}
+
+fn load_change_feed_range_envelope(
+    conn: &Connection,
+    project_id: &str,
+    after_sequence: i64,
+    through_sequence_inclusive: i64,
+) -> anyhow::Result<Option<ChangeBatchEnvelope>> {
+    // Keep every persisted value as raw SQL text in the fingerprint. This
+    // deliberately does not decode Feed JSON or enum vocabulary: malformed
+    // rows still need a durable Run and the same bounded retry budget.
+    let mut statement = conn.prepare(
+        "SELECT event.id, event.canonical_sequence,
+                json_array(
+                  event.id, event.project_id, event.transaction_id,
+                  event.canonical_change_event_uid, event.canonical_sequence,
+                  event.event_ordinal, event.object_key_json, event.change_kind,
+                  event.mutation_kind, event.before_version, event.before_digest,
+                  event.after_version, event.after_digest,
+                  event.changed_paths_json, event.text_impact_json,
+                  event.structural_impact_json, event.occurred_at,
+                  feed_transaction.id, feed_transaction.project_id,
+                  feed_transaction.request_id, feed_transaction.source_domain,
+                  feed_transaction.source_change_event_uid,
+                  feed_transaction.source_change_event_sequence,
+                  feed_transaction.cause_kind, feed_transaction.origin,
+                  feed_transaction.original_transaction_id,
+                  feed_transaction.commit_id, feed_transaction.journal_id,
+                  feed_transaction.undo_journal_id,
+                  feed_transaction.application_ids_json,
+                  feed_transaction.payload_digest, feed_transaction.created_at
+                )
+           FROM narrative_change_events event
+           LEFT JOIN narrative_change_transactions feed_transaction
+             ON feed_transaction.project_id = event.project_id
+            AND feed_transaction.id = event.transaction_id
+          WHERE event.project_id = ?1
+            AND event.canonical_sequence > ?2
+            AND event.canonical_sequence <= ?3
+          ORDER BY event.canonical_sequence, event.event_ordinal, event.id",
+    )?;
+    let rows = statement
+        .query_map(
+            params![project_id, after_sequence, through_sequence_inclusive],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    let Some(live_through_sequence) = rows.iter().map(|(_, sequence, _)| *sequence).max() else {
+        return Ok(None);
+    };
+    let event_ids = rows
+        .iter()
+        .map(|(event_id, _, _)| event_id.clone())
+        .collect::<Vec<_>>();
+    let raw_rows = rows
+        .into_iter()
+        .map(|(_, _, raw_row)| serde_json::from_str::<Value>(&raw_row))
+        .collect::<Result<Vec<_>, _>>()?;
+    let feed_page_digest = digest_json(&Value::Array(raw_rows))?;
+    Ok(Some(ChangeBatchEnvelope {
+        event_ids,
+        through_sequence_inclusive: live_through_sequence,
+        feed_page_digest,
+    }))
+}
+
+fn prepare_change_events(
+    conn: &Connection,
+    project_id: &str,
+    after_sequence: i64,
+    through_sequence_inclusive: i64,
+    fallback_event_ids: &[String],
+) -> PreparedChangeEvents {
+    let loaded = get_changes_since(
+        conn,
+        project_id,
+        after_sequence,
+        MAX_CANONICAL_SEQUENCES_PER_BATCH,
+    );
+    let events = match loaded {
+        Ok(events) => events
+            .into_iter()
+            .filter(|event| event.canonical_sequence <= through_sequence_inclusive)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return PreparedChangeEvents {
+                events: Vec::new(),
+                affected_objects: fallback_event_ids
+                    .iter()
+                    .map(|event_id| format!("unresolved-change-feed-event:{event_id}"))
+                    .collect(),
+                error: Some(format!("{error:#}")),
+            };
+        }
+    };
+    let decoded_event_ids = events
+        .iter()
+        .map(|event| event.event_id.as_str())
+        .collect::<Vec<_>>();
+    let sealed_event_ids = fallback_event_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    if decoded_event_ids != sealed_event_ids {
+        return PreparedChangeEvents {
+            events,
+            affected_objects: fallback_event_ids
+                .iter()
+                .map(|event_id| format!("unresolved-change-feed-event:{event_id}"))
+                .collect(),
+            error: Some(format!(
+                "NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH: decoded event IDs do not match sealed range ({after_sequence}, {through_sequence_inclusive}]"
+            )),
+        };
+    }
+    match affected_source_identities(project_id, &events) {
+        Ok(affected_objects) => PreparedChangeEvents {
+            events,
+            affected_objects,
+            error: None,
+        },
+        Err(error) => PreparedChangeEvents {
+            affected_objects: events
+                .iter()
+                .map(|event| format!("unresolved-change-feed-event:{}", event.event_id))
+                .collect(),
+            events,
+            error: Some(format!("{error:#}")),
+        },
+    }
+}
+
+fn sealed_change_set_value(
+    project_id: &str,
+    from_sequence_exclusive: i64,
+    through_sequence_inclusive: i64,
+    event_ids: &[String],
+    affected_objects: &[String],
+    feed_page_digest: &str,
+) -> Value {
+    json!({
+        "projectId": project_id,
+        "fromSequenceExclusive": from_sequence_exclusive,
+        "throughSequenceInclusive": through_sequence_inclusive,
+        "eventIds": event_ids,
+        "affectedObjects": affected_objects,
+        "feedPageDigest": feed_page_digest,
+    })
+}
+
+fn load_sealed_change_set_for_run(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    from_sequence_exclusive: i64,
+    through_sequence_inclusive: i64,
+) -> anyhow::Result<SealedChangeSet> {
+    let mut statement = conn.prepare(
+        "SELECT input_json
+           FROM narrative_extraction_tasks
+          WHERE run_id = ?1 AND task_kind = ?2
+          ORDER BY id",
+    )?;
+    let task_inputs = statement
+        .query_map(params![run_id, TASK_KIND], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    anyhow::ensure!(
+        task_inputs.len() == 1,
+        "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: Run '{run_id}' must have exactly one {TASK_KIND} Task"
+    );
+    let input_json = &task_inputs[0];
+    let input: Value = serde_json::from_str(input_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: Task input is unreadable: {error}"
+        )
+    })?;
+    let change_set_id = input
+        .get("changeSetId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: Task input has no changeSetId"
+            )
+        })?;
+    let (sealed_from, sealed_through, event_ids_json, affected_objects_json, digest): (
+        i64,
+        i64,
+        String,
+        String,
+        String,
+    ) = conn.query_row(
+        "SELECT from_sequence_exclusive, through_sequence_inclusive,
+                event_ids_json, affected_objects_json, digest
+           FROM narrative_change_sets
+          WHERE id = ?1 AND project_id = ?2",
+        params![change_set_id, project_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    anyhow::ensure!(
+        sealed_from == from_sequence_exclusive && sealed_through == through_sequence_inclusive,
+        "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: sealed range ({sealed_from}, {sealed_through}] does not match reserved range ({from_sequence_exclusive}, {through_sequence_inclusive}]"
+    );
+    let event_ids = serde_json::from_str::<Vec<String>>(&event_ids_json).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: eventIdsJson is unreadable: {error}"
+        )
+    })?;
+    anyhow::ensure!(
+        !event_ids.is_empty() && event_ids.iter().all(|event_id| !event_id.is_empty()),
+        "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: sealed event IDs must be non-empty"
+    );
+    let affected_objects =
+        serde_json::from_str::<Vec<String>>(&affected_objects_json).map_err(|error| {
+            anyhow::anyhow!(
+                "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: affectedObjectsJson is unreadable: {error}"
+            )
+        })?;
+    anyhow::ensure!(
+        digest.starts_with("sha256:") && digest.len() == "sha256:".len() + 64,
+        "NEX_INCREMENTAL_FRESHNESS_CHANGE_SET_INVALID: digest is not a SHA-256 token"
+    );
+    Ok(SealedChangeSet {
+        event_ids,
+        affected_objects,
+        digest,
+    })
+}
+
+fn prepare_reserved_change_events(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    from_sequence_exclusive: i64,
+    through_sequence_inclusive: i64,
+) -> PreparedChangeEvents {
+    let sealed = match load_sealed_change_set_for_run(
+        conn,
+        project_id,
+        run_id,
+        from_sequence_exclusive,
+        through_sequence_inclusive,
+    ) {
+        Ok(sealed) => sealed,
+        Err(error) => {
+            return PreparedChangeEvents {
+                events: Vec::new(),
+                affected_objects: vec![format!("unresolved-change-set:{run_id}")],
+                error: Some(format!("{error:#}")),
+            };
+        }
+    };
+    let live_envelope = match load_change_feed_range_envelope(
+        conn,
+        project_id,
+        from_sequence_exclusive,
+        through_sequence_inclusive,
+    ) {
+        Ok(Some(envelope)) => envelope,
+        Ok(None) => {
+            return PreparedChangeEvents {
+                events: Vec::new(),
+                affected_objects: sealed
+                    .event_ids
+                    .iter()
+                    .map(|event_id| format!("unresolved-change-feed-event:{event_id}"))
+                    .collect(),
+                error: Some(format!(
+                    "NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH: sealed range ({from_sequence_exclusive}, {through_sequence_inclusive}] is empty"
+                )),
+            };
+        }
+        Err(error) => {
+            return PreparedChangeEvents {
+                events: Vec::new(),
+                affected_objects: sealed
+                    .event_ids
+                    .iter()
+                    .map(|event_id| format!("unresolved-change-feed-event:{event_id}"))
+                    .collect(),
+                error: Some(format!("{error:#}")),
+            };
+        }
+    };
+    let live_sealed_value = sealed_change_set_value(
+        project_id,
+        from_sequence_exclusive,
+        through_sequence_inclusive,
+        &sealed.event_ids,
+        &sealed.affected_objects,
+        &live_envelope.feed_page_digest,
+    );
+    let live_change_set_digest = match digest_json(&live_sealed_value) {
+        Ok(digest) => digest,
+        Err(error) => {
+            return PreparedChangeEvents {
+                events: Vec::new(),
+                affected_objects: sealed.affected_objects,
+                error: Some(format!("{error:#}")),
+            };
+        }
+    };
+    if live_envelope.event_ids != sealed.event_ids
+        || live_envelope.through_sequence_inclusive != through_sequence_inclusive
+        || live_change_set_digest != sealed.digest
+    {
+        return PreparedChangeEvents {
+            events: Vec::new(),
+            affected_objects: sealed
+                .event_ids
+                .iter()
+                .map(|event_id| format!("unresolved-change-feed-event:{event_id}"))
+                .collect(),
+            error: Some(format!(
+                "NEX_INCREMENTAL_FRESHNESS_CHANGE_FEED_PAGE_MISMATCH: live Feed rows do not match the sealed Change Set for range ({from_sequence_exclusive}, {through_sequence_inclusive}]"
+            )),
+        };
+    }
+    prepare_change_events(
+        conn,
+        project_id,
+        from_sequence_exclusive,
+        through_sequence_inclusive,
+        &sealed.event_ids,
+    )
+}
+
 fn create_and_claim_batch_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -362,27 +778,33 @@ fn create_and_claim_batch_in_tx(
         )
         .optional()?
         .unwrap_or(0);
-    let events = get_changes_since(
+    let Some(envelope) = load_change_batch_envelope(
         conn,
         project_id,
         acknowledged,
         MAX_CANONICAL_SEQUENCES_PER_BATCH,
-    )?;
-    let Some(through_sequence) = events.iter().map(|event| event.canonical_sequence).max() else {
+    )?
+    else {
         return Ok(ReservationOutcome::Idle);
     };
-    let affected_objects = affected_source_identities(project_id, &events)?;
-    let event_ids = events
-        .iter()
-        .map(|event| event.event_id.clone())
-        .collect::<Vec<_>>();
-    let sealed = json!({
-        "projectId": project_id,
-        "fromSequenceExclusive": acknowledged,
-        "throughSequenceInclusive": through_sequence,
-        "eventIds": event_ids,
-        "affectedObjects": affected_objects,
-    });
+    let through_sequence = envelope.through_sequence_inclusive;
+    let prepared = prepare_change_events(
+        conn,
+        project_id,
+        acknowledged,
+        through_sequence,
+        &envelope.event_ids,
+    );
+    let affected_objects = prepared.affected_objects;
+    let event_ids = envelope.event_ids;
+    let sealed = sealed_change_set_value(
+        project_id,
+        acknowledged,
+        through_sequence,
+        &event_ids,
+        &affected_objects,
+        &envelope.feed_page_digest,
+    );
     let digest = digest_json(&sealed)?;
     let change_set_id = format!(
         "incremental-freshness:{}",
@@ -459,7 +881,8 @@ fn create_and_claim_batch_in_tx(
         &run_id,
         acknowledged,
         through_sequence,
-        events,
+        prepared.events,
+        prepared.error,
         has_more,
     )
 }
@@ -537,21 +960,12 @@ fn resume_active_batch_in_tx(
         return Ok(ReservationOutcome::Idle);
     }
 
-    let events = get_changes_since(
+    let prepared = prepare_reserved_change_events(
         conn,
         project_id,
+        &active.run_id,
         active.acknowledged_through_sequence,
-        MAX_CANONICAL_SEQUENCES_PER_BATCH,
-    )?
-    .into_iter()
-    .filter(|event| event.canonical_sequence <= active.through_sequence)
-    .collect::<Vec<_>>();
-    anyhow::ensure!(
-        !events.is_empty(),
-        "NEX_INCREMENTAL_FRESHNESS_RESERVED_RANGE_EMPTY: run '{}' reserved ({}, {}]",
-        active.run_id,
-        active.acknowledged_through_sequence,
-        active.through_sequence
+        active.through_sequence,
     );
     let has_more = has_changes_after(conn, project_id, active.through_sequence)?;
 
@@ -582,7 +996,8 @@ fn resume_active_batch_in_tx(
         &active.run_id,
         active.acknowledged_through_sequence,
         active.through_sequence,
-        events,
+        prepared.events,
+        prepared.error,
         has_more,
     )
 }
@@ -596,6 +1011,7 @@ fn claim_reserved_batch_in_tx(
     from_sequence_exclusive: i64,
     through_sequence_inclusive: i64,
     events: Vec<NarrativeChangeEventRecord>,
+    preparation_error: Option<String>,
     has_more: bool,
 ) -> anyhow::Result<ReservationOutcome> {
     let lease_owner = format!("{CURSOR_CONSUMER_ID}:{}", std::process::id());
@@ -634,7 +1050,7 @@ fn claim_reserved_batch_in_tx(
         "NEX_CURSOR_RESERVATION_STALE: lease claim lost"
     );
 
-    Ok(ReservationOutcome::Claimed(ClaimedBatch {
+    Ok(ReservationOutcome::Claimed(Box::new(ClaimedBatch {
         project_id: project_id.to_string(),
         run_id: run_id.to_string(),
         task_id: claimed.task_id,
@@ -644,8 +1060,9 @@ fn claim_reserved_batch_in_tx(
         from_sequence_exclusive,
         through_sequence_inclusive,
         events,
+        preparation_error,
         has_more,
-    }))
+    })))
 }
 
 fn ensure_batch_task_in_tx(
@@ -676,6 +1093,9 @@ fn ensure_batch_task_in_tx(
 }
 
 fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<EvaluationPlan> {
+    if let Some(error) = batch.preparation_error.as_deref() {
+        anyhow::bail!("{error}");
+    }
     let identities = affected_source_identities(&batch.project_id, &batch.events)?;
     let signals = event_signals_by_source(&batch.project_id, &batch.events)?;
     let component_changed = batch.events.iter().any(is_component_schema_change);
@@ -1659,7 +2079,7 @@ mod tests {
         };
         let plan = evaluate_batch(db, &batch).expect("evaluate claimed batch");
         assert_eq!(plan.affected_edge_count, 1);
-        (batch, plan)
+        (*batch, plan)
     }
 
     fn assert_publish_rolled_back(db: &Database, batch: &ClaimedBatch) {
