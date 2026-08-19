@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 29,
+  "schemaVersion": 30,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -7395,6 +7395,13 @@
           "default": null,
           "primaryKey": 1
         },
+        "owning_run_id": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "project_id": {
           "ordinal": 1,
           "declaredType": "TEXT",
@@ -7439,7 +7446,7 @@
           ]
         }
       ],
-      "createSql": "CREATE TABLE narrative_dependency_edges ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0), read_set_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'), generated_by_transaction_id TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity) )"
+      "createSql": "CREATE TABLE narrative_dependency_edges ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0), read_set_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(read_set_json) AND json_type(read_set_json) = 'array'), generated_by_transaction_id TEXT, created_at TEXT NOT NULL, owning_run_id TEXT, PRIMARY KEY(id), UNIQUE(project_id, consumer_kind, consumer_key, source_object_identity) )"
     },
     "narrative_extraction_artifacts": {
       "kind": "table",

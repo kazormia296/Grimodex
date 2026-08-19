@@ -23,21 +23,33 @@
 //! `BEGIN IMMEDIATE` / commit block. Wiring those call sites is out of scope
 //! for this Lane; see Gate C2-T1.
 //!
-//! C2-T1 wires the Producer side in: `repository.rs`'s `insert_proposal_seed`
-//! and `append_revision_on_conn` call [`record_dependency_edge_in_tx`] for
-//! every `SourceBasisRow` a Proposal's Reconciliation Envelope carries,
-//! keyed under [`RUN_CONSUMER_KIND`]/the owning Run's id -- the same
-//! Consumer identity `restore_rebuild.rs`'s Lane N diagnostics already
-//! queried by convention before any Producer declared Edges under it.
-//! Edges accumulate per Run across every Proposal/Revision it produces
-//! (an upsert per Source, never a delete-then-redeclare at this
-//! granularity): deleting a Run's whole Edge set on one Proposal's revision
-//! would erase sibling Proposals' Edges from the same Run. When a Run's
-//! Edge set as a whole should be cleared (a full re-run/redo) is a
-//! separate, not-yet-wired question left to Run/Task/Attempt lifecycle
-//! code (Lane B, `execution_state.rs`).
+//! The Producer side is wired in `repository.rs`: `insert_proposal_seed` and
+//! `append_revision_on_conn` call [`record_dependency_edge_in_tx`] for every
+//! `SourceBasisRow` a Proposal's Reconciliation Envelope carries.
+//!
+//! Those Edges are keyed under [`PROPOSAL_REVISION_CONSUMER_KIND`]/the
+//! Revision's own id (Gate C2-2). They were keyed under
+//! [`RUN_CONSUMER_KIND`]/the Run until then, which made every Proposal a Run
+//! produced share one Consumer -- so editing one Scene staled all of them.
+//! The Run is still recorded, as `owning_run_id` (SCHEMA 30): it is what a
+//! `snapshot:<runId>` Source of that Revision must name, and it stays true
+//! after the Proposal is gone.
+//!
+//! [`RUN_CONSUMER_KIND`] is not a legacy value. `legacy_backfill.rs` still
+//! declares Edges under it for Applications that have no Revision to
+//! attribute a read to; re-keying those to the reserved `application` kind
+//! is Gate C2-Z's legacy/Generic parity work.
+//!
+//! Declaration is an upsert per Source, never a delete-then-redeclare. Under
+//! Run grain that was a hard constraint -- clearing a Run's Edge set on one
+//! Proposal's revision would erase its siblings'. Under Revision grain it is
+//! a property instead: a Revision is immutable, so its declared set never
+//! shrinks, and re-running the same Producer for it stays idempotent.
 
 use rusqlite::{params, Connection, Row};
+
+use super::consumer_identity::validate_consumer_identity;
+use super::semantic_index_diagnostics::compute_dependency_set_digest;
 
 /// The Dependency Edge Consumer identity a Run's own declared Edges are
 /// stored under: `consumer_kind = RUN_CONSUMER_KIND`, `consumer_key =
@@ -46,7 +58,17 @@ use rusqlite::{params, Connection, Row};
 /// Run-scoped caller (Producer-time recording in `repository.rs`,
 /// Rebuild-time lookup in `restore_rebuild.rs`) shares this one constant
 /// rather than each fixing its own literal.
-pub(crate) const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
+///
+/// Defined in `consumer_identity.rs` (Gate C2-2 moved the whole Consumer
+/// vocabulary there) and re-exported here so the call sites that already
+/// import it from this module keep working.
+pub(crate) use super::consumer_identity::RUN_CONSUMER_KIND;
+
+/// The Consumer identity a Proposal Revision's declared Edges are stored
+/// under. Defined in `consumer_identity.rs` alongside the rest of the
+/// vocabulary and re-exported here for the same reason as
+/// [`RUN_CONSUMER_KIND`].
+pub(crate) use super::consumer_identity::PROPOSAL_REVISION_CONSUMER_KIND;
 
 /// Builds a `source_object_identity` string from a Source's `(kind, key)`
 /// pair. The prefixes are the same ones `restore_rebuild.rs`'s
@@ -105,12 +127,66 @@ fn starts_with_any_source_prefix(value: &str) -> bool {
         .any(|prefix| value.starts_with(prefix))
 }
 
+/// Validates the Run id grammar required for an unambiguous
+/// `snapshot:<runId>` Source identity. Source identity prefixes are reserved:
+/// accepting one at the start of a Run id would make its Snapshot identity
+/// indistinguishable from the malformed historical double-prefix shape.
+pub(crate) fn validate_run_id(run_id: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !run_id.trim().is_empty() && run_id.trim() == run_id,
+        "NEX_RUN_ID_INVALID: runId must be non-empty and must not contain surrounding whitespace"
+    );
+    anyhow::ensure!(
+        !starts_with_any_source_prefix(run_id),
+        "NEX_RUN_ID_INVALID: runId '{run_id}' must not start with a reserved Source identity prefix"
+    );
+    Ok(())
+}
+
+/// Parses the Run id embedded in a canonical Snapshot Source identity.
+///
+/// `Ok(None)` means the identity is not a Snapshot Source. Snapshot-shaped
+/// identities fail closed when the suffix is blank, padded, or itself starts
+/// with a Source prefix. The last case is the historical double-prefix shape
+/// (`snapshot:snapshot:<runId>`) that must never be treated as a Run id.
+pub(crate) fn parse_snapshot_run_id_from_source_identity(
+    source_object_identity: &str,
+) -> anyhow::Result<Option<&str>> {
+    let Some(run_id) = source_object_identity.strip_prefix("snapshot:") else {
+        return Ok(None);
+    };
+    validate_run_id(run_id).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_SOURCE_KEY_INVALID: snapshot-document sourceKey '{source_object_identity}' has an invalid Run id: {error}"
+        )
+    })?;
+    Ok(Some(run_id))
+}
+
+/// `true` only when `run_id` names a persisted Run owned by another project.
+/// A missing Run is deliberately not rejected here: for an otherwise
+/// well-formed Snapshot Edge that is genuine Source-missing evidence.
+pub(crate) fn run_id_belongs_to_another_project(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM narrative_extraction_runs
+              WHERE id = ?1 AND project_id <> ?2
+         )",
+        params![run_id, project_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// The one place a `(source_kind, source_key)` pair becomes a
 /// `source_object_identity`, for every writer and for SCHEMA 28's repair.
 ///
 /// Idempotent by construction: a key that already carries its own kind's
 /// prefix is returned unchanged, so running it twice cannot double-prefix
-/// the way `record_run_dependency_edges_in_tx` once did.
+/// the way `record_revision_dependency_edges_in_tx` once did.
 ///
 /// The bare-key rule is not a style choice, it mirrors what
 /// `source_revision.rs`'s resolvers actually accept.
@@ -146,6 +222,11 @@ pub(crate) fn canonical_source_object_identity(
             !starts_with_any_source_prefix(rest),
             "NEX_SOURCE_KEY_INVALID: {source_kind} sourceKey '{source_key}' is already prefixed twice"
         );
+        if source_kind == "snapshot-document" {
+            // Keep the writer-facing Snapshot parser and the general
+            // canonicalizer on one exact grammar.
+            parse_snapshot_run_id_from_source_identity(source_key)?;
+        }
         return Ok(source_key.to_string());
     }
 
@@ -175,6 +256,11 @@ pub(crate) struct DependencyEdge {
     pub read_set_json: String,
     pub generated_by_transaction_id: Option<String>,
     pub created_at: String,
+    /// The Run that declared this Edge (SCHEMA 30). Provenance, not a
+    /// derivation: it stays true after the Proposal the declaration came from
+    /// is gone. `None` for an Edge whose declaring Run could not be
+    /// identified -- `restore_rebuild` reports that instead of guessing.
+    pub owning_run_id: Option<String>,
 }
 
 fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
@@ -187,6 +273,7 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
         read_set_json: row.get(5)?,
         generated_by_transaction_id: row.get(6)?,
         created_at: row.get(7)?,
+        owning_run_id: row.get(8)?,
     })
 }
 
@@ -202,6 +289,22 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
 /// source_object_identity)` key upserts in place rather than accumulating
 /// duplicate Edge rows.
 ///
+/// The Consumer identity is validated here too
+/// ([`validate_consumer_identity`]), because the table's own `CHECK`s only
+/// require non-empty strings. A `consumer_kind` carrying the `finding_key`
+/// separator would silently collide two unrelated Consumers onto one
+/// Maintenance Attention row, which no constraint SQLite can express would
+/// catch. This is the Producer-time gate; the read side stays tolerant of
+/// whatever is already stored.
+///
+/// `owning_run_id` is provenance, not an arbitrary resolver hint. A supplied
+/// value must be an exact, non-blank id; for a Run Consumer it must equal the
+/// Consumer key, and for a `snapshot:<runId>` Source it is required to equal
+/// the embedded Run id. If that Run exists, it must belong to the Edge's
+/// project. Historical/corrupt rows can still bypass these code-only
+/// invariants, so `restore_rebuild` validates them again before it calls the
+/// Snapshot resolver.
+///
 /// Returns the Edge's `id` (stable across upserts of the same key).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn record_dependency_edge_in_tx(
@@ -212,8 +315,18 @@ pub(crate) fn record_dependency_edge_in_tx(
     source_object_identity: &str,
     read_set_json: &str,
     generated_by_transaction_id: Option<&str>,
+    owning_run_id: Option<&str>,
     created_at: &str,
 ) -> anyhow::Result<String> {
+    validate_consumer_identity(consumer_kind, consumer_key)?;
+    validate_owning_run_identity(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        source_object_identity,
+        owning_run_id,
+    )?;
     serde_json::from_str::<Vec<serde_json::Value>>(read_set_json).map_err(|error| {
         anyhow::anyhow!(
             "NEX_DEPENDENCY_READ_SET_INVALID: readSetJson must be a JSON array: {error}"
@@ -224,13 +337,14 @@ pub(crate) fn record_dependency_edge_in_tx(
     let id: String = conn.query_row(
         "INSERT INTO narrative_dependency_edges (
              id, project_id, consumer_kind, consumer_key, source_object_identity,
-             read_set_json, generated_by_transaction_id, created_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             read_set_json, generated_by_transaction_id, created_at, owning_run_id
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, consumer_kind, consumer_key, source_object_identity)
          DO UPDATE SET
              read_set_json = excluded.read_set_json,
              generated_by_transaction_id = excluded.generated_by_transaction_id,
-             created_at = excluded.created_at
+             created_at = excluded.created_at,
+             owning_run_id = excluded.owning_run_id
          RETURNING id",
         params![
             candidate_id,
@@ -241,10 +355,93 @@ pub(crate) fn record_dependency_edge_in_tx(
             read_set_json,
             generated_by_transaction_id,
             created_at,
+            owning_run_id,
         ],
         |row| row.get(0),
     )?;
     Ok(id)
+}
+
+fn validate_owning_run_identity(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    source_object_identity: &str,
+    owning_run_id: Option<&str>,
+) -> anyhow::Result<()> {
+    if let Some(owning_run_id) = owning_run_id {
+        anyhow::ensure!(
+            !owning_run_id.trim().is_empty() && owning_run_id.trim() == owning_run_id,
+            "NEX_DEPENDENCY_OWNING_RUN_INVALID: owningRunId must be non-empty and must not contain surrounding whitespace"
+        );
+        if consumer_kind == RUN_CONSUMER_KIND {
+            anyhow::ensure!(
+                consumer_key == owning_run_id,
+                "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: Run consumerKey '{consumer_key}' does not match owningRunId '{owning_run_id}'"
+            );
+        }
+        anyhow::ensure!(
+            !run_id_belongs_to_another_project(conn, project_id, owning_run_id)?,
+            "NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH: owningRunId '{owning_run_id}' belongs to another project"
+        );
+    }
+
+    if let Some(snapshot_run_id) =
+        parse_snapshot_run_id_from_source_identity(source_object_identity)?
+    {
+        let owning_run_id = owning_run_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: snapshot-document Edge must record its declaring Run"
+            )
+        })?;
+        anyhow::ensure!(
+            snapshot_run_id == owning_run_id,
+            "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: snapshot Run '{snapshot_run_id}' does not match owningRunId '{owning_run_id}'"
+        );
+    }
+
+    Ok(())
+}
+
+/// The digest of the identity set `(project_id, consumer_kind,
+/// consumer_key)` currently depends on: `compute_dependency_set_digest`
+/// over every one of the Consumer's Dependency Edges'
+/// `source_object_identity`.
+///
+/// This is the Consumer-grained counterpart of
+/// `narrative_semantic_index_metadata.dependency_set_digest`, and it is a
+/// *set* digest, not a content digest: it changes when the Consumer starts
+/// or stops depending on a Source, not when a Source it already depends on
+/// is edited (that is what Edge State and the rolled-up Freshness are for).
+/// Together they answer the two questions a Verify has to separate -- "is
+/// what this Consumer read still current?" and "is this Consumer still
+/// reading the same things?" -- which the Run Kind Policy names
+/// `consumer-freshness-dependency-set-digest`.
+///
+/// Returns the digest of the empty set for a Consumer with no Edges. That
+/// is a real, distinguishable value rather than `None`: "this Consumer
+/// depends on nothing" and "this Consumer's dependency set was never
+/// computed" are different facts, and only the latter is NULL.
+pub(crate) fn consumer_dependency_set_digest(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+) -> anyhow::Result<String> {
+    let mut statement = conn.prepare(
+        "SELECT source_object_identity
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+    )?;
+    let identities = statement
+        .query_map(params![project_id, consumer_kind, consumer_key], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    // `compute_dependency_set_digest` sorts and length-prefixes internally,
+    // so no ORDER BY is needed for determinism here.
+    Ok(compute_dependency_set_digest(&identities))
 }
 
 /// Mutation-time Reverse Dependency Lookup: every Consumer that declared a
@@ -263,7 +460,7 @@ pub(crate) fn find_edges_by_source(
 ) -> anyhow::Result<Vec<DependencyEdge>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
-                read_set_json, generated_by_transaction_id, created_at
+                read_set_json, generated_by_transaction_id, created_at, owning_run_id
            FROM narrative_dependency_edges
           WHERE project_id = ?1 AND source_object_identity = ?2
           ORDER BY consumer_kind ASC, consumer_key ASC",
@@ -283,7 +480,7 @@ pub(crate) fn find_edges_by_consumer(
 ) -> anyhow::Result<Vec<DependencyEdge>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, consumer_kind, consumer_key, source_object_identity,
-                read_set_json, generated_by_transaction_id, created_at
+                read_set_json, generated_by_transaction_id, created_at, owning_run_id
            FROM narrative_dependency_edges
           WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3
           ORDER BY source_object_identity ASC",
@@ -351,6 +548,7 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body","/title"]"#,
                 Some("tx-1"),
+                None,
                 "2026-08-15T00:00:00.000Z",
             )?;
             assert!(!id.is_empty());
@@ -396,6 +594,7 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 Some("tx-1"),
+                None,
                 "2026-08-15T00:00:00.000Z",
             )?;
 
@@ -407,6 +606,7 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body","/title"]"#,
                 Some("tx-2"),
+                None,
                 "2026-08-15T01:00:00.000Z",
             )?;
 
@@ -425,6 +625,213 @@ mod tests {
         .expect("upsert edge");
     }
 
+    /// The Producer-time gate this module's doc comment claims, exercised
+    /// through the writer rather than only through
+    /// `validate_consumer_identity` itself -- otherwise deleting the call
+    /// leaves every test in this crate green while two unrelated Consumers
+    /// start sharing one `finding_key`, and with it one human disposition.
+    #[test]
+    fn a_consumer_kind_carrying_the_finding_key_separator_fails_closed() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            // ("a:b", "c") and ("a", "b:c") both render as "a:b:c".
+            let collides = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                "a:b",
+                "c",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            );
+            assert!(collides
+                .expect_err("a consumer kind containing the separator must be refused")
+                .to_string()
+                .contains("NEX_CONSUMER_KIND_INVALID"));
+
+            for (kind, key) in [("", "run-1"), (RUN_CONSUMER_KIND, ""), (" padded", "run-1")] {
+                assert!(
+                    record_dependency_edge_in_tx(
+                        conn,
+                        "project-1",
+                        kind,
+                        key,
+                        "project:scene:scene-1",
+                        r#"["/body"]"#,
+                        None,
+                        None,
+                        "2026-08-15T00:00:00.000Z"
+                    )
+                    .is_err(),
+                    "expected ({kind:?}, {key:?}) to be refused"
+                );
+            }
+
+            // A key may carry separators; only the kind may not.
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                "semantic-index",
+                "embeddings:v2",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                None,
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect("a compound consumer key is legitimate");
+            Ok(())
+        })
+        .expect("consumer identity gate");
+    }
+
+    #[test]
+    fn invalid_owning_run_identity_fails_closed_at_the_writer() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            for (label, consumer_kind, consumer_key, source, owning_run_id) in [
+                (
+                    "empty owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-empty",
+                    "snapshot:run-1",
+                    Some(""),
+                ),
+                (
+                    "whitespace owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-whitespace",
+                    "snapshot:run-1",
+                    Some("   "),
+                ),
+                (
+                    "padded owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-padded",
+                    "snapshot:run-1",
+                    Some(" run-1 "),
+                ),
+                (
+                    "missing snapshot owner",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-missing",
+                    "snapshot:run-1",
+                    None,
+                ),
+                (
+                    "snapshot owner mismatch",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-mismatch",
+                    "snapshot:run-1",
+                    Some("run-2"),
+                ),
+                (
+                    "double-prefixed snapshot",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-double-prefix",
+                    "snapshot:snapshot:run-1",
+                    Some("snapshot:run-1"),
+                ),
+                (
+                    "Run consumer mismatch",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    "project:scene:scene-1",
+                    Some("run-2"),
+                ),
+            ] {
+                let result = record_dependency_edge_in_tx(
+                    conn,
+                    "project-1",
+                    consumer_kind,
+                    consumer_key,
+                    source,
+                    r#"["/body"]"#,
+                    None,
+                    owning_run_id,
+                    "2026-08-15T00:00:00.000Z",
+                );
+                assert!(result.is_err(), "{label} must be refused");
+            }
+
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-2', 'Project Two')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('foreign-run', 'project-2', 'x', '{}', '{}', 'd',
+                         'completed', '{}', 'sha256:snap',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
+            let cross_project = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-cross-project",
+                "snapshot:foreign-run",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("foreign-run"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("a known foreign-project owner must be refused");
+            assert!(
+                cross_project
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH"),
+                "unexpected error: {cross_project}"
+            );
+            let cross_project_non_snapshot = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-cross-project-scene",
+                "project:scene:scene-1",
+                r#"["/body"]"#,
+                None,
+                Some("foreign-run"),
+                "2026-08-15T00:00:00.000Z",
+            )
+            .expect_err("foreign-project provenance must be refused for every Source kind");
+            assert!(
+                cross_project_non_snapshot
+                    .to_string()
+                    .contains("NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH"),
+                "unexpected error: {cross_project_non_snapshot}"
+            );
+
+            let valid = record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                PROPOSAL_REVISION_CONSUMER_KIND,
+                "revision-valid",
+                "snapshot:run-1",
+                r#"["sha256:snapshot"]"#,
+                None,
+                Some("run-1"),
+                "2026-08-15T00:00:00.000Z",
+            )?;
+            assert!(!valid.is_empty());
+            let persisted: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_dependency_edges WHERE project_id = 'project-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                persisted, 1,
+                "only the one valid Edge may survive the writer gate"
+            );
+            Ok(())
+        })
+        .expect("owning Run writer gate");
+    }
+
     #[test]
     fn non_array_read_set_json_fails_closed() {
         let db = test_db();
@@ -436,6 +843,7 @@ mod tests {
                 "proposal-1",
                 "project:scene:scene-1",
                 r#"{"not":"an array"}"#,
+                None,
                 None,
                 "2026-08-15T00:00:00.000Z",
             );
@@ -453,6 +861,7 @@ mod tests {
                 "proposal-1",
                 "project:scene:scene-1",
                 "not json at all",
+                None,
                 None,
                 "2026-08-15T00:00:00.000Z",
             );
@@ -482,6 +891,7 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
+                None,
                 "2026-08-15T00:00:00.000Z",
             )?;
             record_dependency_edge_in_tx(
@@ -491,6 +901,7 @@ mod tests {
                 "proposal-1",
                 "project:scene:scene-1",
                 r#"["/body"]"#,
+                None,
                 None,
                 "2026-08-15T00:00:00.000Z",
             )?;
@@ -530,6 +941,7 @@ mod tests {
                 "project:scene:scene-1",
                 r#"["/body"]"#,
                 None,
+                None,
                 "2026-08-15T00:00:00.000Z",
             )?;
             record_dependency_edge_in_tx(
@@ -540,6 +952,7 @@ mod tests {
                 "project:scene:scene-2",
                 r#"["/body"]"#,
                 None,
+                None,
                 "2026-08-15T00:00:00.000Z",
             )?;
             record_dependency_edge_in_tx(
@@ -549,6 +962,7 @@ mod tests {
                 "proposal-2",
                 "project:scene:scene-1",
                 r#"["/body"]"#,
+                None,
                 None,
                 "2026-08-15T00:00:00.000Z",
             )?;
@@ -584,6 +998,20 @@ mod tests {
                 canonical_source_object_identity(kind, key).unwrap(),
                 key,
                 "{kind} must be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn run_ids_reserve_every_source_identity_prefix() {
+        validate_run_id("run-1").expect("ordinary Run id");
+        for prefix in SOURCE_IDENTITY_PREFIXES {
+            let run_id = format!("{prefix}run-1");
+            let error = validate_run_id(&run_id)
+                .expect_err("a Source-prefixed Run id would make snapshot identity ambiguous");
+            assert!(
+                error.to_string().contains("NEX_RUN_ID_INVALID"),
+                "unexpected error for {run_id}: {error}"
             );
         }
     }

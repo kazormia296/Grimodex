@@ -32,8 +32,8 @@ use rusqlite::{params, Connection};
 use serde_json::Value;
 
 use super::change_feed::{acknowledge_cursor_in_tx, contribution_target_identity_from_object_key};
-use super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH;
 use super::cursor_reservation::get_cursor;
+use super::legacy_backfill::LEGACY_BACKFILL_FIELD_PATH;
 
 /// The Feed consumer identity this projection acknowledges under.
 pub(crate) const CONSUMER_ID: &str = "contribution-target-state";

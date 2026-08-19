@@ -1,7 +1,9 @@
 //! Publish Runtime (Gate C2 Wave 2 Lane J): the single integrated
-//! transaction that turns a batch of already-evaluated Dependency Edge
-//! outcomes (`evaluator::EdgeObservation`, Lane F -- pure, no DB I/O) into
-//! every durable write a completed Freshness-evaluation Run must make.
+//! transaction that turns a batch of Dependency Edge outcomes
+//! (`evaluator::EdgeObservation`, Lane F -- pure, no DB I/O) into every
+//! durable write a completed Freshness-evaluation Run must make. Outcomes
+//! normally come from evaluation; callers may also publish an explicit
+//! `Unknown` when an Edge cannot be evaluated safely.
 //!
 //! ADR 005 Amendment, "Mutation-time" flow (`docs/adr/005-narrative-semantic-core-boundary.md`):
 //!
@@ -48,8 +50,10 @@
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 
+use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
-use super::evaluator::{EdgeObservation, EvidenceFreshness, FindingReasonCode};
+use super::dependency_edges::consumer_dependency_set_digest;
+use super::evaluator::{BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_observation::record_finding_observation_in_tx;
 
@@ -179,6 +183,13 @@ pub(crate) fn write_edge_state_in_tx(
 /// Freshness row seeded by something other than a Run, e.g. legacy
 /// backfill) and is written exactly as passed, `None` included.
 ///
+/// `dependency_set_digest` (SCHEMA 24, nullable) is the digest of the
+/// identity set this Consumer currently depends on -- see
+/// [`consumer_dependency_set_digest`]. `None` writes SQL `NULL`, which the
+/// Consumer Contract defines as "not yet evaluated", never as "no
+/// dependencies" and never as an inconsistency: every workspace migrated
+/// from before Gate C2-2 has NULL here and is not thereby broken.
+///
 /// Callers own the surrounding `BEGIN`/`COMMIT`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn write_consumer_freshness_in_tx(
@@ -189,11 +200,11 @@ pub(crate) fn write_consumer_freshness_in_tx(
     observation: &EdgeObservation,
     semantic_epoch_id: &str,
     last_evaluated_run_id: Option<&str>,
+    dependency_set_digest: Option<&str>,
     updated_at: &str,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
-    anyhow::ensure!(!consumer_kind.trim().is_empty(), "consumerKind is required");
-    anyhow::ensure!(!consumer_key.trim().is_empty(), "consumerKey is required");
+    validate_consumer_identity(consumer_kind, consumer_key)?;
     anyhow::ensure!(
         !semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
@@ -205,13 +216,14 @@ pub(crate) fn write_consumer_freshness_in_tx(
     conn.execute(
         "INSERT INTO narrative_consumer_freshness
             (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
-             semantic_epoch_id, last_evaluated_run_id, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             semantic_epoch_id, last_evaluated_run_id, dependency_set_digest, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(project_id, consumer_kind, consumer_key) DO UPDATE SET
              evidence_freshness = excluded.evidence_freshness,
              build_action = excluded.build_action,
              semantic_epoch_id = excluded.semantic_epoch_id,
              last_evaluated_run_id = excluded.last_evaluated_run_id,
+             dependency_set_digest = excluded.dependency_set_digest,
              updated_at = excluded.updated_at",
         params![
             project_id,
@@ -221,10 +233,109 @@ pub(crate) fn write_consumer_freshness_in_tx(
             observation.build_action.as_str(),
             semantic_epoch_id,
             last_evaluated_run_id,
+            dependency_set_digest,
             updated_at,
         ],
     )?;
     Ok(())
+}
+
+/// The worst stored Edge State across every Edge this Consumer declares,
+/// restricted to the current Semantic Epoch.
+///
+/// The epoch restriction is what makes reading state back safe rather than
+/// merely convenient. `narrative_dependency_edge_states` is keyed by
+/// `edge_id` alone and survives an Epoch rotation, so without the filter a
+/// row evaluated under a superseded Epoch -- exactly the rows
+/// `restore_rebuild`'s Verify reports as
+/// `edge_state_ids_outside_current_epoch` -- would be rolled into the
+/// Consumer's *current* Freshness. The caller has just written a row at
+/// `semantic_epoch_id` for every Edge outcome it received. A declared Edge
+/// with no state in this Epoch remains in scope and contributes `Unknown`,
+/// as detailed below.
+///
+/// Ordering is `source_object_identity` then `edge_id`, which is the order
+/// `dependency_edges::find_edges_by_consumer` returns Edges in. Combined
+/// with the strict `>` below that reproduces the previous
+/// reduce-over-the-argument behaviour exactly for the whole-Consumer
+/// publish every caller performs today: same winner, same
+/// `build_action`, including on a tie between two equally-bad Edges (see
+/// `freshness_severity_rank`'s note on ties).
+///
+/// An Edge the Consumer declares but that has *no* state in this Epoch is
+/// `Unknown`, not absent. Dropping it would be a false PASS, and a loud one:
+/// the same publish stamps a `dependency_set_digest` computed over every
+/// Edge, so the stored row would claim "evaluated against this whole
+/// dependency set, and clean" about a set it had not finished evaluating.
+/// `Unknown` already means "Freshness could not be determined" and already
+/// outranks `Stale`, so this is the value the vocabulary reserves for it.
+///
+/// That is why the join is a LEFT JOIN from the Edges rather than an INNER
+/// JOIN from the states. The INNER JOIN made "not evaluated yet" and "has no
+/// Edge" the same query result, and only the second is a reason to contribute
+/// nothing.
+///
+/// Returns `None` only when the Consumer declares no Edges at all.
+fn worst_edge_state_for_consumer(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<Option<EdgeObservation>> {
+    let mut statement = conn.prepare(
+        "SELECT s.evidence_freshness, s.reason_code, s.build_action
+           FROM narrative_dependency_edges e
+           LEFT JOIN narrative_dependency_edge_states s
+             ON s.edge_id = e.id
+            AND s.evaluated_at_epoch_id = ?4
+          WHERE e.project_id = ?1
+            AND e.consumer_kind = ?2
+            AND e.consumer_key = ?3
+          ORDER BY e.source_object_identity ASC, e.id ASC",
+    )?;
+    let rows = statement
+        .query_map(
+            params![project_id, consumer_kind, consumer_key, semantic_epoch_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut worst: Option<(u8, EdgeObservation)> = None;
+    for (freshness, reason_code, build_action) in rows {
+        let observation = match (freshness, build_action) {
+            // Fail closed on a value outside the ratified vocabulary rather
+            // than rank it as something it is not --
+            // `EvidenceFreshness::try_from` is the same gate `evaluator.rs`
+            // applies on the way in.
+            (Some(freshness), Some(build_action)) => EdgeObservation {
+                freshness: EvidenceFreshness::try_from(freshness.as_str())?,
+                reason_code: reason_code
+                    .as_deref()
+                    .map(FindingReasonCode::try_from)
+                    .transpose()?,
+                build_action: BuildAction::try_from(build_action.as_str())?,
+            },
+            // Declared but not evaluated in this Epoch. `Manual` rather than
+            // `None`, because "nothing to do" is precisely what is not known.
+            _ => EdgeObservation {
+                freshness: EvidenceFreshness::Unknown,
+                reason_code: None,
+                build_action: BuildAction::Manual,
+            },
+        };
+        let rank = freshness_severity_rank(observation.freshness);
+        if worst.as_ref().is_none_or(|(best, _)| rank > *best) {
+            worst = Some((rank, observation));
+        }
+    }
+    Ok(worst.map(|(_, observation)| observation))
 }
 
 /// Severity rank used to pick the single worst Freshness value across a
@@ -266,29 +377,10 @@ fn freshness_severity_rank(freshness: EvidenceFreshness) -> u8 {
     }
 }
 
-/// Stable Attention/Finding key for a Consumer's diagnostic Finding rows.
-///
-/// This MUST match `inbox_read_model::consumer_finding_key` exactly --
-/// Lane P's cross-Lane adversarial suite caught an earlier version of this
-/// function keying per-Edge (`edge:{edge_id}`) while the Inbox Read Model
-/// looked up `{consumer_kind}:{consumer_key}`, which silently made every
-/// diagnostic Finding Observation invisible to the real Inbox. The Inbox is
-/// the user-facing surface and is Consumer-grained (one row per Consumer,
-/// matching `narrative_consumer_freshness`'s own primary key), so this
-/// function conforms to that grain rather than the reverse: a human snoozes
-/// or dismisses "this Consumer's freshness problem," not an individual
-/// internal Dependency Edge they never see. Multiple Edges under one
-/// Consumer therefore share one `finding_key`; `edge_id` is still recorded
-/// per-row in `narrative_maintenance_finding_observations.edge_id` so
-/// per-Edge attribution isn't lost, only de-emphasized as the lookup key.
-fn consumer_finding_key(consumer_kind: &str, consumer_key: &str) -> String {
-    format!("{consumer_kind}:{consumer_key}")
-}
-
 /// Deterministic `sha256:`-prefixed digest standing in for
 /// `narrative_maintenance_finding_observations.material_basis_digest`.
 /// [`publish_freshness_evaluation_in_tx`]'s fixed signature receives only
-/// already-evaluated `EdgeObservation`s, not the raw
+/// publishable `EdgeObservation`s, not the raw
 /// `evaluator::EdgeComparisonInput` signals that produced them (that
 /// comparison happens upstream, before this module is ever called), so the
 /// material basis this function can attest to is exactly what it has in
@@ -409,10 +501,9 @@ fn verify_publish_reservation_in_tx(
 ///    (`freshness_severity_rank`) as the Consumer's rolled-up current
 ///    value.
 /// d. [`record_finding_observation_in_tx`] for every Edge whose
-///    `observation.reason_code` is `Some` -- `evaluator::evaluate_edge`'s
-///    own doc comment: "a Finding row is only worth recording when there
-///    is something to explain", so a Fresh Edge with `reason_code: None`
-///    produces no Finding.
+///    `observation.reason_code` is `Some`. A Fresh Edge, or a synthetic
+///    `Unknown` with no registered explanation, has `reason_code: None`
+///    and produces no Finding.
 /// e. [`transition_run_status_in_tx`] to `Completed`.
 /// f. [`acknowledge_cursor_reservation_in_tx`] through `through_sequence`,
 ///    releasing the Change Feed cursor reservation this Run held -- itself
@@ -548,26 +639,50 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
         )?;
     }
 
-    // b. The single worst Freshness across all Edges becomes the Consumer's
-    //    rolled-up current value. Strict `>` (not `>=`) keeps the first
-    //    Edge encountered on a tie, matching freshness_severity_rank's doc.
-    let mut worst = &edges_and_observations[0].1;
-    let mut worst_rank = freshness_severity_rank(worst.freshness);
-    for (_, observation) in &edges_and_observations[1..] {
-        let rank = freshness_severity_rank(observation.freshness);
-        if rank > worst_rank {
-            worst = observation;
-            worst_rank = rank;
-        }
-    }
+    // b. The single worst Freshness across the Consumer's Edges becomes its
+    //    rolled-up current value -- read back from the Edge States just
+    //    written, *not* reduced over `edges_and_observations`.
+    //
+    //    The difference only shows when a caller publishes a subset of a
+    //    Consumer's Edges, and then it is the whole point. Reducing over the
+    //    argument would let a partial publish overwrite the Consumer row
+    //    using only the Edges in hand, so an Edge that went `stale` in an
+    //    earlier publish and was not re-evaluated in this one would simply
+    //    stop counting and the Consumer would roll back to `fresh` while its
+    //    own Edge State still said otherwise. No caller does that today
+    //    (`restore_rebuild`'s Rebuild-Derived orchestrator passes every Edge
+    //    `find_edges_by_consumer` returns), which is exactly why it was safe
+    //    -- and exactly why Gate C2-1's Change-Feed-driven incremental
+    //    evaluation, whose reason for existing is to re-evaluate only the
+    //    Edges a Source change touched, must not inherit it.
+    let worst = worst_edge_state_for_consumer(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        semantic_epoch_id,
+    )?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PUBLISH_RUNTIME_NO_EDGE_STATE: no Edge State at epoch '{semantic_epoch_id}' \
+             for consumer '{consumer_kind}:{consumer_key}' after writing {} of them",
+            edges_and_observations.len()
+        )
+    })?;
     write_consumer_freshness_in_tx(
         conn,
         project_id,
         consumer_kind,
         consumer_key,
-        worst,
+        &worst,
         semantic_epoch_id,
         Some(run_id),
+        Some(&consumer_dependency_set_digest(
+            conn,
+            project_id,
+            consumer_kind,
+            consumer_key,
+        )?),
         now,
     )?;
 
@@ -601,9 +716,12 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
 mod tests {
     use super::*;
     use crate::narrative_extraction::cursor_reservation::reserve_cursor_range_in_tx;
-    use crate::narrative_extraction::dependency_edges::record_dependency_edge_in_tx;
+    use crate::narrative_extraction::dependency_edges::{
+        record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+    };
     use crate::narrative_extraction::evaluator::BuildAction;
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
+    use crate::narrative_extraction::semantic_index_diagnostics::compute_dependency_set_digest;
     use crate::narrative_extraction::task_leases::with_immediate_transaction;
     use crate::Database;
     use std::path::Path;
@@ -696,9 +814,30 @@ mod tests {
             source_object_identity,
             r#"["/body"]"#,
             None,
+            None,
             "2026-08-15T00:00:00.000Z",
         )
         .expect("record edge")
+    }
+
+    fn consumer_freshness_value(conn: &Connection, consumer_key: &str) -> String {
+        conn.query_row(
+            "SELECT evidence_freshness FROM narrative_consumer_freshness
+              WHERE project_id = 'project-1' AND consumer_kind = ?1 AND consumer_key = ?2",
+            params![RUN_CONSUMER_KIND, consumer_key],
+            |row| row.get(0),
+        )
+        .expect("consumer freshness row")
+    }
+
+    fn stored_dependency_set_digest(conn: &Connection, consumer_key: &str) -> Option<String> {
+        conn.query_row(
+            "SELECT dependency_set_digest FROM narrative_consumer_freshness
+              WHERE project_id = 'project-1' AND consumer_kind = ?1 AND consumer_key = ?2",
+            params![RUN_CONSUMER_KIND, consumer_key],
+            |row| row.get(0),
+        )
+        .expect("consumer freshness row")
     }
 
     fn fresh() -> EdgeObservation {
@@ -1035,6 +1174,286 @@ mod tests {
         .expect("query after rejected publish");
     }
 
+    /// The regression Gate C2-1 would otherwise have shipped.
+    ///
+    /// A second publish that re-evaluates only *one* of a Consumer's Edges
+    /// must not let the Edges it did not look at stop counting. Reducing
+    /// over the caller's argument did exactly that: the Consumer rolled back
+    /// to `fresh` while its other Edge's own Edge State still said
+    /// `source-missing`, so the durable Freshness authority contradicted the
+    /// per-Edge diagnostic it is a rollup of -- and nothing errored.
+    #[test]
+    fn a_partial_republish_does_not_roll_consumer_freshness_backwards() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
+            let edge_fresh = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-1",
+            );
+            let edge_missing = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-2",
+            );
+
+            // Round 1: the whole Consumer. One Edge is gone, so the Consumer
+            // rolls up to source-missing.
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[
+                        (edge_fresh.clone(), fresh()),
+                        (edge_missing.clone(), source_missing()),
+                    ],
+                    &epoch_id,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+            assert_eq!(consumer_freshness_value(conn, "run-1"), "source-missing");
+
+            // Round 2: only the healthy Edge is re-evaluated, as an
+            // incremental Change-Feed-driven pass would do after an edit to
+            // scene-1 alone. scene-2 is still missing and was not looked at.
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[(edge_fresh.clone(), fresh())],
+                    &epoch_id,
+                    "2026-08-15T02:00:00.000Z",
+                )
+            })?;
+
+            assert_eq!(
+                consumer_freshness_value(conn, "run-1"),
+                "source-missing",
+                "an Edge that was not re-evaluated must keep contributing its stored state"
+            );
+            let untouched: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_dependency_edge_states WHERE edge_id = ?1",
+                params![edge_missing],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                untouched, "source-missing",
+                "round 2 must not have touched the Edge it was not given"
+            );
+            Ok(())
+        })
+        .expect("partial republish");
+    }
+
+    /// An Edge State left behind by a superseded Semantic Epoch must not be
+    /// rolled into the current Consumer Freshness. Reading state back is
+    /// only safe because of that filter: `narrative_dependency_edge_states`
+    /// is keyed by `edge_id` alone and survives an Epoch rotation.
+    #[test]
+    fn a_prior_epochs_edge_state_does_not_contribute_to_the_rollup() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let old_epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1", &old_epoch_id);
+            let edge_missing = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-2",
+            );
+            let edge_fresh = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-1",
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[
+                        (edge_fresh.clone(), fresh()),
+                        (edge_missing.clone(), source_missing()),
+                    ],
+                    &old_epoch_id,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+            assert_eq!(consumer_freshness_value(conn, "run-1"), "source-missing");
+
+            // Rotate. The stale Edge State row for edge_missing stays behind,
+            // still stamped with the superseded Epoch.
+            let new_epoch_id = with_immediate_transaction(conn, |conn| {
+                create_epoch_in_tx(conn, "project-1", "restore", None)
+            })?;
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[(edge_fresh.clone(), fresh())],
+                    &new_epoch_id,
+                    "2026-08-15T03:00:00.000Z",
+                )
+            })?;
+
+            assert_eq!(
+                consumer_freshness_value(conn, "run-1"),
+                "unknown",
+                "the prior Epoch's source-missing must not leak in, and the Edge that was \
+                 not re-evaluated must not silently vanish either -- it is unknown, and \
+                 unknown outranks fresh"
+            );
+            Ok(())
+        })
+        .expect("epoch rotation rollup");
+    }
+
+    /// The false PASS the LEFT JOIN exists to stop: a Consumer must not be
+    /// published `fresh` while one of the Edges its own dependency-set digest
+    /// covers has never been evaluated in this Epoch.
+    #[test]
+    fn a_consumer_is_not_fresh_while_one_of_its_edges_is_unevaluated() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
+            let evaluated = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-1",
+            );
+            // Declared, never evaluated. No Edge State row will exist for it.
+            seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-2",
+            );
+
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[(evaluated.clone(), fresh())],
+                    &epoch_id,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+
+            assert_eq!(
+                consumer_freshness_value(conn, "run-1"),
+                "unknown",
+                "publishing one Edge of two must not certify the Consumer clean"
+            );
+            // ...and the digest still covers both, which is exactly why the
+            // rollup may not quietly drop one of them.
+            let digest = stored_dependency_set_digest(conn, "run-1")
+                .expect("publish must write a dependency set digest");
+            assert_eq!(
+                digest,
+                compute_dependency_set_digest(&[
+                    "project:scene:scene-1".to_string(),
+                    "project:scene:scene-2".to_string(),
+                ])
+            );
+            Ok(())
+        })
+        .expect("partial evaluation");
+    }
+
+    /// The Consumer's dependency-set digest is written by the publish, and
+    /// it tracks *which* Sources the Consumer reads rather than their
+    /// content: adding an Edge changes it even when every Edge is Fresh.
+    #[test]
+    fn publishing_records_the_consumers_dependency_set_digest() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-1", "project-1", &epoch_id);
+            let edge_one = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-1",
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[(edge_one.clone(), fresh())],
+                    &epoch_id,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+            let first = stored_dependency_set_digest(conn, "run-1")
+                .expect("publish must write a dependency set digest");
+            assert_eq!(
+                first,
+                compute_dependency_set_digest(&["project:scene:scene-1".to_string()]),
+                "the stored digest must be the digest of the Consumer's Edge identities"
+            );
+
+            let edge_two = seed_edge(
+                conn,
+                "project-1",
+                RUN_CONSUMER_KIND,
+                "run-1",
+                "project:scene:scene-2",
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_edges_only_in_tx(
+                    conn,
+                    "project-1",
+                    "run-1",
+                    RUN_CONSUMER_KIND,
+                    "run-1",
+                    &[(edge_one.clone(), fresh()), (edge_two.clone(), fresh())],
+                    &epoch_id,
+                    "2026-08-15T02:00:00.000Z",
+                )
+            })?;
+            let second =
+                stored_dependency_set_digest(conn, "run-1").expect("digest must still be present");
+            assert_ne!(
+                first, second,
+                "the dependency set changed, so its digest must change -- even though every \
+                 Edge is Fresh and no per-Edge state moved"
+            );
+            Ok(())
+        })
+        .expect("dependency set digest");
+    }
+
     #[test]
     fn publish_requires_a_caller_owned_transaction() {
         let db = test_db();
@@ -1100,6 +1519,35 @@ mod tests {
         .expect("query after rejected write");
     }
 
+    /// Same Producer-time gate as `dependency_edges`', on the Freshness
+    /// authority's own writer. Both have to refuse, or the two tables could
+    /// disagree about what a Consumer even is.
+    #[test]
+    fn write_consumer_freshness_refuses_a_kind_carrying_the_finding_key_separator() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = seed_epoch(conn, "project-1");
+            let error = write_consumer_freshness_in_tx(
+                conn,
+                "project-1",
+                "a:b",
+                "c",
+                &fresh(),
+                &epoch_id,
+                None,
+                None,
+                "2026-08-15T01:00:00.000Z",
+            )
+            .expect_err("a consumer kind containing the separator must be refused");
+            assert!(
+                error.to_string().contains("NEX_CONSUMER_KIND_INVALID"),
+                "unexpected error: {error}"
+            );
+            Ok(())
+        })
+        .expect("consumer identity gate");
+    }
+
     #[test]
     fn write_consumer_freshness_fails_closed_when_epoch_belongs_to_a_different_project() {
         let db = test_db();
@@ -1113,6 +1561,7 @@ mod tests {
                 "proposal-1",
                 &fresh(),
                 &other_epoch_id,
+                None,
                 None,
                 "2026-08-15T01:00:00.000Z",
             )

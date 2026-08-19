@@ -3,6 +3,7 @@ import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockIfUnlicensed } from "@/features/license/gate";
 import { useCodexStore } from "@/features/codex/codexStore";
 import { findMentionedEntriesAsync } from "@/features/codex/rustMatcher";
 import { invoke } from "@/lib/tauri";
@@ -1397,7 +1398,7 @@ export async function proposePastSetups(
 ): Promise<ProposedSetup[]> {
   // 分析・提案系の LLM 呼び出し — kouetsu views と同じく analysis で gate する
   // (presentation から独立した correctness 層、policyGuard.ts 参照)。
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1473,7 +1474,7 @@ export interface EvaluateStrengthRequest {
 export async function evaluateSetupStrength(
   req: EvaluateStrengthRequest,
 ): Promise<AiEvaluation | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return null;
   let _project;
   try {
     _project = await getProject(useTreeStore.getState().projectId);
@@ -1562,7 +1563,7 @@ export async function auditChapter(
     // New pipeline owns chapter-level discovery; legacy audit returns empty.
     return [];
   }
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockIfPolicyOff("analysis") || blockIfUnlicensed()) return [];
   let _auditProject;
   try {
     _auditProject = await getProject(useTreeStore.getState().projectId);

@@ -206,7 +206,7 @@ additive typed-writer/read-model commands — new table, new writer, new IPC
 entrypoint, nothing pre-existing touched. A follow-up audit of the other 9
 Wave 1/2 modules found that most of them are explicitly documented, in
 their own module doc comments, as internal helpers meant to be called from
-*existing* pipelines, not new standalone commands:
+_existing_ pipelines, not new standalone commands:
 
 - `semantic_epoch.rs` (Lane A) and `restore_rebuild.rs`'s
   `rotate_epoch_for_restore_in_tx` (Lane N): **wired (C2-T1, see below)** —
@@ -221,11 +221,11 @@ their own module doc comments, as internal helpers meant to be called from
   IPC entrypoint itself.
 - `dependency_edges.rs` (Lane G): **wired (C2-T1, see below)** — its
   "Producer-time commit path" turned out, on closer reading, to mean
-  Proposal/Revision *generation* (`repository.rs`), not `commit.rs`'s
-  *apply*, and needed no change to `commit.rs` at all.
+  Proposal/Revision _generation_ (`repository.rs`), not `commit.rs`'s
+  _apply_, and needed no change to `commit.rs` at all.
 - `application_contributions.rs` (Lane H): **wired (C2-T1, see below)** —
   a genuine `commit.rs` apply-time concern, but it turned out to need only
-  *one* new call site, not 15: `commit.rs` already has a single central
+  _one_ new call site, not 15: `commit.rs` already has a single central
   loop (right after applying every operation) that calls
   `field_authority::affected_fields` per operation to record Field
   Authority, and that loop already has `application_id`,
@@ -238,7 +238,7 @@ their own module doc comments, as internal helpers meant to be called from
   built) Change Feed → Reverse Lookup → evaluator → publish background
   path; `semantic-core-authorities.json` already fixes Evidence Freshness's
   `canonicalAuthority` as this evaluator with `writePolicy:
-  canonical-only`, and no ratified Mutation Authority Route yet permits a
+canonical-only`, and no ratified Mutation Authority Route yet permits a
   background/scheduler caller for it.
 - `semantic_index_diagnostics.rs` (Lane M): pure diagnostic, no I/O; its
   own doc comment says it never triggers a rebuild itself.
@@ -246,7 +246,7 @@ their own module doc comments, as internal helpers meant to be called from
   `rebuild_verify_dependency_edges`/`rebuild_repair_dependency_edges_in_tx`
   (Lane N): **design ratified, see `narrative-run-kind-policy.json`
   below** — Legacy Backfill and Rebuild-verify run automatically; only a
-  Repair that corrects a *durable* Dependency/Contribution declaration is
+  Repair that corrects a _durable_ Dependency/Contribution declaration is
   human-triggered. Run creation/scheduling for all four is still to be
   implemented.
 
@@ -261,7 +261,7 @@ No frontend UI exists yet for any of this beyond a Gate C0 placeholder
 Proposal's validated Reconciliation Envelope carries. Two things only
 became clear by reading `restore_rebuild.rs` (Lane N) closely: Edges are
 declared under Consumer identity `(RUN_CONSUMER_KIND =
-"narrative-extraction-run", run_id)` — the *Run*, never the individual
+"narrative-extraction-run", run_id)` — the _Run_, never the individual
 Proposal — because Lane N's Rebuild-verify diagnostic already queried Edges
 by that exact convention before any Producer declared them; and
 `source_object_identity` uses fixed prefixes (`project:scene:`,
@@ -280,7 +280,7 @@ Run; when a Run's whole Edge set should be cleared (a full re-run/redo) is
 a separate, still-open question left to Run/Task/Attempt lifecycle code
 (Lane B). `commit.rs` needed no changes at all for this piece — the
 "Producer-time commit path" its own doc comment referred to turned out to
-mean Proposal/Revision generation, not commit *apply*.
+mean Proposal/Revision generation, not commit _apply_.
 
 Verified via `rustfmt --edition 2021 --check`, a brace/paren balance check,
 a Python `sqlite3` replay of the exact `narrative_dependency_edges` upsert
@@ -312,7 +312,7 @@ calls are guaranteed identical. Every contribution lands with
 matches exactly what this Application applied); a later process — Undo/
 Redo, a superseding Application, a hand edit — is what would ever
 transition it away from `Unchanged`, not this commit itself. This is
-*not* the 15-operation-kind risk originally feared: `affected_fields`
+_not_ the 15-operation-kind risk originally feared: `affected_fields`
 already centralizes per-operation-kind field derivation for Field
 Authority, so Lane H needed no new per-operation-kind logic at all, only
 one small addition at the one place all operation kinds already converge.
@@ -334,7 +334,7 @@ a Semantic Epoch, in the same transaction as their Change Feed append:
 
 - `project_snapshots.rs`'s `apply_project_snapshot_restore` calls
   `rotate_epoch_for_restore_in_tx(&transaction, &payload.project_id,
-  "project-restored", Some(&change_event_uid))` right after
+"project-restored", Some(&change_event_uid))` right after
   `append_canonical_and_narrative_change_in_tx` succeeds.
   `build_snapshot_restore_feed_events` — the only place this function ever
   sets a `structural_impact` — always uses the literal `"project-restored"`
@@ -398,7 +398,7 @@ open — automatic or human-triggered?" framing with one principle:
 > correcting a meaningful durable declaration is a human's responsibility.
 
 - **`dependency-backfill`** (Lane K; reuses the existing `run_kind =
-  'backfill'` column value) — automatic, once, after a schema upgrade. Not
+'backfill'` column value) — automatic, once, after a schema upgrade. Not
   inside the SCHEMA migration transaction itself: migration only creates
   tables/columns/indexes and leaves a backfill-required marker; Workspace
   open succeeds first, then a post-open bootstrap step detects the marker
@@ -406,8 +406,8 @@ open — automatic or human-triggered?" framing with one principle:
   already be enabled before Backfill starts, so no Application created
   during Backfill is lost to the Backfill's own snapshot. The Run seals
   `{projectId, runKind, semanticEpochId, legacySourceSchemaVersion,
-  legacyHighWaterMark, targetGraphContractDigest,
-  backfillAlgorithmVersion}` at creation. Editing is never blocked while
+legacyHighWaterMark, targetGraphContractDigest,
+backfillAlgorithmVersion}` at creation. Editing is never blocked while
   Backfill runs or if it fails — Legacy Freshness stays the read authority
   throughout; only the C2-Z cutover is gated on completion. Auto-retry is
   bounded to transient causes (SQLite busy, process interruption, app
@@ -429,7 +429,7 @@ open — automatic or human-triggered?" framing with one principle:
   never repair Dependency Edge/Contribution/Freshness as a side effect
   (`forbidSideEffectRepair: true` in the contract).
 - **`dependency-rebuild-derived`** (Lane N; reuses the existing `run_kind
-  = 'semantic-index-rebuild'` column value) — automatic whenever
+= 'semantic-index-rebuild'` column value) — automatic whenever
   Rebuildable Derived State (`narrative_dependency_edge_states`,
   `narrative_consumer_freshness`,
   `narrative_maintenance_finding_observations`, reanchor candidates,
@@ -446,7 +446,7 @@ open — automatic or human-triggered?" framing with one principle:
   before it runs. A crash mid-repair may resume the same already-approved
   sealed plan automatically — that is recovery of an approved operation,
   not a new repair decision. Allowed repairs are limited to what is
-  *reconstructible*, not *inferred*: an Edge fully rebuildable from the
+  _reconstructible_, not _inferred_: an Edge fully rebuildable from the
   Durable Ledger, an Artifact with an explicit Dependency Manifest, a
   Proposal Revision Edge uniquely derivable from its own Source Basis/Read
   Set, an Application Contribution uniquely derivable from its Commit
@@ -502,7 +502,7 @@ implementation task.
 
 - Two new tables — `narrative_semantic_index_metadata` (Semantic Index
   generation/digest/dirty-cache bookkeeping, `PRIMARY KEY(project_id,
-  index_key)`) and `narrative_maintenance_repair_leases` (the Repair
+index_key)`) and `narrative_maintenance_repair_leases` (the Repair
   exclusive-claim row: `lease_owner`, `verify_run_id`,
   `repair_plan_digest`, `semantic_epoch_id`, `claimed_at`, `expires_at`,
   `PRIMARY KEY(project_id)` enforcing one active claim per project).
@@ -598,13 +598,13 @@ the same detached maintenance connection
 `prune_old_logs`/`maybe_auto_backup` already use, on the assumption that
 staying off the live `WorkspaceAuthority`'s connection meant it could
 never compete with the renderer. That assumption was wrong: most
-foreground domain writes use a *deferred* transaction
+foreground domain writes use a _deferred_ transaction
 (`unchecked_transaction()` in `domain_writes.rs`), which takes a read
 snapshot and upgrades to a write on its first INSERT — and any commit
 from another connection in that window fails the upgrade with
-SQLITE_BUSY_SNAPSHOT, which `busy_timeout` cannot retry (the same hazard
+SQLITE*BUSY_SNAPSHOT, which `busy_timeout` cannot retry (the same hazard
 `execute.rs` documents for the standalone MCP process). Because `migrate`
-seeds `default-project`, the Backfill committed on *every* workspace
+seeds `default-project`, the Backfill committed on \_every* workspace
 open, including brand-new ones, so foreground writes running just after
 open failed immediately with "database is locked". Re-wiring requires
 either running the Backfill on the live authority's own connection or
@@ -693,9 +693,9 @@ shape as the Backfill bootstrap trigger (reuse-check+create / do the
 work / finalize status), for the same reason. Phase 1 creates the Run
 (`create_system_run_in_tx`, `run_kind = "semantic-index-rebuild"`, the
 existing reused column value, `SystemRunWorkKeyReuse::RunningOnly`
-matching the ratified policy exactly) under the project's *existing*
+matching the ratified policy exactly) under the project's _existing_
 current Semantic Epoch — unlike Backfill, this does not mint one:
-Rebuild-Derived recomputes state *from* a Durable Graph expected to
+Rebuild-Derived recomputes state _from_ a Durable Graph expected to
 already exist under a real Epoch, so a project with none yet fails
 closed (`NEX_REBUILD_DERIVED_NO_EPOCH`) rather than silently minting
 one. Phase 2 evaluates and publishes every distinct
@@ -748,11 +748,11 @@ Not yet implemented, and not silently treated as passing:
 `semantic-index-generation-correspondence`.
 
 **Real bug found and fixed while building this**: the previous commit's
-`dependency-rebuild-derived` orchestrator passed the *Rebuild Run's own*
+`dependency-rebuild-derived` orchestrator passed the _Rebuild Run's own_
 `run_id` into `evaluate_edge_from_db` for every Edge, but
 `source_revision.rs`'s `resolve_snapshot_document` requires the id
 embedded in a `snapshot:<runId>` Source key to match the id passed in
-exactly — the *owning Consumer's* run, not whichever Run is doing the
+exactly — the _owning Consumer's_ run, not whichever Run is doing the
 evaluating. Every `snapshot-document`-sourced Edge a Rebuild-Derived pass
 touched would have been misclassified `SourceMissing` (caught internally
 by `build_edge_comparison_input`'s own `Err` handling, not a crash, but a
@@ -774,21 +774,21 @@ real, end-to-end repair category.
 
 Scope, stated up front rather than discovered later: the policy's
 `allowedRepairs` names six categories; only `deactivate-duplicate-edge`
-is implemented, because it is the *only* one
+is implemented, because it is the _only_ one
 `verify_narrative_dependency_graph_for_project`'s current 6-of-13 check
 coverage can actually surface — the other five all need Verify checks
 this crate does not implement yet
 (`contribution-to-application-commit-correspondence`,
 `application-revision-artifact-references`,
 `legacy-mirror-migration-parity`). There is nothing yet to seal a repair
-plan *from* for those five. The safety machinery below is generic and
+plan _from_ for those five. The safety machinery below is generic and
 does not need to change as more categories are added; only
 `seal_repair_plan` needs to grow.
 
 - `claim_repair_lease_in_tx`/`release_repair_lease_in_tx` — CAS over
   `narrative_maintenance_repair_leases` (`PRIMARY KEY(project_id)`, one
-  row ever). A live (non-expired) lease for a *different* plan/owner is
-  rejected (`NEX_REPAIR_LEASE_HELD`); the *same* plan/owner re-claims
+  row ever). A live (non-expired) lease for a _different_ plan/owner is
+  rejected (`NEX_REPAIR_LEASE_HELD`); the _same_ plan/owner re-claims
   idempotently; an expired lease is freely reclaimed by anyone.
 - `seal_repair_plan` — deterministic plan sealing: sorts
   `restore_rebuild::duplicate_edge_ids_to_deactivate`'s output (new —
@@ -922,6 +922,216 @@ and documented at each landing commit above: 7 of the 13
 does not implement yet), and the crash-recovery gap for a Run stuck
 `running` after a terminated process (a Lane B / execution-state-model
 concern spanning every Run Kind, not specific to any one of these).
+
+## C2-2 Consumer contract and the Proposal Revision grain
+
+`policies/narrative/narrative-consumer-contract.json` (schema:
+`schemas/narrative-consumer-contract.schema.json`, validated by
+`scripts/quality/validate-semantic-core-boundary.mjs`'s `schemaContracts`
+list, `pnpm test:narrative:semantic-contract`) fixes the first C2-2
+deliverable — the canonical `(consumer_kind, consumer_key)` vocabulary —
+so the remaining three (Producer-time declaration at the smallest safe
+durable unit, Backfill re-keying, reverse lookup) have one registry to be
+written against instead of each inventing its own literals. The
+per-Consumer dependency digest landed alongside it; see below.
+
+`narrative_extraction/consumer_identity.rs` is the Rust counterpart, and
+it is deliberately the _only_ place the pair means anything: a fail-closed
+`ConsumerKind`, the `RUN_CONSUMER_KIND` literal (moved there from
+`dependency_edges.rs`, which re-exports it), `validate_consumer_identity`
+for the shape rules SQLite cannot express, the single
+`consumer_finding_key`, and `owning_run_id_for_consumer` — the one seam
+that answers "which Run is this Consumer's `snapshot:<runId>` Source
+expected to name?". That seam is why the vocabulary landed before any
+Producer moved off Run grain: `restore_rebuild.rs` had been passing
+`consumer_key` straight through as a `run_id`, and because
+`build_edge_comparison_input` collapses every resolver error into
+`current_source_exists = false`, a Consumer that stopped being a Run would
+have reported `source-missing` for Sources that are present rather than
+raising anything.
+
+Every Consumer kind carries a `status` that says what is true today, not
+what is planned:
+
+- **`declared`** — a production Producer writes Edges under it now. There
+  are two. `proposal-revision` (`consumer_key =
+narrative_proposal_revisions.id`) is what `repository.rs` declares every
+  Edge under: the grain C2-2 exists to reach, where editing one Scene stales
+  the Revisions that actually read it rather than every Proposal from the
+  same Run. `narrative-extraction-run` stays declared and is not a legacy
+  value — `legacy_backfill.rs` declares Edges for Applications that have no
+  Revision to attribute a read to, and a Run remains a legitimate Consumer
+  of its own Run-wide Sources. Re-keying the Backfill to the reserved
+  `application` kind is C2-Z's legacy/Generic parity work.
+- **`reserved`** — the roadmap's Consumer class already has a durable row
+  that could carry its identity, but nothing declares Edges under it yet:
+  `extraction-artifact` (`narrative_extraction_artifacts.id`),
+  `application` (`narrative_proposal_applications.id`),
+  `application-contribution` (`narrative_application_contributions.id`),
+  `derived-projection` (`narrative_temporal_projections.id` — the one
+  Projection this codebase recomputes rather than applies directly), and
+  `semantic-index` (`narrative_semantic_index_metadata.index_key`; only
+  `index_key`, because `narrative_consumer_freshness` already carries
+  `project_id` as its own column and a Consumer key must never repeat the
+  project scope).
+- **`not-yet-modelled`** — the roadmap asks for it and there is no durable
+  table to key it from: `narrative-ir-revision` (Interpreter output lives
+  inside `payload_json`/`reconciliation_envelope_json`, never as its own
+  addressable row), `related-scenes-materialization` and
+  `chat-context-materialization` (both computed per query and kept
+  nowhere), and `structure-health-diagnostic` (still the Gate C0
+  placeholder panel). Each entry says so in its own `notes` rather than
+  being quietly omitted: deriving a key for one of these from payload
+  content would be exactly the heuristic identity C2-2's exit criteria
+  forbid.
+
+`keyFormat` fixes `finding_key = "{consumerKind}:{consumerKey}"` with
+`findingKeyParseRule: "split-on-first-colon"` — the shape
+`publish_runtime.rs` and `inbox_read_model.rs` already have to agree on
+(Lane P caught them disagreeing once, which made every diagnostic Finding
+Observation invisible to the Maintenance Inbox). A `consumerKind` may not
+contain a colon so the first one is an unambiguous separator; a
+`consumerKey` may, because a durable identity can legitimately be a
+compound key. Both components forbid the empty string and surrounding
+whitespace, since either would let two different Consumers collide on one
+`finding_key`.
+
+`freshnessAuthority` restates, in Consumer terms, what
+`semantic-core-authorities.json` already fixes: `narrative_consumer_freshness`'s
+`(project_id, consumer_kind, consumer_key)` is the one canonical Consumer
+Freshness authority and `narrative_projection_freshness` — keyed by
+`application_id` alone, so structurally unable to express any other
+Consumer kind — is compatibility-only. Legacy still serves reads until the
+C2-Z cutover per `narrative-run-kind-policy.json`; that makes it the
+mirror, not a second authority. `dependencySetDigest` fixes
+`narrative_consumer_freshness.dependency_set_digest` as a digest over the
+set of `source_object_identity` values declared under the Consumer, and
+records that `NULL` means "not evaluated since SCHEMA 24 added the
+column", never "inconsistent".
+
+That column now has a writer and a check. Publishing a Freshness
+evaluation stamps the digest, and
+`verify_narrative_dependency_graph_for_project` gained
+`consumer-freshness-dependency-set-digest` — the "is this Consumer still
+reading the same things?" question no per-Edge Freshness value can answer,
+since a Consumer that stopped depending on a Source has no Edge left to go
+stale. Verify coverage is therefore **7 of the 13 named checks**, not 6,
+and `VERIFY_CONTRACT_VERSION` moved to `"3"`: a stored version-`"1"`
+result is refused by `seal_repair_plan`, so an in-flight Verify has to be
+re-run before a Repair can be sealed from it. The Semantic Index half of
+`dependency-set-digest` is still unimplemented — nothing writes
+`narrative_semantic_index_metadata` yet.
+
+`"3"` rather than `"2"` because the report gained three fields in one
+Gate, not one: `consumer_keys_with_stale_dependency_set_digest` (the check
+above), `edge_ids_with_unresolvable_consumer_scope`, and
+`orphaned_attention_finding_keys`. None of the three is a _new_ named
+check — the 13 are unchanged — but each is a field a version-`"1"` report
+does not carry, and none is `#[serde(default)]`, so an older stored report
+cannot be deserialized rather than being read as a clean bill of health
+over a smaller set of questions. `"2"` existed only mid-branch, between the
+second field and the third, and was never released; a real workspace only
+ever experiences `"1"` → `"3"`.
+
+The `keyFormat` shape rules are enforced by the typed writers
+(`record_dependency_edge_in_tx` and `write_consumer_freshness_in_tx` both
+call `validate_consumer_identity`). Registry _membership_ is reported
+rather than refused: `ConsumerKind::try_from` fails closed, and Verify
+lists Edges under an unregistered kind as
+`edge_ids_with_unresolvable_consumer_scope` — deliberately not as
+`edge_ids_with_missing_source`, whose Sources are present.
+`narrative_dependency_edges.consumer_kind` still carries only a
+`length > 0` CHECK at the SQL layer, and the writer still accepts a
+reserved kind, which is intentional while those kinds have no readers.
+Refusing at the writer is the remaining piece; re-keying the live Producer
+off `narrative-extraction-run` is done, and is what SCHEMA 30 below
+carries.
+
+The registry is guarded from both sides, because neither side can see the
+other's language. `validate-semantic-core-boundary.mjs`'s
+`validateConsumerContract` catches what a JSON Schema cannot express — one
+`kind` registered twice with contradictory `status` values (`uniqueItems`
+only compares whole entries), the loss of the last `declared` entry, and a
+`durableIdentitySource` naming a table `migrate.rs` never creates. From
+Rust, `consumer_identity.rs` reads this file with `include_str!` (the same
+way `protected_writers.rs` reads its own policy) and fails if the
+`declared` set and `ConsumerKind` stop naming the same kinds, or if a
+`reserved` kind starts being accepted. Renaming the literal on either side
+now breaks a test rather than silently splitting the vocabulary in two.
+
+### SCHEMA 30: `owning_run_id`, the re-key, and one atomic block
+
+`narrative_dependency_edges` gained `owning_run_id` — the Run that
+declared the Edge — because `owning_run_id_for_consumer` cannot answer
+"which Run is this Edge's `snapshot:<runId>` Source expected to name?"
+from `consumer_kind` once a Consumer is a Revision. Storing it per Edge
+rather than deriving it through `narrative_proposal_revisions →
+narrative_proposals → narrative_proposal_sets.run_id` is the same choice
+SCHEMA 29 made for Contribution provenance: it is a _provenance_ fact, so
+it stays true after the Proposal it came from is deleted. Rows whose
+declaring Run cannot be identified keep `NULL` rather than being given a
+wrong one.
+
+The re-key reads its finer attribution out of
+`narrative_revision_source_basis`, which already records, per Revision,
+the `(source_kind, source_key, revision_token)` it read. So each Revision
+takes exactly the reads its own basis names — no cross-run identity is
+invented, which is what C2-2's exit criteria forbid.
+
+Three cases the re-key deliberately does **not** collapse:
+
+- **An Edge with no Source Basis stays under the Run.** A Legacy Backfill
+  Edge has no Revision to attribute a read to; moving it would require
+  guessing one.
+- **An Edge an Application also declares stays under the Run, _and_ the
+  Revision Edges are added.** Both Producers upsert on
+  `(project_id, consumer_kind, consumer_key, source_object_identity)`, so
+  a Revision and an Application of the same Run reading the same Source
+  had already collapsed into one row, with nothing on it saying it came
+  from both. Deleting that row because a Revision matched would silently
+  drop the Application's dependency. The cost of keeping it is a duplicate
+  Consumer; the cost of dropping it is a lost dependency, so it is kept
+  whenever the same `(Run, Source)` appears in
+  `narrative_projection_dependencies`.
+- **Durable Attention is neither deleted nor re-pointed.** A
+  `narrative_maintenance_attention` row keyed to the old Run's
+  `finding_key` records a human decision, so the migration does not
+  discard it; re-pointing it at each Revision would silently broaden that
+  decision to Consumers it was never made about. Verify reports them as
+  `orphaned_attention_finding_keys` instead, and re-homing them is C2-3's
+  Finding-identity work.
+
+Freshness decided against the old Consumer identity _is_ discarded, since
+a verdict reached about `(run, sources)` is not a verdict about
+`(revision, sources)`; Rebuild-Derived recomputes it.
+
+**The whole Gate C2 step runs inside one savepoint.** `migrate_impl` is
+otherwise autocommit, and the block both destroys (three unconditional
+DELETEs of derived state, a `DROP`+`RENAME` rebuild, the Run-Edge delete)
+and refuses (the SCHEMA 29 rebuild fails closed on an orphaned
+Contribution). Without the savepoint, a workspace that cannot complete the
+upgrade would still have paid the discard — leaving Consumer Freshness,
+the durable Freshness authority, empty on a database nothing can rebuild
+until a human repairs the orphan. Two `migrate.rs` tests hold the
+invariant from both ends: a refused upgrade and an interrupted one must
+each leave every derived table exactly as it was, and the interrupted one
+must still upgrade cleanly on the next open.
+
+### An unevaluated Edge is `unknown`, never absent
+
+`worst_edge_state_for_consumer` rolls up the Consumer's Edge States at the
+current Semantic Epoch. It used to `JOIN`, so an Edge with no state at
+this epoch — which is precisely what C2-1's partial, Change-Feed-driven
+publish produces — simply left the rollup. A Consumer could then be
+published `fresh` while `dependency_set_digest`, computed over _all_ its
+declared Edges, asserted the verdict covered every one of them.
+
+It now `LEFT JOIN`s and treats a missing state as
+`EvidenceFreshness::Unknown` with `BuildAction::Manual` and no reason
+code. `Unknown` outranks everything except `SourceMissing` in the severity
+order, so an unevaluated Edge cannot be quietly outvoted by a fresh one:
+"we have not looked at this yet" is reported as the honest answer rather
+than absorbed into a clean one.
 
 Wave 2 landed Lanes I (`cursor_reservation.rs`), J (`publish_runtime.rs`),
 K (`legacy_backfill.rs`), L (`semantic-state-vocabulary.json`

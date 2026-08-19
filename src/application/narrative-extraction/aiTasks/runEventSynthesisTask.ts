@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -92,7 +92,7 @@ async function parseSynthesisFromText(
 export async function runEventSynthesisTask(
   input: RunEventSynthesisTaskInput,
 ): Promise<readonly EventHypothesis[]> {
-  if (blockIfPolicyOff("analysis")) return [];
+  if (blockNarrativeAiTask()) return [];
   if (input.observations.length === 0) return [];
 
   const prompt = buildSynthesisPrompt(input);

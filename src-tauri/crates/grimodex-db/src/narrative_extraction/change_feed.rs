@@ -551,7 +551,8 @@ fn ensure_event_history_continuity(
         // projection keeps its one-dimensional watermark instead of growing a
         // second ordering key that neither the cursor nor `baseline_sequence`
         // would share.
-        if let Some(previous_kind) = mutation_kinds.insert(identity.clone(), event.mutation_kind.clone())
+        if let Some(previous_kind) =
+            mutation_kinds.insert(identity.clone(), event.mutation_kind.clone())
         {
             anyhow::ensure!(
                 (previous_kind == "delete") == (event.mutation_kind == "delete"),

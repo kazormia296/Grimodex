@@ -192,10 +192,11 @@ impl TryFrom<&str> for FindingReasonCode {
     }
 }
 
-/// One evaluated Dependency Edge outcome: the three orthogonal axes this
-/// module is allowed to produce. `reason_code` is `None` exactly when the
-/// Edge is Fresh with an unchanged revision token -- a Finding row is only
-/// worth recording when there is something to explain.
+/// One Dependency Edge outcome: the three orthogonal axes the publish
+/// runtime accepts. `reason_code` is `None` for a Fresh Edge with an
+/// unchanged revision token, and for a synthetic `Unknown` outcome when a
+/// caller could not safely evaluate the Edge at all. A Finding row is only
+/// recorded when a registered reason code can explain the outcome.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EdgeObservation {
     pub freshness: EvidenceFreshness,

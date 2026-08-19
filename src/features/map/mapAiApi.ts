@@ -1,4 +1,8 @@
 import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import {
+  blockIfUnlicensed,
+  LICENSE_WRITE_RESTRICTED_ERROR,
+} from "@/features/license/gate";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { buildVsInstruction, type VsOptions } from "@/lib/verbalizedSampling";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
@@ -404,6 +408,9 @@ export async function generateAiBranchCards(
 ): Promise<AiBranchCard[]> {
   if (blockIfPolicyOff("chat")) {
     throw new Error("chat policy is off");
+  }
+  if (blockIfUnlicensed()) {
+    throw new Error(LICENSE_WRITE_RESTRICTED_ERROR);
   }
 
   // Keep direct callers safe while production orchestration passes the

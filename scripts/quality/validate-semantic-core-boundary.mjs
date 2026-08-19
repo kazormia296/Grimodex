@@ -30,7 +30,7 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-export const EXPECTED_SCHEMA_VERSION = 29;
+export const EXPECTED_SCHEMA_VERSION = 30;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,
@@ -1063,12 +1063,82 @@ function validateContractFixtures(repoRoot, errors) {
   }
 }
 
+// The Consumer registry's semantic rules -- the ones a JSON Schema cannot
+// express. `narrative-consumer-contract.schema.json` checks each entry's
+// shape; nothing there stops the registry from listing one `kind` twice with
+// contradictory `status` values, from losing its only `declared` entry, or
+// from naming a `durableIdentitySource` on a table that does not exist.
+//
+// The Rust side of the same pact is `consumer_identity.rs`'s
+// `every_declared_contract_kind_has_a_consumer_kind_variant_and_vice_versa`,
+// which fails if `ConsumerKind` and this registry stop naming the same
+// `declared` kinds. Neither check can see the other's language, so both have
+// to exist.
+function validateConsumerContract(repoRoot, contract, errors) {
+  if (!isObject(contract)) return;
+  const entries = Array.isArray(contract.consumerKinds)
+    ? contract.consumerKinds
+    : [];
+  if (entries.length === 0) {
+    errors.push("narrative consumer contract lists no consumerKinds");
+    return;
+  }
+
+  const seen = new Set();
+  for (const entry of entries) {
+    if (!isObject(entry) || !isNonEmptyString(entry.kind)) continue;
+    if (seen.has(entry.kind)) {
+      errors.push(
+        `narrative consumer contract registers consumer kind '${entry.kind}' more than once; ` +
+          "uniqueItems only compares whole entries, so two contradictory registrations pass the schema",
+      );
+    }
+    seen.add(entry.kind);
+  }
+
+  const declared = entries.filter((entry) => entry?.status === "declared");
+  if (declared.length === 0) {
+    errors.push(
+      "narrative consumer contract declares no consumer kind, but production Producers write Edges today",
+    );
+  }
+
+  // Every declared/reserved kind names a durable identity source; the schema
+  // requires the field, this checks the table it names is real.
+  const migrateSource = readSourceIfPresent(
+    repoRoot,
+    "src-tauri/crates/grimodex-db/src/migrate.rs",
+  );
+  if (migrateSource) {
+    for (const entry of entries) {
+      const source = entry?.durableIdentitySource;
+      if (!isNonEmptyString(source)) continue;
+      const table = source.split(".")[0];
+      if (!migrateSource.includes(`CREATE TABLE IF NOT EXISTS ${table} (`)) {
+        errors.push(
+          `narrative consumer contract points consumer kind '${entry.kind}' at '${source}', ` +
+            `but migrate.rs creates no table named '${table}'`,
+        );
+      }
+    }
+  }
+}
+
+function readSourceIfPresent(repoRoot, relativePath) {
+  const absolute = path.join(repoRoot, relativePath);
+  return existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
+}
+
 function validatePolicySchemas(repoRoot, errors) {
   const schemaContracts = [
     ["mutation-authority-routes.schema.json", "mutation-authority-routes.json"],
     ["semantic-state-vocabulary.schema.json", "semantic-state-vocabulary.json"],
     ["semantic-core-authorities.schema.json", "semantic-core-authorities.json"],
     ["retrieval-disclosure.schema.json", "retrieval-disclosure.json"],
+    [
+      "narrative-consumer-contract.schema.json",
+      "narrative-consumer-contract.json",
+    ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
   for (const [schemaName, contractName] of schemaContracts) {
@@ -1134,6 +1204,7 @@ export function validateSemanticCoreBoundary({
   stateVocabularyPath = "policies/narrative/semantic-state-vocabulary.json",
   authorityMatrixPath = "policies/narrative/semantic-core-authorities.json",
   disclosurePolicyPath = "policies/narrative/retrieval-disclosure.json",
+  consumerContractPath = "policies/narrative/narrative-consumer-contract.json",
 } = {}) {
   const errors = [];
   const routeRegistry = readJson(
@@ -1175,6 +1246,13 @@ export function validateSemanticCoreBoundary({
   );
   validateDisclosurePolicy(disclosurePolicy, errors);
   validateContractFixtures(repoRoot, errors);
+  const consumerContract = readJson(
+    repoRoot,
+    consumerContractPath,
+    errors,
+    "narrative consumer contract",
+  );
+  validateConsumerContract(repoRoot, consumerContract, errors);
   validatePolicySchemas(repoRoot, errors);
   validateArchitectureImports(repoRoot, writerManifest, errors);
   validateMutationCommandInventory(repoRoot, writerManifest, errors);

@@ -8,6 +8,7 @@ mod codex_operations;
 mod codex_snapshots;
 mod codex_undo;
 mod commit;
+mod consumer_identity;
 mod contribution_target_state;
 mod cursor_reservation;
 mod dependency_edges;
@@ -75,8 +76,8 @@ pub(crate) use cursor_reservation::{
 #[allow(unused_imports)]
 pub(crate) use dependency_edges::{
     canonical_source_object_identity, delete_edges_for_consumer_in_tx, find_edges_by_consumer,
-    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge, RUN_CONSUMER_KIND,
-    SOURCE_IDENTITY_PREFIXES,
+    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge,
+    PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND, SOURCE_IDENTITY_PREFIXES,
 };
 #[allow(unused_imports)]
 pub(crate) use evaluator::{evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation};

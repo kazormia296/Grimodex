@@ -1,0 +1,242 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-consumer-contract-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "consumerKinds",
+    "unknownConsumerKindPolicy",
+    "unknownConsumerKindEnforcement",
+    "keyFormat",
+    "freshnessAuthority",
+    "dependencySetDigest",
+    "negativeFixture"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "contract": {
+      "const": "narrative-consumer-contract"
+    },
+    "consumerKinds": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "status",
+          "consumerKeyMeaning",
+          "durableIdentitySource",
+          "notes"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "status": {
+            "enum": ["declared", "reserved", "not-yet-modelled"]
+          },
+          "consumerKeyMeaning": {
+            "type": "string",
+            "minLength": 1
+          },
+          "durableIdentitySource": {
+            "type": ["string", "null"],
+            "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
+          },
+          "notes": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false,
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "not-yet-modelled"
+                }
+              },
+              "required": ["status"]
+            },
+            "then": {
+              "properties": {
+                "durableIdentitySource": {
+                  "type": "null"
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "durableIdentitySource": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "uniqueItems": true
+    },
+    "unknownConsumerKindPolicy": {
+      "const": "fail-closed"
+    },
+    "unknownConsumerKindEnforcement": {
+      "type": "object",
+      "required": ["state", "verifyCheck", "gap"],
+      "properties": {
+        "state": {
+          "enum": ["not-yet-implemented", "verify-only", "implemented"]
+        },
+        "verifyCheck": {
+          "const": "consumer-and-source-key-format"
+        },
+        "gap": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "keyFormat": {
+      "type": "object",
+      "required": [
+        "findingKeyFormat",
+        "findingKeyParseRule",
+        "consumerKindMustNotContainColon",
+        "consumerKeyMayContainColon",
+        "emptyComponentPolicy",
+        "surroundingWhitespacePolicy",
+        "note"
+      ],
+      "properties": {
+        "findingKeyFormat": {
+          "const": "{consumerKind}:{consumerKey}"
+        },
+        "findingKeyParseRule": {
+          "const": "split-on-first-colon"
+        },
+        "consumerKindMustNotContainColon": {
+          "const": true
+        },
+        "consumerKeyMayContainColon": {
+          "const": true
+        },
+        "emptyComponentPolicy": {
+          "const": "forbid"
+        },
+        "surroundingWhitespacePolicy": {
+          "const": "forbid"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "freshnessAuthority": {
+      "type": "object",
+      "required": [
+        "canonicalTable",
+        "canonicalKey",
+        "compatibilityMirror",
+        "compatibilityMirrorRole",
+        "secondaryFreshnessAuthorityPolicy",
+        "cutoverGate",
+        "note"
+      ],
+      "properties": {
+        "canonicalTable": {
+          "const": "narrative_consumer_freshness"
+        },
+        "canonicalKey": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "prefixItems": [
+            {
+              "const": "project_id"
+            },
+            {
+              "const": "consumer_kind"
+            },
+            {
+              "const": "consumer_key"
+            }
+          ],
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "compatibilityMirror": {
+          "const": "narrative_projection_freshness"
+        },
+        "compatibilityMirrorRole": {
+          "const": "compatibility-only"
+        },
+        "secondaryFreshnessAuthorityPolicy": {
+          "const": "forbid"
+        },
+        "cutoverGate": {
+          "const": "C2-Z"
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencySetDigest": {
+      "type": "object",
+      "required": [
+        "column",
+        "computedOver",
+        "nullMeaning",
+        "nullIsInconsistency",
+        "verifyChecks",
+        "note"
+      ],
+      "properties": {
+        "column": {
+          "const": "narrative_consumer_freshness.dependency_set_digest"
+        },
+        "computedOver": {
+          "type": "string",
+          "minLength": 1
+        },
+        "nullMeaning": {
+          "const": "not-yet-evaluated"
+        },
+        "nullIsInconsistency": {
+          "const": false
+        },
+        "verifyChecks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$"
+          }
+        },
+        "note": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "negativeFixture": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "additionalProperties": false
+}

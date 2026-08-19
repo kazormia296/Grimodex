@@ -1,7 +1,7 @@
 import { sendChatMessageWithThinking } from "@/features/chat/chatApi";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
-import { blockIfPolicyOff } from "@/features/ai-policy/policyGuard";
+import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -22,7 +22,7 @@ export interface RunStructuredRepairTaskInput {
 export async function runStructuredRepairTask(
   input: RunStructuredRepairTaskInput,
 ): Promise<string | null> {
-  if (blockIfPolicyOff("analysis")) return null;
+  if (blockNarrativeAiTask()) return null;
 
   const prompt = `次のモデル出力を、指定の JSON 形へ修復してください。説明文は付けず JSON だけを返します。
 Project ID / Scene ID / Event ID などの DB 識別子は新たに作らず、入力に含まれる Source View ref（S0001 形式）だけを維持してください。

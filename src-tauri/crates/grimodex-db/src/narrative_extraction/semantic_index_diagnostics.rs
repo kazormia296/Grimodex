@@ -157,6 +157,7 @@ mod tests {
             read_set_json: r#"["/body"]"#.to_string(),
             generated_by_transaction_id: None,
             created_at: "2026-08-15T00:00:00.000Z".to_string(),
+            owning_run_id: None,
         }
     }
 
