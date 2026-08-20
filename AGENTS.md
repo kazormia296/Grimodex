@@ -19,6 +19,10 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - パッケージ: pnpm electron:package
 - テスト: pnpm test
 - テスト(単体): pnpm test --run [ファイルパス]
+- 差分ローカルCI: pnpm ci:local:quick
+- 完全ローカルCI: pnpm ci:local:full
+- ローカルCI一覧: pnpm ci:local:list
+- ローカルCI証跡検証: pnpm ci:local:verify -- <quick|full> --base origin/master --head HEAD
 - フロントCI相当: pnpm verify:frontend
 - Electronテスト: pnpm test:electron --run
 - N-APIビルド: pnpm napi:build
@@ -29,6 +33,26 @@ main process を呼び、Rust 実装は N-API モジュールと standalone MCP 
 - N-APIチェック: cargo check --manifest-path electron/native/grimodex-node/Cargo.toml
 - 共有Rustチェック: cargo check --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
 - 共有Rustテスト: cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex --features grimodex-semantic/semantic-embedding
+
+## ローカルCI gate
+
+- 通常のPR／branch pushではGitHub Actionsのrunnerを起動しない。hosted PR checkが無いことを
+  greenの根拠にせず、次のローカル証跡を必須gateとして扱う。
+- 関連する実装・修正・AI behavior assetの変更を終えた後、完成commitまたはPRを作る前に
+  `pnpm ci:local:quick` を実行する。比較範囲を固定する場合は
+  `pnpm ci:local:quick -- --base origin/master --head HEAD` とし、直後に同じrefで
+  `pnpm ci:local:verify -- quick --base origin/master --head HEAD` を実行する。
+- merge前は、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、最初のstageから
+  `pnpm ci:local:full -- --base origin/master --head HEAD` を実行し、直後とmerge直前に
+  `pnpm ci:local:verify -- full --base origin/master --head HEAD` を実行する。baseまたはHEADが
+  変わった場合は古い証跡を再利用せず、Fullを最初からやり直す。
+- release tag前は、squash前のbranch証跡を再利用せず、merge後のrelease commitそのものを
+  cleanなcheckout／worktreeの現在HEADとして同じFullとverifyを再実行する。
+- `--from`は失敗調査・再開用のpartial run、`--dry-run`は計画確認だけである。どちらも
+  merge／releaseの成功証跡にせず、原因解消後に`--from`なしのFullを最初から実行する。
+- 必須command、toolchain、依存、host capabilityが不足した場合は`blocked`として停止する。
+  skipped、deferred、古いreceipt、Windows以外で実行不能なrelease-only項目をpassedへ
+  読み替えない。Windows NSISの最終compileは手動Full CI／tag releaseで別途検証する。
 
 ## GitHub認証（Codex sandbox）
 

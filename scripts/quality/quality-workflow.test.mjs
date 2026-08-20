@@ -100,8 +100,8 @@ test("new skills use current frontmatter and call the canonical commands", async
   assert.match(author, /evals\/quality-manifest\.yaml/);
   assert.match(author, /pnpm verify:quality/);
   assert.match(author, /grimodex-impact-gate/);
-  assert.match(impact, /pnpm eval:impact/);
-  assert.match(impact, /--run/);
+  assert.match(impact, /pnpm ci:local:quick/);
+  assert.match(impact, /pnpm ci:local:verify/);
   assert.match(impact, /deferred/i);
 });
 

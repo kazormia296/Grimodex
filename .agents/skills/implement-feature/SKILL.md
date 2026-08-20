@@ -5,7 +5,6 @@ description: >
   Use when: 新機能の追加、既存機能の拡張、「実装して」「作って」「追加して」
   と言われたとき。UIコンポーネント、DB操作、Electron IPC追加を含む。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
-argument-hint: [feature-description]
 ---
 
 以下の手順で「$1」を実装してください。
@@ -33,6 +32,8 @@ argument-hint: [feature-description]
 8. `npx tsc --noEmit` で型チェック通過を確認
 9. `pnpm lint:fix` でLint修正
 10. Electron変更は `pnpm test:electron --run`、Rust変更は対象crateの `cargo check && cargo test`
-11. 変更をコミットする
+11. 完成commitを作る前に`pnpm ci:local:quick`を実行する。失敗、blocked、partial、dry-runを
+    成功扱いせず、原因を解消してcompleteなQuickが通るまでcommit／PRへ進まない
+12. 変更をコミットする
 
 各ステップの結果を簡潔に報告すること。

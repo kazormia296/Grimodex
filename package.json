@@ -33,6 +33,7 @@
     "ci:local:quick": "node scripts/local-ci.mjs quick",
     "ci:local:full": "node scripts/local-ci.mjs full",
     "ci:local:list": "node scripts/local-ci.mjs --list",
+    "ci:local:verify": "node scripts/local-ci.mjs --verify",
     "benchmark:browser-ci": "node scripts/browser-ci-benchmark.mjs",
     "research:zen-blur": "node scripts/zen-blur-research.mjs",
     "research:zen-shaders": "node scripts/zen-shader-research.mjs",

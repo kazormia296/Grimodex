@@ -65,6 +65,13 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
 
    Electron 版が新値で、凍結 Tauri 版が v1 のままであることを確認する。release workflow の tag pattern と `--major` も同じ新 major を使っていることを確認する。
 
+   完成commitを作る前に、変更全体を対象とするQuick gateを実行する。
+
+   ```bash
+   pnpm ci:local:quick -- --base origin/master --head HEAD
+   pnpm ci:local:verify -- quick --base origin/master --head HEAD
+   ```
+
 6. **branch と commit を作る**
    - `master` へ直接 commit しない。
    - 新規 branch は `chore/bump-v<新バージョン>` とする。既に適切な作業 branch 上ならそのまま使える。
@@ -75,9 +82,21 @@ electron-builder、`app.getVersion()`、v2 release workflow の tag gate は、�
 7. **push、PR、merge を行う**
    - release commit を作成して作業ツリーが clean になった後、`/ship-branch` をbranchのpush／PR／mergeフローとして使用する。
    - ユーザーが依頼したゴールに含まれる push、PR、merge まで進める。
-   - `/ship-branch` の CI、mergeability、レビュー、HEAD 固定、base 反映確認を満たす。
+   - `/ship-branch` のcompleteなローカルFull、mergeability、レビュー、HEAD固定、base反映確認を満たす。
 8. **注釈付き tag をpushし、Draft Releaseを確認する**
    - merge 後の `origin/master` を fetch し、release commit を確認する。
+   - squash前のbranch HEADに対するFull receiptは、merge後のrelease commitの証跡として再利用しない。
+   - tagを作る前に、release commitそのものをcleanなcheckout／worktreeの現在HEADにし、
+     `origin/master`とHEADがそのrelease commitを指す状態で、最初のstageからFullを再実行して検証する。
+
+     ```bash
+     pnpm ci:local:full -- --base origin/master --head HEAD
+     pnpm ci:local:verify -- full --base origin/master --head HEAD
+     ```
+
+   - `--from`によるpartial runと`--dry-run`はrelease認証に使わない。必須toolchain、依存、
+     host capabilityの不足、candidate不一致、base移動があればtagを作らず停止し、release commitを
+     固定し直して`--from`なしのFullを最初からやり直す。
    - ゴールに tag／Draft Release 作成が含まれる場合、`origin/master` の release commit に `v<新バージョン>` を付ける。
    - `git tag -a v<新バージョン> <release-commit> -m "Release v<新バージョン>"`
    - lightweight tag は使わない。

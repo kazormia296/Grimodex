@@ -189,30 +189,44 @@ CI runnerを起動しません。`.github/workflows/ci.yml` は、明示的な�
 
 通常の変更確認には、差分に対応するLight suiteだけを実行します。既定では
 `origin/master...HEAD`に加えてstaged、unstaged、untrackedの変更も対象です。
+実装や修正を完了した後、完成commitまたはPRを作る前に実行してください。
 
 ```bash
 pnpm ci:local:quick
 
 # 比較元を明示する場合
 pnpm ci:local:quick -- --base <base-ref> --head HEAD
+
+# 実行後に同じcandidateへ結び付いたreceiptか確認
+pnpm ci:local:verify -- quick --base <base-ref> --head HEAD
 ```
 
-mergeまたはrelease候補を作る前は、ローカルで再現可能なFull CIを実行します。
+merge前は、最新の`origin/master`を含むcleanかつcommit済みの現在HEADで、ローカルで
+再現可能なFull CIを最初のstageから実行します。release tag前には、squash前のbranch証跡を
+再利用せず、merge後のrelease commitそのものをcleanな現在HEADとしてFullを再実行します。
 依存audit、Rust/N-API、Browser/WebGL/Storybook、Electron performance、全product journeyを
 含むため、初回は長時間かかります。`uv`、Rust toolchain、`cargo-audit`、Playwrightと
 Electronのホスト依存を先に導入してください。
 
 ```bash
-pnpm ci:local:full
+pnpm ci:local:full -- --base origin/master --head HEAD
+pnpm ci:local:verify -- full --base origin/master --head HEAD
 
-# 失敗を直した後、指定stageから再開する場合
+# 失敗調査・修正確認のため、指定stageから部分再開する場合
 pnpm ci:local:full -- --from security
 
 # profile、stage、release-only項目を確認する場合
 pnpm ci:local:list
 ```
 
-実行結果は`.artifacts/local-ci/<profile>.json`へ保存されます。Linux/macOSでは再現できない
+`--from`の結果は`partial`、`--dry-run`の結果は`planned`であり、merge／releaseの認証には
+使えません。部分実行で修正を確認した後も、`--from`なしのFullを最初から実行してください。
+必須toolchain、依存、host capabilityが不足した場合はblockedであり、skipやpassへ読み替えません。
+
+実行結果はversion 2の`.artifacts/local-ci/<profile>.json`へ保存され、requested／resolved
+base・head SHA、現在HEAD、tree、worktreeのclean状態と内容fingerprint、complete／partialを記録します。
+Fullはdirty worktreeを拒否し、実行中または実行後にcandidateが変わったreceiptはverifyで
+拒否されます。Linux/macOSでは再現できない
 Windows NSISの最終compileだけはrelease-onlyとして明示され、手動Full CIまたはtag releaseで
 検証します。現在のprivate repositoryプランでcode scanningを利用できないCodeQLと、手動起動時に
 必ずskipされるDependency Review workflowは公開しません。代わりにlocal fullの`security` stageと
@@ -290,6 +304,7 @@ pnpm electron:package         # 現在の OS 向け配布パッケージを作�
 | `pnpm ci:local:quick`                                                                                                             | 差分に対応するローカルLight suite                       |
 | `pnpm ci:local:full`                                                                                                              | release-only項目を除くローカルFull CI                   |
 | `pnpm ci:local:list`                                                                                                              | ローカルCI profileとstageの一覧                         |
+| `pnpm ci:local:verify -- <quick\|full> --base origin/master --head HEAD`                                                          | ローカルCI receiptと現在candidateの一致を検証           |
 | `pnpm napi:build`                                                                                                                 | Electron用Rust N-APIモジュールをビルド                  |
 | `pnpm electron:build`                                                                                                             | Electron本番JavaScriptをビルド                          |
 | `pnpm electron:package`                                                                                                           | native release成果物と配布パッケージを作成              |

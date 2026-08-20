@@ -6,7 +6,6 @@ description: >
   と言われたとき。一般のPR／master CI、ランタイムエラー、型エラーの修正に使う。
   Electron release workflow、tag build、署名、公証、publishの失敗はdebug-release-ciへ渡す。
 allowed-tools: Read, Write, Edit, Grep, Glob, Bash, MultiEdit
-argument-hint: [bug-description-or-error-message]
 ---
 
 「$1」を修正してください。
@@ -20,6 +19,8 @@ argument-hint: [bug-description-or-error-message]
 5. 既存テストが通過することを確認する
 6. 再発防止のためのテストを追加する
 7. `pnpm test` + `pnpm test:electron --run` + 対象 Rust crate の `cargo test` で確認
-8. 変更をコミットする
+8. 完成commitを作る前に`pnpm ci:local:quick`を実行する。失敗、blocked、partial、dry-runを
+   成功扱いせず、原因を解消してcompleteなQuickが通るまでcommit／PRへ進まない
+9. 変更をコミットする
 
 **推測で修正しない。原因を特定してから修正すること。**

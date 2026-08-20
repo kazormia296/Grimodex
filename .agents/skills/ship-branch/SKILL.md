@@ -26,14 +26,38 @@ description: >
 
 `master`／`main` に公開対象 commit がある場合、base へ直接 push せず作業ブランチへ退避する。安全な branch 名を依頼内容から決められない場合だけユーザーへ確認する。
 
-## 2. Branch を push する
+## 2. ローカルCI gateを固定する
+
+1. PR作成だけがゴールの場合も、cleanなcommit済みHEADで次を実行し、completeなQuick receiptを確認する。
+
+   ```bash
+   pnpm ci:local:quick -- --base origin/master --head HEAD
+   pnpm ci:local:verify -- quick --base origin/master --head HEAD
+   ```
+
+2. mergeまでがゴールの場合は、最新の`origin/master`が現在HEADの祖先であることを確認する。
+   branchが遅れていれば安全に更新してレビュー対象SHAを取り直し、cleanなcommit済みHEADで
+   最初のstageから次を実行する。
+
+   ```bash
+   pnpm ci:local:full -- --base origin/master --head HEAD
+   pnpm ci:local:verify -- full --base origin/master --head HEAD
+   ```
+
+3. Full receiptの`resolvedBaseSha`、`resolvedHeadSha`、`currentHeadSha`、clean状態を記録する。
+   `--from`によるpartial runと`--dry-run`は診断用であり、merge証跡にしない。partial runが
+   成功しても、merge前には`--from`なしのFullを最初から実行する。
+4. command、toolchain、依存、host capabilityの不足、失敗、candidate不一致はgate failureとして
+   停止する。hosted PR checksが無いことや`no checks reported`をローカルFullの代替にしない。
+
+## 3. Branch を push する
 
 1. `git push -u origin <current-branch>` で現在の branch だけを push する。
 2. ゴールに push が含まれている場合、同じ操作を再確認しない。
 3. push 後に remote branch の HEAD が記録した local HEAD と一致することを確認する。
 4. force push、base branch push、wildcard refspec は、ユーザーが明示しない限り使用しない。
 
-## 3. PR を作成または再利用する
+## 4. PR を作成または再利用する
 
 1. preflight で確認した同じ head／base の open PR を再取得し、存在すれば重複作成せず再利用する。
 2. PR がなければ `master` 向けの ready PR を作成する。draft 指定がある場合だけ draft にする。
@@ -47,7 +71,7 @@ description: >
 
 GitHub connector が利用できる場合は PR mutation と状態取得に優先して使う。`gh` を使う場合、複数行 body は `--body-file` で渡し、shell 展開で内容を壊さない。
 
-## 4. CI とレビュー gate を待つ
+## 5. CI とレビュー gate を待つ
 
 1. required checks と通常 checks の状態を取得する。
 2. check がまだ登録されていない場合、即座に green と扱わない。PR workflow の有無と branch protection を確認し、非同期に再取得する。
@@ -56,9 +80,11 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 5. fail、cancelled、timed out があればマージしない。失敗 job とログを特定し、一般のPR CIは`/debug-issue`へ、Electron release workflow／tag build／署名／publishの失敗はversionを変更せず`/debug-release-ci`へ渡す。
 6. review decision、requested changes、未解決 inline thread、保留中の必須 reviewer を確認する。
 
-チェックが本当に設定されていない repository では、required check が存在しないことを確認してから次へ進む。`no checks reported` だけを根拠にマージしない。
+チェックが本当に設定されていない repository では、required check が存在しないことと、
+手順2のcompleteなローカルFull receiptが有効であることを確認してから次へ進む。
+`no checks reported`だけを根拠にマージしない。
 
-## 5. Merge 直前に再検証する
+## 6. Merge 直前に再検証する
 
 次を一つの snapshot として取り直す。
 
@@ -67,13 +93,15 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 - head branch が意図した branch
 - head SHA が push 前に記録してレビューした local SHA と一致
 - mergeable で競合がない
-- 全 required checks が success
+- completeなローカルFull receiptが固定したbase／head SHAと現在の`origin/master`／PR HEADが一致し、
+  `pnpm ci:local:verify -- full --base origin/master --head HEAD`が成功
+- 設定されている全required checksがsuccess
 - pending／failed checks がない
 - requested changes と未解決 review thread がない
 
 一つでも満たさなければマージせず、状態を解消してから再検証する。
 
-## 6. Merge と反映確認を行う
+## 7. Merge と反映確認を行う
 
 1. マージまでがゴールなら、既定で squash merge する。別方式が明示されている場合だけ変更する。
 2. 可能なら expected head SHA を指定できる GitHub mutation を使う。`gh` では `--match-head-commit <sha>` を使う。
@@ -86,10 +114,11 @@ GitHub connector が利用できる場合は PR mutation と状態取得に優�
 
 - PR だけがゴール: PR URL と現在の checks 状態を報告して停止する。
 - draft PR: ready 化または merge を依頼されるまで停止する。
-- CI failure: fail した check と原因調査結果を報告し、修正後に本フローを再開する。
+- local CI／CI failure: failしたstageまたはcheckと原因調査結果を報告し、修正後に本フローを再開する。
 - release workflow failure: `/debug-release-ci`のfocused gateへ戻す。本スキルはversion、release notes、tagを作らない。
 - conflict／requested changes／未解決 thread: 解消するまで停止する。
 
 ## 完了報告
 
-PR URL、公開した head SHA、checks／review の結果、merge method、merge commit SHA、`origin/master` の検証結果、local branch の状態を簡潔に報告する。
+PR URL、公開したhead SHA、Quick／Full receiptのcandidate SHAと結果、hosted checks／reviewの結果、
+merge method、merge commit SHA、`origin/master`の検証結果、local branchの状態を簡潔に報告する。

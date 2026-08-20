@@ -179,6 +179,14 @@ and failure class remain linked. Failures use `[routing]`, `[precheck]`, `[tool]
 `[quality]`, or `[artifact]`. Runnable Heavy evaluations are `deferred` until executed; missing
 runners or prerequisites are `blocked`. Neither state is ever reported as `passed`.
 
+When hosted PR checks are absent, a completed change runs local Quick before its completion commit
+or PR. Merge requires a complete Full run from the first stage on the clean, committed, current HEAD;
+a release tag requires a new complete Full run on the merged release commit itself. Receipts bind
+the requested and resolved base and head, current HEAD and tree, worktree state, and completeness.
+Dirty Quick receipts additionally bind the tracked diff and untracked file-content fingerprint.
+Partial `--from` runs, dry runs, stale receipts, missing prerequisites, and release-only coverage are
+never converted into merge or release passes.
+
 ## Evaluation evidence boundaries
 
 `pnpm eval:fixtures` validates fixture metadata, reciprocal traceability, isolated namespace

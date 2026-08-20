@@ -535,8 +535,14 @@ requirements:
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
     implementedBy:
+      - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
+      - .agents/skills/grimodex-impact-gate/SKILL.md
       - .agents/skills/rerun-sandbox-eperm/SKILL.md
+      - .agents/skills/ship-branch/SKILL.md
+      - .agents/skills/bump-version/SKILL.md
+      - scripts/local-ci.mjs
+      - scripts/local-ci-registry.json
       - scripts/quality/impact-map.mjs
       - scripts/quality/certify-gate-b2.mjs
       - scripts/quality/quality-evaluation-runtime.mjs
@@ -559,6 +565,8 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - scripts/local-ci.test.mjs
+      - scripts/ci-pause.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs
