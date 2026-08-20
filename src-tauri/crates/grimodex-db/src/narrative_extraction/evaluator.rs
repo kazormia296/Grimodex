@@ -204,6 +204,18 @@ pub struct EdgeObservation {
     pub build_action: BuildAction,
 }
 
+/// Synthetic fail-closed outcome for an Edge whose Consumer or evaluation
+/// scope this build cannot safely interpret. It deliberately carries no
+/// Finding reason: the durable Unknown/Manual state is the authority
+/// invalidation, while Verify owns the structural explanation.
+pub(crate) fn unknown_edge_observation() -> EdgeObservation {
+    EdgeObservation {
+        freshness: EvidenceFreshness::Unknown,
+        reason_code: None,
+        build_action: BuildAction::Manual,
+    }
+}
+
 /// Plain comparison signals for one Dependency Edge, gathered by the caller
 /// from the stored Edge row and a fresh read of the current Source. No field
 /// here is DB-shaped (no connection, no row id): everything the evaluator
@@ -298,11 +310,7 @@ pub fn evaluate_edge(input: &EdgeComparisonInput) -> EdgeObservation {
     }
 
     if !input.comparison_available {
-        return EdgeObservation {
-            freshness: EvidenceFreshness::Unknown,
-            reason_code: None,
-            build_action: BuildAction::Manual,
-        };
+        return unknown_edge_observation();
     }
 
     // 2. A normalizer version mismatch means the stored revision

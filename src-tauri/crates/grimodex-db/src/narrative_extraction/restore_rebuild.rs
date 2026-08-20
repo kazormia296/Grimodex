@@ -20,7 +20,7 @@ use super::dependency_edges::{
 };
 use super::digest_plan;
 use super::evaluator::{
-    evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
+    evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
@@ -327,12 +327,12 @@ pub struct RebuildDerivedStateSummary {
     /// State and Consumer Freshness so a verdict from an earlier pass in the
     /// same Epoch cannot remain authoritative.
     pub consumers_skipped_unresolvable_scope: usize,
-    /// Individual Edges skipped because their Consumer cannot be matched to
-    /// one trustworthy declaring Run -- see
-    /// [`resolve_edge_consumer_scope`]. Counted rather than source-evaluated
-    /// with a stand-in or inconsistent Run, which is how a present Source
-    /// gets called missing. The Edge still receives an explicit `Unknown`
-    /// state for authority invalidation.
+    /// Individual Edges skipped because their Consumer kind is outside this
+    /// build's vocabulary, or because the Consumer cannot be matched to one
+    /// trustworthy declaring Run -- see [`resolve_edge_consumer_scope`].
+    /// Counted rather than source-evaluated with a stand-in or inconsistent
+    /// Run, which is how a present Source gets called missing. Every such Edge
+    /// receives an explicit `Unknown` state for authority invalidation.
     pub edges_skipped_unresolvable_scope: usize,
 }
 
@@ -497,9 +497,24 @@ fn rebuild_derived_state_edges_in_project(
                         target: "narrative.rebuild",
                         consumer_kind = %consumer_kind,
                         consumer_key = %consumer_key,
-                        "NEX_CONSUMER_KIND_INVALID: skipping a Consumer whose kind is outside \
-                         this build's declared vocabulary"
+                        "NEX_CONSUMER_KIND_UNRESOLVABLE: publishing Unknown for a Consumer \
+                         whose kind is outside this build's declared vocabulary"
                     );
+                    let publish_observations = edges
+                        .iter()
+                        .map(|edge| (edge.id.clone(), unknown_edge_observation()))
+                        .collect::<Vec<_>>();
+                    publish_freshness_evaluation_edges_only_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &consumer_kind,
+                        &consumer_key,
+                        &publish_observations,
+                        semantic_epoch_id,
+                        now,
+                    )?;
+                    summary.edges_skipped_unresolvable_scope += edges.len();
                     skipped += 1;
                     return Ok(());
                 }
@@ -527,14 +542,8 @@ fn rebuild_derived_state_edges_in_project(
                                  Run is missing, malformed, or inconsistent"
                             );
                             skipped_edges += 1;
-                            publish_observations.push((
-                                edge.id.clone(),
-                                EdgeObservation {
-                                    freshness: EvidenceFreshness::Unknown,
-                                    reason_code: None,
-                                    build_action: BuildAction::Manual,
-                                },
-                            ));
+                            publish_observations
+                                .push((edge.id.clone(), unknown_edge_observation()));
                             continue;
                         }
                     };
@@ -2173,7 +2182,8 @@ mod tests {
     /// prevent.
     /// Version skew must not stop the rebuild. A Consumer under a kind this
     /// build does not implement is skipped and counted; every Consumer it
-    /// does understand is still evaluated and published in the same pass.
+    /// does understand is still evaluated and published in the same pass;
+    /// the unknown Consumer receives an explicit Unknown/Manual publication.
     #[test]
     fn rebuild_derived_state_skips_an_unresolvable_consumer_without_failing_the_run() {
         let db = test_db();
@@ -2203,12 +2213,14 @@ mod tests {
         assert_eq!(summary.consumers_evaluated, 1);
         assert_eq!(summary.edges_evaluated, 1);
         assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
 
         let published: Vec<String> = db
             .with_conn(|conn| {
                 let mut statement = conn.prepare(
                     "SELECT consumer_kind FROM narrative_consumer_freshness
-                      WHERE project_id = 'project-1'",
+                      WHERE project_id = 'project-1'
+                      ORDER BY consumer_kind",
                 )?;
                 let rows = statement
                     .query_map([], |row| row.get::<_, String>(0))?
@@ -2218,8 +2230,11 @@ mod tests {
             .expect("read consumer freshness");
         assert_eq!(
             published,
-            vec![RUN_CONSUMER_KIND.to_string()],
-            "only the Consumer this build understands may get a Freshness row"
+            vec![
+                "application-contribution".to_string(),
+                RUN_CONSUMER_KIND.to_string(),
+            ],
+            "unknown Consumers must be invalidated while supported Consumers are evaluated"
         );
     }
 
@@ -2459,6 +2474,98 @@ mod tests {
             })
             .expect("read the second Run status");
         assert_eq!(second_status, "completed");
+    }
+
+    #[test]
+    fn rebuild_replaces_existing_freshness_for_an_unknown_consumer_kind() {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let edge_id = "edge-unknown-consumer-authority";
+        let consumer_kind = "application-contribution";
+        let consumer_key = "contribution-unknown-authority";
+        seed_raw_edge(
+            &db,
+            edge_id,
+            consumer_kind,
+            consumer_key,
+            "project:scene:scene-live",
+            None,
+        );
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edge_states
+                    (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                     evaluated_at_epoch_id, evaluated_at)
+                 VALUES (?1, 'project-1', 'fresh', NULL, 'none', ?2, ?3)",
+                params![edge_id, epoch_id, "2026-08-15T00:00:00.000Z"],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+                 VALUES ('project-1', ?1, ?2, 'fresh', 'none', ?3, 'legacy-run', ?4)",
+                params![
+                    consumer_kind,
+                    consumer_key,
+                    epoch_id,
+                    "2026-08-15T00:00:00.000Z"
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed an old Fresh authority for the reserved Consumer");
+
+        let (run_id, summary) = match rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect("rebuild must invalidate the old unknown-Consumer authority")
+        {
+            RebuildDerivedStateOutcome::Ran { run_id, summary } => (run_id, summary),
+            RebuildDerivedStateOutcome::AlreadyRunning { .. } => {
+                panic!("expected a fresh Rebuild-Derived Run")
+            }
+        };
+        assert_eq!(summary.consumers_evaluated, 0);
+        assert_eq!(summary.edges_evaluated, 0);
+        assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
+        assert_eq!(summary.edges_skipped_unresolvable_scope, 1);
+
+        let states: (String, String, String, String, Option<String>) = db
+            .with_conn(|conn| {
+                let edge_state = conn.query_row(
+                    "SELECT evidence_freshness, build_action
+                       FROM narrative_dependency_edge_states
+                      WHERE edge_id = ?1",
+                    [edge_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+                let consumer_state = conn.query_row(
+                    "SELECT evidence_freshness, build_action, last_evaluated_run_id
+                       FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = ?1
+                        AND consumer_key = ?2",
+                    params![consumer_kind, consumer_key],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                Ok((
+                    edge_state.0,
+                    edge_state.1,
+                    consumer_state.0,
+                    consumer_state.1,
+                    consumer_state.2,
+                ))
+            })
+            .expect("read the invalidated unknown-Consumer authority");
+        assert_eq!(
+            states,
+            (
+                "unknown".to_string(),
+                "manual".to_string(),
+                "unknown".to_string(),
+                "manual".to_string(),
+                Some(run_id),
+            )
+        );
     }
 
     #[test]

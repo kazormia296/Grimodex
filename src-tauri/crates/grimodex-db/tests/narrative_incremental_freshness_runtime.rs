@@ -463,6 +463,81 @@ fn scene_feed_range_updates_only_reverse_dependent_consumers_and_acks_atomically
 }
 
 #[test]
+fn unknown_consumer_kind_replaces_old_freshness_before_feed_ack() {
+    let db = fixture_db();
+    let consumer_kind = "application-contribution";
+    let consumer_key = "contribution-incremental-authority";
+    db.with_conn(|conn| {
+        seed_scene(conn, "scene-target")?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, generated_by_transaction_id, created_at, owning_run_id)
+             VALUES ('edge-unknown-incremental', ?1, ?2, ?3, 'project:scene:scene-target',
+                     ?4, NULL, ?5, NULL)",
+            params![
+                PROJECT_ID,
+                consumer_kind,
+                consumer_key,
+                r#"["v1@2026-08-19T00:00:01.000Z"]"#,
+                OCCURRED_AT,
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edge_states
+                (edge_id, project_id, evidence_freshness, reason_code, build_action,
+                 evaluated_at_epoch_id, evaluated_at)
+             VALUES ('edge-unknown-incremental', ?1, 'fresh', NULL, 'none', ?2, ?3)",
+            params![PROJECT_ID, EPOCH_ID, OCCURRED_AT],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_consumer_freshness
+                (project_id, consumer_kind, consumer_key, evidence_freshness,
+                 build_action, semantic_epoch_id, last_evaluated_run_id, updated_at)
+             VALUES (?1, ?2, ?3, 'fresh', 'none', ?4, 'legacy-incremental-run', ?5)",
+            params![
+                PROJECT_ID,
+                consumer_kind,
+                consumer_key,
+                EPOCH_ID,
+                OCCURRED_AT,
+            ],
+        )?;
+        seed_scene_change(conn, "scene-target", 1)?;
+        Ok(())
+    })
+    .expect("seed an unknown Consumer with an old Fresh authority and a change event");
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("process unknown Consumer change")
+    else {
+        panic!("the pending Feed range must be processed")
+    };
+    assert_eq!(summary.affected_edge_count, 1);
+    assert_eq!(summary.affected_consumer_count, 1);
+    assert_eq!(
+        edge_state(&db, "edge-unknown-incremental"),
+        ("unknown".to_string(), None, "manual".to_string())
+    );
+
+    db.with_conn(|conn| {
+        let freshness: (String, String, Option<String>) = conn.query_row(
+            "SELECT evidence_freshness, build_action, last_evaluated_run_id
+               FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+            params![PROJECT_ID, consumer_kind, consumer_key],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(freshness.0, "unknown");
+        assert_eq!(freshness.1, "manual");
+        assert_ne!(freshness.2.as_deref(), Some("legacy-incremental-run"));
+        Ok(())
+    })
+    .expect("read the published unknown Consumer authority");
+    assert_completed_cursor_without_reservation(&db, 1);
+}
+
+#[test]
 fn one_source_publishes_both_consumers_before_the_single_range_ack() {
     let db = fixture_db();
     db.with_conn(|conn| {

@@ -25,7 +25,9 @@ use super::cursor_reservation::{
     reserve_cursor_range_in_tx,
 };
 use super::dependency_edges::{find_edges_by_source, DependencyEdge};
-use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
+use super::evaluator::{
+    evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
+};
 use super::execution_state::{
     supersede_run_in_tx, transition_run_status_in_tx, NarrativeRunStatus,
 };
@@ -121,12 +123,13 @@ enum ReservationOutcome {
 struct EvaluationPlan {
     by_consumer: BTreeMap<(String, String), Vec<(String, EdgeObservation)>>,
     affected_edge_count: usize,
-    source_guards: Vec<EvaluatedSourceGuard>,
+    edge_declaration_guards: Vec<DependencyEdge>,
+    source_state_guards: Vec<SourceStateGuard>,
     producer_epoch_guards: Vec<ProducerEpochGuard>,
 }
 
 #[derive(Debug)]
-struct EvaluatedSourceGuard {
+struct SourceStateGuard {
     edge: DependencyEdge,
     resolving_run_id: String,
     state: ResolvedEdgeSourceState,
@@ -1117,18 +1120,27 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
 
     let mut by_consumer = BTreeMap::<(String, String), Vec<(String, EdgeObservation)>>::new();
     let mut source_states = BTreeMap::<(String, String), ResolvedEdgeSourceState>::new();
-    let mut source_guards = Vec::new();
+    let mut edge_declaration_guards = Vec::new();
+    let mut source_state_guards = Vec::new();
     let mut producer_epoch_guards = Vec::new();
     let mut affected_edge_count = 0;
     for (index, edge) in edges.values().enumerate() {
-        if !is_declared_consumer_kind(&edge.consumer_kind) {
-            // A corrupt legacy Edge cannot be published through the closed
-            // Consumer vocabulary. Repair/Verify owns that graph finding;
-            // it must not poison every later Change Feed range.
-            continue;
-        }
         if index % LEASE_HEARTBEAT_EDGE_INTERVAL == 0 {
             renew_batch_lease(db, batch)?;
+        }
+        edge_declaration_guards.push(edge.clone());
+        if !is_declared_consumer_kind(&edge.consumer_kind) {
+            // A forward-version or reserved Consumer kind has no evaluator in
+            // this build. Publish an explicit Unknown/Manual observation so a
+            // previous build's Fresh authority cannot survive version skew.
+            // The exact Edge declaration is still guarded and the Feed range
+            // is acknowledged only after this publication commits.
+            affected_edge_count += 1;
+            by_consumer
+                .entry((edge.consumer_kind.clone(), edge.consumer_key.clone()))
+                .or_default()
+                .push((edge.id.clone(), unknown_edge_observation()));
+            continue;
         }
         let resolving_run_id = edge.owning_run_id.as_deref().unwrap_or(&batch.run_id);
         let source_cache_key = (
@@ -1142,13 +1154,13 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
                 resolve_edge_source_state(conn, &batch.project_id, resolving_run_id, edge)
             })?;
             source_states.insert(source_cache_key, state.clone());
-            source_guards.push(EvaluatedSourceGuard {
-                edge: edge.clone(),
-                resolving_run_id: resolving_run_id.to_string(),
-                state: state.clone(),
-            });
             state
         };
+        source_state_guards.push(SourceStateGuard {
+            edge: edge.clone(),
+            resolving_run_id: resolving_run_id.to_string(),
+            state: source_state.clone(),
+        });
         let mut comparison = build_edge_comparison_input_from_source_state(edge, &source_state)?;
         let producer_epoch_matched =
             db.with_conn(|conn| edge_producer_epoch_matches(conn, edge, &batch.semantic_epoch_id))?;
@@ -1174,7 +1186,8 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
     Ok(EvaluationPlan {
         affected_edge_count,
         by_consumer,
-        source_guards,
+        edge_declaration_guards,
+        source_state_guards,
         producer_epoch_guards,
     })
 }
@@ -1244,7 +1257,15 @@ fn publish_batch_in_tx(
         &batch.semantic_epoch_id,
         batch.through_sequence_inclusive,
     )?;
-    for guard in &plan.source_guards {
+    for edge in &plan.edge_declaration_guards {
+        let current_edge = load_edge_by_id(conn, &edge.project_id, &edge.id)?;
+        anyhow::ensure!(
+            current_edge.as_ref() == Some(edge),
+            "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: '{}' changed after evaluation",
+            edge.id
+        );
+    }
+    for guard in &plan.source_state_guards {
         let current = resolve_edge_source_state(
             conn,
             &batch.project_id,
@@ -1258,12 +1279,6 @@ fn publish_batch_in_tx(
         );
     }
     for guard in &plan.producer_epoch_guards {
-        let current_edge = load_edge_by_id(conn, &guard.edge.project_id, &guard.edge.id)?;
-        anyhow::ensure!(
-            current_edge.as_ref() == Some(&guard.edge),
-            "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: '{}' changed after evaluation",
-            guard.edge.id
-        );
         let current = edge_producer_epoch_matches(conn, &guard.edge, &batch.semantic_epoch_id)?;
         anyhow::ensure!(
             current == guard.matched,
@@ -2178,6 +2193,46 @@ mod tests {
                 with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
             })
             .expect_err("edge CAS must reject a stale evaluation plan");
+        assert!(
+            format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED"),
+            "unexpected publish failure: {error:#}"
+        );
+        assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn publish_rejects_an_unknown_consumer_edge_redeclared_after_evaluation() {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET consumer_kind = 'application-contribution',
+                        consumer_key = 'reserved-consumer',
+                        owning_run_id = NULL
+                  WHERE id = ?1 AND project_id = ?2",
+                params![EDGE_ID, PROJECT_ID],
+            )?;
+            Ok(())
+        })
+        .expect("seed a reserved Consumer Edge");
+        let (batch, plan) = reserve_and_evaluate(&db);
+
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET read_set_json = '[\"v99@2026-08-19T00:00:03.000Z\"]'
+                  WHERE id = ?1 AND project_id = ?2",
+                params![EDGE_ID, PROJECT_ID],
+            )?;
+            Ok(())
+        })
+        .expect("redeclare the reserved Consumer Edge after evaluation");
+
+        let error = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| publish_batch_in_tx(conn, &batch, &plan))
+            })
+            .expect_err("unknown Consumer Edge CAS must reject a stale plan");
         assert!(
             format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED"),
             "unexpected publish failure: {error:#}"
