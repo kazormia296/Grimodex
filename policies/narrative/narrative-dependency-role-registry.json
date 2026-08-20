@@ -1,0 +1,444 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-dependency-role-registry",
+  "adr": "docs/adr/010-narrative-dependency-role-granularity-contract.md",
+  "roleContractVersion": "narrative-dependency-role/1",
+  "implementationStatus": {
+    "state": "declared",
+    "productionEntryPoints": [],
+    "scanRoots": [
+      "src/features/narrative-semantic-core",
+      "src/features/narrative-extraction",
+      "electron/main",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction"
+    ],
+    "productionMarkers": [
+      "NARRATIVE_DEPENDENCY_ROLE_CONTRACT_VERSION",
+      "declarationSetId",
+      "declaration_set_id"
+    ],
+    "blockedOn": [
+      "reconciliation-envelope-v2",
+      "dependency-selector-v2",
+      "sealed-declaration-set-storage",
+      "independent-build-action-summary"
+    ]
+  },
+  "sets": {
+    "evidenceSet": "direct-support-shown-to-users-and-reviewers",
+    "dependencySet": "inputs-whose-change-requires-consumer-reevaluation",
+    "contextSet": "all-dynamic-inputs-presented-to-a-model-or-deterministic-stage",
+    "evidenceRequiresDirectEvidenceDependency": true,
+    "modelVisibleDynamicInputRequiresContextEntry": true,
+    "unclassifiedModelContextRole": "opaque-model-context"
+  },
+  "promptConstruction": {
+    "dynamicSourceInputAuthority": "context-set-only",
+    "componentInputsRole": "component-contract",
+    "auditDigests": [
+      "contextSetDigest",
+      "componentContractDigest",
+      "finalRequestDigest"
+    ]
+  },
+  "roles": [
+    {
+      "id": "direct-evidence",
+      "meaning": "The Source selection directly supports an Assertion or finding."
+    },
+    {
+      "id": "opaque-model-context",
+      "meaning": "The model saw this dynamic input, but no deterministic stage can prove a narrower role."
+    },
+    {
+      "id": "entity-resolution",
+      "meaning": "The input resolved a person, place, object, or other stable entity identity."
+    },
+    {
+      "id": "temporal-resolution",
+      "meaning": "The input resolved Story Time or Reading Order."
+    },
+    {
+      "id": "scope-resolution",
+      "meaning": "The input resolved a Narrative Scope axis or boundary."
+    },
+    {
+      "id": "projection-match",
+      "meaning": "The input matched an Interpretation to an existing Domain Projection."
+    },
+    {
+      "id": "author-correction",
+      "meaning": "The input applied an author correction rule or prior Review history."
+    },
+    {
+      "id": "component-contract",
+      "meaning": "The input is a Prompt, Parser, Normalizer, Tool Schema, or other component contract."
+    },
+    {
+      "id": "quality-context",
+      "meaning": "The input can improve output quality without invalidating the current output."
+    },
+    {
+      "id": "ranking-only",
+      "meaning": "The input materially determines a Semantic Index or ranking artifact, not an Interpretation."
+    }
+  ],
+  "sourceChangeClasses": [
+    "source-content-changed",
+    "source-missing",
+    "anchor-missing",
+    "exact-content-relocated",
+    "selected-set-collapsed",
+    "component-unavailable",
+    "quality-input-changed",
+    "ranking-input-changed"
+  ],
+  "effectAuthority": {
+    "keyDimensions": [
+      "dependency-role",
+      "consumer-kind",
+      "source-change-class"
+    ],
+    "producerMayOverrideResult": false,
+    "unknownCombinationPolicy": "fail-closed",
+    "freshnessVocabulary": "policies/narrative/semantic-state-vocabulary.json#evidenceFreshness",
+    "reasonVocabulary": "policies/narrative/narrative-finding-contract.json#reasonCodes",
+    "buildActionVocabulary": "policies/narrative/semantic-state-vocabulary.json#buildActions",
+    "unknownFreshnessPolicy": "evaluation-unavailable-only"
+  },
+  "effectRules": [
+    {
+      "id": "direct-evidence-content-changed",
+      "role": "direct-evidence",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "rebuild-required",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "direct-evidence-source-missing",
+      "role": "direct-evidence",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-missing",
+      "freshness": "source-missing",
+      "reasonCode": "source-missing",
+      "buildAction": "manual",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "direct-evidence-anchor-missing",
+      "role": "direct-evidence",
+      "consumerKind": "proposal-revision",
+      "changeClass": "anchor-missing",
+      "freshness": "anchor-mismatch",
+      "reasonCode": "quote-not-found",
+      "buildAction": "reanchor-candidate",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "direct-evidence-relocated",
+      "role": "direct-evidence",
+      "consumerKind": "proposal-revision",
+      "changeClass": "exact-content-relocated",
+      "freshness": "fresh",
+      "reasonCode": "exact-content-relocated",
+      "buildAction": "revalidate-exact",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "opaque-model-context-content-changed",
+      "role": "opaque-model-context",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "rebuild-required",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "entity-resolution-input-changed",
+      "role": "entity-resolution",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "entity-resolution-read-set-collapsed",
+      "role": "entity-resolution",
+      "consumerKind": "proposal-revision",
+      "changeClass": "selected-set-collapsed",
+      "freshness": "read-set-drift",
+      "reasonCode": "read-set-drift",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "temporal-resolution-input-changed",
+      "role": "temporal-resolution",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "scope-resolution-input-changed",
+      "role": "scope-resolution",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "projection-match-input-changed",
+      "role": "projection-match",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "author-correction-input-changed",
+      "role": "author-correction",
+      "consumerKind": "proposal-revision",
+      "changeClass": "source-content-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "resolve-only",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "component-contract-unavailable",
+      "role": "component-contract",
+      "consumerKind": "proposal-revision",
+      "changeClass": "component-unavailable",
+      "freshness": "unknown",
+      "reasonCode": "component-incompatible",
+      "buildAction": "manual",
+      "actionRequirement": "required"
+    },
+    {
+      "id": "quality-context-refresh-available",
+      "role": "quality-context",
+      "consumerKind": "proposal-revision",
+      "changeClass": "quality-input-changed",
+      "freshness": "fresh",
+      "reasonCode": null,
+      "buildAction": "refresh-available",
+      "actionRequirement": "advisory"
+    },
+    {
+      "id": "ranking-input-changed",
+      "role": "ranking-only",
+      "consumerKind": "semantic-index",
+      "changeClass": "ranking-input-changed",
+      "freshness": "stale",
+      "reasonCode": "source-revision-changed",
+      "buildAction": "recompile-only",
+      "actionRequirement": "required"
+    }
+  ],
+  "actionAggregation": {
+    "freshnessIndependent": true,
+    "requiredActions": [
+      "revalidate-exact",
+      "reanchor-candidate",
+      "resolve-only",
+      "recompile-only",
+      "rebuild-required",
+      "manual"
+    ],
+    "advisoryActions": ["refresh-available"],
+    "noAction": "none",
+    "compatibilityPrimaryAction": {
+      "purpose": "v1-display-and-storage-compatibility-only",
+      "schedulerAuthority": false
+    }
+  },
+  "selectors": [
+    {
+      "kind": "whole-source"
+    },
+    {
+      "kind": "text-range",
+      "unit": "utf16",
+      "rangeSemantics": "half-open",
+      "requiredFields": ["from", "to", "normalizerVersion"],
+      "optionalFields": ["anchorDigest"]
+    },
+    {
+      "kind": "field-path",
+      "requiredFields": ["objectIdentity", "fieldPath"]
+    },
+    {
+      "kind": "exact-object-set",
+      "requiredFields": ["objectIdentities", "setDigest"]
+    },
+    {
+      "kind": "component-contract",
+      "requiredFields": ["contractId", "contractDigest"]
+    }
+  ],
+  "selectorSafety": {
+    "exactObjectSetNewCandidateRisk": "cannot-detect-objects-not-present-in-declared-set",
+    "catalogFallbackUntilDeterministicSlice": "whole-source",
+    "falseFineGrainedDependencyPolicy": "forbid"
+  },
+  "textRangeValidation": {
+    "producerOrSourceView": [
+      "utf16-boundary",
+      "not-inside-surrogate-pair",
+      "range-within-source",
+      "anchor-digest-matches-range"
+    ],
+    "nativeDependencyWriter": [
+      "unit-is-utf16",
+      "safe-non-negative-integers",
+      "from-less-than-to",
+      "normalizer-version-present",
+      "selector-schema-valid",
+      "selector-digest-matches-canonical-selector"
+    ],
+    "evaluatorBoundaryFailure": {
+      "freshness": "anchor-mismatch",
+      "reasonCode": "quote-not-found",
+      "buildAction": "reanchor-candidate"
+    }
+  },
+  "positionMapping": {
+    "currentChangeFeedKinds": [
+      "position-map",
+      "canonical-diff",
+      "whole-document"
+    ],
+    "fineGrainedFreshnessRequires": [
+      "producer-role-and-selector-declaration",
+      "writer-position-map"
+    ],
+    "missingMappingPolicy": "whole-document",
+    "guessOutOfRangeEditPolicy": "forbid"
+  },
+  "dependencyKey": {
+    "digestAlgorithm": "sha256-canonical-json",
+    "hashComponents": ["dependency-role", "canonical-selector"],
+    "excludedComponents": [
+      "role-contract-version",
+      "source-object-identity",
+      "source-revision",
+      "freshness"
+    ],
+    "uniqueKeyComponents": [
+      "project-id",
+      "consumer-kind",
+      "consumer-key",
+      "source-object-identity",
+      "dependency-key"
+    ],
+    "breakingRoleMeaningPolicy": "new-role-id-or-explicit-migration"
+  },
+  "declarationSet": {
+    "persistentStates": ["sealed"],
+    "buildingState": "transaction-or-memory-only",
+    "transactionSteps": [
+      "insert-all-edges-with-declaration-set-id",
+      "compute-dependency-set-digest",
+      "insert-sealed-declaration-set",
+      "compare-and-swap-consumer-declaration-head",
+      "commit"
+    ],
+    "rollbackPolicy": "all-or-nothing",
+    "headCas": {
+      "expectedVersionRequired": true,
+      "incomingGenerationRule": "strictly-greater-than-current",
+      "sameOrOlderGenerationPolicy": "reject"
+    },
+    "digestComponents": [
+      "source-object-identity",
+      "dependency-key",
+      "selector-digest"
+    ],
+    "digestExcludes": [
+      "evidence-freshness",
+      "finding",
+      "build-action",
+      "current-source-revision",
+      "last-evaluated-at",
+      "consumer-freshness",
+      "cursor-position"
+    ]
+  },
+  "v1V2Selection": {
+    "sealedActiveV2Head": "evaluate-v2-only-and-use-v1-for-verify",
+    "noActiveV2Head": "evaluate-v1",
+    "incompleteV2Edges": "contract-corruption-keep-v1-canonical",
+    "singleV2EdgeActivatesV2": false
+  },
+  "v1Compatibility": {
+    "currentEdgeIdentity": "project-consumer-source",
+    "currentDependencyDigest": "source-object-identity-set",
+    "legacyRole": "opaque-model-context",
+    "legacySelector": "whole-source",
+    "automaticPerformanceClaim": "forbid",
+    "v2DigestSemanticCutoverRequiresMigration": true
+  },
+  "modelSelfDeclarationPolicy": {
+    "acceptModelClaimAsDependencyProof": false,
+    "narrowingAuthority": "deterministic-input-construction-only"
+  },
+  "narrativeIrRevisionConsumerGate": {
+    "currentStatus": "not-yet-modelled",
+    "requiredBeforeActivation": [
+      "durable-revision-row",
+      "stable-revision-id",
+      "producer-time-dependency-declaration",
+      "replay-and-migration-rules",
+      "verify-contract"
+    ],
+    "heuristicIdentityPolicy": "forbid"
+  },
+  "contractFixtures": [
+    {
+      "id": "catalog-content-change-is-stale-not-unknown",
+      "ruleId": "entity-resolution-input-changed",
+      "expectedFreshness": "stale",
+      "expectedBuildAction": "resolve-only"
+    },
+    {
+      "id": "quality-context-remains-fresh-with-advisory-action",
+      "ruleId": "quality-context-refresh-available",
+      "expectedFreshness": "fresh",
+      "expectedBuildAction": "refresh-available"
+    },
+    {
+      "id": "ranking-input-recompiles-semantic-index",
+      "ruleId": "ranking-input-changed",
+      "expectedFreshness": "stale",
+      "expectedBuildAction": "recompile-only"
+    },
+    {
+      "id": "incomplete-v2-does-not-hide-v1",
+      "expectedSelection": "contract-corruption-keep-v1-canonical"
+    },
+    {
+      "id": "utf16-range-rejects-surrogate-interior",
+      "expectedWriterResult": "reject-before-edge-write"
+    }
+  ],
+  "nonEffects": [
+    "semantic-truth",
+    "automatic-retraction",
+    "automatic-merge-or-split",
+    "automatic-delete",
+    "automatic-apply"
+  ]
+}

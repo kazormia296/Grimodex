@@ -178,6 +178,8 @@ rules:
       - docs/adr/004-narrative-reconciliation-boundary.md
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
+      - docs/adr/009-narrative-scope-relation-contract.md
+      - docs/adr/010-narrative-dependency-role-granularity-contract.md
       - policies/narrative/**
       - src/features/narrative-semantic-core/**
       - scripts/quality/validate-semantic-core-boundary.mjs

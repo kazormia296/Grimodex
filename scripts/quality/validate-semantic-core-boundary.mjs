@@ -186,6 +186,48 @@ const REQUIRED_DISCLOSURE_FIXTURES = Object.freeze([
   "worldline-mismatch-rejected",
 ]);
 
+const REQUIRED_SCOPE_AXIS_IDS = Object.freeze([
+  "timeline",
+  "worldline",
+  "scene",
+  "viewpoint",
+  "knowledgeHolder",
+  "audience",
+  "narrativeLayer",
+  "storyTime",
+  "readingOrder",
+]);
+
+const REQUIRED_SCOPE_RELATION_FIXTURES = Object.freeze([
+  "any-vs-any-is-equal",
+  "any-vs-exact-is-contains",
+  "any-vs-unresolved-is-contains",
+  "unresolved-vs-any-is-contained-by",
+  "same-unresolved-reason-is-not-identity",
+  "same-unresolved-constraint-id-is-equal",
+]);
+
+const REQUIRED_DEPENDENCY_ROLE_IDS = Object.freeze([
+  "direct-evidence",
+  "opaque-model-context",
+  "entity-resolution",
+  "temporal-resolution",
+  "scope-resolution",
+  "projection-match",
+  "author-correction",
+  "component-contract",
+  "quality-context",
+  "ranking-only",
+]);
+
+const REQUIRED_DEPENDENCY_CONTRACT_FIXTURES = Object.freeze([
+  "catalog-content-change-is-stale-not-unknown",
+  "quality-context-remains-fresh-with-advisory-action",
+  "ranking-input-recompiles-semantic-index",
+  "incomplete-v2-does-not-hide-v1",
+  "utf16-range-rejects-surrogate-interior",
+]);
+
 const EXPECTED_ALLOWED_CALLERS = Object.freeze({
   "human-direct": ["human-ui", "manual-wrapper", "typed-domain-api"],
   "interactive-agent-command": [
@@ -288,6 +330,109 @@ function listSourceFiles(repoRoot, relativeRoot) {
   };
   visit(absoluteRoot);
   return files;
+}
+
+function listProductionSourceFiles(repoRoot, relativeRoot) {
+  return listSourceFiles(repoRoot, relativeRoot).filter((file) => {
+    const normalized = file.replaceAll("\\", "/");
+    return (
+      !/\.(?:test|spec)\.(?:ts|tsx|mjs|js)$/.test(normalized) &&
+      !normalized.includes("/__tests__/") &&
+      !normalized.includes("/tests/")
+    );
+  });
+}
+
+function sameStringSet(actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  return (
+    new Set(actual).size === actual.length &&
+    expected.every((value) => actual.includes(value))
+  );
+}
+
+function validateImplementationStatus(repoRoot, label, status, errors) {
+  if (!isObject(status)) {
+    errors.push(`${label} implementationStatus must be an object`);
+    return;
+  }
+  const state = status.state;
+  if (!new Set(["declared", "shadow", "wired"]).has(state)) {
+    errors.push(
+      `${label} implementationStatus has unknown state: ${String(state)}`,
+    );
+    return;
+  }
+
+  const entryPoints = Array.isArray(status.productionEntryPoints)
+    ? status.productionEntryPoints
+    : [];
+  if (state === "declared" && entryPoints.length > 0) {
+    errors.push(`${label} is declared but lists productionEntryPoints`);
+  }
+  if (state !== "declared" && entryPoints.length === 0) {
+    errors.push(`${label} is ${state} but lists no productionEntryPoints`);
+  }
+  for (const entryPoint of entryPoints) {
+    if (!isNonEmptyString(entryPoint) || path.isAbsolute(entryPoint)) {
+      errors.push(
+        `${label} production entry point must be repository-relative`,
+      );
+      continue;
+    }
+    const absolute = path.resolve(repoRoot, entryPoint);
+    const relative = path.relative(repoRoot, absolute);
+    if (
+      relative.startsWith("..") ||
+      path.isAbsolute(relative) ||
+      !existsSync(absolute)
+    ) {
+      errors.push(`${label} production entry point is missing: ${entryPoint}`);
+    }
+  }
+
+  const roots = Array.isArray(status.scanRoots) ? status.scanRoots : [];
+  const markers = Array.isArray(status.productionMarkers)
+    ? status.productionMarkers.filter(isNonEmptyString)
+    : [];
+  const markerHits = [];
+  for (const relativeRoot of roots) {
+    if (!isNonEmptyString(relativeRoot) || path.isAbsolute(relativeRoot)) {
+      errors.push(
+        `${label} implementation scan root must be repository-relative`,
+      );
+      continue;
+    }
+    const absoluteRoot = path.resolve(repoRoot, relativeRoot);
+    const relative = path.relative(repoRoot, absoluteRoot);
+    if (
+      relative.startsWith("..") ||
+      path.isAbsolute(relative) ||
+      !existsSync(absoluteRoot)
+    ) {
+      errors.push(
+        `${label} implementation scan root is missing: ${relativeRoot}`,
+      );
+      continue;
+    }
+    for (const file of listProductionSourceFiles(repoRoot, relativeRoot)) {
+      const source = readFileSync(file, "utf8");
+      for (const marker of markers) {
+        if (source.includes(marker)) {
+          markerHits.push(`${path.relative(repoRoot, file)}:${marker}`);
+        }
+      }
+    }
+  }
+
+  if (state === "declared" && markerHits.length > 0) {
+    errors.push(
+      `${label} is declared but production markers are wired: ${markerHits.join(", ")}`,
+    );
+  }
+  if (state !== "declared" && markerHits.length === 0) {
+    errors.push(`${label} is ${state} but no production marker is present`);
+  }
 }
 
 function containsForbiddenDirectAgentCommandCall(source) {
@@ -1124,6 +1269,352 @@ function validateConsumerContract(repoRoot, contract, errors) {
   }
 }
 
+export function validateScopeRelationContract(repoRoot, contract, errors) {
+  if (!isObject(contract)) return;
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.contract !== "narrative-scope-relation-contract" ||
+    contract.scopeSchemaVersion !== 2
+  ) {
+    errors.push(
+      "narrative scope relation contract identity/version is invalid",
+    );
+    return;
+  }
+
+  const axisIds = Array.isArray(contract.axes)
+    ? contract.axes.map((axis) => axis?.id)
+    : [];
+  if (!sameStringSet(axisIds, REQUIRED_SCOPE_AXIS_IDS)) {
+    errors.push(
+      `narrative scope relation axes must contain exactly [${REQUIRED_SCOPE_AXIS_IDS.join(", ")}]`,
+    );
+  }
+  if (
+    contract.relationSemantics?.classification !==
+    "strongest-established-knowledge"
+  ) {
+    errors.push(
+      "scope relations must classify the strongest established knowledge",
+    );
+  }
+  if (
+    contract.relationSemantics?.containsIsStrict !== false ||
+    contract.relationSemantics?.containedByIsStrict !== false
+  ) {
+    errors.push(
+      "scope contains/contained-by must not claim strict containment",
+    );
+  }
+  if (
+    contract.relationSemantics
+      ?.overlapsRequiresEstablishedNonEmptyIntersection !== true
+  ) {
+    errors.push(
+      "scope overlaps must require an established non-empty intersection",
+    );
+  }
+  if (
+    contract.unresolvedSemantics?.reasonAloneEstablishesIdentity !== false ||
+    contract.unresolvedSemantics?.equalityPolicy !==
+      "same-scope-revision-or-stable-constraint-id"
+  ) {
+    errors.push("an unresolved reason alone must not establish Scope identity");
+  }
+
+  const fixtures = new Map(
+    (contract.basicRelationFixtures ?? []).map((fixture) => [
+      fixture?.id,
+      fixture,
+    ]),
+  );
+  for (const fixtureId of REQUIRED_SCOPE_RELATION_FIXTURES) {
+    if (!fixtures.has(fixtureId)) {
+      errors.push(
+        `narrative scope relation contract is missing fixture: ${fixtureId}`,
+      );
+    }
+  }
+  if (fixtures.get("any-vs-unresolved-is-contains")?.expected !== "contains") {
+    errors.push("any versus unresolved must establish contains");
+  }
+  if (
+    fixtures.get("unresolved-vs-any-is-contained-by")?.expected !==
+    "contained-by"
+  ) {
+    errors.push("unresolved versus any must establish contained-by");
+  }
+  if (
+    fixtures.get("same-unresolved-reason-is-not-identity")?.expected !==
+    "unknown"
+  ) {
+    errors.push("matching unresolved reasons must not establish equal");
+  }
+
+  if (
+    contract.oracleContract?.basisRequiredWheneverOracleOrRegistryUsed !==
+      true ||
+    !sameStringSet(
+      contract.oracleContract?.basisRequiredRelations,
+      contract.relations ?? [],
+    )
+  ) {
+    errors.push(
+      "every Oracle/Registry-derived Scope relation must carry Basis",
+    );
+  }
+  const canonicalExcludes = new Set(contract.canonicalization?.excludes ?? []);
+  for (const excluded of [
+    "from-before-until-order",
+    "worldline-containment-or-exclusion",
+    "narrative-layer-parentage",
+    "cross-reference-equivalence",
+  ]) {
+    if (!canonicalExcludes.has(excluded)) {
+      errors.push(
+        `scope structural digest must exclude Oracle fact: ${excluded}`,
+      );
+    }
+  }
+  validateImplementationStatus(
+    repoRoot,
+    "narrative scope relation contract",
+    contract.implementationStatus,
+    errors,
+  );
+}
+
+export function validateDependencyRoleContract(
+  repoRoot,
+  contract,
+  stateVocabulary,
+  findingContract,
+  consumerContract,
+  errors,
+) {
+  if (!isObject(contract)) return;
+  if (
+    contract.schemaVersion !== 1 ||
+    contract.contract !== "narrative-dependency-role-registry"
+  ) {
+    errors.push(
+      "narrative dependency role contract identity/version is invalid",
+    );
+    return;
+  }
+
+  const roleIds = Array.isArray(contract.roles)
+    ? contract.roles.map((role) => role?.id)
+    : [];
+  if (!sameStringSet(roleIds, REQUIRED_DEPENDENCY_ROLE_IDS)) {
+    errors.push(
+      `narrative dependency roles must contain exactly [${REQUIRED_DEPENDENCY_ROLE_IDS.join(", ")}]`,
+    );
+  }
+
+  const freshnessValues = new Set(stateVocabulary?.evidenceFreshness ?? []);
+  const buildActions = new Set(stateVocabulary?.buildActions ?? []);
+  const reasonCodes = new Set(findingContract?.reasonCodes ?? []);
+  const consumerKinds = new Set(
+    (consumerContract?.consumerKinds ?? []).map((entry) => entry?.kind),
+  );
+  const changeClasses = new Set(contract.sourceChangeClasses ?? []);
+  const rules = Array.isArray(contract.effectRules) ? contract.effectRules : [];
+  const seenRuleIds = new Set();
+  const seenEffectKeys = new Set();
+  const coveredRoles = new Set();
+  const requiredActions = new Set(
+    contract.actionAggregation?.requiredActions ?? [],
+  );
+  const advisoryActions = new Set(
+    contract.actionAggregation?.advisoryActions ?? [],
+  );
+
+  for (const rule of rules) {
+    if (!isObject(rule)) continue;
+    if (seenRuleIds.has(rule.id)) {
+      errors.push(
+        `duplicate narrative dependency effect rule id: ${String(rule.id)}`,
+      );
+    }
+    seenRuleIds.add(rule.id);
+    const effectKey = `${rule.role}|${rule.consumerKind}|${rule.changeClass}`;
+    if (seenEffectKeys.has(effectKey)) {
+      errors.push(`duplicate narrative dependency effect key: ${effectKey}`);
+    }
+    seenEffectKeys.add(effectKey);
+    coveredRoles.add(rule.role);
+
+    if (!REQUIRED_DEPENDENCY_ROLE_IDS.includes(rule.role)) {
+      errors.push(
+        `dependency effect rule uses unknown role: ${String(rule.role)}`,
+      );
+    }
+    if (!consumerKinds.has(rule.consumerKind)) {
+      errors.push(
+        `dependency effect rule uses unregistered consumer kind: ${String(rule.consumerKind)}`,
+      );
+    }
+    if (!changeClasses.has(rule.changeClass)) {
+      errors.push(
+        `dependency effect rule uses unknown change class: ${String(rule.changeClass)}`,
+      );
+    }
+    if (!freshnessValues.has(rule.freshness)) {
+      errors.push(
+        `dependency effect rule uses unknown Freshness: ${String(rule.freshness)}`,
+      );
+    }
+    if (rule.reasonCode !== null && !reasonCodes.has(rule.reasonCode)) {
+      errors.push(
+        `dependency effect rule uses unknown reason code: ${String(rule.reasonCode)}`,
+      );
+    }
+    if (!buildActions.has(rule.buildAction)) {
+      errors.push(
+        `dependency effect rule uses unknown Build Action: ${String(rule.buildAction)}`,
+      );
+    }
+    if (
+      rule.freshness === "unknown" &&
+      rule.changeClass !== "component-unavailable"
+    ) {
+      errors.push(
+        `dependency effect rule ${String(rule.id)} uses unknown outside evaluation-unavailable input`,
+      );
+    }
+    if (
+      (requiredActions.has(rule.buildAction) &&
+        rule.actionRequirement !== "required") ||
+      (advisoryActions.has(rule.buildAction) &&
+        rule.actionRequirement !== "advisory") ||
+      (rule.buildAction === "none" && rule.actionRequirement !== "none")
+    ) {
+      errors.push(
+        `dependency effect rule ${String(rule.id)} mismatches Build Action requirement channel`,
+      );
+    }
+  }
+  for (const role of REQUIRED_DEPENDENCY_ROLE_IDS) {
+    if (!coveredRoles.has(role)) {
+      errors.push(`narrative dependency role has no effect rule: ${role}`);
+    }
+  }
+
+  const findRule = (id) => rules.find((rule) => rule?.id === id);
+  const catalogRule = findRule("entity-resolution-input-changed");
+  if (
+    catalogRule?.freshness !== "stale" ||
+    catalogRule?.reasonCode !== "source-revision-changed" ||
+    catalogRule?.buildAction !== "resolve-only"
+  ) {
+    errors.push(
+      "ordinary entity-resolution input changes must map to stale/resolve-only",
+    );
+  }
+  const qualityRule = findRule("quality-context-refresh-available");
+  if (
+    qualityRule?.freshness !== "fresh" ||
+    qualityRule?.reasonCode !== null ||
+    qualityRule?.buildAction !== "refresh-available" ||
+    qualityRule?.actionRequirement !== "advisory"
+  ) {
+    errors.push(
+      "quality-context changes must remain fresh with advisory refresh-available",
+    );
+  }
+  const rankingRule = findRule("ranking-input-changed");
+  if (
+    rankingRule?.consumerKind !== "semantic-index" ||
+    rankingRule?.freshness !== "stale" ||
+    rankingRule?.buildAction !== "recompile-only"
+  ) {
+    errors.push(
+      "ranking-only changes must recompile the semantic-index Consumer",
+    );
+  }
+
+  const selectorKinds = (contract.selectors ?? []).map(
+    (selector) => selector?.kind,
+  );
+  if (
+    !sameStringSet(selectorKinds, [
+      "whole-source",
+      "text-range",
+      "field-path",
+      "exact-object-set",
+      "component-contract",
+    ])
+  ) {
+    errors.push(
+      "narrative dependency selector registry is incomplete or duplicated",
+    );
+  }
+  const textRange = (contract.selectors ?? []).find(
+    (selector) => selector?.kind === "text-range",
+  );
+  if (
+    textRange?.unit !== "utf16" ||
+    textRange?.rangeSemantics !== "half-open"
+  ) {
+    errors.push(
+      "text-range dependency selectors must use half-open UTF-16 units",
+    );
+  }
+  if (
+    contract.selectorSafety?.catalogFallbackUntilDeterministicSlice !==
+    "whole-source"
+  ) {
+    errors.push(
+      "exact-object-set Catalog matching must fall back to whole-source until a deterministic slice exists",
+    );
+  }
+  if (
+    JSON.stringify(contract.positionMapping?.currentChangeFeedKinds) !==
+    JSON.stringify(["position-map", "canonical-diff", "whole-document"])
+  ) {
+    errors.push(
+      "Dependency contract must preserve all current Change Feed mapping kinds",
+    );
+  }
+
+  if (
+    JSON.stringify(contract.dependencyKey?.hashComponents) !==
+      JSON.stringify(["dependency-role", "canonical-selector"]) ||
+    !contract.dependencyKey?.excludedComponents?.includes(
+      "role-contract-version",
+    )
+  ) {
+    errors.push("dependencyKey must exclude the role contract version");
+  }
+  if (
+    !sameStringSet(contract.declarationSet?.persistentStates, ["sealed"]) ||
+    contract.declarationSet?.buildingState !== "transaction-or-memory-only"
+  ) {
+    errors.push("only sealed Dependency Declaration Sets may persist");
+  }
+  if (contract.v1V2Selection?.singleV2EdgeActivatesV2 !== false) {
+    errors.push("one V2 Edge must never hide the active V1 dependency set");
+  }
+
+  const fixtures = new Set(
+    (contract.contractFixtures ?? []).map((fixture) => fixture?.id),
+  );
+  for (const fixtureId of REQUIRED_DEPENDENCY_CONTRACT_FIXTURES) {
+    if (!fixtures.has(fixtureId)) {
+      errors.push(
+        `narrative dependency role contract is missing fixture: ${fixtureId}`,
+      );
+    }
+  }
+  validateImplementationStatus(
+    repoRoot,
+    "narrative dependency role contract",
+    contract.implementationStatus,
+    errors,
+  );
+}
+
 function readSourceIfPresent(repoRoot, relativePath) {
   const absolute = path.join(repoRoot, relativePath);
   return existsSync(absolute) ? readFileSync(absolute, "utf8") : null;
@@ -1138,6 +1629,14 @@ function validatePolicySchemas(repoRoot, errors) {
     [
       "narrative-consumer-contract.schema.json",
       "narrative-consumer-contract.json",
+    ],
+    [
+      "narrative-scope-relation-contract.schema.json",
+      "narrative-scope-relation-contract.json",
+    ],
+    [
+      "narrative-dependency-role-registry.schema.json",
+      "narrative-dependency-role-registry.json",
     ],
   ];
   const ajv = new Ajv2020({ allErrors: true, strict: false });
@@ -1205,6 +1704,9 @@ export function validateSemanticCoreBoundary({
   authorityMatrixPath = "policies/narrative/semantic-core-authorities.json",
   disclosurePolicyPath = "policies/narrative/retrieval-disclosure.json",
   consumerContractPath = "policies/narrative/narrative-consumer-contract.json",
+  findingContractPath = "policies/narrative/narrative-finding-contract.json",
+  scopeRelationContractPath = "policies/narrative/narrative-scope-relation-contract.json",
+  dependencyRoleContractPath = "policies/narrative/narrative-dependency-role-registry.json",
 } = {}) {
   const errors = [];
   const routeRegistry = readJson(
@@ -1253,6 +1755,33 @@ export function validateSemanticCoreBoundary({
     "narrative consumer contract",
   );
   validateConsumerContract(repoRoot, consumerContract, errors);
+  const findingContract = readJson(
+    repoRoot,
+    findingContractPath,
+    errors,
+    "narrative finding contract",
+  );
+  const scopeRelationContract = readJson(
+    repoRoot,
+    scopeRelationContractPath,
+    errors,
+    "narrative scope relation contract",
+  );
+  validateScopeRelationContract(repoRoot, scopeRelationContract, errors);
+  const dependencyRoleContract = readJson(
+    repoRoot,
+    dependencyRoleContractPath,
+    errors,
+    "narrative dependency role contract",
+  );
+  validateDependencyRoleContract(
+    repoRoot,
+    dependencyRoleContract,
+    vocabulary,
+    findingContract,
+    consumerContract,
+    errors,
+  );
   validatePolicySchemas(repoRoot, errors);
   validateArchitectureImports(repoRoot, writerManifest, errors);
   validateMutationCommandInventory(repoRoot, writerManifest, errors);
@@ -1269,6 +1798,8 @@ export function validateSemanticCoreBoundary({
       stateVocabulary: errors.length === 0,
       authorityMatrix: errors.length === 0,
       disclosurePolicy: errors.length === 0,
+      scopeRelationContract: errors.length === 0,
+      dependencyRoleContract: errors.length === 0,
     },
   };
 }

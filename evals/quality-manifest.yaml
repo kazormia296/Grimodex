@@ -381,19 +381,25 @@ requirements:
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-SEMANTIC-CONTRACT-001
-    title: Narrative mutation routes, state axes, disclosure, and authority matrix remain ratified.
+    title: Narrative authority, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
+      - docs/adr/009-narrative-scope-relation-contract.md
+      - docs/adr/010-narrative-dependency-role-granularity-contract.md
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
       - policies/narrative/retrieval-disclosure.json
+      - policies/narrative/narrative-scope-relation-contract.json
+      - policies/narrative/narrative-dependency-role-registry.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
       - policies/narrative/schemas/retrieval-disclosure.schema.json
+      - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
+      - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
       - scripts/quality/validate-semantic-core-boundary.mjs
     lightTests:

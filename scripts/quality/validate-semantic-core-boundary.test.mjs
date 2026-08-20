@@ -11,7 +11,11 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { validateSemanticCoreBoundary } from "./validate-semantic-core-boundary.mjs";
+import {
+  validateDependencyRoleContract,
+  validateScopeRelationContract,
+  validateSemanticCoreBoundary,
+} from "./validate-semantic-core-boundary.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -201,6 +205,103 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
     assert.equal(result.schemaVersion, 30);
+    assert.equal(result.checks.scopeRelationContract, true);
+    assert.equal(result.checks.dependencyRoleContract, true);
+  });
+
+  it("rejects strict Scope containment and unresolved-reason identity", () => {
+    const contract = structuredClone(
+      JSON.parse(
+        readFileSync(
+          path.join(
+            REPO_ROOT,
+            "policies/narrative/narrative-scope-relation-contract.json",
+          ),
+          "utf8",
+        ),
+      ),
+    );
+    contract.relationSemantics.containsIsStrict = true;
+    contract.unresolvedSemantics.reasonAloneEstablishesIdentity = true;
+    const errors = [];
+
+    validateScopeRelationContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /must not claim strict containment/i.test(error)),
+    );
+    assert.ok(
+      errors.some((error) => /reason alone must not establish/i.test(error)),
+    );
+  });
+
+  it("rejects ordinary Catalog drift mapped to unknown and a versioned dependencyKey", () => {
+    const readPolicy = (relativePath) =>
+      JSON.parse(readFileSync(path.join(REPO_ROOT, relativePath), "utf8"));
+    const contract = structuredClone(
+      readPolicy("policies/narrative/narrative-dependency-role-registry.json"),
+    );
+    const catalogRule = contract.effectRules.find(
+      (rule) => rule.id === "entity-resolution-input-changed",
+    );
+    catalogRule.freshness = "unknown";
+    contract.dependencyKey.hashComponents = [
+      "role-contract-version",
+      "dependency-role",
+      "canonical-selector",
+    ];
+    const errors = [];
+
+    validateDependencyRoleContract(
+      REPO_ROOT,
+      contract,
+      readPolicy("policies/narrative/semantic-state-vocabulary.json"),
+      readPolicy("policies/narrative/narrative-finding-contract.json"),
+      readPolicy("policies/narrative/narrative-consumer-contract.json"),
+      errors,
+    );
+
+    assert.ok(errors.some((error) => /uses unknown outside/i.test(error)));
+    assert.ok(
+      errors.some((error) => /must map to stale\/resolve-only/i.test(error)),
+    );
+    assert.ok(
+      errors.some((error) =>
+        /must exclude the role contract version/i.test(error),
+      ),
+    );
+  });
+
+  it("rejects a declared contract with a production marker", () => {
+    const root = mkdtempSync(
+      path.join(tmpdir(), "scope-implementation-status-"),
+    );
+    const sourceRoot = "src/features/narrative-semantic-core";
+    mkdirSync(path.join(root, sourceRoot), { recursive: true });
+    writeFileSync(
+      path.join(root, sourceRoot, "scopeV2.ts"),
+      "export const NARRATIVE_SCOPE_V2_SCHEMA_VERSION = 2;\n",
+    );
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-scope-relation-contract.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.implementationStatus.scanRoots = [sourceRoot];
+    const errors = [];
+
+    validateScopeRelationContract(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(
+      errors.some((error) =>
+        /declared but production markers are wired/i.test(error),
+      ),
+    );
   });
 
   it("fails closed for an unknown route and a forbidden interpreter import", () => {

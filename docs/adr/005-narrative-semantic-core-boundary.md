@@ -7,6 +7,9 @@ Accepted — 2026-08-14（Gate C1.5 / Narrative Semantic Contract Ratification�
 本ADRはADR 004を置き換えない。意味評価、変更権限、Semantic retraction、
 Deterministic Coreの境界については、引き続きADR 004を正本とする。
 Mutation Authority Routeの詳細は[ADR 006](./006-narrative-mutation-authority-routes.md)で固定する。
+Scopeの正規形と比較契約は[ADR 009](./009-narrative-scope-relation-contract.md)、
+Dependencyの役割・粒度・宣言集合契約は
+[ADR 010](./010-narrative-dependency-role-granularity-contract.md)を正本とする。
 
 ## Context
 
@@ -290,7 +293,7 @@ interface NarrativeAssertionRevision<TPayload> {
   payloadSchemaVersion: string;
   payload: TPayload;
 
-  scope: NarrativeScope;
+  scope: NarrativeScope; // versioned contract owned by ADR 009
   modality: AssertionModality;
   polarity: AssertionPolarity;
   supportClass: AssertionSupportClass;
@@ -410,25 +413,14 @@ Stable identityがない場合、Deterministic Coreがheuristic matchingでident
 
 Narrative assertionは、scope付きかつ相互矛盾可能でなければならない。
 
-Scopeは概念上、次のような軸を持てる。
+Scopeの正規形、Reference／Temporal軸、`any`と`unresolved`の非同値、
+Revision付きOracle、Relation合成、Assertion Scope ProfileはADR 009を唯一の正本とする。
+本ADRの旧`scopeStatus`／optional-axis形式は互換実装の履歴であり、新しいProducerや
+Persistence Contractが複製してはならない。ScopeはAssertionが観測された場所ではなく、
+Assertionが成立する適用範囲である。観測場所はEvidenceが保持する。
 
-```ts
-interface NarrativeScope {
-  scopeStatus: "explicit" | "unresolved";
-  timelineRef?: string;
-  worldlineRef?: string;
-  sceneRef?: string;
-  validFromRef?: string;
-  validUntilRef?: string;
-  viewpointRef?: string;
-  knowledgeHolderRef?: string;
-  audienceRef?: "reader" | string;
-  narrativeLayer?: string;
-}
-```
-
-正確な語彙はversioned registryで管理する。ただし、すべてを単一のglobal truthへ
-潰してはならない。
+Scope Relationは作品世界のTruth Verdictではない。現在のScope、Registry、Order Basisから
+確立できた関係を表すだけであり、すべてを単一のglobal truthへ潰してはならない。
 
 次のAssertionを同時に表現できる必要がある。
 
@@ -496,6 +488,10 @@ Domain Projectionを別のInterpretationのSourceとして使う場合、Depende
 - observed revision token
 - propagation mode
 - 必要な場合はbaseline sequence
+
+役割、Selector、`dependencyKey`、Context Set、Build Action集約、sealed Declaration Set、
+V1／V2優先規則の正本はADR 010とする。上記は現行V1 Edgeの最低項目であり、
+V2のRoleまたは粒度を推測させるものではない。
 
 Application自身の書き込みで、自身が即座にstaleになることをSelf-stale guardで防ぐ。
 
@@ -638,6 +634,9 @@ Semantic retractionはADR 004に従い、forwardなCompensating Proposal／Appli
 ## Semantic Build Graph
 
 Semantic Build GraphはNarrative Semantic Coreのincremental build systemである。
+
+Dependency Role、Selector V2、Declaration Set、Consumer Head、Context Setの詳細は
+ADR 010を正本とする。本節はSource／Consumer／Freshness Authorityの境界だけを保持する。
 
 DurableなDependency Edgeは、SourceとConsumerを接続する。
 
@@ -1021,7 +1020,7 @@ Rejected Candidate、Full Read Set、Reusable Intermediate Artifactを表せな�
 具体的Consumerが揃った段階で、別ADRまたは本ADRのAmendmentとして決定する。
 
 - mandatoryなstable `assertionId`／`claimUid` allocation
-- Reader Knowledge、Narrator Layer、Timeline、Worldlineの正確なScope vocabulary
+- Registry固有のWorldline分岐、Narrative Layer階層、集合Scope拡張
 - Proposal payloadからdedicated typed storageへ昇格する基準
 - Composite AssertionのField-level Review UI
 - Canonical Assertion Kind RegistryのOwnership／Extension Policy
@@ -1176,23 +1175,10 @@ author-declared | direct-source | reported-source | single-source-inference
 | multi-source-inference | imported-assertion | unresolved
 ```
 
-An empty Scope is never an implicit global truth. Scope has an explicit status:
-
-```ts
-interface NarrativeScope {
-  scopeStatus: "explicit" | "unresolved";
-  timelineRef?: string;
-  worldlineRef?: string;
-  sceneRef?: string;
-  viewpointRef?: string;
-  knowledgeHolderRef?: string;
-  audienceRef?: "reader" | string;
-  narrativeLayer?: string;
-}
-```
-
-An unresolved Scope cannot be automatically expanded to every time, character,
-or worldline. AI Inference and Reconciler Proposal require a non-empty Evidence
+An empty or omitted Scope is never an implicit global truth. ADR 009 owns the
+canonical V2 shape: every axis is present and distinguishes intentional `any`
+from constrained-but-`unresolved`. An unresolved Scope cannot be automatically
+expanded to every time, character, or worldline. AI Inference and Reconciler Proposal require a non-empty Evidence
 Set. Author Declaration may have an empty Evidence Set only with a Source
 Basis. Import Metadata may use the Source Package as Evidence. Legacy
 Migration may have an empty Evidence Set only with an explicit

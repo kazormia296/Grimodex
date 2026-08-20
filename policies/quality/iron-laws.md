@@ -128,6 +128,22 @@ orthogonal vocabularies; no one axis may be used as another. Evidence, Scope,
 Disclosure, and the canonical Freshness authority are machine-readable and
 validated before C2 adds durable dependency graph state.
 
+Scope comparison records the strongest relation established by the current
+structural Scope and revision-bound Registry／Order Basis; it is never a truth
+verdict. `any` is intentional lack of constraint, `unresolved` is an unknown
+constraint, matching unresolved reasons do not establish identity, and an
+Oracle-derived `equal` requires the same Basis discipline as every other
+Oracle-derived relation.
+
+Narrative producers keep Evidence, invalidation Dependency, and model-visible
+Context as separate declared sets. Dynamic Source input reaches a model only
+through the recorded Context Set; unclassified model input remains an opaque
+Dependency. Dependency Role × Consumer Kind × Source Change Class maps only to
+the existing Freshness, Finding Reason, and Build Action vocabularies. Required
+and advisory Build Actions aggregate independently of Freshness, and only a
+sealed, complete Declaration Set may replace the active V1 Dependency set.
+Dependency invalidation never authorizes semantic retraction or Domain mutation.
+
 ## GDX-NARR-COVERAGE-001 — Do not overclaim from partial narrative coverage
 
 Narrative evaluations and extraction artifacts declare included and omitted documents. Partial
