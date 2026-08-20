@@ -602,6 +602,84 @@ describe("release workflow boundary", () => {
     assert.match(auditStep?.run ?? "", /audit --audit-level high/);
   });
 
+  it("gives every root TypeScript build explicit Node heap headroom", async () => {
+    const ci = await readWorkflow("ci.yml");
+    const release = await readWorkflow("release.yml");
+    const expectedNodeOptions = "--max-old-space-size=4096";
+    const expectedGuardedSteps = [
+      ["ci.yml", "frontend", "型チェック"],
+      ["ci.yml", "frontend", "Web Editor-only production artifact"],
+      ["ci.yml", "electron", "Electron production build"],
+      [
+        "ci.yml",
+        "electron-runtime-performance",
+        "Build development native module and production Electron app",
+      ],
+      [
+        "ci.yml",
+        "electron-product-journeys",
+        "Build native module and production Electron app",
+      ],
+      [
+        "ci.yml",
+        "electron-windows-installer-contract",
+        "Build Electron JavaScript",
+      ],
+      ["release.yml", "build", "Build Electron main, preload, and renderer"],
+    ];
+    const workflows = new Map([
+      ["ci.yml", ci],
+      ["release.yml", release],
+    ]);
+    const rootBuildPattern =
+      /pnpm exec tsc --noEmit|pnpm build:web-editor|pnpm electron:build/;
+
+    for (const [workflowName, jobName, stepName] of expectedGuardedSteps) {
+      const workflow = workflows.get(workflowName);
+      const job = workflow?.jobs?.[jobName];
+      const step = job?.steps?.find((candidate) => candidate.name === stepName);
+      assert.ok(step, `${stepName} must remain a named workflow step`);
+      assert.equal(
+        step.env?.NODE_OPTIONS,
+        expectedNodeOptions,
+        `${stepName} must not rely on Node's approximately 2 GiB default heap`,
+      );
+      assert.match(
+        step.run ?? "",
+        rootBuildPattern,
+        `${stepName} must remain a root TypeScript build seam`,
+      );
+    }
+
+    const actualGuardedSteps = [];
+    const actualRootBuildSteps = [];
+    for (const [workflowName, workflow] of workflows) {
+      assert.equal(
+        workflow.env?.NODE_OPTIONS,
+        undefined,
+        `${workflowName} must not widen the heap for every job`,
+      );
+      for (const [jobName, job] of Object.entries(workflow.jobs)) {
+        assert.equal(
+          job.env?.NODE_OPTIONS,
+          undefined,
+          `${workflowName}:${jobName} must not widen the heap for every step`,
+        );
+        for (const step of job.steps ?? []) {
+          if (rootBuildPattern.test(step.run ?? "")) {
+            actualRootBuildSteps.push([workflowName, jobName, step.name]);
+          }
+          if (step.env?.NODE_OPTIONS !== undefined) {
+            actualGuardedSteps.push([workflowName, jobName, step.name]);
+          }
+        }
+      }
+    }
+
+    assert.deepEqual(actualRootBuildSteps, expectedGuardedSteps);
+    assert.deepEqual(actualGuardedSteps, expectedGuardedSteps);
+  });
+
   it("pins brace-expansion to the patched version required by the audit gate", async () => {
     const workspace = await readFile(
       path.join(repoRoot, "pnpm-workspace.yaml"),

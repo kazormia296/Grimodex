@@ -427,6 +427,8 @@ jobs:
         run: pnpm test:electron --run
 
       - name: Build Electron main, preload, and renderer
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       # Windows artifacts are intentionally distributed unsigned. Disable

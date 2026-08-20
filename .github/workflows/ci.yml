@@ -114,6 +114,8 @@ jobs:
         run: pnpm build:workspace:dependencies
 
       - name: 型チェック
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm exec tsc --noEmit
 
       - name: Lint
@@ -129,6 +131,8 @@ jobs:
         run: pnpm test:node --run
 
       - name: Web Editor-only production artifact
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm build:web-editor
 
   lfm-encoder-phase0:
@@ -395,6 +399,8 @@ jobs:
         run: pnpm test:electron --run
 
       - name: Electron production build
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       - name: Renderer performance budget
@@ -452,6 +458,8 @@ jobs:
         run: pnpm exec playwright install-deps chromium
 
       - name: Build development native module and production Electron app
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           pnpm napi:build
           pnpm electron:build
@@ -566,6 +574,8 @@ jobs:
 
       - name: Build native module and production Electron app
         if: steps.product-journey-impact.outputs.should_run == 'true'
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: |
           pnpm napi:build
           pnpm electron:build
@@ -670,6 +680,8 @@ jobs:
           }
 
       - name: Build Electron JavaScript
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
         run: pnpm electron:build
 
       # This job validates electron-builder's two makensis passes, not the
