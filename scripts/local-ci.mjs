@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
+import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repoRoot = path.resolve(
@@ -12,6 +14,7 @@ const repoRoot = path.resolve(
   "..",
 );
 const registryPath = path.join(repoRoot, "scripts/local-ci-registry.json");
+const execFileAsync = promisify(execFile);
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -212,7 +215,158 @@ export function buildLocalCiPlan(
           .filter(([, coverage]) => coverage.releaseOnly)
           .map(([id, coverage]) => ({ id, reason: coverage.reason }))
       : [];
-  return { comparison, profile, releaseOnlyJobs, stages };
+  return {
+    comparison,
+    coverage: {
+      completeness: from === null ? "complete" : "partial",
+      fromStage: from,
+    },
+    profile,
+    releaseOnlyJobs,
+    stages,
+  };
+}
+
+async function executeGit(args, { root = repoRoot } = {}) {
+  const { stdout } = await execFileAsync("git", args, {
+    cwd: root,
+    encoding: "utf8",
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+function requireGitObjectId(value, label) {
+  const normalized = value.trim();
+  if (!/^[0-9a-f]{40,64}$/u.test(normalized)) {
+    throw new Error(`${label} did not resolve to a Git object ID`);
+  }
+  return normalized;
+}
+
+export async function resolveLocalCiCandidate(
+  plan,
+  { root = repoRoot, git = (args) => executeGit(args, { root }) } = {},
+) {
+  const requestedBase = plan.comparison.base;
+  const requestedHead = plan.comparison.head;
+  const [
+    base,
+    head,
+    currentHead,
+    headTree,
+    worktreeStatus,
+    trackedDiff,
+    untrackedPathsRaw,
+  ] = await Promise.all([
+    git(["rev-parse", "--verify", `${requestedBase}^{commit}`]),
+    git(["rev-parse", "--verify", `${requestedHead}^{commit}`]),
+    git(["rev-parse", "--verify", "HEAD"]),
+    git(["rev-parse", "--verify", `${requestedHead}^{tree}`]),
+    git(["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
+    git(["diff", "--binary", "--no-ext-diff", "HEAD", "--"]),
+    git(["ls-files", "--others", "--exclude-standard", "-z"]),
+  ]);
+  const untrackedPaths = untrackedPathsRaw.split("\0").filter(Boolean);
+  let untrackedHashes = "";
+  if (untrackedPaths.length > 0) {
+    const output = await git([
+      "hash-object",
+      "--no-filters",
+      "--",
+      ...untrackedPaths,
+    ]);
+    const hashes = output.trimEnd().split("\n");
+    if (hashes.length !== untrackedPaths.length) {
+      throw new Error(
+        "Git did not hash every untracked local CI candidate file",
+      );
+    }
+    untrackedHashes = hashes
+      .map((hash, index) =>
+        requireGitObjectId(hash, `untracked file ${untrackedPaths[index]}`),
+      )
+      .join("\n");
+  }
+  const worktreeFingerprint = createHash("sha256")
+    .update("tracked\0")
+    .update(trackedDiff)
+    .update("untracked-paths\0")
+    .update(untrackedPathsRaw)
+    .update("untracked-hashes\0")
+    .update(untrackedHashes)
+    .digest("hex");
+
+  return {
+    requestedBase,
+    requestedHead,
+    resolvedBaseSha: requireGitObjectId(base, requestedBase),
+    resolvedHeadSha: requireGitObjectId(head, requestedHead),
+    resolvedHeadTreeSha: requireGitObjectId(
+      headTree,
+      `${requestedHead}^{tree}`,
+    ),
+    currentHeadSha: requireGitObjectId(currentHead, "HEAD"),
+    worktreeClean: worktreeStatus.length === 0,
+    worktreeFingerprint,
+    worktreeStatusHash: createHash("sha256")
+      .update(worktreeStatus)
+      .digest("hex"),
+  };
+}
+
+export function validateLocalCiCandidate(plan, candidate) {
+  if (candidate.resolvedHeadSha !== candidate.currentHeadSha) {
+    throw new Error(
+      `Local CI must execute against current HEAD (${candidate.currentHeadSha}), not ${candidate.requestedHead} (${candidate.resolvedHeadSha}).`,
+    );
+  }
+  if (plan.profile === "full" && !candidate.worktreeClean) {
+    throw new Error("The full local CI profile requires a clean worktree.");
+  }
+  return candidate;
+}
+
+function verifyCandidateBinding(receiptCandidate, candidate) {
+  for (const field of [
+    "requestedBase",
+    "requestedHead",
+    "resolvedBaseSha",
+    "resolvedHeadSha",
+    "resolvedHeadTreeSha",
+    "currentHeadSha",
+    "worktreeClean",
+    "worktreeFingerprint",
+    "worktreeStatusHash",
+  ]) {
+    if (receiptCandidate?.[field] !== candidate[field]) {
+      throw new Error(
+        `Local CI receipt does not match the current candidate: ${field}.`,
+      );
+    }
+  }
+}
+
+export function verifyLocalCiReceipt(receipt, { profile, candidate }) {
+  if (!isPlainObject(receipt) || receipt.version !== 2) {
+    throw new Error("Local CI receipt version 2 is required.");
+  }
+  if (receipt.profile !== profile || receipt.status !== "passed") {
+    throw new Error(`A passed ${profile} local CI receipt is required.`);
+  }
+  if (
+    receipt.coverage?.completeness !== "complete" ||
+    receipt.coverage?.fromStage !== null
+  ) {
+    throw new Error(
+      "A complete local CI receipt from the first stage is required.",
+    );
+  }
+  if (profile === "full" && receipt.candidate?.worktreeClean !== true) {
+    throw new Error("A clean-worktree Full local CI receipt is required.");
+  }
+  verifyCandidateBinding(receipt.candidate, candidate);
+  return receipt;
 }
 
 function readOptionValue(argv, option, index) {
@@ -232,12 +386,14 @@ export function parseLocalCiArgs(argv) {
     list: false,
     profile: null,
     report: null,
+    verify: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--") continue;
     if (argument === "--dry-run") result.dryRun = true;
     else if (argument === "--list") result.list = true;
+    else if (argument === "--verify") result.verify = true;
     else if (argument === "--base") {
       result.base = readOptionValue(argv, argument, index);
       index += 1;
@@ -303,6 +459,7 @@ function notRunCommand(command, reason) {
 export async function runLocalCiPlan(
   plan,
   {
+    candidate = null,
     dryRun = false,
     executeCommand: execute = (entry) => executeCommand(entry),
     notify = () => {},
@@ -387,9 +544,11 @@ export async function runLocalCiPlan(
   }
 
   return {
-    version: 1,
+    version: 2,
     profile: plan.profile,
     comparison: plan.comparison,
+    coverage: plan.coverage,
+    candidate,
     startedAt,
     finishedAt: new Date().toISOString(),
     durationMs: Math.round(performance.now() - started),
@@ -471,8 +630,29 @@ async function main() {
   for (const job of plan.releaseOnlyJobs) {
     process.stdout.write(`[local-ci] release-only ${job.id}: ${job.reason}\n`);
   }
+  let candidate = null;
+  if (!args.dryRun) {
+    candidate = validateLocalCiCandidate(
+      plan,
+      await resolveLocalCiCandidate(plan),
+    );
+  }
+  const reportPath = path.resolve(
+    repoRoot,
+    args.report ?? `.artifacts/local-ci/${plan.profile}.json`,
+  );
+  if (args.verify) {
+    if (args.dryRun) {
+      throw new Error("--verify cannot be combined with --dry-run");
+    }
+    const receipt = JSON.parse(await readFile(reportPath, "utf8"));
+    verifyLocalCiReceipt(receipt, { profile: plan.profile, candidate });
+    process.stdout.write(`[local-ci] verified=${reportPath}\n`);
+    return;
+  }
   if (!args.dryRun) await prepareLocalCiArtifacts(plan);
   const result = await runLocalCiPlan(plan, {
+    candidate,
     dryRun: args.dryRun,
     notify(event) {
       if (event.type === "stage-start") {
@@ -489,10 +669,17 @@ async function main() {
     },
   });
   if (!args.dryRun) {
-    const reportPath = path.resolve(
-      repoRoot,
-      args.report ?? `.artifacts/local-ci/${plan.profile}.json`,
+    const finishedCandidate = validateLocalCiCandidate(
+      plan,
+      await resolveLocalCiCandidate(plan),
     );
+    try {
+      verifyCandidateBinding(result.candidate, finishedCandidate);
+    } catch (error) {
+      result.status = "failed";
+      result.receiptError =
+        error instanceof Error ? error.message : String(error);
+    }
     await writeReport(reportPath, result);
     process.stdout.write(`[local-ci] report=${reportPath}\n`);
   }

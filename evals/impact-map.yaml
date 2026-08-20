@@ -37,6 +37,11 @@ rules:
       - package.json
       - pnpm-lock.yaml
       - .github/workflows/**
+      - docs/DEVELOPMENT_SETUP.md
+      - scripts/local-ci.mjs
+      - scripts/local-ci-registry.json
+      - scripts/local-ci.test.mjs
+      - scripts/ci-pause.test.mjs
     requirements:
       - GDX-TRACE-001
     suites:

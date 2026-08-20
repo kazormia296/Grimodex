@@ -662,6 +662,79 @@ export declare class Backend {
   narrativeExtractionGetCommitStatus(payload: any): Promise<string>
   narrativeExtractionUndoCommit(payload: any): Promise<string>
   narrativeExtractionRedoCommit(payload: any): Promise<string>
+  /**
+   * `dependency-verify`: a read-only diagnostic across the Durable
+   * Dependency Graph and Rebuildable Derived State for one project,
+   * recorded under a real Run.
+   *
+   * The diagnostic itself writes nothing to the tables it reads; the
+   * Run and its stored result exist so a later `dependency-repair` can
+   * prove *which* Verify result its sealed plan came from (the policy's
+   * `verify-first` precondition -- see `seal_repair_plan`). The response
+   * therefore carries `runId`/`reportDigest` alongside the report, not
+   * the bare report.
+   *
+   * Owns its own transactions internally, so this goes through the live
+   * `Database` rather than `with_db_state`'s single-closure shape.
+   */
+  verifyNarrativeDependencyGraph(payload: any): Promise<string>
+  /**
+   * `dependency-rebuild-derived`: discards and recomputes every
+   * Rebuildable Derived State row from the Durable Graph and current
+   * Source state, for every Consumer in the project. Owns its own
+   * transaction(s) internally (see the shared crate's own doc
+   * comment), so this calls it directly against the live `Database`
+   * rather than through `with_db_state`'s single-closure shape.
+   */
+  rebuildNarrativeDerivedState(payload: any): Promise<string>
+  /**
+   * Read-only: status of the most recent Legacy Dependency Backfill Run
+   * for one project, if any.
+   */
+  getNarrativeBackfillStatus(payload: any): Promise<string>
+  /**
+   * Manual retry for Legacy Dependency Backfill
+   * (`dependency-backfill`'s `manualRetryRole:
+   * failure-recovery-only`) -- the automatic post-open bootstrap
+   * trigger already retries on the next Workspace open when a prior
+   * attempt failed (a `failed` Run is not reused); this triggers that
+   * same retry immediately, without waiting for a reopen. A no-op
+   * (`outcome: "alreadyRun"`) when the project already has a
+   * `pending`/`running`/`completed` Backfill Run -- there is nothing
+   * to retry.
+   */
+  retryNarrativeLegacyBackfill(payload: any): Promise<string>
+  /**
+   * `dependency-repair`, manual-only. `apply: false` (the default)
+   * seals a repair plan against the project's *current* Semantic
+   * Epoch and returns it as a preview -- the policy's
+   * `change-count-preview` precondition -- without executing
+   * anything. `apply: true` executes: `planDigest` must match the
+   * digest a preview call just returned (binds the confirmation to
+   * the exact plan a human saw, not a blind re-seal that could differ
+   * if the Durable Graph changed in between) and `leaseOwner` claims
+   * the exclusive Repair lease. Every precondition failure
+   * (`NEX_REPAIR_*`) is a typed, `?`-propagated error from the shared
+   * crate or an explicit one constructed here -- never a silent
+   * fallback.
+   */
+  repairNarrativeDependencyDeclarations(payload: any): Promise<string>
+  /**
+   * Set (upsert) a Maintenance Attention disposition. Never touches the
+   * Change Feed: `narrative_maintenance_attention` is durable,
+   * non-epoch-bound, `backflowPolicy: "forbid"` user state.
+   */
+  narrativeMaintenanceAttentionSet(payload: any): Promise<string>
+  /**
+   * Clear a Maintenance Attention disposition under the caller's OCC
+   * token. Clearing an absent row is a no-op success only when the caller
+   * expected it to be absent (`expectedVersion: 0`); a row that has moved
+   * on since the caller read it fails with
+   * `NEX_ATTENTION_VERSION_CONFLICT` rather than being deleted silently.
+   */
+  narrativeMaintenanceAttentionClear(payload: any): Promise<string>
+  /** Read-only: assemble the Maintenance Inbox for one project as of now. */
+  narrativeMaintenanceInboxList(payload: any): Promise<string>
   /** 校閲 run 一覧 (limit 省略時 20 / offset 省略時 0 はサーバサイド既定)。 */
   listPostEffectRuns(projectId: string, effectType?: string | undefined | null, limit?: number | undefined | null, offset?: number | undefined | null): Promise<string>
   /** Outline 用: scene ごとに最新 run の lens (`runCompletedAt` 付き) を返す。 */

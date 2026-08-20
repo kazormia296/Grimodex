@@ -18,7 +18,7 @@ description: >
 1. `AGENTS.md`、`policies/quality/iron-laws.md`、`evals/impact-map.yaml`、
    `evals/quality-manifest.yaml` を読む。
 2. `git status` で staged、unstaged、untracked の状態を確認する。
-3. `package.json` に `verify:quality` と `eval:impact` が実在することを確認する。
+3. `package.json` に `verify:quality`、`ci:local:quick`、`ci:local:verify` が実在することを確認する。
 4. PR／commit 間を評価する場合は base と head を実在確認する。比較範囲を確定できない
    場合は推測せず、全 suite fallback または `[precheck]` として扱う。
 
@@ -30,27 +30,27 @@ description: >
    pnpm verify:quality
    ```
 
-2. 現在の working tree を対象に、選択された Light suite を実行する。
+2. 現在の working tree を対象に、local CI wrapperから選択されたLight suiteを実行する。
+   wrapperが内部で`pnpm eval:impact`を呼ぶため、差分選択ロジックを別経路で再実装しない。
 
    ```bash
-   pnpm eval:impact -- --run
+   pnpm ci:local:quick
    ```
 
 3. 明示的な比較範囲が必要な場合だけ、検証済みの ref を渡す。
 
    ```bash
-   pnpm eval:impact -- --base <base-ref> --head <head-ref> --run
+   pnpm ci:local:quick -- --base <base-ref> --head <head-ref>
    ```
 
-4. machine-readable evidence が必要な場合は、pnpm の lifecycle banner を JSON と混ぜず
-   `--report` の出力ファイルを正本にする。
+4. 実行直後に同じrefでreceiptを検証する。途中で差分やHEADが変わったreceiptを成功証跡にしない。
 
    ```bash
-   pnpm eval:impact -- --run --report /tmp/grimodex-impact-report.json
+   pnpm ci:local:verify -- quick --base <base-ref> --head <head-ref>
    ```
 
-   stdout の JSON を直接 pipe する場合だけ
-   `pnpm --silent eval:impact -- --format json` を使う。
+   machine-readable evidenceの正本は`.artifacts/local-ci/quick.json`、選択suiteの詳細は
+   `.artifacts/local-ci/impact.json`とする。stdoutのbannerをJSONとして扱わない。
 
 `evals/impact-map.yaml` の rule を手作業で再判定したり、選択 suite を減らしたりしない。
 selector が複数 rule の suite を合算し、未分類 path、空差分、取得不能な差分を安全側の
@@ -59,6 +59,8 @@ selector が複数 rule の suite を合算し、未分類 path、空差分、�
 ## Interpret results
 
 - 全ての selected Light suite が成功した場合だけ Light gate を成功とする。
+- receiptが`complete`で、requested／resolved base・headと現在candidateが一致する場合だけ
+  Quick gateを成功とする。`--from`、`--dry-run`、stale receiptは成功証跡ではない。
 - Heavy evaluation は実 connector、資格情報、課金、環境分離を必要とするため、通常は
   `deferred` evidence としてコマンドと理由を報告する。deferred／skipped を passed としない。
 - 実行可能な runner 自体がない評価は `blocked` gap として必要作業を報告し、Heavy の
