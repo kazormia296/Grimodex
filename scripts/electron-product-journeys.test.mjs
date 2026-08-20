@@ -79,7 +79,7 @@ test("CI has a dedicated product-journeys gate with native Electron and SQLite",
   );
 });
 
-test("CI exposes only all/shadow manually, plans shadow for PR and master before setup, and schedules nightly all", async () => {
+test("CI pauses automatic triggers while preserving manual and reusable controls", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const input = workflow.on.workflow_call.inputs.product_journey_mode;
   const manualInput = workflow.on.workflow_dispatch.inputs.product_journey_mode;
@@ -107,7 +107,9 @@ test("CI exposes only all/shadow manually, plans shadow for PR and master before
     default: "all",
     options: ["all", "shadow"],
   });
-  assert.deepEqual(workflow.on.schedule, [{ cron: "17 18 * * *" }]);
+  assert.equal(workflow.on.push, undefined);
+  assert.equal(workflow.on.pull_request, undefined);
+  assert.equal(workflow.on.schedule, undefined);
   assert.ok(checkoutIndex >= 0, "product journey checkout is required");
   assert.equal(job.steps[checkoutIndex].with["fetch-depth"], 0);
   assert.equal(
@@ -188,7 +190,7 @@ test("CI exposes only all/shadow manually, plans shadow for PR and master before
   assert.match(mcpBuild.if, /execution_capabilities.*mcp/);
 });
 
-test("nightly schedule skips every non-product CI job", async () => {
+test("paused CI keeps every product journey job definition available", async () => {
   const workflow = yaml.load(await read(".github/workflows/ci.yml"));
   const productJourneyJobId = "electron-product-journeys";
   const jobEntries = Object.entries(workflow.jobs);
@@ -202,14 +204,9 @@ test("nightly schedule skips every non-product CI job", async () => {
     assert.equal(
       job.if,
       "github.event_name != 'schedule'",
-      `${jobId} must skip the product-journey-only nightly schedule`,
+      `${jobId} must retain its non-scheduled execution guard`,
     );
   }
-  assert.notEqual(
-    workflow.jobs[productJourneyJobId].if,
-    "github.event_name != 'schedule'",
-    "the product journey job must remain enabled for the nightly schedule",
-  );
 });
 
 test("catalog and runner implementation IDs match in deterministic order", () => {

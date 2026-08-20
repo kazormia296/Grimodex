@@ -12,12 +12,9 @@ name: CodeQL
 # 無効化する必要がある(default と advanced は併用不可)。
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    branches: [master]
-  schedule:
-    - cron: "30 6 * * 1"
+  # Automatic CodeQL runs are paused while this source repository is private.
+  # Security analysis remains available as an explicit manual run.
+  workflow_dispatch:
 
 permissions:
   contents: read

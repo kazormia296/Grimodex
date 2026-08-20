@@ -1,8 +1,9 @@
 name: Dependency Review
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  # Automatic dependency review is paused while this source repository is
+  # private. Run it manually when a dependency change needs review.
+  workflow_dispatch:
 
 permissions:
   contents: read
