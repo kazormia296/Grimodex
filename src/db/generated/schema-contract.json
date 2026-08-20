@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 30,
+  "schemaVersion": 31,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -1144,10 +1144,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "runtime",
-            "external_thread_id"
-          ]
+          "columns": ["runtime", "external_thread_id"]
         }
       ],
       "createSql": "CREATE TABLE chat_runtime_threads ( session_id TEXT NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE, runtime TEXT NOT NULL, external_thread_id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, history_revision TEXT, last_turn_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (session_id, runtime), UNIQUE (runtime, external_thread_id) )"
@@ -1715,11 +1712,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "type_slug",
-            "name"
-          ]
+          "columns": ["project_id", "type_slug", "name"]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_definitions ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, type_slug TEXT NOT NULL, name TEXT NOT NULL, field_type TEXT NOT NULL DEFAULT 'text' CHECK(field_type IN ('text', 'dropdown', 'codex_reference')), field_config TEXT, sort_order REAL NOT NULL DEFAULT 0.0, include_in_context INTEGER NOT NULL DEFAULT 0, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, type_slug, name), -- Composite FK: (project_id, type_slug) must reference a row in codex_types. FOREIGN KEY (project_id, type_slug) REFERENCES codex_types(project_id, slug) ON UPDATE CASCADE ON DELETE RESTRICT )"
@@ -1917,10 +1910,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "entry_id",
-            "definition_id"
-          ]
+          "columns": ["entry_id", "definition_id"]
         }
       ],
       "createSql": "CREATE TABLE codex_detail_values ( id TEXT PRIMARY KEY, entry_id TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE, definition_id TEXT NOT NULL REFERENCES codex_detail_definitions(id) ON DELETE CASCADE, value TEXT, version INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entry_id, definition_id) )"
@@ -2668,10 +2658,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE codex_tags ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT, type_filter TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -2764,10 +2751,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "slug"
-          ]
+          "columns": ["project_id", "slug"]
         }
       ],
       "createSql": "CREATE TABLE codex_types ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, slug TEXT NOT NULL, label TEXT NOT NULL, color TEXT NOT NULL DEFAULT '#888888', palette_index INTEGER, icon TEXT, is_builtin INTEGER NOT NULL DEFAULT 0, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, slug) )"
@@ -2828,11 +2812,7 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": [
-            "entity_type",
-            "entity_id",
-            "version_number"
-          ]
+          "columns": ["entity_type", "entity_id", "version_number"]
         }
       ],
       "createSql": "CREATE TABLE content_versions ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), entity_type TEXT NOT NULL CHECK(entity_type IN ('scene', 'note', 'codex_entry', 'snippet')), entity_id TEXT NOT NULL, content TEXT NOT NULL, version_number INTEGER NOT NULL, snapshot_type TEXT NOT NULL DEFAULT 'auto' CHECK(snapshot_type IN ('auto', 'manual')), created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(entity_type, entity_id, version_number) )"
@@ -4115,9 +4095,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "trace_id"
-          ]
+          "columns": ["trace_id"]
         }
       ],
       "createSql": "CREATE TABLE generation_logs ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, scene_node_id TEXT REFERENCES tree_nodes(id) ON DELETE CASCADE, kind TEXT NOT NULL CHECK(kind IN ('inline-ai','beat')), command_id TEXT, instruction TEXT, prompt_full TEXT, model TEXT, trace_id TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL DEFAULT (datetime('now')) )"
@@ -4178,10 +4156,7 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": [
-            "id",
-            "revision"
-          ]
+          "columns": ["id", "revision"]
         }
       ],
       "createSql": "CREATE TABLE generic_extraction_schemas ( id TEXT NOT NULL, revision INTEGER NOT NULL, name TEXT NOT NULL, description TEXT, digest TEXT NOT NULL, schema_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(id, revision) )"
@@ -4577,9 +4552,7 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": [
-            "request_id"
-          ]
+          "columns": ["request_id"]
         }
       ],
       "createSql": "CREATE TABLE import_commits ( id TEXT PRIMARY KEY, session_id TEXT NOT NULL, request_id TEXT NOT NULL, plan_digest TEXT NOT NULL, project_id TEXT, status TEXT NOT NULL, receipt_json TEXT, error_message TEXT, created_at TEXT NOT NULL, UNIQUE(request_id) )"
@@ -5159,10 +5132,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE labels ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, color TEXT NOT NULL, sort_order REAL NOT NULL DEFAULT 0.0, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -6731,10 +6701,7 @@
           ]
         },
         {
-          "columns": [
-            "project_id",
-            "id"
-          ]
+          "columns": ["project_id", "id"]
         }
       ],
       "createSql": "CREATE TABLE narrative_change_events ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, transaction_id TEXT NOT NULL, canonical_change_event_uid TEXT NOT NULL, canonical_sequence INTEGER NOT NULL CHECK(canonical_sequence > 0), event_ordinal INTEGER NOT NULL CHECK(event_ordinal >= 0), object_key_json TEXT NOT NULL CHECK(json_valid(object_key_json)), change_kind TEXT NOT NULL CHECK(change_kind IN ('content','metadata','order','association','catalog','calendar','policy','schema','unknown')), mutation_kind TEXT NOT NULL CHECK(mutation_kind IN ('create','update','delete','restore')), before_version INTEGER, before_digest TEXT, after_version INTEGER, after_digest TEXT, changed_paths_json TEXT NOT NULL CHECK(json_valid(changed_paths_json) AND json_type(changed_paths_json) = 'array'), text_impact_json TEXT CHECK(text_impact_json IS NULL OR json_valid(text_impact_json)), structural_impact_json TEXT CHECK(structural_impact_json IS NULL OR json_valid(structural_impact_json)), occurred_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, canonical_change_event_uid, event_ordinal), FOREIGN KEY(project_id, transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE, FOREIGN KEY(project_id, canonical_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT )"
@@ -7081,23 +7048,13 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "source_change_event_uid"
-          ]
+          "columns": ["project_id", "source_change_event_uid"]
         },
         {
-          "columns": [
-            "project_id",
-            "source_domain",
-            "request_id"
-          ]
+          "columns": ["project_id", "source_domain", "request_id"]
         },
         {
-          "columns": [
-            "project_id",
-            "id"
-          ]
+          "columns": ["project_id", "id"]
         }
       ],
       "createSql": "CREATE TABLE \"narrative_change_transactions\" ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, request_id TEXT NOT NULL CHECK(length(request_id) > 0), source_domain TEXT NOT NULL CHECK(length(source_domain) > 0), source_change_event_uid TEXT NOT NULL CHECK(length(source_change_event_uid) > 0), source_change_event_sequence INTEGER NOT NULL CHECK(source_change_event_sequence > 0), cause_kind TEXT NOT NULL CHECK(cause_kind IN ('forward','undo','redo')), origin TEXT NOT NULL CHECK(origin IN ('human','ai-apply','import','undo','redo','restore','migration')), original_transaction_id TEXT, commit_id TEXT, journal_id TEXT, undo_journal_id TEXT, application_ids_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(application_ids_json) AND json_type(application_ids_json) = 'array'), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, id), UNIQUE(project_id, source_domain, request_id), UNIQUE(project_id, source_change_event_uid), FOREIGN KEY(project_id, source_change_event_uid) REFERENCES change_events(project_id, event_uid) ON DELETE RESTRICT, FOREIGN KEY(project_id, original_transaction_id) REFERENCES narrative_change_transactions(project_id, id) ON DELETE CASCADE )"
@@ -8090,12 +8047,26 @@
           "default": null,
           "primaryKey": 0
         },
+        "finding_identity": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
         "finding_key": {
           "ordinal": 1,
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
           "primaryKey": 2
+        },
+        "identity_resolution_status": {
+          "ordinal": 12,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'resolved'",
+          "primaryKey": 0
         },
         "material_basis_digest": {
           "ordinal": 3,
@@ -8167,7 +8138,120 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE \"narrative_maintenance_attention\" ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), disposition TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), snoozed_until TEXT, set_at TEXT NOT NULL, actor_id TEXT NOT NULL CHECK(length(actor_id) > 0), request_id TEXT NOT NULL CHECK(length(request_id) > 0), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), reason TEXT, version INTEGER NOT NULL CHECK(version > 0), PRIMARY KEY(project_id, finding_key) )"
+      "createSql": "CREATE TABLE \"narrative_maintenance_attention\" ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), disposition TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), snoozed_until TEXT, set_at TEXT NOT NULL, actor_id TEXT NOT NULL CHECK(length(actor_id) > 0), request_id TEXT NOT NULL CHECK(length(request_id) > 0), payload_digest TEXT NOT NULL CHECK(length(payload_digest) > 0), reason TEXT, version INTEGER NOT NULL CHECK(version > 0), finding_identity TEXT, identity_resolution_status TEXT NOT NULL DEFAULT 'resolved' CHECK(identity_resolution_status IN ('resolved','unresolved','legacy-unresolved')), PRIMARY KEY(project_id, finding_key) )"
+    },
+    "narrative_maintenance_finding_lifecycle": {
+      "kind": "table",
+      "columns": {
+        "finding_identity": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finding_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "lifecycle_state": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "material_basis_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observation_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": false,
+          "default": null,
+          "primaryKey": 0
+        },
+        "observed_at": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "rule_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "rule_version": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "semantic_epoch_id": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_semantic_epochs",
+          "from": "semantic_epoch_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_maintenance_finding_lifecycle ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, finding_identity TEXT NOT NULL CHECK(length(finding_identity) > 0), finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), rule_id TEXT NOT NULL CHECK(length(rule_id) > 0), rule_version INTEGER NOT NULL CHECK(rule_version > 0), lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN ('new','recurring','changed','resolved')), observation_digest TEXT, material_basis_digest TEXT, run_id TEXT NOT NULL, semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), observed_at TEXT NOT NULL, PRIMARY KEY(id) )"
     },
     "narrative_maintenance_finding_observations": {
       "kind": "table",
@@ -8183,6 +8267,13 @@
           "ordinal": 7,
           "declaredType": "TEXT",
           "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "finding_identity": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": false,
           "default": null,
           "primaryKey": 0
         },
@@ -8207,6 +8298,13 @@
           "default": null,
           "primaryKey": 0
         },
+        "observation_digest": {
+          "ordinal": 13,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "''",
+          "primaryKey": 0
+        },
         "observed_at": {
           "ordinal": 9,
           "declaredType": "TEXT",
@@ -8226,6 +8324,20 @@
           "declaredType": "TEXT",
           "notNull": true,
           "default": null,
+          "primaryKey": 0
+        },
+        "rule_id": {
+          "ordinal": 11,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": "'narrative.consumer-freshness'",
+          "primaryKey": 0
+        },
+        "rule_version": {
+          "ordinal": 12,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": "1",
           "primaryKey": 0
         },
         "run_id": {
@@ -8266,7 +8378,7 @@
         }
       ],
       "uniqueConstraints": [],
-      "createSql": "CREATE TABLE narrative_maintenance_finding_observations ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), edge_id TEXT, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), reason_code TEXT NOT NULL CHECK(reason_code IN ( 'source-revision-changed','source-missing','evidence-overlap','context-overlap', 'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift', 'normalizer-incompatible','component-incompatible','target-modified' )), evidence_freshness_snapshot TEXT NOT NULL CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), observed_at TEXT NOT NULL, PRIMARY KEY(id) )"
+      "createSql": "CREATE TABLE narrative_maintenance_finding_observations ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), edge_id TEXT, finding_key TEXT NOT NULL CHECK(length(finding_key) > 0), reason_code TEXT NOT NULL CHECK(reason_code IN ( 'source-revision-changed','source-missing','evidence-overlap','context-overlap', 'exact-content-relocated','quote-not-found','quote-ambiguous','read-set-drift', 'normalizer-incompatible','component-incompatible','target-modified' )), evidence_freshness_snapshot TEXT NOT NULL CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), material_basis_digest TEXT NOT NULL CHECK(length(material_basis_digest) > 0), observed_at TEXT NOT NULL, finding_identity TEXT, rule_id TEXT NOT NULL DEFAULT 'narrative.consumer-freshness', rule_version INTEGER NOT NULL DEFAULT 1 CHECK(rule_version > 0), observation_digest TEXT NOT NULL DEFAULT '', PRIMARY KEY(id) )"
     },
     "narrative_maintenance_repair_leases": {
       "kind": "table",
@@ -8882,10 +8994,7 @@
       "foreignKeys": [],
       "uniqueConstraints": [
         {
-          "columns": [
-            "revision_id",
-            "source_key"
-          ]
+          "columns": ["revision_id", "source_key"]
         }
       ],
       "createSql": "CREATE TABLE narrative_revision_source_basis ( revision_id TEXT NOT NULL, ordinal INTEGER NOT NULL, source_kind TEXT NOT NULL, source_key TEXT NOT NULL, revision_token TEXT NOT NULL, observed_at TEXT, PRIMARY KEY (revision_id, ordinal), UNIQUE (revision_id, source_key) )"
@@ -9000,10 +9109,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "epoch_number"
-          ]
+          "columns": ["project_id", "epoch_number"]
         }
       ],
       "createSql": "CREATE TABLE narrative_semantic_epochs ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, epoch_number INTEGER NOT NULL CHECK(epoch_number >= 0), reason TEXT NOT NULL CHECK(reason IN ('initial','restore','migration','integrity-repair','manual-rebuild')), triggered_by_change_event_uid TEXT, created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, epoch_number) )"
@@ -10914,10 +11020,7 @@
       ],
       "uniqueConstraints": [
         {
-          "columns": [
-            "project_id",
-            "name"
-          ]
+          "columns": ["project_id", "name"]
         }
       ],
       "createSql": "CREATE TABLE project_snapshots ( id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))), project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, name TEXT NOT NULL, description TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), UNIQUE(project_id, name) )"
@@ -14464,6 +14567,46 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_field_authority_entity ON narrative_field_authority(project_id, entity_kind, entity_id)"
+    },
+    "idx_narrative_finding_lifecycle_identity": {
+      "table": "narrative_maintenance_finding_lifecycle",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "finding_identity"
+        },
+        {
+          "ordinal": 2,
+          "column": "observed_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_finding_lifecycle_identity ON narrative_maintenance_finding_lifecycle(project_id, finding_identity, observed_at)"
+    },
+    "idx_narrative_finding_lifecycle_key": {
+      "table": "narrative_maintenance_finding_lifecycle",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "finding_key"
+        },
+        {
+          "ordinal": 2,
+          "column": "observed_at"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_finding_lifecycle_key ON narrative_maintenance_finding_lifecycle(project_id, finding_key, observed_at)"
     },
     "idx_narrative_finding_observations_key": {
       "table": "narrative_maintenance_finding_observations",

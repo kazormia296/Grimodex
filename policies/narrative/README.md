@@ -1087,15 +1087,19 @@ Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
 `orphaned_attention_finding_keys`. `"2"` existed only mid-branch and was
 never released.
 
-The current version is `"4"`. It adds
-`consumer_keys_with_uncomputed_dependency_set_digest`, keeping a NULL
-digest out of the inconsistency list while making the incomplete check
-visible. `DependencyGraphVerifyReport::is_consistent()` answers whether the
-covered checks found a defect, `is_complete()` answers whether every
-Consumer had a computed dependency-set baseline, and `is_clean()` requires
-both. A stored version-`"3"` result lacks that field and could otherwise
-false-PASS, so `seal_repair_plan` refuses older versions and an in-flight
-Verify must be re-run before Repair can be sealed.
+The current version is `"5"`. It adds the required
+`orphaned_attention_rehome_ambiguities` field, which reports every preserved
+Attention row for which the material-digest → Observation → Edge mapping was
+zero, ambiguous, or collided with an existing target. It also reports
+`legacy-identity-unresolved` Attention rows whose old history cannot prove a
+stable Edge identity; those rows remain durable but are never considered
+applicable by the Inbox. A stored version-`"4"` result lacks this field and
+must not be accepted as the new report shape: the workspace must re-run
+Verify under contract version 5 before Repair can be sealed.
+
+Attention application additionally requires `finding-identity-resolved`.
+Matching the finding key and material-basis digest is insufficient when a
+legacy disposition has no provable Edge subject.
 
 The `keyFormat` shape rules are enforced by the typed writers
 (`record_dependency_edge_in_tx` and `write_consumer_freshness_in_tx` both

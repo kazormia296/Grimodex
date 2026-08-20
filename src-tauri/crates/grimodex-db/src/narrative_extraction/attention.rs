@@ -23,6 +23,10 @@ use serde::Serialize;
 use serde_json::json;
 
 use super::commit::digest_plan;
+use super::finding_identity::{
+    material_basis_digest, stable_finding_identity, MaterialBasisInput, BUNDLED_FINDING_RULE_ID,
+    BUNDLED_FINDING_RULE_VERSION,
+};
 use super::task_leases::with_immediate_transaction;
 use crate::idempotency::{
     insert_idempotent_response, load_idempotent_response, payload_fingerprint, IdempotencyRequest,
@@ -115,6 +119,13 @@ impl TryFrom<&str> for AttentionDisposition {
 pub struct AttentionRow {
     pub project_id: String,
     pub finding_key: String,
+    /// Stable Finding identity used for inheritance across a harmless rerun
+    /// or epoch rotation. `None` is retained for pre-C2-3 rows.
+    pub finding_identity: Option<String>,
+    /// `legacy-unresolved` is persisted when migration could not prove that
+    /// an old Attention belongs to exactly one current Edge. Such a row is
+    /// reported diagnostically and is never silently inherited.
+    pub identity_resolution_status: String,
     pub disposition: AttentionDisposition,
     pub material_basis_digest: String,
     pub snoozed_until: Option<String>,
@@ -303,6 +314,8 @@ fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRo
     Ok(AttentionRow {
         project_id: row.get("project_id")?,
         finding_key: row.get("finding_key")?,
+        finding_identity: row.get("finding_identity")?,
+        identity_resolution_status: row.get("identity_resolution_status")?,
         disposition,
         material_basis_digest: row.get("material_basis_digest")?,
         snoozed_until: row.get("snoozed_until")?,
@@ -315,8 +328,43 @@ fn row_to_attention_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AttentionRo
     })
 }
 
-const ATTENTION_COLUMNS: &str = "project_id, finding_key, disposition, material_basis_digest,
-     snoozed_until, set_at, actor_id, request_id, payload_digest, reason, version";
+const ATTENTION_COLUMNS: &str = "project_id, finding_key, finding_identity, identity_resolution_status,
+     disposition, material_basis_digest, snoozed_until, set_at, actor_id, request_id, payload_digest,
+     reason, version";
+
+/// Resolve a stable identity when the current diagnostic history has exactly
+/// one subject for this consumer. Multiple Edge findings are intentionally
+/// ambiguous and return `None`; preserving that ambiguity prevents one
+/// Attention decision from being inherited by an unrelated Edge.
+fn current_finding_identity(
+    conn: &Connection,
+    project_id: &str,
+    finding_key: &str,
+    material_basis_digest: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT finding_identity
+           FROM narrative_maintenance_finding_observations
+          WHERE project_id = ?1 AND finding_key = ?2
+            AND material_basis_digest = ?3
+            AND finding_identity IS NOT NULL AND finding_identity <> ''
+          ORDER BY finding_identity ASC",
+    )?;
+    let identities = statement
+        .query_map(
+            params![project_id, finding_key, material_basis_digest],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    match identities.as_slice() {
+        [identity] => Ok(Some(identity.clone())),
+        // A Finding key is a consumer-facing label, not proof of the Edge
+        // subject. Leave the identity unresolved until an observation gives
+        // us a unique Edge-backed subject.
+        [] => Ok(None),
+        _ => Ok(None),
+    }
+}
 
 /// Upsert a Maintenance Attention row. `snoozed_until` is required exactly
 /// when `disposition` is [`AttentionDisposition::Snoozed`] and is stored as
@@ -400,12 +448,26 @@ pub fn set_attention_in_tx(
     );
 
     let next_version = current_version + 1;
+    let finding_identity = current_finding_identity(
+        conn,
+        request.project_id,
+        request.finding_key,
+        request.material_basis_digest,
+    )?;
+    let identity_resolution_status = if finding_identity.is_some() {
+        "resolved"
+    } else {
+        "unresolved"
+    };
     let updated = conn.execute(
         "INSERT INTO narrative_maintenance_attention
-            (project_id, finding_key, disposition, material_basis_digest,
-             snoozed_until, set_at, actor_id, request_id, payload_digest, reason, version)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            (project_id, finding_key, finding_identity, identity_resolution_status,
+             disposition, material_basis_digest, snoozed_until, set_at, actor_id, request_id,
+             payload_digest, reason, version)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
          ON CONFLICT(project_id, finding_key) DO UPDATE SET
+            finding_identity = excluded.finding_identity,
+            identity_resolution_status = excluded.identity_resolution_status,
             disposition = excluded.disposition,
             material_basis_digest = excluded.material_basis_digest,
             snoozed_until = excluded.snoozed_until,
@@ -415,10 +477,12 @@ pub fn set_attention_in_tx(
             payload_digest = excluded.payload_digest,
             reason = excluded.reason,
             version = excluded.version
-          WHERE narrative_maintenance_attention.version = ?12",
+          WHERE narrative_maintenance_attention.version = ?14",
         params![
             request.project_id,
             request.finding_key,
+            finding_identity,
+            identity_resolution_status,
             request.disposition.as_str(),
             request.material_basis_digest,
             stored_snoozed_until,
@@ -570,6 +634,146 @@ pub(crate) fn get_attention(
     Ok(row)
 }
 
+/// Re-home a legacy orphan only when the old Attention material digest maps to
+/// exactly one Finding Observation, whose Edge identifies exactly one current
+/// Consumer. A consumer's owning Run is only a candidate hint and is not
+/// sufficient proof: the old digest -> Observation -> Edge chain is the
+/// identity-preserving evidence. This is a migration-only repair; ambiguous,
+/// missing, and target-conflicting rows remain untouched and are reported.
+pub(crate) fn rehome_orphaned_attention_in_tx(conn: &Connection) -> anyhow::Result<Vec<String>> {
+    let mapping_tables_available: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'narrative_dependency_edges'
+        ) AND EXISTS(
+            SELECT 1 FROM sqlite_master
+             WHERE type = 'table' AND name = 'narrative_maintenance_finding_observations'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !mapping_tables_available {
+        let rows: Vec<String> = conn
+            .prepare(
+                "SELECT project_id || ':' || finding_key
+                   FROM narrative_maintenance_attention
+                  ORDER BY project_id, finding_key",
+            )?
+            .query_map([], |row| row.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(rows
+            .into_iter()
+            .map(|key| format!("{key} (mapping-tables-unavailable)"))
+            .collect());
+    }
+    let orphan_rows: Vec<(String, String, String)> = conn
+        .prepare(
+            "SELECT a.project_id, a.finding_key, a.material_basis_digest
+               FROM narrative_maintenance_attention a
+              WHERE NOT EXISTS (
+                    SELECT 1 FROM narrative_dependency_edges e
+                     WHERE e.project_id = a.project_id
+                       AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
+              )
+              ORDER BY a.project_id, a.finding_key",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut unresolved = Vec::new();
+
+    for (project_id, old_finding_key, old_material_basis_digest) in orphan_rows {
+        let candidates: Vec<(String, String, String, String, String)> = conn
+            .prepare(
+                "SELECT DISTINCT e.consumer_kind || ':' || e.consumer_key,
+                        COALESCE(NULLIF(o.finding_identity, ''), ''), e.id,
+                        o.reason_code, o.evidence_freshness_snapshot
+                   FROM narrative_dependency_edges e
+                   JOIN narrative_maintenance_finding_observations o
+                     ON o.project_id = e.project_id
+                    AND o.edge_id = e.id
+                    AND o.material_basis_digest = ?2
+                    AND o.finding_key = ?3
+                  WHERE e.project_id = ?1
+                    AND e.consumer_kind || ':' || e.consumer_key <> ?3
+                  ORDER BY 1",
+            )?
+            .query_map(
+                params![project_id, old_material_basis_digest, old_finding_key],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if candidates.len() != 1 {
+            unresolved.push(format!(
+                "{project_id}:{old_finding_key} (exact-candidate-count={})",
+                candidates.len()
+            ));
+            continue;
+        }
+        let (new_finding_key, observed_identity, edge_id, reason_code, freshness) =
+            candidates[0].clone();
+        let target_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM narrative_maintenance_attention
+                 WHERE project_id = ?1 AND finding_key = ?2
+            )",
+            params![project_id, new_finding_key],
+            |row| row.get(0),
+        )?;
+        if target_exists {
+            unresolved.push(format!(
+                "{project_id}:{old_finding_key} (target-conflict={new_finding_key})"
+            ));
+            continue;
+        }
+
+        let finding_identity = stable_finding_identity(
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            &edge_id,
+        )?;
+        if !observed_identity.is_empty() && observed_identity != finding_identity {
+            unresolved.push(format!(
+                "{project_id}:{old_finding_key} (observation-identity-mismatch)"
+            ));
+            continue;
+        }
+        let new_material_basis_digest = material_basis_digest(
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            &MaterialBasisInput {
+                stable_subject: &edge_id,
+                edge_id: Some(&edge_id),
+                reason_code: &reason_code,
+                evidence_freshness: &freshness,
+            },
+        )?;
+        conn.execute(
+            "UPDATE narrative_maintenance_attention
+                SET finding_key = ?1, finding_identity = ?2,
+                    identity_resolution_status = 'resolved',
+                    material_basis_digest = ?3
+              WHERE project_id = ?4 AND finding_key = ?5",
+            params![
+                new_finding_key,
+                finding_identity,
+                new_material_basis_digest,
+                project_id,
+                old_finding_key
+            ],
+        )?;
+    }
+    Ok(unresolved)
+}
+
 /// Pure computation of `applicationConditions` from
 /// `maintenance-attention-contract.json`, minus `finding-key-match` (the
 /// caller already looked the row up by finding key). No DB access.
@@ -577,6 +781,8 @@ pub(crate) fn get_attention(
 /// - `material-basis-digest-match`: the row's `material_basis_digest` must
 ///   equal `current_material_basis_digest` — a stale finding no longer
 ///   applies once its underlying evidence has moved.
+/// - `finding-identity-resolved`: migration-preserved legacy rows whose Edge
+///   identity cannot be proved are diagnostic only and never apply.
 /// - `snooze-not-expired`: only meaningful for
 ///   [`AttentionDisposition::Snoozed`]; the row applies only while
 ///   `snoozed_until > now`. Dismissed/Flagged rows have no expiry and apply
@@ -586,6 +792,9 @@ pub(crate) fn is_attention_applicable(
     current_material_basis_digest: &str,
     now: &str,
 ) -> bool {
+    if row.identity_resolution_status != "resolved" {
+        return false;
+    }
     if row.material_basis_digest != current_material_basis_digest {
         return false;
     }
@@ -602,6 +811,7 @@ pub(crate) fn is_attention_applicable(
 mod tests {
     use super::*;
     use crate::Database;
+    use rusqlite::params;
     use std::path::Path;
 
     fn fixture() -> Database {
@@ -616,6 +826,395 @@ mod tests {
         })
         .expect("seed project");
         db
+    }
+
+    fn seed_orphan_mapping(
+        db: &Database,
+        edge_id: &str,
+        consumer_key: &str,
+        observation_id: &str,
+        old_material_basis_digest: &str,
+        finding_identity: &str,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-attention-rehome', 'proj-1', 1, 'initial',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at, owning_run_id)
+                 VALUES (?1, 'proj-1', 'proposal-revision', ?2,
+                         'project:scene:scene-1', '[]',
+                         '2026-08-15T00:00:00.000Z', 'old')",
+                params![edge_id, consumer_key],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES (?1, 'proj-1', 'run-old', 'epoch-attention-rehome', ?2,
+                         'legacy:old', 'source-missing', 'source-missing',
+                         ?3, '2026-08-15T00:00:00.000Z', ?4,
+                         'narrative.consumer-freshness', 1, 'observation-old')",
+                params![
+                    observation_id,
+                    edge_id,
+                    old_material_basis_digest,
+                    finding_identity
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed exact attention mapping");
+    }
+
+    fn seed_orphan_attention(db: &Database, material_basis_digest: &str, request_id: &str) {
+        let mut request = request(
+            AttentionDisposition::Dismissed,
+            material_basis_digest,
+            None,
+            request_id,
+            0,
+        );
+        request.finding_key = "legacy:old";
+        db.with_conn(|conn| set_attention_in_tx(conn, request))
+            .expect("seed orphan attention");
+    }
+
+    fn stable_test_identity(edge_id: &str) -> String {
+        stable_finding_identity(
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            edge_id,
+        )
+        .expect("stable identity")
+    }
+
+    #[test]
+    fn attention_identity_resolution_uses_the_requested_material_basis() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-attention-identity', 'proj-1', 1, 'initial',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            for (id, digest, identity) in [
+                (
+                    "observation-identity-exact",
+                    "digest-exact",
+                    "identity-exact",
+                ),
+                (
+                    "observation-identity-other",
+                    "digest-other",
+                    "identity-other",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_maintenance_finding_observations
+                        (id, project_id, run_id, semantic_epoch_id, edge_id,
+                         finding_key, reason_code, evidence_freshness_snapshot,
+                         material_basis_digest, observed_at, finding_identity,
+                         rule_id, rule_version, observation_digest)
+                     VALUES (?1, 'proj-1', 'run-identity', 'epoch-attention-identity',
+                             NULL, 'finding-a', 'source-missing', 'source-missing',
+                             ?2, '2026-08-15T00:00:00.000Z', ?3,
+                             'narrative.consumer-freshness', 1, 'observation-digest')",
+                    params![id, digest, identity],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed material-specific identities");
+
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-exact",
+                    None,
+                    "req-material-exact",
+                    0,
+                ),
+            )
+        })
+        .expect("set exact material Attention");
+        let row = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("read exact material Attention")
+            .expect("Attention row");
+        assert_eq!(row.finding_identity.as_deref(), Some("identity-exact"));
+    }
+
+    #[test]
+    fn attention_identity_is_cleared_when_new_material_is_ambiguous() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-attention-ambiguity', 'proj-1', 1, 'initial',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            for (id, digest, identity) in [
+                (
+                    "observation-identity-initial",
+                    "digest-initial",
+                    "identity-initial",
+                ),
+                (
+                    "observation-identity-ambiguous-a",
+                    "digest-ambiguous",
+                    "identity-a",
+                ),
+                (
+                    "observation-identity-ambiguous-b",
+                    "digest-ambiguous",
+                    "identity-b",
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_maintenance_finding_observations
+                        (id, project_id, run_id, semantic_epoch_id, edge_id,
+                         finding_key, reason_code, evidence_freshness_snapshot,
+                         material_basis_digest, observed_at, finding_identity,
+                         rule_id, rule_version, observation_digest)
+                     VALUES (?1, 'proj-1', 'run-identity', 'epoch-attention-ambiguity',
+                             NULL, 'finding-a', 'source-missing', 'source-missing',
+                             ?2, '2026-08-15T00:00:00.000Z', ?3,
+                             'narrative.consumer-freshness', 1, 'observation-digest')",
+                    params![id, digest, identity],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("seed ambiguous material identities");
+
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-initial",
+                    None,
+                    "req-material-initial",
+                    0,
+                ),
+            )
+        })
+        .expect("set initial material Attention");
+        db.with_conn(|conn| {
+            set_attention_in_tx(
+                conn,
+                request(
+                    AttentionDisposition::Dismissed,
+                    "digest-ambiguous",
+                    None,
+                    "req-material-ambiguous",
+                    1,
+                ),
+            )
+        })
+        .expect("set ambiguous material Attention");
+
+        let row = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "finding-a"))
+            .expect("read ambiguous material Attention")
+            .expect("Attention row");
+        assert_eq!(row.finding_identity, None);
+        assert_eq!(row.material_basis_digest, "digest-ambiguous");
+    }
+
+    #[test]
+    fn orphan_rehome_uses_unique_digest_observation_edge_mapping_and_converts_digest() {
+        let db = fixture();
+        seed_orphan_mapping(
+            &db,
+            "edge-rehome-1",
+            "revision-1",
+            "observation-rehome-1",
+            "legacy-material",
+            &stable_test_identity("edge-rehome-1"),
+        );
+        seed_orphan_attention(&db, "legacy-material", "req-orphan-rehome");
+
+        let unresolved = db
+            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .expect("rehome orphan attention");
+        assert!(unresolved.is_empty(), "unique mapping should be moved");
+
+        let row = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "proposal-revision:revision-1"))
+            .expect("read rehomed attention")
+            .expect("rehomed row");
+        assert_eq!(
+            row.finding_identity.as_deref(),
+            Some(stable_test_identity("edge-rehome-1").as_str())
+        );
+        assert_ne!(row.material_basis_digest, "legacy-material");
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "legacy:old"))
+            .expect("read old attention")
+            .is_none());
+    }
+
+    #[test]
+    fn orphan_rehome_preserves_ambiguous_digest_mappings() {
+        let db = fixture();
+        seed_orphan_mapping(
+            &db,
+            "edge-rehome-ambiguous-1",
+            "revision-1",
+            "observation-rehome-ambiguous-1",
+            "legacy-material",
+            &stable_test_identity("edge-rehome-ambiguous-1"),
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at, owning_run_id)
+                 VALUES ('edge-rehome-ambiguous-2', 'proj-1', 'proposal-revision',
+                         'revision-2', 'project:scene:scene-2', '[]',
+                         '2026-08-15T00:00:00.000Z', 'old')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('observation-rehome-ambiguous-2', 'proj-1', 'run-old',
+                         'epoch-attention-rehome', 'edge-rehome-ambiguous-2',
+                         'legacy:old', 'source-missing', 'source-missing',
+                         'legacy-material', '2026-08-15T00:00:00.000Z',
+                         ?1, 'narrative.consumer-freshness', 1,
+                         'observation-old-2')",
+                params![stable_test_identity("edge-rehome-ambiguous-2")],
+            )?;
+            Ok(())
+        })
+        .expect("seed ambiguous mapping");
+        seed_orphan_attention(&db, "legacy-material", "req-orphan-ambiguous");
+
+        let unresolved = db
+            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .expect("inspect ambiguous orphan attention");
+        assert_eq!(unresolved.len(), 1);
+        let old = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "legacy:old"))
+            .expect("read preserved orphan")
+            .expect("ambiguous row must remain");
+        assert_eq!(old.material_basis_digest, "legacy-material");
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "proposal-revision:revision-1"))
+            .expect("read ambiguous target")
+            .is_none());
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "proposal-revision:revision-2"))
+            .expect("read ambiguous target")
+            .is_none());
+    }
+
+    #[test]
+    fn orphan_rehome_preserves_digest_mapping_when_target_attention_conflicts() {
+        let db = fixture();
+        seed_orphan_mapping(
+            &db,
+            "edge-rehome-conflict-1",
+            "revision-conflict",
+            "observation-rehome-conflict-1",
+            "legacy-material",
+            &stable_test_identity("edge-rehome-conflict-1"),
+        );
+        seed_orphan_attention(&db, "legacy-material", "req-orphan-conflict");
+        let mut target_request = request(
+            AttentionDisposition::Flagged,
+            "target-material",
+            None,
+            "req-target-conflict",
+            0,
+        );
+        target_request.finding_key = "proposal-revision:revision-conflict";
+        db.with_conn(|conn| set_attention_in_tx(conn, target_request))
+            .expect("seed target attention");
+
+        let unresolved = db
+            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .expect("inspect conflicting orphan attention");
+        assert_eq!(unresolved.len(), 1);
+        let old = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "legacy:old"))
+            .expect("read preserved orphan")
+            .expect("conflicting row must remain");
+        assert_eq!(old.material_basis_digest, "legacy-material");
+        let target = db
+            .with_conn(|conn| get_attention(conn, "proj-1", "proposal-revision:revision-conflict"))
+            .expect("read target attention")
+            .expect("existing target remains");
+        assert_eq!(target.material_basis_digest, "target-material");
+    }
+
+    #[test]
+    fn orphan_rehome_ignores_same_digest_observations_for_another_finding() {
+        let db = fixture();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-attention-cross-finding', 'proj-1', 1, 'initial',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at, owning_run_id)
+                 VALUES ('edge-cross-finding', 'proj-1', 'proposal-revision',
+                         'revision-cross-finding', 'project:scene:scene-cross', '[]',
+                         '2026-08-15T00:00:00.000Z', 'old')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('observation-cross-finding', 'proj-1', 'run-old',
+                         'epoch-attention-cross-finding', 'edge-cross-finding',
+                         'legacy:other', 'source-missing', 'source-missing',
+                         'legacy-material', '2026-08-15T00:00:00.000Z',
+                         'stable-other', 'narrative.consumer-freshness', 1,
+                         'observation-cross-finding')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed cross-finding observation");
+        seed_orphan_attention(&db, "legacy-material", "req-orphan-cross-finding");
+
+        let unresolved = db
+            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .expect("inspect cross-finding orphan");
+        assert_eq!(unresolved.len(), 1);
+        assert!(db
+            .with_conn(|conn| get_attention(conn, "proj-1", "legacy:old"))
+            .expect("read preserved cross-finding orphan")
+            .is_some());
     }
 
     /// Minimal valid request; tests override just the field under test.
@@ -1189,6 +1788,8 @@ mod tests {
         AttentionRow {
             project_id: "proj-1".to_string(),
             finding_key: "finding-a".to_string(),
+            finding_identity: None,
+            identity_resolution_status: "resolved".to_string(),
             disposition: AttentionDisposition::Dismissed,
             material_basis_digest: material_basis_digest.to_string(),
             snoozed_until: None,
@@ -1205,6 +1806,8 @@ mod tests {
         AttentionRow {
             project_id: "proj-1".to_string(),
             finding_key: "finding-a".to_string(),
+            finding_identity: None,
+            identity_resolution_status: "resolved".to_string(),
             disposition: AttentionDisposition::Snoozed,
             material_basis_digest: "digest-1".to_string(),
             snoozed_until: Some(snoozed_until.to_string()),
@@ -1224,6 +1827,17 @@ mod tests {
             &row,
             "digest-2",
             "2026-08-15T00:00:00.000Z"
+        ));
+    }
+
+    #[test]
+    fn legacy_unresolved_identity_is_never_applicable_even_when_digest_matches() {
+        let mut row = dismissed_row("digest-1");
+        row.identity_resolution_status = "legacy-unresolved".to_string();
+        assert!(!is_attention_applicable(
+            &row,
+            "digest-1",
+            "2026-08-15T01:00:00.000Z"
         ));
     }
 

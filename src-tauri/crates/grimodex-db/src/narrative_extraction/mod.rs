@@ -2,6 +2,7 @@
 
 pub(crate) mod application_contributions;
 mod attention;
+mod c2z_preparation;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
@@ -16,12 +17,14 @@ mod detail_operations;
 mod evaluator;
 mod execution_state;
 mod field_authority;
+mod finding_identity;
 mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
 mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
+pub mod maintenance_runtime;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -61,6 +64,7 @@ pub(crate) use application_contributions::{
 pub(crate) use attention::{get_attention, is_attention_applicable};
 // C2-T1: exposed through narrative_maintenance_attention_set/_clear
 // (electron/native/grimodex-node/src/lib.rs).
+pub(crate) use attention::rehome_orphaned_attention_in_tx;
 pub use attention::{
     clear_attention, clear_attention_in_tx, set_attention, set_attention_in_tx,
     AttentionDisposition, AttentionRow, AttentionWriteOutcome, SetAttentionRequest,
@@ -95,6 +99,11 @@ pub(crate) use finding_observation::{
 };
 // C2-T1: FindingObservationRow crosses the N-API boundary as a field of
 // InboxEntry (narrative_maintenance_inbox_list).
+pub use finding_identity::{
+    bundled_finding_rule_registry, material_basis_digest, observation_digest,
+    stable_finding_identity, FindingRule, FindingRuleRegistry, MaterialBasisInput,
+    ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+};
 pub use finding_observation::FindingObservationRow;
 // EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
 // (Lane F); `finding_observation` (Lane C) imports them from there instead
@@ -106,6 +115,15 @@ pub(crate) use evaluator::{EvidenceFreshness, FindingReasonCode};
 pub(crate) use inbox_read_model::{list_consumer_freshness, ConsumerFreshnessRow};
 // C2-T1: called from narrative_maintenance_inbox_list
 // (electron/native/grimodex-node/src/lib.rs).
+pub use c2z_preparation::{
+    inspect_legacy_generic_freshness_parity, inspect_project_cutover_readiness,
+    inspect_workspace_cutover_readiness, plan_application_rekey, ApplicationRekeyCandidate,
+    ApplicationRekeyFanOut, ApplicationRekeyPlan, DependencySetMismatch, ExistingApplicationTarget,
+    FreshnessParityReport, FreshnessStatusMismatch, InvalidLegacyDependency,
+    ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
+    RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
+    WorkspaceCutoverReadiness, APPLICATION_CONSUMER_KIND, REQUIRED_VERIFY_CHECKS,
+};
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
@@ -113,6 +131,17 @@ pub use incremental_freshness::{
 };
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
+pub use maintenance_runtime::{
+    canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
+    decide_execution, decide_run_recovery, decide_run_recovery_for_epoch, plan_maintenance_trigger,
+    read_run_ledger, read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
+    terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
+    terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
+    FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
+    MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction, RecoveryDecision, RecoveryMode,
+    RunLedgerCounts, StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
     publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,

@@ -117,6 +117,25 @@ function baseFindingContract(overrides = {}) {
     epochBinding: "required",
     freshnessSnapshotPolicy: "diagnostic-only",
     currentFreshnessLookup: "narrative-consumer-freshness",
+    rules: [
+      {
+        ruleId: "narrative.consumer-freshness",
+        version: 1,
+        identityScope: "edge",
+        observationFields: [
+          "stableSubject",
+          "edgeId",
+          "reasonCode",
+          "evidenceFreshness",
+        ],
+        materialBasisFields: [
+          "stableSubject",
+          "edgeId",
+          "reasonCode",
+          "evidenceFreshness",
+        ],
+      },
+    ],
     negativeFixture: "editing an observation must not change current freshness",
     ...overrides,
   };
@@ -134,7 +153,12 @@ function baseAttentionContract(overrides = {}) {
     requestIdentity: "request-id-plus-payload-digest",
     actorIdentity: "required",
     writerControls: ["expectedVersion is required on every set and clear"],
-    applicationConditions: ["finding-key-match"],
+    applicationConditions: [
+      "finding-key-match",
+      "finding-identity-resolved",
+      "material-basis-digest-match",
+      "snooze-not-expired",
+    ],
     negativeFixture: "attention rows are never mutated by run publish",
     ...overrides,
   };
@@ -219,10 +243,7 @@ function writeFixtureRoot({
     path.join(root, "docs/adr/005-narrative-semantic-core-boundary.md"),
   );
   cpSync(
-    path.join(
-      REPO_ROOT,
-      "src/features/narrative-extraction/runtime/types.ts",
-    ),
+    path.join(REPO_ROOT, "src/features/narrative-extraction/runtime/types.ts"),
     path.join(root, "src/features/narrative-extraction/runtime/types.ts"),
   );
   return root;
@@ -238,6 +259,73 @@ describe("validate-execution-state-authority", () => {
     const root = writeFixtureRoot();
     const result = validateExecutionStateAuthority({ repoRoot: root });
     assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a finding rule with an unsupported identity scope", () => {
+    const findingContract = baseFindingContract();
+    findingContract.rules[0].identityScope = "consumer";
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("narrative-finding-contract.schema.json rejects"),
+      ),
+    );
+  });
+
+  it("rejects a finding rule with a missing required field", () => {
+    const findingContract = baseFindingContract();
+    findingContract.rules[0].observationFields = [
+      "stableSubject",
+      "reasonCode",
+      "evidenceFreshness",
+    ];
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("narrative-finding-contract.schema.json rejects"),
+      ),
+    );
+  });
+
+  it("rejects duplicate finding ruleId/version pairs", () => {
+    const findingContract = baseFindingContract();
+    findingContract.rules.push({
+      ...findingContract.rules[0],
+      observationFields: [
+        "evidenceFreshness",
+        "reasonCode",
+        "edgeId",
+        "stableSubject",
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "duplicate ruleId/version: narrative.consumer-freshness@1",
+        ),
+      ),
+    );
+  });
+
+  it("rejects attention application conditions that omit identity resolution", () => {
+    const attentionContract = baseAttentionContract({
+      applicationConditions: [
+        "finding-key-match",
+        "material-basis-digest-match",
+        "snooze-not-expired",
+      ],
+    });
+    const root = writeFixtureRoot({ attentionContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("maintenance-attention-contract.schema.json rejects"),
+      ),
+    );
   });
 
   it("rejects a derivedView that drops a declared status", () => {
@@ -349,9 +437,7 @@ describe("validate-execution-state-authority", () => {
     attentionEntry.canonicalAuthority = "something-else";
     const root = writeFixtureRoot({ authorityMatrix });
     const result = validateExecutionStateAuthority({ repoRoot: root });
-    assert.ok(
-      result.errors.some((error) => error.includes("disagrees with")),
-    );
+    assert.ok(result.errors.some((error) => error.includes("disagrees with")));
   });
 
   it("rejects a backflowPolicy other than forbid on the attention contract", () => {
@@ -365,7 +451,10 @@ describe("validate-execution-state-authority", () => {
 
   it("rejects narrative-execution-state.json when it fails schema validation", () => {
     const root = writeFixtureRoot({
-      executionState: { schemaVersion: 1, contract: "narrative-execution-state" },
+      executionState: {
+        schemaVersion: 1,
+        contract: "narrative-execution-state",
+      },
     });
     const result = validateExecutionStateAuthority({ repoRoot: root });
     assert.ok(

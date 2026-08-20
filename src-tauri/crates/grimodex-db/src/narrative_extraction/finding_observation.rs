@@ -14,11 +14,16 @@
 //! `narrative_maintenance_attention` (durable user Attention state, also a
 //! different Lane's responsibility).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::consumer_identity::consumer_finding_key;
 use super::evaluator::{EvidenceFreshness, FindingReasonCode};
+use super::finding_identity::{
+    material_basis_digest, observation_digest, stable_finding_identity, MaterialBasisInput,
+    ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+};
 
 /// One diagnostic row from `narrative_maintenance_finding_observations`.
 ///
@@ -40,10 +45,145 @@ pub struct FindingObservationRow {
     pub semantic_epoch_id: String,
     pub edge_id: Option<String>,
     pub finding_key: String,
+    /// Stable identity derived from the bundled rule and durable subject. It
+    /// is independent of the Run and Semantic Epoch that produced this row.
+    /// NULL is retained for legacy rows whose Edge subject was deleted or
+    /// never recorded; an edge-scoped rule must not use finding_key as a
+    /// substitute identity.
+    pub finding_identity: Option<String>,
+    pub rule_id: String,
+    pub rule_version: u32,
     pub reason_code: FindingReasonCode,
     pub evidence_freshness_snapshot: EvidenceFreshness,
+    /// Digest of the observed result. It deliberately excludes Run, Epoch,
+    /// and wall-clock values so harmless reruns compare equal.
+    pub observation_digest: String,
     pub material_basis_digest: String,
     pub observed_at: String,
+}
+
+/// The complete append-only input for a Finding Observation. The old helper
+/// below remains as a compatibility wrapper for callers that have not yet
+/// supplied the C2-3 identity fields.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FindingObservationWrite<'a> {
+    pub project_id: &'a str,
+    pub run_id: &'a str,
+    pub semantic_epoch_id: &'a str,
+    pub edge_id: Option<&'a str>,
+    pub finding_key: &'a str,
+    pub finding_identity: &'a str,
+    pub rule_id: &'a str,
+    pub rule_version: u32,
+    pub reason_code: FindingReasonCode,
+    pub evidence_freshness_snapshot: EvidenceFreshness,
+    pub observation_digest: &'a str,
+    pub material_basis_digest: &'a str,
+    pub observed_at: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum FindingLifecycleState {
+    New,
+    Recurring,
+    Changed,
+    Resolved,
+}
+
+impl FindingLifecycleState {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::New => "new",
+            Self::Recurring => "recurring",
+            Self::Changed => "changed",
+            Self::Resolved => "resolved",
+        }
+    }
+}
+
+impl TryFrom<&str> for FindingLifecycleState {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> anyhow::Result<Self> {
+        match value {
+            "new" => Ok(Self::New),
+            "recurring" => Ok(Self::Recurring),
+            "changed" => Ok(Self::Changed),
+            "resolved" => Ok(Self::Resolved),
+            other => {
+                anyhow::bail!("NEX_FINDING_LIFECYCLE_INVALID: unknown lifecycle state '{other}'")
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct FindingLifecycleWrite<'a> {
+    pub project_id: &'a str,
+    pub finding_identity: &'a str,
+    pub finding_key: &'a str,
+    pub rule_id: &'a str,
+    pub rule_version: u32,
+    pub state: FindingLifecycleState,
+    pub observation_digest: Option<&'a str>,
+    pub material_basis_digest: Option<&'a str>,
+    pub run_id: &'a str,
+    pub semantic_epoch_id: &'a str,
+    pub observed_at: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(crate) struct FindingLifecycleRow {
+    pub id: String,
+    pub project_id: String,
+    pub finding_identity: String,
+    pub finding_key: String,
+    pub rule_id: String,
+    pub rule_version: u32,
+    pub state: FindingLifecycleState,
+    pub observation_digest: Option<String>,
+    pub material_basis_digest: Option<String>,
+    pub run_id: String,
+    pub semantic_epoch_id: String,
+    pub observed_at: String,
+}
+
+fn row_to_finding_lifecycle(row: &Row<'_>) -> rusqlite::Result<FindingLifecycleRow> {
+    let state: String = row.get("lifecycle_state")?;
+    let rule_version: i64 = row.get("rule_version")?;
+    Ok(FindingLifecycleRow {
+        id: row.get("id")?,
+        project_id: row.get("project_id")?,
+        finding_identity: row.get("finding_identity")?,
+        finding_key: row.get("finding_key")?,
+        rule_id: row.get("rule_id")?,
+        rule_version: u32::try_from(rule_version).map_err(|_| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Integer,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "finding rule version is outside u32",
+                )),
+            )
+        })?,
+        state: FindingLifecycleState::try_from(state.as_str()).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    error.to_string(),
+                )),
+            )
+        })?,
+        observation_digest: row.get("observation_digest")?,
+        material_basis_digest: row.get("material_basis_digest")?,
+        run_id: row.get("run_id")?,
+        semantic_epoch_id: row.get("semantic_epoch_id")?,
+        observed_at: row.get("observed_at")?,
+    })
 }
 
 /// Fail closed (mirrors `repository::ensure_run_project`) rather than let a
@@ -79,7 +219,7 @@ fn ensure_epoch_project(
 /// separate Lane's table) or `narrative_maintenance_attention` (durable user
 /// Attention state, also a separate Lane's table) — see the module doc
 /// comment and `narrative-finding-contract.json`'s `freshnessSnapshotPolicy`.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, dead_code)]
 pub(crate) fn record_finding_observation_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -92,41 +232,483 @@ pub(crate) fn record_finding_observation_in_tx(
     material_basis_digest: &str,
     observed_at: &str,
 ) -> anyhow::Result<String> {
-    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
-    anyhow::ensure!(!run_id.trim().is_empty(), "runId is required");
+    let edge_id = edge_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_FINDING_EDGE_REQUIRED: edge-scoped Finding observations cannot be written without edgeId"
+        )
+    })?;
+    let stable_subject = edge_id;
+    let finding_identity = stable_finding_identity(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        stable_subject,
+    )?;
+    let digest_input = ObservationDigestInput {
+        stable_subject,
+        edge_id: Some(edge_id),
+        reason_code: reason_code.as_str(),
+        evidence_freshness: evidence_freshness_snapshot.as_str(),
+    };
+    let observation_digest = observation_digest(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        &digest_input,
+    )?;
+    record_finding_observation_with_identity_in_tx(
+        conn,
+        FindingObservationWrite {
+            project_id,
+            run_id,
+            semantic_epoch_id,
+            edge_id: Some(edge_id),
+            finding_key,
+            finding_identity: &finding_identity,
+            rule_id: BUNDLED_FINDING_RULE_ID,
+            rule_version: BUNDLED_FINDING_RULE_VERSION,
+            reason_code,
+            evidence_freshness_snapshot,
+            observation_digest: &observation_digest,
+            material_basis_digest,
+            observed_at,
+        },
+    )
+}
+
+pub(crate) fn record_finding_observation_with_identity_in_tx(
+    conn: &Connection,
+    write: FindingObservationWrite<'_>,
+) -> anyhow::Result<String> {
+    anyhow::ensure!(!write.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!write.run_id.trim().is_empty(), "runId is required");
     anyhow::ensure!(
-        !semantic_epoch_id.trim().is_empty(),
+        !write.semantic_epoch_id.trim().is_empty(),
         "semanticEpochId is required"
     );
-    anyhow::ensure!(!finding_key.trim().is_empty(), "findingKey is required");
     anyhow::ensure!(
-        !material_basis_digest.trim().is_empty(),
+        !write.finding_key.trim().is_empty(),
+        "findingKey is required"
+    );
+    anyhow::ensure!(
+        !write.finding_identity.trim().is_empty(),
+        "findingIdentity is required"
+    );
+    anyhow::ensure!(!write.rule_id.trim().is_empty(), "ruleId is required");
+    anyhow::ensure!(write.rule_version > 0, "ruleVersion must be positive");
+    anyhow::ensure!(
+        !write.observation_digest.trim().is_empty(),
+        "observationDigest is required"
+    );
+    anyhow::ensure!(
+        !write.material_basis_digest.trim().is_empty(),
         "materialBasisDigest is required"
     );
-    anyhow::ensure!(!observed_at.trim().is_empty(), "observedAt is required");
+    anyhow::ensure!(
+        !write.observed_at.trim().is_empty(),
+        "observedAt is required"
+    );
 
-    ensure_epoch_project(conn, project_id, semantic_epoch_id)?;
+    // Every live writer must use a rule that is present in the bundled,
+    // executable registry. Unknown rules are never persisted.
+    super::finding_identity::bundled_finding_rule_registry()?
+        .resolve(write.rule_id, write.rule_version)?;
+    let edge_id = write.edge_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_FINDING_EDGE_REQUIRED: edge-scoped Finding observations cannot be written without edgeId"
+        )
+    })?;
+    let (edge_project_id, consumer_kind, consumer_key): (String, String, String) = conn
+        .query_row(
+            "SELECT project_id, consumer_kind, consumer_key
+               FROM narrative_dependency_edges
+              WHERE id = ?1",
+            params![edge_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_FINDING_EDGE_MISSING: edgeId '{edge_id}' does not name an existing Dependency Edge"
+            )
+        })?;
+    anyhow::ensure!(
+        edge_project_id == write.project_id,
+        "NEX_FINDING_EDGE_PROJECT_MISMATCH: edgeId '{edge_id}' belongs to project '{edge_project_id}', not '{}'",
+        write.project_id
+    );
+    let canonical_finding_key = consumer_finding_key(&consumer_kind, &consumer_key);
+    anyhow::ensure!(
+        write.finding_key == canonical_finding_key,
+        "NEX_FINDING_KEY_MISMATCH: supplied findingKey '{}' does not match the Edge Consumer key '{canonical_finding_key}'",
+        write.finding_key
+    );
+    let expected_identity = stable_finding_identity(write.rule_id, write.rule_version, edge_id)?;
+    anyhow::ensure!(
+        write.finding_identity == expected_identity,
+        "NEX_FINDING_IDENTITY_MISMATCH: supplied findingIdentity does not match the bundled rule and edgeId"
+    );
+    let expected_observation_digest = observation_digest(
+        write.rule_id,
+        write.rule_version,
+        &ObservationDigestInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        write.observation_digest == expected_observation_digest,
+        "NEX_FINDING_OBSERVATION_DIGEST_MISMATCH: supplied observationDigest does not match the declared result fields"
+    );
+    let expected_material_basis_digest = material_basis_digest(
+        write.rule_id,
+        write.rule_version,
+        &MaterialBasisInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        write.material_basis_digest == expected_material_basis_digest,
+        "NEX_FINDING_MATERIAL_BASIS_MISMATCH: supplied materialBasisDigest does not match the declared result fields"
+    );
+    ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
 
     let id = Uuid::new_v4().to_string();
     conn.execute(
         "INSERT INTO narrative_maintenance_finding_observations
             (id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
-             reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at,
+             finding_identity, rule_id, rule_version, observation_digest)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
-            project_id,
-            run_id,
-            semantic_epoch_id,
-            edge_id,
-            finding_key,
-            reason_code.as_str(),
-            evidence_freshness_snapshot.as_str(),
-            material_basis_digest,
-            observed_at,
+            write.project_id,
+            write.run_id,
+            write.semantic_epoch_id,
+            write.edge_id,
+            write.finding_key,
+            write.reason_code.as_str(),
+            write.evidence_freshness_snapshot.as_str(),
+            write.material_basis_digest,
+            write.observed_at,
+            write.finding_identity,
+            write.rule_id,
+            i64::from(write.rule_version),
+            write.observation_digest,
         ],
     )?;
     Ok(id)
+}
+
+pub(crate) fn record_finding_lifecycle_in_tx(
+    conn: &Connection,
+    write: FindingLifecycleWrite<'_>,
+) -> anyhow::Result<String> {
+    anyhow::ensure!(!write.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(
+        !write.finding_identity.trim().is_empty(),
+        "findingIdentity is required"
+    );
+    anyhow::ensure!(
+        !write.finding_key.trim().is_empty(),
+        "findingKey is required"
+    );
+    anyhow::ensure!(!write.rule_id.trim().is_empty(), "ruleId is required");
+    anyhow::ensure!(write.rule_version > 0, "ruleVersion must be positive");
+    anyhow::ensure!(!write.run_id.trim().is_empty(), "runId is required");
+    anyhow::ensure!(
+        !write.semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(
+        !write.observed_at.trim().is_empty(),
+        "observedAt is required"
+    );
+    if let Some(digest) = write.observation_digest {
+        anyhow::ensure!(
+            !digest.trim().is_empty(),
+            "observationDigest must not be empty"
+        );
+    }
+    if let Some(digest) = write.material_basis_digest {
+        anyhow::ensure!(
+            !digest.trim().is_empty(),
+            "materialBasisDigest must not be empty"
+        );
+    }
+    match (write.state, write.observation_digest, write.material_basis_digest) {
+        (FindingLifecycleState::Resolved, None, Some(_)) => {}
+        (FindingLifecycleState::Resolved, Some(_), _) => anyhow::bail!(
+            "NEX_FINDING_LIFECYCLE_RESOLVED_OBSERVATION_INVALID: resolved lifecycle must not carry an observation digest"
+        ),
+        (FindingLifecycleState::Resolved, None, None) => anyhow::bail!(
+            "NEX_FINDING_LIFECYCLE_RESOLVED_EVIDENCE_MISSING: resolved lifecycle requires the prior material basis evidence"
+        ),
+        (_, Some(_), Some(_)) => {}
+        (_, _, _) => anyhow::bail!(
+            "NEX_FINDING_LIFECYCLE_EVIDENCE_MISSING: active lifecycle requires observation and material basis digests"
+        ),
+    }
+    super::finding_identity::bundled_finding_rule_registry()?
+        .resolve(write.rule_id, write.rule_version)?;
+    ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
+    if let Some(lifecycle_observation_digest) = write.observation_digest {
+        let observation: Option<(
+            Option<String>,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            String,
+            String,
+            String,
+        )> = conn
+            .query_row(
+                "SELECT edge_id, finding_identity, material_basis_digest, rule_id,
+                        rule_version, finding_key, reason_code,
+                        evidence_freshness_snapshot, observation_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE project_id = ?1 AND finding_identity = ?2
+                    AND observation_digest = ?3 AND finding_key = ?4
+                  ORDER BY observed_at DESC, rowid DESC
+                  LIMIT 1",
+                params![
+                    write.project_id,
+                    write.finding_identity,
+                    lifecycle_observation_digest,
+                    write.finding_key
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((
+            edge_id,
+            identity,
+            material_basis,
+            rule_id,
+            rule_version,
+            finding_key,
+            reason_code,
+            freshness,
+            stored_observation_digest,
+        )) = observation
+        else {
+            anyhow::bail!(
+                "NEX_FINDING_LIFECYCLE_OBSERVATION_MISSING: lifecycle digest has no matching observation"
+            );
+        };
+        let edge_id = edge_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_FINDING_LIFECYCLE_OBSERVATION_MISMATCH: observation has no Edge identity"
+            )
+        })?;
+        anyhow::ensure!(
+            identity == write.finding_identity
+                && finding_key == write.finding_key
+                && rule_id == write.rule_id
+                && rule_version == i64::from(write.rule_version),
+            "NEX_FINDING_LIFECYCLE_OBSERVATION_MISMATCH: lifecycle identity/rule does not match observation"
+        );
+        let expected_identity =
+            stable_finding_identity(write.rule_id, write.rule_version, &edge_id)?;
+        anyhow::ensure!(
+            identity == expected_identity,
+            "NEX_FINDING_LIFECYCLE_OBSERVATION_IDENTITY_MISMATCH: observation identity is not proven by its Edge"
+        );
+        let reason_code = FindingReasonCode::try_from(reason_code.as_str())?;
+        let freshness = EvidenceFreshness::try_from(freshness.as_str())?;
+        let expected_observation_digest = observation_digest(
+            write.rule_id,
+            write.rule_version,
+            &ObservationDigestInput {
+                stable_subject: &edge_id,
+                edge_id: Some(&edge_id),
+                reason_code: reason_code.as_str(),
+                evidence_freshness: freshness.as_str(),
+            },
+        )?;
+        anyhow::ensure!(
+            stored_observation_digest == lifecycle_observation_digest
+                && lifecycle_observation_digest == expected_observation_digest,
+            "NEX_FINDING_LIFECYCLE_OBSERVATION_DIGEST_MISMATCH: lifecycle digest is not proven by the observation result"
+        );
+        let active_basis_digest = write.material_basis_digest.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_FINDING_LIFECYCLE_MATERIAL_BASIS_MISSING: lifecycle observation requires a material basis"
+            )
+        })?;
+        let expected_material_basis = material_basis_digest(
+            write.rule_id,
+            write.rule_version,
+            &MaterialBasisInput {
+                stable_subject: &edge_id,
+                edge_id: Some(&edge_id),
+                reason_code: reason_code.as_str(),
+                evidence_freshness: freshness.as_str(),
+            },
+        )?;
+        anyhow::ensure!(
+            material_basis == active_basis_digest
+                && active_basis_digest == expected_material_basis,
+            "NEX_FINDING_LIFECYCLE_MATERIAL_BASIS_MISMATCH: lifecycle basis is not proven by the observation result"
+        );
+    } else {
+        // A Resolved row is not a finding observation, but it must still be
+        // anchored to a previously observed, exact identity/key/rule/basis.
+        // Otherwise any caller that knows a bundled rule could manufacture a
+        // lifecycle closure for an identity that was never observed.
+        let resolved_basis_digest = write.material_basis_digest.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_FINDING_LIFECYCLE_RESOLVED_EVIDENCE_MISSING: resolved lifecycle requires the prior material basis evidence"
+            )
+        })?;
+        let prior_observation: Option<(String, String, String, String, String)> = conn
+            .query_row(
+                "SELECT edge_id, finding_identity, reason_code,
+                        evidence_freshness_snapshot, material_basis_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE project_id = ?1 AND finding_identity = ?2
+                    AND finding_key = ?3 AND rule_id = ?4
+                    AND rule_version = ?5
+                    AND material_basis_digest = ?6
+                  ORDER BY observed_at DESC, rowid DESC
+                  LIMIT 1",
+                params![
+                    write.project_id,
+                    write.finding_identity,
+                    write.finding_key,
+                    write.rule_id,
+                    i64::from(write.rule_version),
+                    resolved_basis_digest,
+                ],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((edge_id, identity, reason_code, freshness, stored_material_basis)) =
+            prior_observation
+        else {
+            anyhow::bail!(
+                "NEX_FINDING_LIFECYCLE_RESOLVED_EVIDENCE_MISSING: resolved lifecycle has no exact prior observation"
+            );
+        };
+        let expected_identity =
+            stable_finding_identity(write.rule_id, write.rule_version, &edge_id)?;
+        anyhow::ensure!(
+            identity == write.finding_identity && identity == expected_identity,
+            "NEX_FINDING_LIFECYCLE_RESOLVED_IDENTITY_MISMATCH: prior observation identity is not proven by its Edge"
+        );
+        let reason_code = FindingReasonCode::try_from(reason_code.as_str())?;
+        let freshness = EvidenceFreshness::try_from(freshness.as_str())?;
+        let expected_material_basis = material_basis_digest(
+            write.rule_id,
+            write.rule_version,
+            &MaterialBasisInput {
+                stable_subject: &edge_id,
+                edge_id: Some(&edge_id),
+                reason_code: reason_code.as_str(),
+                evidence_freshness: freshness.as_str(),
+            },
+        )?;
+        anyhow::ensure!(
+            stored_material_basis == expected_material_basis
+                && resolved_basis_digest == expected_material_basis,
+            "NEX_FINDING_LIFECYCLE_RESOLVED_BASIS_MISMATCH: resolved basis is not proven by the prior observation"
+        );
+    }
+
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_maintenance_finding_lifecycle
+            (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+             lifecycle_state, observation_digest, material_basis_digest, run_id,
+             semantic_epoch_id, observed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            write.project_id,
+            write.finding_identity,
+            write.finding_key,
+            write.rule_id,
+            i64::from(write.rule_version),
+            write.state.as_str(),
+            write.observation_digest,
+            write.material_basis_digest,
+            write.run_id,
+            write.semantic_epoch_id,
+            write.observed_at,
+        ],
+    )?;
+    Ok(id)
+}
+
+#[allow(dead_code)]
+pub(crate) fn list_finding_lifecycle_for_identity(
+    conn: &Connection,
+    project_id: &str,
+    finding_identity: &str,
+) -> anyhow::Result<Vec<FindingLifecycleRow>> {
+    let mut statement = conn.prepare(
+        "SELECT id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                lifecycle_state, observation_digest, material_basis_digest, run_id,
+                semantic_epoch_id, observed_at
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+          ORDER BY observed_at ASC, rowid ASC",
+    )?;
+    let rows = statement
+        .query_map(
+            params![project_id, finding_identity],
+            row_to_finding_lifecycle,
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Read only the latest lifecycle transition for a stable Finding identity.
+/// Publish uses this bounded read for its recurring/changed decision; the
+/// append-only list API above remains available for diagnostics and tests.
+pub(crate) fn latest_finding_lifecycle_for_identity(
+    conn: &Connection,
+    project_id: &str,
+    finding_identity: &str,
+) -> anyhow::Result<Option<FindingLifecycleRow>> {
+    conn.query_row(
+        "SELECT id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                lifecycle_state, observation_digest, material_basis_digest, run_id,
+                semantic_epoch_id, observed_at
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+          ORDER BY observed_at DESC, rowid DESC
+          LIMIT 1",
+        params![project_id, finding_identity],
+        row_to_finding_lifecycle,
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// Read the diagnostic observation history for one `finding_key` at one
@@ -143,7 +725,8 @@ pub(crate) fn list_observations_for_epoch(
 ) -> anyhow::Result<Vec<FindingObservationRow>> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
-                reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at
+                reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at,
+                finding_identity, rule_id, rule_version, observation_digest
            FROM narrative_maintenance_finding_observations
           WHERE project_id = ?1 AND semantic_epoch_id = ?2 AND finding_key = ?3
           ORDER BY observed_at ASC, rowid ASC",
@@ -161,6 +744,10 @@ pub(crate) fn list_observations_for_epoch(
                 row.get::<_, String>(7)?,
                 row.get::<_, String>(8)?,
                 row.get::<_, String>(9)?,
+                row.get::<_, Option<String>>(10)?,
+                row.get::<_, String>(11)?,
+                row.get::<_, i64>(12)?,
+                row.get::<_, String>(13)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -179,6 +766,10 @@ pub(crate) fn list_observations_for_epoch(
                 evidence_freshness_snapshot,
                 material_basis_digest,
                 observed_at,
+                finding_identity,
+                rule_id,
+                rule_version,
+                observation_digest,
             )| {
                 Ok(FindingObservationRow {
                     id,
@@ -187,10 +778,15 @@ pub(crate) fn list_observations_for_epoch(
                     semantic_epoch_id,
                     edge_id,
                     finding_key,
+                    finding_identity,
+                    rule_id,
+                    rule_version: u32::try_from(rule_version)
+                        .map_err(|_| anyhow::anyhow!("finding rule version is outside u32"))?,
                     reason_code: FindingReasonCode::try_from(reason_code.as_str())?,
                     evidence_freshness_snapshot: EvidenceFreshness::try_from(
                         evidence_freshness_snapshot.as_str(),
                     )?,
+                    observation_digest,
                     material_basis_digest,
                     observed_at,
                 })
@@ -201,6 +797,7 @@ pub(crate) fn list_observations_for_epoch(
 
 #[cfg(test)]
 mod tests {
+    use super::super::consumer_identity::consumer_finding_key;
     use super::*;
     use crate::Database;
 
@@ -220,6 +817,58 @@ mod tests {
             params![epoch_id, project_id],
         )
         .expect("seed semantic epoch");
+        if project_id == "project-1" {
+            for edge_id in ["edge-1", "edge-2"] {
+                seed_dependency_edge(
+                    conn,
+                    edge_id,
+                    project_id,
+                    "narrative-extraction-run",
+                    "run-1",
+                );
+            }
+        }
+    }
+
+    fn seed_dependency_edge(
+        conn: &Connection,
+        edge_id: &str,
+        project_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '[]', '2026-08-15T00:00:00.000Z')",
+            params![
+                edge_id,
+                project_id,
+                consumer_kind,
+                consumer_key,
+                format!("test-source:{edge_id}"),
+            ],
+        )
+        .expect("seed dependency edge");
+    }
+
+    fn test_material_basis(
+        edge_id: &str,
+        reason_code: FindingReasonCode,
+        freshness: EvidenceFreshness,
+    ) -> String {
+        material_basis_digest(
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            &MaterialBasisInput {
+                stable_subject: edge_id,
+                edge_id: Some(edge_id),
+                reason_code: reason_code.as_str(),
+                evidence_freshness: freshness.as_str(),
+            },
+        )
+        .expect("material basis")
     }
 
     #[test]
@@ -281,6 +930,7 @@ mod tests {
         let db = open_db();
         db.with_conn(|conn| {
             seed_project_and_epoch(conn, "project-1", "epoch-1");
+            let finding_key = consumer_finding_key("narrative-extraction-run", "run-1");
 
             let id = record_finding_observation_in_tx(
                 conn,
@@ -288,17 +938,21 @@ mod tests {
                 "run-1",
                 "epoch-1",
                 Some("edge-1"),
-                "finding-1",
+                &finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:material-basis",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:01.000Z",
             )
             .expect("record observation");
             assert!(!id.is_empty());
 
             let observations =
-                list_observations_for_epoch(conn, "project-1", "epoch-1", "finding-1")
+                list_observations_for_epoch(conn, "project-1", "epoch-1", &finding_key)
                     .expect("list observations");
             assert_eq!(observations.len(), 1);
             let observation = &observations[0];
@@ -307,7 +961,7 @@ mod tests {
             assert_eq!(observation.run_id, "run-1");
             assert_eq!(observation.semantic_epoch_id, "epoch-1");
             assert_eq!(observation.edge_id.as_deref(), Some("edge-1"));
-            assert_eq!(observation.finding_key, "finding-1");
+            assert_eq!(observation.finding_key, finding_key);
             assert_eq!(
                 observation.reason_code,
                 FindingReasonCode::SourceRevisionChanged
@@ -316,7 +970,14 @@ mod tests {
                 observation.evidence_freshness_snapshot,
                 EvidenceFreshness::Stale
             );
-            assert_eq!(observation.material_basis_digest, "sha256:material-basis");
+            assert_eq!(
+                observation.material_basis_digest,
+                test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                )
+            );
             assert_eq!(observation.observed_at, "2026-08-15T00:00:01.000Z");
 
             // A second observation for the same finding_key is a distinct
@@ -327,19 +988,23 @@ mod tests {
                 "project-1",
                 "run-2",
                 "epoch-1",
-                None,
-                "finding-1",
+                Some("edge-2"),
+                &finding_key,
                 FindingReasonCode::QuoteAmbiguous,
                 EvidenceFreshness::Unknown,
-                "sha256:material-basis-2",
+                &test_material_basis(
+                    "edge-2",
+                    FindingReasonCode::QuoteAmbiguous,
+                    EvidenceFreshness::Unknown,
+                ),
                 "2026-08-15T00:00:02.000Z",
             )
             .expect("record second observation");
             let observations =
-                list_observations_for_epoch(conn, "project-1", "epoch-1", "finding-1")
+                list_observations_for_epoch(conn, "project-1", "epoch-1", &finding_key)
                     .expect("list observations after second write");
             assert_eq!(observations.len(), 2);
-            assert_eq!(observations[1].edge_id, None);
+            assert_eq!(observations[1].edge_id.as_deref(), Some("edge-2"));
 
             Ok(())
         })
@@ -352,8 +1017,9 @@ mod tests {
         db.with_conn(|conn| {
             seed_project_and_epoch(conn, "project-1", "epoch-1");
             assert!(FindingReasonCode::try_from("bogus-reason").is_err());
+            let finding_key = consumer_finding_key("narrative-extraction-run", "run-1");
             let observations =
-                list_observations_for_epoch(conn, "project-1", "epoch-1", "finding-1")
+                list_observations_for_epoch(conn, "project-1", "epoch-1", &finding_key)
                     .expect("list observations");
             assert!(observations.is_empty());
             Ok(())
@@ -371,6 +1037,7 @@ mod tests {
         let db = open_db();
         db.with_conn(|conn| {
             seed_project_and_epoch(conn, "project-1", "epoch-1");
+            let finding_key = consumer_finding_key("narrative-extraction-run", "run-1");
 
             let freshness_rows_before: i64 = conn
                 .query_row(
@@ -409,10 +1076,14 @@ mod tests {
                 "run-1",
                 "epoch-1",
                 Some("edge-1"),
-                "finding-1",
+                &finding_key,
                 FindingReasonCode::ContextOverlap,
                 EvidenceFreshness::AnchorMismatch,
-                "sha256:material-basis",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::ContextOverlap,
+                    EvidenceFreshness::AnchorMismatch,
+                ),
                 "2026-08-15T00:00:03.000Z",
             )
             .expect("record observation");
@@ -442,6 +1113,415 @@ mod tests {
                 "Finding Observation write must not mutate an existing Freshness row"
             );
 
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn stable_identity_and_digests_round_trip_with_observation_history() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            seed_project_and_epoch(conn, "project-1", "epoch-1");
+            let finding_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-1",
+            )
+            .expect("identity");
+            let observation_digest = observation_digest(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                &ObservationDigestInput {
+                    stable_subject: "edge-1",
+                    edge_id: Some("edge-1"),
+                    reason_code: FindingReasonCode::SourceMissing.as_str(),
+                    evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
+                },
+            )
+            .expect("observation digest");
+            let material_basis_digest = test_material_basis(
+                "edge-1",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+            );
+
+            record_finding_observation_with_identity_in_tx(
+                conn,
+                FindingObservationWrite {
+                    project_id: "project-1",
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    edge_id: Some("edge-1"),
+                    finding_key: "narrative-extraction-run:run-1",
+                    finding_identity: &finding_identity,
+                    rule_id: "narrative.consumer-freshness",
+                    rule_version: 1,
+                    reason_code: FindingReasonCode::SourceMissing,
+                    evidence_freshness_snapshot: EvidenceFreshness::SourceMissing,
+                    observation_digest: &observation_digest,
+                    material_basis_digest: &material_basis_digest,
+                    observed_at: "2026-08-15T00:00:04.000Z",
+                },
+            )?;
+
+            let rows = list_observations_for_epoch(
+                conn,
+                "project-1",
+                "epoch-1",
+                "narrative-extraction-run:run-1",
+            )?;
+            assert_eq!(
+                rows[0].finding_identity.as_deref(),
+                Some(finding_identity.as_str())
+            );
+            assert_eq!(rows[0].rule_id, "narrative.consumer-freshness");
+            assert_eq!(rows[0].rule_version, 1);
+            assert_eq!(rows[0].observation_digest, observation_digest);
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn observation_writer_requires_project_owned_edge_and_canonical_finding_key() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            seed_project_and_epoch(conn, "project-1", "epoch-1");
+            seed_project_and_epoch(conn, "project-2", "epoch-2");
+            seed_dependency_edge(
+                conn,
+                "foreign-edge",
+                "project-2",
+                "narrative-extraction-run",
+                "run-foreign",
+            );
+
+            let finding_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-1",
+            )?;
+            let observation_digest = observation_digest(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                &ObservationDigestInput {
+                    stable_subject: "edge-1",
+                    edge_id: Some("edge-1"),
+                    reason_code: FindingReasonCode::SourceMissing.as_str(),
+                    evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
+                },
+            )?;
+            let material_basis_digest = test_material_basis(
+                "edge-1",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+            );
+            let canonical_key = consumer_finding_key("narrative-extraction-run", "run-1");
+
+            let missing = record_finding_observation_with_identity_in_tx(
+                conn,
+                FindingObservationWrite {
+                    project_id: "project-1",
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    edge_id: Some("missing-edge"),
+                    finding_key: &canonical_key,
+                    finding_identity: &finding_identity,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    reason_code: FindingReasonCode::SourceMissing,
+                    evidence_freshness_snapshot: EvidenceFreshness::SourceMissing,
+                    observation_digest: &observation_digest,
+                    material_basis_digest: &material_basis_digest,
+                    observed_at: "2026-08-15T00:00:04.000Z",
+                },
+            )
+            .expect_err("missing Edge must not accept an Observation");
+            assert!(missing.to_string().contains("NEX_FINDING_EDGE_MISSING"));
+
+            let foreign_key = consumer_finding_key("narrative-extraction-run", "run-foreign");
+            let foreign = record_finding_observation_with_identity_in_tx(
+                conn,
+                FindingObservationWrite {
+                    project_id: "project-1",
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    edge_id: Some("foreign-edge"),
+                    finding_key: &foreign_key,
+                    finding_identity: &finding_identity,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    reason_code: FindingReasonCode::SourceMissing,
+                    evidence_freshness_snapshot: EvidenceFreshness::SourceMissing,
+                    observation_digest: &observation_digest,
+                    material_basis_digest: &material_basis_digest,
+                    observed_at: "2026-08-15T00:00:05.000Z",
+                },
+            )
+            .expect_err("a foreign-project Edge must not accept an Observation");
+            assert!(foreign
+                .to_string()
+                .contains("NEX_FINDING_EDGE_PROJECT_MISMATCH"));
+
+            let key_mismatch = record_finding_observation_with_identity_in_tx(
+                conn,
+                FindingObservationWrite {
+                    project_id: "project-1",
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    edge_id: Some("edge-1"),
+                    finding_key: "wrong:consumer",
+                    finding_identity: &finding_identity,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    reason_code: FindingReasonCode::SourceMissing,
+                    evidence_freshness_snapshot: EvidenceFreshness::SourceMissing,
+                    observation_digest: &observation_digest,
+                    material_basis_digest: &material_basis_digest,
+                    observed_at: "2026-08-15T00:00:06.000Z",
+                },
+            )
+            .expect_err("a caller-supplied non-canonical key must be rejected");
+            assert!(key_mismatch
+                .to_string()
+                .contains("NEX_FINDING_KEY_MISMATCH"));
+
+            let observation_count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_maintenance_finding_observations",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(observation_count, 0);
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn lifecycle_records_explicit_resolved_state_and_changed_observation() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            seed_project_and_epoch(conn, "project-1", "epoch-1");
+            let first_observation = record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-1",
+                "epoch-1",
+                Some("edge-1"),
+                "narrative-extraction-run:run-1",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceMissing,
+                    EvidenceFreshness::SourceMissing,
+                ),
+                "2026-08-15T00:00:04.000Z",
+            )?;
+            let first_observation_digest: String = conn.query_row(
+                "SELECT observation_digest FROM narrative_maintenance_finding_observations WHERE id = ?1",
+                params![first_observation],
+                |row| row.get(0),
+            )?;
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-1",
+                "epoch-1",
+                Some("edge-1"),
+                "narrative-extraction-run:run-1",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
+                "2026-08-15T00:00:05.000Z",
+            )?;
+            let second_observation_digest: String = conn.query_row(
+                "SELECT observation_digest FROM narrative_maintenance_finding_observations
+                  WHERE project_id = 'project-1'
+                    AND finding_key = 'narrative-extraction-run:run-1'
+                  ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )?;
+            let finding_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-1",
+            )?;
+            let base = FindingLifecycleWrite {
+                project_id: "project-1",
+                finding_identity: &finding_identity,
+                finding_key: "narrative-extraction-run:run-1",
+                rule_id: "narrative.consumer-freshness",
+                rule_version: 1,
+                run_id: "run-1",
+                semantic_epoch_id: "epoch-1",
+                state: FindingLifecycleState::New,
+                observation_digest: None,
+                material_basis_digest: Some(&test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceMissing,
+                    EvidenceFreshness::SourceMissing,
+                )),
+                observed_at: "2026-08-15T00:00:05.000Z",
+            };
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    observation_digest: Some(&first_observation_digest),
+                    state: FindingLifecycleState::New,
+                    ..base
+                },
+            )?;
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    observation_digest: Some(&second_observation_digest),
+                    material_basis_digest: Some(&test_material_basis(
+                        "edge-1",
+                        FindingReasonCode::SourceRevisionChanged,
+                        EvidenceFreshness::Stale,
+                    )),
+                    state: FindingLifecycleState::Changed,
+                    observed_at: "2026-08-15T00:00:06.000Z",
+                    ..base
+                },
+            )?;
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    observation_digest: None,
+                    state: FindingLifecycleState::Resolved,
+                    observed_at: "2026-08-15T00:00:07.000Z",
+                    ..base
+                },
+            )?;
+
+            let states = list_finding_lifecycle_for_identity(
+                conn,
+                "project-1",
+                &finding_identity,
+            )?;
+            assert_eq!(states.len(), 3);
+            assert_eq!(states[0].state, FindingLifecycleState::New);
+            assert_eq!(states[1].state, FindingLifecycleState::Changed);
+            assert_eq!(states[2].state, FindingLifecycleState::Resolved);
+            assert!(states[2].observation_digest.is_none());
+            let latest = latest_finding_lifecycle_for_identity(
+                conn,
+                "project-1",
+                &finding_identity,
+            )?
+            .expect("latest lifecycle row");
+            assert_eq!(latest.id, states[2].id);
+            assert_eq!(latest.state, FindingLifecycleState::Resolved);
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn lifecycle_writer_requires_exact_observation_key_and_resolved_evidence() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            seed_project_and_epoch(conn, "project-1", "epoch-1");
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-1",
+                "epoch-1",
+                Some("edge-1"),
+                "narrative-extraction-run:run-1",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceMissing,
+                    EvidenceFreshness::SourceMissing,
+                ),
+                "2026-08-15T00:00:04.000Z",
+            )?;
+            let finding_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-1",
+            )?;
+            let observation_digest: String = conn.query_row(
+                "SELECT observation_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE project_id = 'project-1' AND finding_identity = ?1",
+                params![finding_identity],
+                |row| row.get(0),
+            )?;
+            let material_basis = test_material_basis(
+                "edge-1",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+            );
+
+            let key_mismatch = record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    project_id: "project-1",
+                    finding_identity: &finding_identity,
+                    finding_key: "wrong:consumer",
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    state: FindingLifecycleState::New,
+                    observation_digest: Some(&observation_digest),
+                    material_basis_digest: Some(&material_basis),
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    observed_at: "2026-08-15T00:00:05.000Z",
+                },
+            )
+            .expect_err("lifecycle must not borrow an observation under another finding key");
+            assert!(key_mismatch
+                .to_string()
+                .contains("NEX_FINDING_LIFECYCLE_OBSERVATION_MISSING"));
+
+            let unknown_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-never-observed",
+            )?;
+            let unknown_basis = test_material_basis(
+                "edge-never-observed",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+            );
+            let missing_resolved_evidence = record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    project_id: "project-1",
+                    finding_identity: &unknown_identity,
+                    finding_key: "run:never-observed",
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    state: FindingLifecycleState::Resolved,
+                    observation_digest: None,
+                    material_basis_digest: Some(&unknown_basis),
+                    run_id: "run-1",
+                    semantic_epoch_id: "epoch-1",
+                    observed_at: "2026-08-15T00:00:06.000Z",
+                },
+            )
+            .expect_err("resolved lifecycle must be anchored to a prior observation");
+            assert!(missing_resolved_evidence
+                .to_string()
+                .contains("NEX_FINDING_LIFECYCLE_RESOLVED_EVIDENCE_MISSING"));
+
+            let lifecycle_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_maintenance_finding_lifecycle",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(lifecycle_rows, 0);
             Ok(())
         })
         .expect("with_conn");

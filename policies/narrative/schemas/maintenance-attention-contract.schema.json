@@ -37,12 +37,23 @@
     },
     "applicationConditions": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 4,
+      "maxItems": 4,
       "uniqueItems": true,
       "items": {
-        "type": "string",
-        "minLength": 1
-      }
+        "enum": [
+          "finding-key-match",
+          "finding-identity-resolved",
+          "material-basis-digest-match",
+          "snooze-not-expired"
+        ]
+      },
+      "allOf": [
+        { "contains": { "const": "finding-key-match" } },
+        { "contains": { "const": "finding-identity-resolved" } },
+        { "contains": { "const": "material-basis-digest-match" } },
+        { "contains": { "const": "snooze-not-expired" } }
+      ]
     },
     "negativeFixture": {
       "type": "string",

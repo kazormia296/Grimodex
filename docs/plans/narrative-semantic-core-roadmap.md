@@ -3,7 +3,7 @@
 ## Status
 
 - **Lifecycle:** Active mutable roadmap
-- **Last updated:** 2026-08-19
+- **Last updated:** 2026-08-21
 - **Current focus:** Gate C2 completion and canonical Semantic Build Graph cutover
 - **North star:** **本文に追従し、根拠を示し、人間の修正を覚える Living Story Bible**
 
@@ -52,8 +52,10 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 | Application Contribution ownership | **Complete** | [PR #536](https://github.com/kazormia296/Grimodex/pull/536) landed C2 item 4: Contribution provenance, canonical target identities with the SCHEMA rewrite migration, and one-way human ownership behind typed writers.                                                                                                                                                          |
 | C2-2 Consumer granularity          | **Complete** | Producers declare Edges per Proposal Revision, the canonical vocabulary is ratified in [`policies/narrative/narrative-consumer-contract.json`](../../policies/narrative/narrative-consumer-contract.json), SCHEMA 30 records each Edge's declaring Run, and existing Run-grained Edges are re-keyed from the durable per-Revision Source Basis.                                  |
 | C2-1 incremental Freshness runtime | **Complete** | [`incremental_freshness.rs`](../../src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs) owns the bounded Feed range, reverse lookup, evaluation, atomic multi-Consumer publication, replay/recovery, and single acknowledgement; [`narrativeFreshness.ts`](../../electron/main/narrativeFreshness.ts) supplies the main-only single-flight scheduler. |
-| Remaining C2 work                  | **Planned**  | C2-3 Finding identity and orphaned Attention re-homing, then C2-5's shared automatic triggers and cross-Run-Kind lifecycle recovery, remain pending.                                                                                                                                                                                                                             |
-| C2-Z canonical cutover             | **Blocked**  | Generic Consumer Freshness remains shadow until parity and cutover criteria pass.                                                                                                                                                                                                                                                                                                |
+| C2-3 Finding identity              | **Active**   | SCHEMA 31, the versioned Rule Registry, three-layer Finding identity, lifecycle classification, and fail-closed Attention re-homing are implemented on the active branch and await the branch quality gate and merge.                                                                                                                                                            |
+| C2-5A lifecycle foundation         | **Active**   | Schema-less trigger planning, coalescing, per-project serialization, epoch-aware interrupted-run recovery, bounded retry, and a shadow/execute-safe planner are implemented without production activation. Verify/Rebuild automation and semantic Finding notifications remain C2-5B work after C2-3 joins.                                                                      |
+| C2-ZA cutover preparation          | **Active**   | SELECT-only legacy/Generic parity measurement, fail-closed per-workspace readiness, and `application` re-key dry-run classification are implemented without changing stored keys or the canonical read authority.                                                                                                                                                                |
+| C2-Z canonical cutover             | **Blocked**  | The actual `application` re-key migration waits for C2-3 Attention re-homing; canonical authority switching waits for C2-5B plus clean Verify, rebuild, parity, and runtime-liveness evidence.                                                                                                                                                                                   |
 | First Retrieval Vertical Slice     | **Planned**  | Begins after C2-Z and the minimum shared Narrative IR contract are ready.                                                                                                                                                                                                                                                                                                        |
 | Living Story Bible product Epics   | **Planned**  | Correction Memory, live Structure Health, Change Review, reports, graph exploration, and Map proposals are defined below.                                                                                                                                                                                                                                                        |
 
@@ -63,11 +65,15 @@ When this roadmap conflicts with an accepted ADR or validated policy, the ADR or
 C2-2: Consumer granularity ── complete
 C2-1: Change Feed → reverse lookup → evaluator → publish/ack ── complete
   ↓
-C2-3: Finding three-layer identity + orphaned Attention re-home
-  ↓
-C2-5: Shared automatic triggers and interrupted-run recovery
-  ↓
-C2-Z: Generic Consumer Freshness becomes canonical
+  ├─ C2-3: Finding identity + Attention re-home ───────────────┐
+  ├─ C2-5A: trigger/coalescing/recovery foundation (shadow) ──┼─ join
+  └─ C2-ZA: parity/readiness/re-key dry-run (read-only) ──────┘
+                                                                ↓
+           C2-5B: contract-aware activation + durable notification
+                                                                ↓
+           C2-ZB: `application` re-key + Attention re-home migration
+                                                                ↓
+           C2-ZC: Generic Consumer Freshness becomes canonical
   ↓
 Shared Narrative IR + First Retrieval Vertical Slice
   ↓
@@ -82,7 +88,14 @@ Readable reports and graph exploration
 Map draft proposals and later visualization products
 ```
 
-The ordering after PR #536 is intentional: **Consumer granularity → Finding identity**, while the Change-Feed-driven runtime may proceed alongside Consumer granularity once object identity and publish contracts are stable. C2-2 itself is split: the Consumer contract and the identity seams landed first, because the three places Run grain was load-bearing all failed silently rather than loudly (see C2-2 below).
+The ordering after PR #536 is intentional: **Consumer granularity → Finding identity**. Once C2-1 and C2-2 were complete, the schema-owning C2-3 work could proceed in parallel with schema-less C2-5A and read-only C2-ZA preparation. The join remains strict: Verify/Rebuild activation needs C2-3's stable identity and contract-aware skip evidence, the `application` re-key must share a migration unit with Attention re-homing, and the canonical authority switch remains last. C2-2 itself was split because the three places Run grain was load-bearing all failed silently rather than loudly (see C2-2 below).
+
+### Parallel branch ownership
+
+- **SCHEMA 31 belongs only to C2-3.** It adds Finding identity and Attention resolution state and performs the identity-aware lifecycle baseline/re-home work.
+- **C2-5A is schema-less.** It may plan and coordinate automatic work, but its production adapter is not connected and Verify/Rebuild remain deferred in execute-safe mode.
+- **C2-ZA is read-only.** It may measure parity/readiness and classify a hypothetical re-key, but may not mutate `consumer_kind`, Attention, or the canonical authority.
+- Any later schema-bearing `application` re-key is serialized after C2-3 and must update Attention in the same atomic migration unit.
 
 ---
 
@@ -208,7 +221,7 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-3: Finding three-layer identity
 
-**State:** Planned — Consumer granularity is complete; Finding identity and orphaned Attention re-homing remain pending
+**State:** Active — implemented on the current branch; focused regression and branch quality gates precede merge
 
 ### Required identities
 
@@ -218,11 +231,11 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ### Deliverables
 
-- Versioned Rule Registry.
-- `observation_digest` independent from material basis.
-- Rule-declared material basis digest.
-- Correct Attention inheritance across re-evaluation, re-run, and Semantic Epoch rotation.
-- Explicit distinction among recurring condition, changed condition, and resolved condition.
+- **Active** — A bundled, versioned, fail-closed Rule Registry for `narrative.consumer-freshness@1`.
+- **Active** — Domain-separated `finding_identity`, `observation_digest`, and rule-declared `material_basis_digest`; transient Run, Epoch, and timestamp data are excluded from durable Finding identity.
+- **Active** — Explicit `new` / `recurring` / `changed` / `resolved` lifecycle state derived from the identity-aware Observation stream.
+- **Active** — Attention applicability bound to an exact resolved Finding identity and material basis. Historyless or ambiguous legacy rows remain durable and visible as `legacy-unresolved`; they are never guessed onto a new Finding.
+- **Active** — SCHEMA 31 migration and representative SCHEMA 30 upgrade fixture, including legacy NULL-Edge Observations and an identity-aware lifecycle baseline.
 
 ### Exit criteria
 
@@ -232,7 +245,22 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-5: Automatic triggers and lifecycle recovery
 
-**State:** Planned — C2-1's Freshness-only scheduler/recovery is complete; the shared multi-Run-Kind trigger and lifecycle work remains pending after C2-3
+**State:** Active — C2-5A foundation is implemented in parallel; C2-5B activation remains ordered after C2-3
+
+### C2-5A foundation boundary
+
+- Schema-less trigger-to-work planning for Migration, Restore, contract change, producer completion, and pre-cutover requests.
+- Canonical, Semantic-Epoch-aware work keys; same-key coalescing; one process-wide project claim across automatic Run Kinds.
+- Durable ledger decisions that distinguish same-process reuse, startup interruption, stale-Epoch recovery, fresh work, bounded retry, and manual intervention.
+- A main-only scheduler contract that preserves project scope for durable `hasMore` wakes and rejects malformed backend responses through the retry path.
+- Shadow by default. Execute-safe mode may select Backfill only; Verify and Rebuild-Derived remain explicitly deferred.
+- No renderer/preload surface and no route to human-only Repair.
+
+### C2-5B activation boundary
+
+- Connect the live Native adapter and enable Backfill only after its authority and durable wake contract are validated end to end.
+- Add Rule/graph-contract-aware completed-Run skip evidence before enabling automatic Verify or Rebuild-Derived.
+- Project non-retryable semantic failures into durable Maintenance Inbox Findings using C2-3 identity; logs alone are not completion evidence.
 
 ### Deliverables
 
@@ -250,7 +278,23 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## C2-Z: Canonical authority cutover
 
-**State:** Blocked
+**State:** Active preparation / blocked mutation and cutover
+
+### C2-ZA read-only preparation
+
+- Measure legacy/Generic Freshness and dependency parity without writing either authority.
+- Evaluate every per-workspace cutover requirement fail-closed. Evidence unavailable from the database alone, including scheduler liveness, remains `incomplete` rather than passing by assumption.
+- Dry-run the Legacy Backfill Edge re-key to `application`, reporting exact, fan-out, unattributed, collision, invalid, and missing-Run cases without changing stored Consumers.
+
+### C2-ZB migration boundary
+
+- Run only after C2-3. Re-keying Legacy Backfill Edges to `application` and re-homing affected Attention must be one atomic, schema-owned migration unit.
+- Refuse ambiguous, unattributed, invalid, or colliding candidates; do not manufacture Application identity.
+
+### C2-ZC canonical switch boundary
+
+- Run only after C2-5B and every per-workspace gate below passes from durable current evidence.
+- Switching the read authority and removing the possibility of silent dual-authority divergence is an explicit later change, not part of C2-ZA.
 
 ### Per-Workspace cutover requirements
 

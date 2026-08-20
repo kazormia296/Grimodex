@@ -1897,6 +1897,34 @@ mod tests {
     }
 
     #[test]
+    fn sealing_rejects_a_version_four_verify_after_attention_mapping_contract_bump() {
+        let (_workspace_path, db) = test_workspace("verify-v4");
+        let epoch_id = seed_epoch(&db, "project-1");
+        // Version 4 predates the exact material-digest -> Observation -> Edge
+        // evidence required by the orphaned Attention re-home report. The
+        // version gate must reject it before deserializing the old shape.
+        seed_raw_run(
+            &db,
+            "verify-v4",
+            "project-1",
+            VERIFY_RUN_KIND,
+            "completed",
+            &epoch_id,
+            Some(&json!({ "verifyContractVersion": "4" })),
+        );
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-v4", &epoch_id))
+            .expect_err("a version-4 Verify result must not seal a version-5 Repair plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH"),
+            "the contract-version gate must run before report deserialization: {error}"
+        );
+    }
+
+    #[test]
     fn sealing_against_a_failed_or_running_verify_run_fails_closed() {
         let (_workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");

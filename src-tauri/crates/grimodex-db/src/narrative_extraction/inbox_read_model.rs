@@ -76,15 +76,13 @@
 //!   "dismissed" badge) rather than this Read Model silently omitting rows.
 //!
 //! The `current_material_basis_digest` fed into
-//! `is_attention_applicable` for a Snoozed row is the current epoch's
-//! latest Finding Observation's `material_basis_digest` when one exists
-//! (the freshest available evidence of what the finding actually is right
-//! now), falling back to the Attention row's own stored digest when there
-//! is no Finding Observation to compare against (e.g. a Consumer that has
-//! never produced a diagnostic Finding in the current epoch) -- in that
-//! fallback case the digest trivially matches itself, so the decision
-//! collapses to `snooze-not-expired` alone, which is the only signal
-//! available.
+//! `is_attention_applicable` for a Snoozed row is taken only from the current
+//! epoch's Finding Observation whose `finding_identity` exactly matches the
+//! Attention row's resolved identity. A later Observation for another Edge
+//! under the same Consumer finding key is not evidence about this Attention.
+//! If the row is unresolved or no identity-matching Observation exists in the
+//! current epoch, applicability is false and the entry resurfaces; the read
+//! model never falls back to comparing the Attention digest with itself.
 //!
 //! ## Epoch invalidation
 //!
@@ -240,10 +238,12 @@ pub fn build_maintenance_inbox(
 
         // Only the *current* epoch's diagnostic history is relevant --
         // this is the entire epoch-rotation invalidation mechanism (see
-        // module doc, "Epoch invalidation"). `list_observations_for_epoch`
-        // returns oldest-first, so the last element is the latest.
-        let latest_observation =
-            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?.pop();
+        // module doc, "Epoch invalidation"). Keep the full diagnostic slice
+        // here because the Attention identity may point at one Edge while a
+        // Consumer has several Edges under the same finding key.
+        let observations =
+            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
+        let latest_observation = observations.last().cloned();
 
         // Pure read; never mutates or clears a lapsed row (attention.rs's
         // own contract).
@@ -254,11 +254,26 @@ pub fn build_maintenance_inbox(
                 // Prefer the freshest evidence's digest when one exists;
                 // fall back to the Attention row's own digest otherwise
                 // (module doc, "Snooze expiry" section).
-                let current_material_basis_digest = latest_observation
-                    .as_ref()
-                    .map(|observation| observation.material_basis_digest.as_str())
-                    .unwrap_or(attention_row.material_basis_digest.as_str());
-                is_attention_applicable(attention_row, current_material_basis_digest, now)
+                // Applicability is identity-scoped. Comparing against the
+                // Consumer-wide latest observation would let a different
+                // Edge invalidate this Attention merely because both Edges
+                // share the same finding key.
+                let matching_observation = attention_row
+                    .finding_identity
+                    .as_deref()
+                    .filter(|_| attention_row.identity_resolution_status == "resolved")
+                    .and_then(|finding_identity| {
+                        observations.iter().rev().find(|observation| {
+                            observation.finding_identity.as_deref() == Some(finding_identity)
+                        })
+                    });
+                matching_observation.is_some_and(|observation| {
+                    is_attention_applicable(
+                        attention_row,
+                        observation.material_basis_digest.as_str(),
+                        now,
+                    )
+                })
             }
             // Dismissed/Flagged never hide the entry; no Attention row at
             // all obviously does not either.
@@ -295,6 +310,10 @@ mod tests {
     use crate::narrative_extraction::evaluator::FindingReasonCode;
     use crate::narrative_extraction::finding_observation::record_finding_observation_in_tx;
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
+    use crate::narrative_extraction::{
+        material_basis_digest, MaterialBasisInput, BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+    };
     use crate::Database;
 
     /// Positional shim keeping these Inbox read-model tests focused on the
@@ -352,6 +371,24 @@ mod tests {
         db
     }
 
+    fn test_material_basis(
+        edge_id: &str,
+        reason_code: FindingReasonCode,
+        freshness: EvidenceFreshness,
+    ) -> String {
+        material_basis_digest(
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            &MaterialBasisInput {
+                stable_subject: edge_id,
+                edge_id: Some(edge_id),
+                reason_code: reason_code.as_str(),
+                evidence_freshness: freshness.as_str(),
+            },
+        )
+        .expect("material basis")
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn seed_consumer_freshness(
         conn: &Connection,
@@ -379,6 +416,29 @@ mod tests {
             ],
         )
         .expect("seed consumer freshness row");
+    }
+
+    fn seed_dependency_edge(
+        conn: &Connection,
+        edge_id: &str,
+        project_id: &str,
+        consumer_kind: &str,
+        consumer_key: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                 read_set_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '[]', '2026-08-15T00:00:00.000Z')",
+            params![
+                edge_id,
+                project_id,
+                consumer_kind,
+                consumer_key,
+                format!("test-source:{edge_id}"),
+            ],
+        )
+        .expect("seed dependency edge");
     }
 
     #[test]
@@ -429,6 +489,7 @@ mod tests {
                 "2026-08-15T00:00:00.000Z",
             );
             let finding_key = "codex-entry:entry-1";
+            seed_dependency_edge(conn, "edge-1", "project-1", "codex-entry", "entry-1");
 
             // Two observations recorded against the same finding_key; the
             // later one (by observed_at) must win as "latest".
@@ -441,7 +502,11 @@ mod tests {
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:first",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:01.000Z",
             )?;
             record_finding_observation_in_tx(
@@ -453,7 +518,11 @@ mod tests {
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:second",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:02.000Z",
             )?;
 
@@ -463,7 +532,14 @@ mod tests {
                 .latest_observation
                 .as_ref()
                 .expect("latest observation present");
-            assert_eq!(observation.material_basis_digest, "sha256:second");
+            assert_eq!(
+                observation.material_basis_digest,
+                test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                )
+            );
             assert_eq!(observation.run_id, "run-2");
             assert!(entries[0].attention.is_none());
             Ok(())
@@ -487,16 +563,21 @@ mod tests {
                 "2026-08-15T00:00:00.000Z",
             );
             let finding_key = "proposal:proposal-1";
+            seed_dependency_edge(conn, "edge-1", "project-1", "proposal", "proposal-1");
             record_finding_observation_in_tx(
                 conn,
                 "project-1",
                 "run-1",
                 &epoch_id,
-                None,
+                Some("edge-1"),
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:digest-a",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:01.000Z",
             )?;
             set_attention_for_test(
@@ -504,7 +585,11 @@ mod tests {
                 "project-1",
                 finding_key,
                 AttentionDisposition::Snoozed,
-                "sha256:digest-a",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 Some("2026-09-01T00:00:00.000Z"),
                 "2026-08-15T00:30:00.000Z",
                 Some("user-1"),
@@ -514,6 +599,79 @@ mod tests {
             assert!(
                 entries.is_empty(),
                 "an active, unexpired snooze must hide the consumer entirely"
+            );
+            Ok(())
+        })
+        .expect("with_conn");
+    }
+
+    #[test]
+    fn active_snooze_uses_the_attention_identity_when_a_consumer_has_multiple_edges() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+            seed_consumer_freshness(
+                conn,
+                "project-1",
+                "proposal",
+                "proposal-1",
+                "stale",
+                "rebuild-required",
+                &epoch_id,
+                "2026-08-15T00:00:00.000Z",
+            );
+            let finding_key = "proposal:proposal-1";
+            let edge_a_basis = test_material_basis(
+                "edge-a",
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+            );
+            let edge_b_basis = test_material_basis(
+                "edge-b",
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+            );
+            seed_dependency_edge(conn, "edge-a", "project-1", "proposal", "proposal-1");
+            seed_dependency_edge(conn, "edge-b", "project-1", "proposal", "proposal-1");
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-a",
+                &epoch_id,
+                Some("edge-a"),
+                finding_key,
+                FindingReasonCode::SourceRevisionChanged,
+                EvidenceFreshness::Stale,
+                &edge_a_basis,
+                "2026-08-15T00:00:01.000Z",
+            )?;
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-b",
+                &epoch_id,
+                Some("edge-b"),
+                finding_key,
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+                &edge_b_basis,
+                "2026-08-15T00:00:02.000Z",
+            )?;
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &edge_a_basis,
+                Some("2026-09-01T00:00:00.000Z"),
+                "2026-08-15T00:30:00.000Z",
+                Some("user-1"),
+            )?;
+
+            let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+            assert!(
+                entries.is_empty(),
+                "Edge B's later observation must not invalidate Edge A's applicable Attention"
             );
             Ok(())
         })
@@ -536,16 +694,21 @@ mod tests {
                 "2026-08-15T00:00:00.000Z",
             );
             let finding_key = "proposal:proposal-1";
+            seed_dependency_edge(conn, "edge-1", "project-1", "proposal", "proposal-1");
             record_finding_observation_in_tx(
                 conn,
                 "project-1",
                 "run-1",
                 &epoch_id,
-                None,
+                Some("edge-1"),
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:digest-a",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:01.000Z",
             )?;
             set_attention_for_test(
@@ -553,7 +716,11 @@ mod tests {
                 "project-1",
                 finding_key,
                 AttentionDisposition::Snoozed,
-                "sha256:digest-a",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 Some("2026-08-01T00:00:00.000Z"), // already in the past
                 "2026-07-01T00:00:00.000Z",
                 Some("user-1"),
@@ -600,16 +767,21 @@ mod tests {
             // a newer observation with a different digest has since landed
             // in the current epoch, so the finding is no longer the same
             // material basis the human dismissed via snooze.
+            seed_dependency_edge(conn, "edge-1", "project-1", "proposal", "proposal-1");
             record_finding_observation_in_tx(
                 conn,
                 "project-1",
                 "run-1",
                 &epoch_id,
-                None,
+                Some("edge-1"),
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:digest-new",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-15T00:00:01.000Z",
             )?;
             set_attention_for_test(
@@ -642,16 +814,21 @@ mod tests {
         db.with_conn(|conn| {
             let epoch_0 = create_epoch_in_tx(conn, "project-1", "initial", None)?;
             let finding_key = "proposal:proposal-1";
+            seed_dependency_edge(conn, "edge-1", "project-1", "proposal", "proposal-1");
             record_finding_observation_in_tx(
                 conn,
                 "project-1",
                 "run-1",
                 &epoch_0,
-                None,
+                Some("edge-1"),
                 finding_key,
                 FindingReasonCode::SourceRevisionChanged,
                 EvidenceFreshness::Stale,
-                "sha256:old-epoch",
+                &test_material_basis(
+                    "edge-1",
+                    FindingReasonCode::SourceRevisionChanged,
+                    EvidenceFreshness::Stale,
+                ),
                 "2026-08-01T00:00:00.000Z",
             )?;
 
@@ -875,8 +1052,8 @@ mod tests {
             // alongside (not instead of) the no-mutation assertion below.
             assert_eq!(
                 entries.len(),
-                2,
-                "one consumer hidden by an active snooze, two surfaced"
+                3,
+                "unresolved Attention is never silently inherited, so all three consumers surface"
             );
 
             let snapshot_after: Vec<AttentionRow> = conn
