@@ -28,10 +28,10 @@ use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
 /// The oldest and newest markers a Gate C2 workspace can carry on disk today.
-/// SCHEMA 23 is the first Semantic Build Graph schema; 29 is the last one
-/// before the current marker.
+/// SCHEMA 23 is the first Semantic Build Graph schema; 30 is the last one
+/// before the current Finding identity marker.
 pub const OLDEST_C2_ERA: i32 = 23;
-pub const NEWEST_C2_ERA: i32 = 29;
+pub const NEWEST_C2_ERA: i32 = 30;
 /// The newest marker that still needs the SCHEMA 29 Contribution rebuild.
 /// Tests about that rebuild bound themselves with this rather than with
 /// [`NEWEST_C2_ERA`], which has already been through it.
@@ -182,13 +182,18 @@ pub fn seed_c2_era_workspace(label: &str, era: i32) -> EraWorkspace {
             }
             // Likewise SCHEMA 30's, for every era on this path: the fixture is
             // built by migrating to the current schema and rewinding, so it
-            // inherits a marker no real SCHEMA 23-29 workspace can carry --
+            // inherits a marker no real SCHEMA 23-30 workspace can carry --
             // and the marker is precisely what makes the re-key a no-op, so
             // leaving it would make every assertion about the re-key pass
             // against a migration that never ran.
             conn.execute(
                 "DELETE FROM schema_data_migrations
                   WHERE migration_id = 'narrative-c2-consumer-grain-v30'",
+                [],
+            )?;
+            conn.execute(
+                "DELETE FROM schema_data_migrations
+                  WHERE migration_id = 'narrative-c2-finding-identity-v31'",
                 [],
             )?;
             conn.pragma_update(None, "user_version", era)?;
@@ -200,6 +205,9 @@ pub fn seed_c2_era_workspace(label: &str, era: i32) -> EraWorkspace {
 }
 
 fn rewind_schema_to_era(conn: &Connection, era: i32) -> anyhow::Result<()> {
+    if era < 31 {
+        rewind_finding_identity_to_v30(conn)?;
+    }
     if era < 30 {
         rewind_dependency_edge_owning_run(conn)?;
     }
@@ -218,6 +226,29 @@ fn rewind_schema_to_era(conn: &Connection, era: i32) -> anyhow::Result<()> {
     if era < 24 {
         rewind_v24_objects(conn)?;
     }
+    Ok(())
+}
+
+/// SCHEMA 30 is the pre-C2-3 shape: Finding identity, observation digest, the
+/// lifecycle table, and Attention's identity column do not exist yet. The
+/// fixture starts from the current DDL and removes those objects so a v30
+/// upgrade exercises the real additive migration rather than a fresh DB.
+fn rewind_finding_identity_to_v30(conn: &Connection) -> anyhow::Result<()> {
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS narrative_maintenance_finding_lifecycle;
+         ALTER TABLE narrative_maintenance_finding_observations
+            DROP COLUMN observation_digest;
+         ALTER TABLE narrative_maintenance_finding_observations
+            DROP COLUMN rule_version;
+         ALTER TABLE narrative_maintenance_finding_observations
+            DROP COLUMN rule_id;
+         ALTER TABLE narrative_maintenance_finding_observations
+            DROP COLUMN finding_identity;
+         ALTER TABLE narrative_maintenance_attention
+            DROP COLUMN identity_resolution_status;
+         ALTER TABLE narrative_maintenance_attention
+            DROP COLUMN finding_identity;",
+    )?;
     Ok(())
 }
 

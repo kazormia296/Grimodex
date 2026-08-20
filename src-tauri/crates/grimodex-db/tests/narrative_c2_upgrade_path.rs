@@ -1,4 +1,4 @@
-//! Gate C2-4 follow-up hardening: `migrate()` over a real SCHEMA 23-29
+//! Gate C2-4 follow-up hardening: `migrate()` over a real SCHEMA 23-30
 //! workspace.
 //!
 //! Every Gate C2 migration test that existed before this one ran against a
@@ -53,7 +53,7 @@ use c2_era_workspace::{
 use grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants;
 use grimodex_core::SCHEMA_VERSION;
 use grimodex_db::migration_supervisor::{self, WorkspaceOpenDbOutcome};
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::Value;
 
 const COMMIT_INDEX: &str = "idx_narrative_application_contributions_commit";
@@ -351,6 +351,67 @@ fn migrate_upgrades_every_c2_era_workspace_to_the_current_schema() {
             "SCHEMA 25 must mark an unattributed disposition, not drop it (from SCHEMA {era})"
         );
     }
+}
+
+/// A real SCHEMA 30-shaped workspace has no C2-3 columns yet. In particular,
+/// an old diagnostic row may have lost its Edge subject. The v31 migration
+/// must add nullable identity columns, leave that row unresolved, and seed a
+/// `new` lifecycle baseline only for the Edge-backed observations it can
+/// prove.
+#[test]
+fn schema_30_upgrade_preserves_unresolved_observations_and_seeds_lifecycle_baseline() {
+    let workspace = seed_c2_era_workspace("finding-identity-v31", 30);
+    {
+        let conn = Connection::open(&workspace.db_path).expect("open v30 workspace");
+        conn.execute(
+            "INSERT INTO narrative_maintenance_finding_observations
+                (id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
+                 reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at)
+             VALUES ('legacy-no-edge', ?1, ?2, 'c2-upgrade-epoch', NULL,
+                     'narrative-extraction-run:legacy-no-edge', 'source-missing',
+                     'source-missing', 'legacy-no-edge-basis', ?3)",
+            params![PROJECT_ID, REPAIRED_RUN_ID, "2026-08-15T00:00:01.000Z"],
+        )
+        .expect("seed v30 observation without edge");
+    }
+
+    let db = workspace.open();
+    db.migrate().expect("upgrade SCHEMA 30 to 31");
+    db.with_conn(|conn| {
+        let legacy_identity: Option<String> = conn.query_row(
+            "SELECT finding_identity FROM narrative_maintenance_finding_observations
+              WHERE id = 'legacy-no-edge'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(legacy_identity, None);
+        let unresolved_status: String = conn.query_row(
+            "SELECT identity_resolution_status FROM narrative_maintenance_attention
+              WHERE finding_key = ?1",
+            params![UNATTRIBUTED_ATTENTION_FINDING_KEY],
+            |row| row.get(0),
+        )?;
+        assert_eq!(unresolved_status, "legacy-unresolved");
+        let baseline_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1",
+            params![PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            baseline_count, 2,
+            "only surviving Edge-backed rows seed baselines"
+        );
+        let legacy_baseline_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_maintenance_finding_lifecycle
+              WHERE finding_key = 'narrative-extraction-run:legacy-no-edge'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(legacy_baseline_count, 0);
+        Ok(())
+    })
+    .expect("inspect SCHEMA 31 identity migration");
 }
 
 /// SCHEMA 29 gives every Contribution the provenance of the Application it

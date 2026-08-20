@@ -3161,12 +3161,52 @@ export const narrativeMaintenanceFindingObservations = sqliteTable(
     evidenceFreshnessSnapshot: text("evidence_freshness_snapshot").notNull(),
     materialBasisDigest: text("material_basis_digest").notNull(),
     observedAt: text("observed_at").notNull(),
+    // NULL is a durable legacy-unresolved marker: an edge-scoped rule must
+    // not derive identity from a consumer finding_key when edge_id is gone.
+    findingIdentity: text("finding_identity"),
+    ruleId: text("rule_id").notNull(),
+    ruleVersion: integer("rule_version").notNull(),
+    observationDigest: text("observation_digest").notNull(),
   },
   (table) => [
     index("idx_narrative_finding_observations_key").on(
       table.projectId,
       table.findingKey,
       table.semanticEpochId,
+    ),
+  ],
+);
+
+export const narrativeMaintenanceFindingLifecycle = sqliteTable(
+  "narrative_maintenance_finding_lifecycle",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    findingIdentity: text("finding_identity").notNull(),
+    findingKey: text("finding_key").notNull(),
+    ruleId: text("rule_id").notNull(),
+    ruleVersion: integer("rule_version").notNull(),
+    lifecycleState: text("lifecycle_state").notNull(),
+    observationDigest: text("observation_digest"),
+    materialBasisDigest: text("material_basis_digest"),
+    runId: text("run_id").notNull(),
+    semanticEpochId: text("semantic_epoch_id")
+      .notNull()
+      .references(() => narrativeSemanticEpochs.id),
+    observedAt: text("observed_at").notNull(),
+  },
+  (table) => [
+    index("idx_narrative_finding_lifecycle_identity").on(
+      table.projectId,
+      table.findingIdentity,
+      table.observedAt,
+    ),
+    index("idx_narrative_finding_lifecycle_key").on(
+      table.projectId,
+      table.findingKey,
+      table.observedAt,
     ),
   ],
 );
@@ -3190,6 +3230,10 @@ export const narrativeMaintenanceAttention = sqliteTable(
     payloadDigest: text("payload_digest").notNull(),
     reason: text("reason"),
     version: integer("version").notNull(),
+    findingIdentity: text("finding_identity"),
+    identityResolutionStatus: text("identity_resolution_status")
+      .notNull()
+      .default("resolved"),
   },
   (table) => [primaryKey({ columns: [table.projectId, table.findingKey] })],
 );

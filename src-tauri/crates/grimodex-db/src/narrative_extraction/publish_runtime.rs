@@ -48,14 +48,21 @@
 //! against, for the same reason.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use sha2::{Digest, Sha256};
 
 use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::dependency_edges::consumer_dependency_set_digest;
 use super::evaluator::{BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
-use super::finding_observation::record_finding_observation_in_tx;
+use super::finding_identity::{
+    material_basis_digest, observation_digest, stable_finding_identity, MaterialBasisInput,
+    ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+};
+use super::finding_observation::{
+    latest_finding_lifecycle_for_identity, record_finding_lifecycle_in_tx,
+    record_finding_observation_with_identity_in_tx, FindingLifecycleState, FindingLifecycleWrite,
+    FindingObservationWrite,
+};
 
 /// Fail closed (mirrors `finding_observation.rs::ensure_epoch_project`,
 /// which this module cannot import -- that function is private to its own
@@ -377,36 +384,49 @@ fn freshness_severity_rank(freshness: EvidenceFreshness) -> u8 {
     }
 }
 
-/// Deterministic `sha256:`-prefixed digest standing in for
-/// `narrative_maintenance_finding_observations.material_basis_digest`.
-/// [`publish_freshness_evaluation_in_tx`]'s fixed signature receives only
-/// publishable `EdgeObservation`s, not the raw
-/// `evaluator::EdgeComparisonInput` signals that produced them (that
-/// comparison happens upstream, before this module is ever called), so the
-/// material basis this function can attest to is exactly what it has in
-/// hand: which Edge, at which Semantic Epoch, evaluated to which
-/// (Freshness, reason code, Build Action) triple. That is enough for
-/// Attention's `material-basis-digest-match` check (`attention.rs`) to do
-/// its job: the digest changes whenever a re-evaluation's *result* changes,
-/// so a dismissal recorded against one observed outcome is correctly
-/// treated as stale once a later Run observes a different one.
+/// Material basis excludes Run, Semantic Epoch, and wall-clock context while
+/// retaining the durable Edge result that determines whether a disposition
+/// still applies. Observation digest remains a separate, richer domain.
 fn edge_material_basis_digest(
     edge_id: &str,
-    semantic_epoch_id: &str,
     observation: &EdgeObservation,
-) -> String {
-    let canonical = format!(
-        "{edge_id}|{semantic_epoch_id}|{}|{}|{}",
-        observation.freshness.as_str(),
-        observation
-            .reason_code
-            .map(FindingReasonCode::as_str)
-            .unwrap_or(""),
-        observation.build_action.as_str(),
-    );
-    format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(canonical.as_bytes()))
+) -> anyhow::Result<String> {
+    material_basis_digest(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        &MaterialBasisInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            reason_code: observation
+                .reason_code
+                .map(FindingReasonCode::as_str)
+                .unwrap_or(""),
+            evidence_freshness: observation.freshness.as_str(),
+        },
+    )
+}
+
+fn edge_finding_identity(edge_id: &str) -> anyhow::Result<String> {
+    stable_finding_identity(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        edge_id,
+    )
+}
+
+fn edge_observation_digest(edge_id: &str, observation: &EdgeObservation) -> anyhow::Result<String> {
+    observation_digest(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        &ObservationDigestInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            reason_code: observation
+                .reason_code
+                .map(FindingReasonCode::as_str)
+                .unwrap_or(""),
+            evidence_freshness: observation.freshness.as_str(),
+        },
     )
 }
 
@@ -686,26 +706,98 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
         now,
     )?;
 
-    // c. One Finding Observation per Edge with something to explain.
+    // c. One Finding Observation per Edge with something to explain, plus an
+    // explicit lifecycle record for every stable Finding that transitions to
+    // or from an active condition. Freshness remains owned by the table above.
     for (edge_id, observation) in edges_and_observations {
-        let Some(reason_code) = observation.reason_code else {
-            continue;
-        };
         let finding_key = consumer_finding_key(consumer_kind, consumer_key);
-        let material_basis_digest =
-            edge_material_basis_digest(edge_id, semantic_epoch_id, observation);
-        record_finding_observation_in_tx(
-            conn,
-            project_id,
-            run_id,
-            semantic_epoch_id,
-            Some(edge_id.as_str()),
-            &finding_key,
-            reason_code,
-            observation.freshness,
-            &material_basis_digest,
-            now,
-        )?;
+        let finding_identity = edge_finding_identity(edge_id)?;
+        let material_basis_digest = edge_material_basis_digest(edge_id, observation)?;
+        let previous = latest_finding_lifecycle_for_identity(conn, project_id, &finding_identity)?;
+
+        if let Some(reason_code) = observation.reason_code {
+            let observation_digest = edge_observation_digest(edge_id, observation)?;
+            let lifecycle_state = match previous.as_ref() {
+                None => FindingLifecycleState::New,
+                Some(row) if row.state == FindingLifecycleState::Resolved => {
+                    FindingLifecycleState::New
+                }
+                Some(row)
+                    if row.observation_digest.as_deref() == Some(observation_digest.as_str()) =>
+                {
+                    FindingLifecycleState::Recurring
+                }
+                Some(_) => FindingLifecycleState::Changed,
+            };
+            record_finding_observation_with_identity_in_tx(
+                conn,
+                FindingObservationWrite {
+                    project_id,
+                    run_id,
+                    semantic_epoch_id,
+                    edge_id: Some(edge_id.as_str()),
+                    finding_key: &finding_key,
+                    finding_identity: &finding_identity,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    reason_code,
+                    evidence_freshness_snapshot: observation.freshness,
+                    observation_digest: &observation_digest,
+                    material_basis_digest: &material_basis_digest,
+                    observed_at: now,
+                },
+            )?;
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    project_id,
+                    finding_identity: &finding_identity,
+                    finding_key: &finding_key,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    state: lifecycle_state,
+                    observation_digest: Some(&observation_digest),
+                    material_basis_digest: Some(&material_basis_digest),
+                    run_id,
+                    semantic_epoch_id,
+                    observed_at: now,
+                },
+            )?;
+        } else if previous
+            .as_ref()
+            .is_some_and(|row| row.state != FindingLifecycleState::Resolved)
+        {
+            // A fresh evaluation closes the prior Finding explicitly. The
+            // resolved row has no observation digest because it represents
+            // absence of a reason, not a new diagnostic finding. Keep the
+            // prior Finding's basis as the durable evidence anchor; the
+            // lifecycle writer verifies that it belongs to an exact prior
+            // Observation rather than accepting a caller-supplied digest.
+            let resolved_material_basis_digest = previous
+                .as_ref()
+                .and_then(|row| row.material_basis_digest.as_deref())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_PUBLISH_RUNTIME_RESOLVED_EVIDENCE_MISSING: active Finding has no material basis"
+                    )
+                })?;
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    project_id,
+                    finding_identity: &finding_identity,
+                    finding_key: &finding_key,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    state: FindingLifecycleState::Resolved,
+                    observation_digest: None,
+                    material_basis_digest: Some(resolved_material_basis_digest),
+                    run_id,
+                    semantic_epoch_id,
+                    observed_at: now,
+                },
+            )?;
+        }
     }
 
     Ok(())
@@ -715,6 +807,10 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::attention::{
+        get_attention, is_attention_applicable, set_attention_in_tx, AttentionDisposition,
+        SetAttentionRequest,
+    };
     use crate::narrative_extraction::cursor_reservation::{
         release_cursor_reservation_in_tx, reserve_cursor_range_in_tx,
     };
@@ -722,6 +818,9 @@ mod tests {
         record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
     };
     use crate::narrative_extraction::evaluator::BuildAction;
+    use crate::narrative_extraction::finding_observation::{
+        list_finding_lifecycle_for_identity, FindingLifecycleState,
+    };
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use crate::narrative_extraction::semantic_index_diagnostics::compute_dependency_set_digest;
     use crate::narrative_extraction::task_leases::with_immediate_transaction;
@@ -823,10 +922,18 @@ mod tests {
     }
 
     fn consumer_freshness_value(conn: &Connection, consumer_key: &str) -> String {
+        consumer_freshness_value_for(conn, RUN_CONSUMER_KIND, consumer_key)
+    }
+
+    fn consumer_freshness_value_for(
+        conn: &Connection,
+        consumer_kind: &str,
+        consumer_key: &str,
+    ) -> String {
         conn.query_row(
             "SELECT evidence_freshness FROM narrative_consumer_freshness
               WHERE project_id = 'project-1' AND consumer_kind = ?1 AND consumer_key = ?2",
-            params![RUN_CONSUMER_KIND, consumer_key],
+            params![consumer_kind, consumer_key],
             |row| row.get(0),
         )
         .expect("consumer freshness row")
@@ -873,6 +980,219 @@ mod tests {
             |row| row.get(0),
         )
         .expect("count findings")
+    }
+
+    #[test]
+    fn production_publish_preserves_attention_on_harmless_epoch_rerun_and_tracks_material_changes()
+    {
+        let db = test_db();
+        db.with_conn(|conn| {
+            let consumer_id = "consumer-finding-identity";
+            let consumer_key = "proposal-finding-identity";
+            let edge_id = seed_edge(
+                conn,
+                "project-1",
+                "proposal",
+                consumer_key,
+                "project:scene:scene-finding-identity",
+            );
+            seed_cursor(conn, "project-1", consumer_id);
+
+            let epoch_one = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-finding-identity-1", "project-1", &epoch_one);
+            reserve_cursor(
+                conn,
+                "project-1",
+                consumer_id,
+                &epoch_one,
+                "run-finding-identity-1",
+                1,
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-finding-identity-1",
+                    consumer_id,
+                    "proposal",
+                    consumer_key,
+                    &[(edge_id.clone(), stale())],
+                    &epoch_one,
+                    1,
+                    "2026-08-15T01:00:00.000Z",
+                )
+            })?;
+
+            let first_material: String = conn.query_row(
+                "SELECT material_basis_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE project_id = 'project-1' AND edge_id = ?1",
+                params![edge_id],
+                |row| row.get(0),
+            )?;
+            set_attention_in_tx(
+                conn,
+                SetAttentionRequest {
+                    project_id: "project-1",
+                    finding_key: "proposal:proposal-finding-identity",
+                    disposition: AttentionDisposition::Dismissed,
+                    material_basis_digest: &first_material,
+                    snoozed_until: None,
+                    set_at: "2026-08-15T01:01:00.000Z",
+                    actor_id: "author-1",
+                    request_id: "request-finding-identity",
+                    reason: None,
+                    expected_version: 0,
+                },
+            )?;
+
+            // A new Run in a new Semantic Epoch evaluates the same Edge and
+            // the same durable condition. This calls the full production
+            // writer, including reservation verification and completion.
+            let epoch_two = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-finding-identity-2", "project-1", &epoch_two);
+            reserve_cursor(
+                conn,
+                "project-1",
+                consumer_id,
+                &epoch_two,
+                "run-finding-identity-2",
+                2,
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-finding-identity-2",
+                    consumer_id,
+                    "proposal",
+                    consumer_key,
+                    &[(edge_id.clone(), stale())],
+                    &epoch_two,
+                    2,
+                    "2026-08-15T02:00:00.000Z",
+                )
+            })?;
+
+            let observation_rows: Vec<(String, String, String, String)> = conn
+                .prepare(
+                    "SELECT finding_identity, material_basis_digest, run_id,
+                            semantic_epoch_id
+                       FROM narrative_maintenance_finding_observations
+                      WHERE project_id = 'project-1' AND edge_id = ?1
+                      ORDER BY rowid ASC",
+                )?
+                .query_map(params![edge_id], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(observation_rows.len(), 2);
+            assert_eq!(observation_rows[0].0, observation_rows[1].0);
+            assert_eq!(observation_rows[0].1, observation_rows[1].1);
+            assert_eq!(observation_rows[0].2, "run-finding-identity-1");
+            assert_eq!(observation_rows[1].2, "run-finding-identity-2");
+            assert_ne!(observation_rows[0].3, observation_rows[1].3);
+
+            let lifecycle =
+                list_finding_lifecycle_for_identity(conn, "project-1", &observation_rows[0].0)?;
+            assert_eq!(
+                lifecycle.iter().map(|row| row.state).collect::<Vec<_>>(),
+                vec![FindingLifecycleState::New, FindingLifecycleState::Recurring]
+            );
+            let attention = get_attention(conn, "project-1", "proposal:proposal-finding-identity")?
+                .expect("Attention after harmless rerun");
+            assert_eq!(
+                attention.finding_identity.as_deref(),
+                Some(observation_rows[0].0.as_str())
+            );
+            assert!(is_attention_applicable(
+                &attention,
+                &observation_rows[1].1,
+                "2026-08-15T02:01:00.000Z"
+            ));
+
+            // A reason and Freshness change is a material change even though
+            // the Edge identity remains stable. The disposition must stop
+            // applying and lifecycle must become Changed.
+            let epoch_three = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-finding-identity-3", "project-1", &epoch_three);
+            reserve_cursor(
+                conn,
+                "project-1",
+                consumer_id,
+                &epoch_three,
+                "run-finding-identity-3",
+                3,
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-finding-identity-3",
+                    consumer_id,
+                    "proposal",
+                    consumer_key,
+                    &[(edge_id.clone(), source_missing())],
+                    &epoch_three,
+                    3,
+                    "2026-08-15T03:00:00.000Z",
+                )
+            })?;
+            let changed_material: String = conn.query_row(
+                "SELECT material_basis_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE project_id = 'project-1' AND edge_id = ?1
+                  ORDER BY rowid DESC LIMIT 1",
+                params![edge_id],
+                |row| row.get(0),
+            )?;
+            assert_ne!(changed_material, first_material);
+            let changed_lifecycle =
+                list_finding_lifecycle_for_identity(conn, "project-1", &observation_rows[0].0)?;
+            assert_eq!(changed_lifecycle[2].state, FindingLifecycleState::Changed);
+            assert!(!is_attention_applicable(
+                &attention,
+                &changed_material,
+                "2026-08-15T03:01:00.000Z"
+            ));
+
+            // A Fresh result emits no new Observation but closes the stable
+            // Finding explicitly with a Resolved lifecycle record.
+            let epoch_four = seed_epoch(conn, "project-1");
+            seed_run(conn, "run-finding-identity-4", "project-1", &epoch_four);
+            reserve_cursor(
+                conn,
+                "project-1",
+                consumer_id,
+                &epoch_four,
+                "run-finding-identity-4",
+                4,
+            );
+            with_immediate_transaction(conn, |conn| {
+                publish_freshness_evaluation_in_tx(
+                    conn,
+                    "project-1",
+                    "run-finding-identity-4",
+                    consumer_id,
+                    "proposal",
+                    consumer_key,
+                    &[(edge_id.clone(), fresh())],
+                    &epoch_four,
+                    4,
+                    "2026-08-15T04:00:00.000Z",
+                )
+            })?;
+            let resolved_lifecycle =
+                list_finding_lifecycle_for_identity(conn, "project-1", &observation_rows[0].0)?;
+            assert_eq!(resolved_lifecycle.len(), 4);
+            assert_eq!(resolved_lifecycle[3].state, FindingLifecycleState::Resolved);
+            assert_eq!(
+                consumer_freshness_value_for(conn, "proposal", consumer_key),
+                "fresh"
+            );
+            Ok(())
+        })
+        .expect("production Finding identity lifecycle regression");
     }
 
     #[test]

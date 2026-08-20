@@ -43,8 +43,14 @@ const RUNTIME_STATUS_TYPES = Object.freeze({
   task: "NarrativeExtractionTaskStatus",
   attempt: "NarrativeExtractionAttemptStatus",
 });
-const RUNTIME_TYPES_PATH =
-  "src/features/narrative-extraction/runtime/types.ts";
+const RUNTIME_TYPES_PATH = "src/features/narrative-extraction/runtime/types.ts";
+
+const REQUIRED_ATTENTION_APPLICATION_CONDITIONS = Object.freeze([
+  "finding-key-match",
+  "finding-identity-resolved",
+  "material-basis-digest-match",
+  "snooze-not-expired",
+]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -138,9 +144,7 @@ function validateExecutionStateEntities(executionState, errors) {
 
 function validateRunSupersedeCascade(executionState, failurePolicy, errors) {
   if (!isObject(executionState) || !isObject(failurePolicy)) return;
-  const taskStatuses = new Set(
-    executionState.entities?.task?.statuses ?? [],
-  );
+  const taskStatuses = new Set(executionState.entities?.task?.statuses ?? []);
   const attemptStatuses = new Set(
     executionState.entities?.attempt?.statuses ?? [],
   );
@@ -221,8 +225,60 @@ function validateFailurePolicy(failurePolicy, errors) {
   }
 }
 
-function validateAuthorityMatrixLinkage(authorityMatrix, findingContract, attentionContract, errors) {
-  if (!isObject(authorityMatrix) || !Array.isArray(authorityMatrix.authorities)) {
+function validateFindingRuleRegistry(findingContract, errors) {
+  if (!isObject(findingContract) || !Array.isArray(findingContract.rules)) {
+    return;
+  }
+  const seen = new Set();
+  for (const rule of findingContract.rules) {
+    if (
+      !isObject(rule) ||
+      !isNonEmptyString(rule.ruleId) ||
+      !Number.isInteger(rule.version)
+    ) {
+      continue;
+    }
+    const key = `${rule.ruleId}@${rule.version}`;
+    if (seen.has(key)) {
+      errors.push(
+        `narrative-finding-contract.json has duplicate ruleId/version: ${key}`,
+      );
+    }
+    seen.add(key);
+  }
+}
+
+function validateAttentionApplicationConditions(attentionContract, errors) {
+  if (
+    !isObject(attentionContract) ||
+    !Array.isArray(attentionContract.applicationConditions)
+  ) {
+    return;
+  }
+  const actual = attentionContract.applicationConditions;
+  const exactCanonicalSet =
+    actual.length === REQUIRED_ATTENTION_APPLICATION_CONDITIONS.length &&
+    new Set(actual).size === actual.length &&
+    REQUIRED_ATTENTION_APPLICATION_CONDITIONS.every((condition) =>
+      actual.includes(condition),
+    );
+  if (!exactCanonicalSet) {
+    errors.push(
+      `maintenance-attention-contract.json applicationConditions must contain exactly: ${REQUIRED_ATTENTION_APPLICATION_CONDITIONS.join(", ")}`,
+    );
+  }
+}
+
+function validateAuthorityMatrixLinkage(
+  authorityMatrix,
+  findingContract,
+  attentionContract,
+  errors,
+) {
+  if (
+    !isObject(authorityMatrix) ||
+    !Array.isArray(authorityMatrix.authorities)
+  ) {
     errors.push(
       "semantic-core-authorities.json is missing or malformed; cannot check C2 concern linkage",
     );
@@ -266,14 +322,18 @@ function validateAuthorityMatrixLinkage(authorityMatrix, findingContract, attent
     }
     if (
       isObject(attentionContract) &&
-      attentionAuthority.canonicalAuthority !== attentionContract.writerAuthority
+      attentionAuthority.canonicalAuthority !==
+        attentionContract.writerAuthority
     ) {
       errors.push(
         `maintenance-attention authority canonicalAuthority (${attentionAuthority.canonicalAuthority}) disagrees with maintenance-attention-contract.json writerAuthority (${attentionContract.writerAuthority})`,
       );
     }
   }
-  if (isObject(attentionContract) && attentionContract.backflowPolicy !== "forbid") {
+  if (
+    isObject(attentionContract) &&
+    attentionContract.backflowPolicy !== "forbid"
+  ) {
     errors.push(
       "maintenance-attention-contract.json backflowPolicy must be forbid",
     );
@@ -299,10 +359,7 @@ function validateAdr005StartCondition(repoRoot, errors) {
 }
 
 function extractTsUnionMembers(source, typeName) {
-  const pattern = new RegExp(
-    `export type ${typeName} =([\\s\\S]*?);`,
-    "m",
-  );
+  const pattern = new RegExp(`export type ${typeName} =([\\s\\S]*?);`, "m");
   const match = pattern.exec(source);
   if (!match) return null;
   return [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
@@ -373,6 +430,8 @@ export function validateExecutionStateAuthority({ repoRoot = REPO_ROOT } = {}) {
   validateExecutionStateEntities(executionState, errors);
   validateRunSupersedeCascade(executionState, failurePolicy, errors);
   validateFailurePolicy(failurePolicy, errors);
+  validateFindingRuleRegistry(findingContract, errors);
+  validateAttentionApplicationConditions(attentionContract, errors);
   validateAuthorityMatrixLinkage(
     authorityMatrix,
     findingContract,

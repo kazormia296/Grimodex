@@ -14,6 +14,11 @@
     "actorId is NOT NULL: an unattributed disposition cannot be stored",
     "clear is never an unconditional DELETE"
   ],
-  "applicationConditions": ["finding-key-match", "material-basis-digest-match", "snooze-not-expired"],
+  "applicationConditions": [
+    "finding-key-match",
+    "finding-identity-resolved",
+    "material-basis-digest-match",
+    "snooze-not-expired"
+  ],
   "negativeFixture": "Attention rows are never mutated by Run publish, Finding Observation writes, or epoch rotation; only the typed Attention writer sets or clears them"
 }

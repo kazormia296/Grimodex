@@ -577,9 +577,10 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// physical invariant of its own — only the version guard below moves.
 /// Version 30 records on each Dependency Edge the Run that declared it, so
 /// resolving a `snapshot:<runId>` Source no longer depends on the Consumer
-/// key happening to be a Run id.
+/// key happening to be a Run id. Version 31 adds the bundled Finding Rule
+/// identity/digest columns and append-only lifecycle records.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 30
+    Ok(SCHEMA_VERSION == 31
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -600,6 +601,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v26_run_request_identity_columns(conn)?
         && has_v27_repair_lease_run_binding(conn)?
         && has_v30_dependency_edge_owning_run_column(conn)?
+        && has_v31_finding_identity_columns(conn)?
         // SCHEMA 28 carries a data migration, so without this both of
         // `migrate_impl`'s fast paths skip it: see
         // `has_c2_identity_data_migration_marker`. This supersedes the
@@ -609,6 +611,48 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // Gate C2-2's Consumer grain re-key is a data migration too, and the
         // same fast paths would skip it.
         && has_c2_consumer_grain_data_migration_marker(conn)?)
+}
+
+fn has_v31_finding_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "narrative_maintenance_finding_observations")?
+        || !table_exists(conn, "narrative_maintenance_attention")?
+        || !table_exists(conn, "narrative_maintenance_finding_lifecycle")?
+    {
+        return Ok(false);
+    }
+    let observations = table_columns(conn, "narrative_maintenance_finding_observations")?;
+    let attention = table_columns(conn, "narrative_maintenance_attention")?;
+    let lifecycle = table_columns(conn, "narrative_maintenance_finding_lifecycle")?;
+    let has = |columns: &[ColumnShape], name: &str, ty: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name && column.declared_type == ty && column.not_null == not_null
+        })
+    };
+    let observation_columns = has(&observations, "finding_identity", "TEXT", false)
+        && has(&observations, "rule_id", "TEXT", true)
+        && has(&observations, "rule_version", "INTEGER", true)
+        && has(&observations, "observation_digest", "TEXT", true);
+    let attention_columns = has(&attention, "finding_identity", "TEXT", false)
+        && has(&attention, "identity_resolution_status", "TEXT", true);
+    let lifecycle_columns = has(&lifecycle, "id", "TEXT", true)
+        && has(&lifecycle, "project_id", "TEXT", true)
+        && has(&lifecycle, "finding_identity", "TEXT", true)
+        && has(&lifecycle, "finding_key", "TEXT", true)
+        && has(&lifecycle, "rule_id", "TEXT", true)
+        && has(&lifecycle, "rule_version", "INTEGER", true)
+        && has(&lifecycle, "lifecycle_state", "TEXT", true)
+        && has(&lifecycle, "observation_digest", "TEXT", false)
+        && has(&lifecycle, "material_basis_digest", "TEXT", false)
+        && has(&lifecycle, "run_id", "TEXT", true)
+        && has(&lifecycle, "semantic_epoch_id", "TEXT", true)
+        && has(&lifecycle, "observed_at", "TEXT", true);
+    let lifecycle_sql = compact_sql(&table_sql(conn, "narrative_maintenance_finding_lifecycle")?);
+    Ok(observation_columns
+        && attention_columns
+        && lifecycle_columns
+        && lifecycle_sql
+            .contains("check(lifecycle_statein('new','recurring','changed','resolved'))")
+        && has_c2_finding_identity_data_migration_marker(conn)?)
 }
 
 /// SCHEMA 30: a Dependency Edge records the Run that declared it. Nullable by
@@ -1417,6 +1461,24 @@ fn has_c2_consumer_grain_data_migration_marker(conn: &Connection) -> anyhow::Res
 pub const C2_CONSUMER_GRAIN_MIGRATION_ID: &str = "narrative-c2-consumer-grain-v30";
 /// See [`C2_CONSUMER_GRAIN_MIGRATION_ID`].
 pub const C2_CONSUMER_GRAIN_CONTRACT_VERSION: i64 = 1;
+
+/// Mirrors `migrate.rs`'s SCHEMA 31 data migration marker.
+pub const C2_FINDING_IDENTITY_MIGRATION_ID: &str = "narrative-c2-finding-identity-v31";
+pub const C2_FINDING_IDENTITY_CONTRACT_VERSION: i64 = 1;
+
+fn has_c2_finding_identity_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_FINDING_IDENTITY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(applied.is_some_and(|version| version >= C2_FINDING_IDENTITY_CONTRACT_VERSION))
+}
 
 /// Mirrors `migrate.rs`'s constants of the same name; a test pins them.
 pub const C2_IDENTITY_MIGRATION_ID: &str = "narrative-c2-identity-v28";

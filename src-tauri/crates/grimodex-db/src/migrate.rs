@@ -3348,11 +3348,33 @@ impl Database {
                     CHECK(evidence_freshness_snapshot IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')),
                 material_basis_digest        TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
                 observed_at                  TEXT NOT NULL,
+                finding_identity             TEXT,
+                rule_id                      TEXT NOT NULL DEFAULT 'narrative.consumer-freshness',
+                rule_version                 INTEGER NOT NULL DEFAULT 1 CHECK(rule_version > 0),
+                observation_digest           TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY(id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_lifecycle (
+                id                         TEXT NOT NULL,
+                project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                finding_identity           TEXT NOT NULL CHECK(length(finding_identity) > 0),
+                finding_key                TEXT NOT NULL CHECK(length(finding_key) > 0),
+                rule_id                    TEXT NOT NULL CHECK(length(rule_id) > 0),
+                rule_version               INTEGER NOT NULL CHECK(rule_version > 0),
+                lifecycle_state            TEXT NOT NULL CHECK(lifecycle_state IN ('new','recurring','changed','resolved')),
+                observation_digest         TEXT,
+                material_basis_digest      TEXT,
+                run_id                     TEXT NOT NULL,
+                semantic_epoch_id         TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                observed_at                TEXT NOT NULL,
                 PRIMARY KEY(id)
             );
             CREATE TABLE IF NOT EXISTS narrative_maintenance_attention (
                 project_id             TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                 finding_key            TEXT NOT NULL CHECK(length(finding_key) > 0),
+                finding_identity       TEXT,
+                identity_resolution_status TEXT NOT NULL DEFAULT 'resolved'
+                    CHECK(identity_resolution_status IN ('resolved','unresolved','legacy-unresolved')),
                 disposition            TEXT NOT NULL CHECK(disposition IN ('snoozed','dismissed','flagged')),
                 material_basis_digest  TEXT NOT NULL CHECK(length(material_basis_digest) > 0),
                 snoozed_until          TEXT,
@@ -3607,6 +3629,12 @@ impl Database {
             "CREATE INDEX IF NOT EXISTS idx_narrative_application_contributions_commit
                 ON narrative_application_contributions(project_id, commit_id);",
         )?;
+
+        // SCHEMA 31: versioned Finding identity and append-only lifecycle.
+        // This is deliberately after the C2-2 re-key so the backfill can
+        // derive identities from the durable Edge subject and never from a
+        // transient Run or Semantic Epoch.
+        Self::migrate_narrative_finding_identity_v31(&conn)?;
 
         // Stamp only after every fresh/rescue migration above has succeeded.
         // Headless MCP uses this as its schema-skew gate; advancing earlier
@@ -5317,6 +5345,417 @@ impl Database {
         .context("recording the C2 Consumer grain data migration marker")?;
         Ok(())
     }
+
+    /// SCHEMA 31: give every Finding a stable, rule-versioned identity and
+    /// retain explicit lifecycle records. Existing observations are
+    /// backfilled from their durable Edge subject when available; legacy rows
+    /// without an Edge retain a NULL identity rather than using finding_key as
+    /// a false edge subject.
+    /// Neither Run nor Semantic Epoch participates in either digest.
+    fn migrate_narrative_finding_identity_v31(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_31")?;
+        let result = (|| -> anyhow::Result<()> {
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")? {
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "finding_identity",
+                    "TEXT",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "rule_id",
+                    "TEXT NOT NULL DEFAULT 'narrative.consumer-freshness'",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "rule_version",
+                    "INTEGER NOT NULL DEFAULT 1 CHECK(rule_version > 0)",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_finding_observations",
+                    "observation_digest",
+                    "TEXT NOT NULL DEFAULT ''",
+                )?;
+                Self::backfill_narrative_finding_observations_v31(conn)?;
+            }
+
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_attention")? {
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_attention",
+                    "finding_identity",
+                    "TEXT",
+                )?;
+                Self::add_column_if_missing(
+                    conn,
+                    "narrative_maintenance_attention",
+                    "identity_resolution_status",
+                    "TEXT NOT NULL DEFAULT 'resolved' CHECK(identity_resolution_status IN ('resolved','unresolved','legacy-unresolved'))",
+                )?;
+                // Only exact one-candidate mappings move. Ambiguous and
+                // conflicting rows remain at their old key; restore/verify
+                // reports them rather than silently choosing a target.
+                let unresolved =
+                    crate::narrative_extraction::rehome_orphaned_attention_in_tx(conn)?;
+                if !unresolved.is_empty() {
+                    tracing::warn!(
+                        target: "narrative.migrate",
+                        count = unresolved.len(),
+                        "preserved ambiguous or conflicting orphaned Attention rows"
+                    );
+                }
+                // Existing, non-orphan Attention rows can be converted only
+                // when their old digest identifies one observation on the
+                // current Edge. Orphan rows were handled above; leaving
+                // ambiguous/conflicting rows byte-for-byte intact is the
+                // fail-closed migration policy.
+                if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")?
+                    && Self::table_exists_for_v28(conn, "narrative_dependency_edges")?
+                {
+                    Self::backfill_narrative_attention_identity_v31(conn)?;
+                }
+                Self::mark_legacy_unresolved_attention_v31(conn)?;
+            }
+
+            if Self::table_exists_for_v28(conn, "narrative_maintenance_finding_observations")? {
+                Self::backfill_narrative_finding_observation_material_bases_v31(conn)?;
+            }
+
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS narrative_maintenance_finding_lifecycle (
+                    id                         TEXT NOT NULL,
+                    project_id                 TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    finding_identity           TEXT NOT NULL CHECK(length(finding_identity) > 0),
+                    finding_key                TEXT NOT NULL CHECK(length(finding_key) > 0),
+                    rule_id                    TEXT NOT NULL CHECK(length(rule_id) > 0),
+                    rule_version               INTEGER NOT NULL CHECK(rule_version > 0),
+                    lifecycle_state            TEXT NOT NULL CHECK(lifecycle_state IN ('new','recurring','changed','resolved')),
+                    observation_digest         TEXT,
+                    material_basis_digest      TEXT,
+                    run_id                     TEXT NOT NULL,
+                    semantic_epoch_id         TEXT NOT NULL REFERENCES narrative_semantic_epochs(id),
+                    observed_at                TEXT NOT NULL,
+                    PRIMARY KEY(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_narrative_finding_lifecycle_identity
+                    ON narrative_maintenance_finding_lifecycle(project_id, finding_identity, observed_at);
+                CREATE INDEX IF NOT EXISTS idx_narrative_finding_lifecycle_key
+                    ON narrative_maintenance_finding_lifecycle(project_id, finding_key, observed_at);",
+            )?;
+            Self::seed_narrative_finding_lifecycle_v31(conn)?;
+            Self::record_c2_finding_identity_marker_v31(conn)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => conn
+                .execute_batch("RELEASE narrative_c2_schema_31")
+                .map_err(Into::into),
+            Err(error) => {
+                let _ = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_31; RELEASE narrative_c2_schema_31",
+                );
+                Err(error)
+            }
+        }
+    }
+
+    fn stable_finding_identity_digest_v31(stable_subject: &str) -> anyhow::Result<String> {
+        crate::narrative_extraction::stable_finding_identity(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            stable_subject,
+        )
+    }
+
+    fn observation_digest_v31(
+        stable_subject: &str,
+        edge_id: Option<&str>,
+        reason_code: &str,
+        freshness: &str,
+    ) -> anyhow::Result<String> {
+        crate::narrative_extraction::observation_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::ObservationDigestInput {
+                stable_subject,
+                edge_id,
+                reason_code,
+                evidence_freshness: freshness,
+            },
+        )
+    }
+
+    fn material_basis_digest_v31(
+        stable_subject: &str,
+        edge_id: Option<&str>,
+        reason_code: &str,
+        freshness: &str,
+    ) -> anyhow::Result<String> {
+        crate::narrative_extraction::material_basis_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::MaterialBasisInput {
+                stable_subject,
+                edge_id,
+                reason_code,
+                evidence_freshness: freshness,
+            },
+        )
+    }
+
+    fn backfill_narrative_finding_observations_v31(conn: &Connection) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  WHERE finding_identity IS NULL OR finding_identity = ''",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, _finding_key, reason_code, freshness) in rows {
+            let Some(edge_id) = edge_id.as_deref() else {
+                // This is a diagnostic-only legacy row. `finding_key` is a
+                // consumer label and is not a valid subject for an
+                // edge-scoped identity, so leave finding_identity NULL.
+                continue;
+            };
+            let finding_identity = Self::stable_finding_identity_digest_v31(edge_id)?;
+            let observation_digest =
+                Self::observation_digest_v31(edge_id, Some(edge_id), &reason_code, &freshness)?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET finding_identity = ?1, observation_digest = ?2
+                  WHERE id = ?3",
+                params![finding_identity, observation_digest, id],
+            )?;
+        }
+        // A prerelease row may have had an identity but no digest. Fill only
+        // the missing digest, preserving any already-published identity.
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  WHERE observation_digest IS NULL OR observation_digest = ''",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, finding_key, reason_code, freshness) in rows {
+            let (stable_subject, edge_ref) = match edge_id.as_deref() {
+                Some(edge_id) => (edge_id, Some(edge_id)),
+                None => {
+                    // Keep a deterministic diagnostic digest for a legacy
+                    // row while refusing to claim it has a valid identity.
+                    (finding_key.as_str(), None)
+                }
+            };
+            let observation_digest =
+                Self::observation_digest_v31(stable_subject, edge_ref, &reason_code, &freshness)?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET observation_digest = ?1
+                  WHERE id = ?2",
+                params![observation_digest, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn backfill_narrative_attention_identity_v31(conn: &Connection) -> anyhow::Result<()> {
+        let attention_rows: Vec<(String, String, String)> = conn
+            .prepare(
+                "SELECT project_id, finding_key, COALESCE(finding_identity, '')
+                   FROM narrative_maintenance_attention
+                  WHERE EXISTS (
+                    SELECT 1 FROM narrative_dependency_edges e
+                     WHERE e.project_id = narrative_maintenance_attention.project_id
+                       AND e.consumer_kind || ':' || e.consumer_key =
+                           narrative_maintenance_attention.finding_key
+                  )",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect::<Result<_, _>>()?;
+        for (project_id, finding_key, _) in attention_rows {
+            let candidates: Vec<(String, String, String, String)> = conn
+                .prepare(
+                    "SELECT DISTINCT o.edge_id,
+                            COALESCE(NULLIF(o.finding_identity, ''), ''),
+                            o.reason_code, o.evidence_freshness_snapshot
+                       FROM narrative_maintenance_attention a
+                       JOIN narrative_maintenance_finding_observations o
+                         ON o.project_id = a.project_id
+                        AND o.finding_key = a.finding_key
+                        AND o.material_basis_digest = a.material_basis_digest
+                       JOIN narrative_dependency_edges e
+                         ON e.project_id = o.project_id
+                        AND e.id = o.edge_id
+                        AND e.consumer_kind || ':' || e.consumer_key = a.finding_key
+                      WHERE a.project_id = ?1 AND a.finding_key = ?2
+                        AND o.edge_id IS NOT NULL
+                      ORDER BY o.edge_id",
+                )?
+                .query_map(params![project_id, finding_key], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })?
+                .collect::<Result<_, _>>()?;
+            if candidates.len() != 1 {
+                continue;
+            }
+            let (edge_id, observed_identity, reason_code, freshness) = candidates[0].clone();
+            let identity = Self::stable_finding_identity_digest_v31(&edge_id)?;
+            if !observed_identity.is_empty() && observed_identity != identity {
+                continue;
+            }
+            let material_basis_digest = Self::material_basis_digest_v31(
+                &edge_id,
+                Some(&edge_id),
+                &reason_code,
+                &freshness,
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_attention
+                    SET finding_identity = ?1, material_basis_digest = ?2
+                  WHERE project_id = ?3 AND finding_key = ?4",
+                params![identity, material_basis_digest, project_id, finding_key],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn backfill_narrative_finding_observation_material_bases_v31(
+        conn: &Connection,
+    ) -> anyhow::Result<()> {
+        let rows: Vec<(String, Option<String>, String, String, String)> = conn
+            .prepare(
+                "SELECT id, edge_id, finding_key, reason_code,
+                        evidence_freshness_snapshot
+                   FROM narrative_maintenance_finding_observations
+                  ORDER BY id",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<Result<_, _>>()?;
+        for (id, edge_id, finding_key, reason_code, freshness) in rows {
+            let stable_subject = edge_id.as_deref().unwrap_or(finding_key.as_str());
+            let material_basis_digest = Self::material_basis_digest_v31(
+                stable_subject,
+                edge_id.as_deref(),
+                &reason_code,
+                &freshness,
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET material_basis_digest = ?1
+                  WHERE id = ?2",
+                params![material_basis_digest, id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn mark_legacy_unresolved_attention_v31(conn: &Connection) -> anyhow::Result<()> {
+        // A pre-C2-3 Attention with no exact Observation -> Edge proof is a
+        // durable diagnostic state, not a silently stale disposition. Keep
+        // its key and digest untouched, but make the unresolved reason
+        // visible to Verify/read-model consumers.
+        conn.execute(
+            "UPDATE narrative_maintenance_attention
+                SET identity_resolution_status = CASE
+                    WHEN finding_identity IS NULL OR finding_identity = ''
+                    THEN 'legacy-unresolved'
+                    ELSE 'resolved'
+                END",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn seed_narrative_finding_lifecycle_v31(conn: &Connection) -> anyhow::Result<()> {
+        // The latest durable Observation is the baseline established by the
+        // migration itself. Marking it `new` makes the first equivalent live
+        // publish explicitly `recurring`, while preserving append-only
+        // history and excluding rows whose Edge-scoped identity is unknown.
+        conn.execute(
+            "INSERT INTO narrative_maintenance_finding_lifecycle
+                (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                 lifecycle_state, observation_digest, material_basis_digest, run_id,
+                 semantic_epoch_id, observed_at)
+             SELECT lower(hex(randomblob(16))), project_id, finding_identity, finding_key,
+                    rule_id, rule_version, 'new', observation_digest, material_basis_digest,
+                    run_id, semantic_epoch_id, observed_at
+               FROM (
+                    SELECT o.*,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY o.project_id, o.finding_identity
+                               ORDER BY o.observed_at DESC, o.rowid DESC
+                           ) AS rank_in_identity
+                      FROM narrative_maintenance_finding_observations o
+                     WHERE o.finding_identity IS NOT NULL
+                       AND o.finding_identity <> ''
+                       AND o.observation_digest IS NOT NULL
+                       AND o.observation_digest <> ''
+               ) latest
+              WHERE rank_in_identity = 1
+                AND NOT EXISTS (
+                    SELECT 1
+                      FROM narrative_maintenance_finding_lifecycle l
+                     WHERE l.project_id = latest.project_id
+                       AND l.finding_identity = latest.finding_identity
+                )",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn record_c2_finding_identity_marker_v31(conn: &Connection) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(migration_id)
+             DO UPDATE SET contract_version = excluded.contract_version,
+                 applied_at = excluded.applied_at",
+            params![
+                Self::C2_FINDING_IDENTITY_MIGRATION_ID,
+                Self::C2_FINDING_IDENTITY_CONTRACT_VERSION,
+                chrono::Utc::now()
+                    .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                    .to_string(),
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub(crate) const C2_FINDING_IDENTITY_MIGRATION_ID: &'static str =
+        "narrative-c2-finding-identity-v31";
+    pub(crate) const C2_FINDING_IDENTITY_CONTRACT_VERSION: i64 = 1;
 
     fn has_c2_consumer_grain_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
         if !Self::table_exists_for_v28(conn, "schema_data_migrations")? {
@@ -7435,7 +7874,7 @@ impl Database {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use rusqlite::Connection;
+    use rusqlite::{params, Connection};
     use std::time::{Duration, Instant};
 
     fn temp_database_path(label: &str) -> std::path::PathBuf {
@@ -7443,6 +7882,229 @@ mod tests {
             std::env::temp_dir().join(format!("grimodex-migrate-{label}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).expect("create migration test directory");
         dir.join("grimodex.db")
+    }
+
+    fn seed_finding_identity_migration_fixture(db: &Database, ambiguous: bool) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-finding-identity', 'Finding Identity')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-finding-identity', 'project-finding-identity', 1,
+                         'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            let edge_count = if ambiguous { 2 } else { 1 };
+            for index in 1..=edge_count {
+                let edge_id = format!("edge-finding-identity-{index}");
+                let source_identity = format!("project:scene:scene-{index}");
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at, owning_run_id)
+                     VALUES (?1, 'project-finding-identity', 'proposal-revision',
+                             'revision-finding-identity', ?2, '[]',
+                             '2026-08-15T00:00:00.000Z', 'run-old')",
+                    params![edge_id, source_identity],
+                )?;
+                let observation_id = format!("observation-finding-identity-{index}");
+                conn.execute(
+                    "INSERT INTO narrative_maintenance_finding_observations
+                        (id, project_id, run_id, semantic_epoch_id, edge_id,
+                         finding_key, reason_code, evidence_freshness_snapshot,
+                         material_basis_digest, observed_at, finding_identity,
+                         rule_id, rule_version, observation_digest)
+                     VALUES (?1, 'project-finding-identity', 'run-old',
+                             'epoch-finding-identity', ?2,
+                             'proposal-revision:revision-finding-identity',
+                             'source-missing', 'source-missing', 'legacy-material',
+                             '2026-08-15T00:00:00.000Z', '',
+                             'narrative.consumer-freshness', 1, '')",
+                    params![observation_id, edge_id],
+                )?;
+            }
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, disposition,
+                     material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-finding-identity',
+                         'proposal-revision:revision-finding-identity', NULL,
+                         'dismissed', 'legacy-material', NULL,
+                         '2026-08-15T00:00:00.000Z', 'author-1',
+                         'request-finding-identity', 'payload-finding-identity',
+                         NULL, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed Finding identity migration fixture");
+    }
+
+    #[test]
+    fn schema_31_converts_unique_observation_and_attention_material_basis() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        seed_finding_identity_migration_fixture(&db, false);
+
+        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+            .expect("run SCHEMA 31 identity migration");
+
+        let expected_material = crate::narrative_extraction::material_basis_digest(
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+            crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+            &crate::narrative_extraction::MaterialBasisInput {
+                stable_subject: "edge-finding-identity-1",
+                edge_id: Some("edge-finding-identity-1"),
+                reason_code: "source-missing",
+                evidence_freshness: "source-missing",
+            },
+        )
+        .expect("compute current material basis");
+        db.with_conn(|conn| {
+            let observation_material: String = conn.query_row(
+                "SELECT material_basis_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE id = 'observation-finding-identity-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let (attention_identity, attention_material): (Option<String>, String) = conn
+                .query_row(
+                    "SELECT finding_identity, material_basis_digest
+                       FROM narrative_maintenance_attention
+                      WHERE project_id = 'project-finding-identity'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?;
+            assert_eq!(observation_material, expected_material);
+            assert_eq!(attention_material, expected_material);
+            assert_eq!(
+                attention_identity,
+                Some(
+                    crate::narrative_extraction::stable_finding_identity(
+                        crate::narrative_extraction::BUNDLED_FINDING_RULE_ID,
+                        crate::narrative_extraction::BUNDLED_FINDING_RULE_VERSION,
+                        "edge-finding-identity-1",
+                    )
+                    .expect("stable identity")
+                )
+            );
+            Ok(())
+        })
+        .expect("verify SCHEMA 31 identity conversion");
+    }
+
+    #[test]
+    fn schema_31_preserves_ambiguous_attention_material_and_identity() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        seed_finding_identity_migration_fixture(&db, true);
+
+        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+            .expect("run SCHEMA 31 identity migration");
+
+        db.with_conn(|conn| {
+            let (identity, material): (Option<String>, String) = conn.query_row(
+                "SELECT finding_identity, material_basis_digest
+                   FROM narrative_maintenance_attention
+                  WHERE project_id = 'project-finding-identity'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(identity, None);
+            assert_eq!(material, "legacy-material");
+            Ok(())
+        })
+        .expect("verify ambiguous Attention remains untouched");
+    }
+
+    #[test]
+    fn schema_31_does_not_map_attention_through_a_non_current_observation_edge() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-finding-chain', 'Finding Chain')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-finding-chain', 'project-finding-chain', 1,
+                         'initial', '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-current', 'project-finding-chain', 'proposal-revision',
+                         'revision-current', 'project:scene:current', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key,
+                     source_object_identity, read_set_json, created_at)
+                 VALUES ('edge-historical', 'project-finding-chain', 'proposal-revision',
+                         'revision-historical', 'project:scene:historical', '[]',
+                         '2026-08-15T00:00:00.000Z')",
+                [],
+            )?;
+            // The Observation retains the old finding key, but its Edge is
+            // no longer the current Edge for that Consumer. A finding-key /
+            // digest-only migration must not use this row as identity proof.
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('observation-historical', 'project-finding-chain', 'run-old',
+                         'epoch-finding-chain', 'edge-historical',
+                         'proposal-revision:revision-current', 'source-missing',
+                         'source-missing', 'legacy-material',
+                         '2026-08-15T00:00:00.000Z', '',
+                         'narrative.consumer-freshness', 1, '')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_attention
+                    (project_id, finding_key, finding_identity, disposition,
+                     material_basis_digest, snoozed_until, set_at, actor_id,
+                     request_id, payload_digest, reason, version)
+                 VALUES ('project-finding-chain', 'proposal-revision:revision-current',
+                         NULL, 'dismissed', 'legacy-material', NULL,
+                         '2026-08-15T00:00:00.000Z', 'author-1',
+                         'request-finding-chain', 'payload-finding-chain', NULL, 1)",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed non-current observation chain");
+
+        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+            .expect("run SCHEMA 31 identity migration");
+
+        db.with_conn(|conn| {
+            let (identity, status, material): (Option<String>, String, String) = conn.query_row(
+                "SELECT finding_identity, identity_resolution_status, material_basis_digest
+                   FROM narrative_maintenance_attention
+                  WHERE project_id = 'project-finding-chain'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(identity, None);
+            assert_eq!(status, "legacy-unresolved");
+            assert_eq!(material, "legacy-material");
+            Ok(())
+        })
+        .expect("historical observation must not resolve current Attention");
     }
 
     #[test]

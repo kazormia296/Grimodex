@@ -11,6 +11,7 @@
     "epochBinding",
     "freshnessSnapshotPolicy",
     "currentFreshnessLookup",
+    "rules",
     "negativeFixture"
   ],
   "properties": {
@@ -27,6 +28,66 @@
     "epochBinding": { "const": "required" },
     "freshnessSnapshotPolicy": { "const": "diagnostic-only" },
     "currentFreshnessLookup": { "const": "narrative-consumer-freshness" },
+    "rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "ruleId",
+          "version",
+          "identityScope",
+          "observationFields",
+          "materialBasisFields"
+        ],
+        "properties": {
+          "ruleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
+          "version": { "type": "integer", "minimum": 1 },
+          "identityScope": { "const": "edge" },
+          "observationFields": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "stableSubject",
+                "edgeId",
+                "reasonCode",
+                "evidenceFreshness"
+              ]
+            },
+            "allOf": [
+              { "contains": { "const": "stableSubject" } },
+              { "contains": { "const": "edgeId" } },
+              { "contains": { "const": "reasonCode" } },
+              { "contains": { "const": "evidenceFreshness" } }
+            ]
+          },
+          "materialBasisFields": {
+            "type": "array",
+            "minItems": 4,
+            "maxItems": 4,
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "stableSubject",
+                "edgeId",
+                "reasonCode",
+                "evidenceFreshness"
+              ]
+            },
+            "allOf": [
+              { "contains": { "const": "stableSubject" } },
+              { "contains": { "const": "edgeId" } },
+              { "contains": { "const": "reasonCode" } },
+              { "contains": { "const": "evidenceFreshness" } }
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "negativeFixture": { "type": "string", "minLength": 1 }
   },
   "additionalProperties": false

@@ -19,5 +19,24 @@
   "epochBinding": "required",
   "freshnessSnapshotPolicy": "diagnostic-only",
   "currentFreshnessLookup": "narrative-consumer-freshness",
+  "rules": [
+    {
+      "ruleId": "narrative.consumer-freshness",
+      "version": 1,
+      "identityScope": "edge",
+      "observationFields": [
+        "stableSubject",
+        "edgeId",
+        "reasonCode",
+        "evidenceFreshness"
+      ],
+      "materialBasisFields": [
+        "stableSubject",
+        "edgeId",
+        "reasonCode",
+        "evidenceFreshness"
+      ]
+    }
+  ],
   "negativeFixture": "editing a Finding Observation row alone must not change the current Freshness shown in the Maintenance Inbox; only narrative_consumer_freshness governs the current value"
 }

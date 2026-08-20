@@ -204,7 +204,7 @@ describe("validate-semantic-core-boundary", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
     assert.deepEqual(result.errors, []);
     assert.ok(result.operationCount > 0);
-    assert.equal(result.schemaVersion, 30);
+    assert.equal(result.schemaVersion, 31);
     assert.equal(result.checks.scopeRelationContract, true);
     assert.equal(result.checks.dependencyRoleContract, true);
   });
@@ -312,7 +312,9 @@ describe("validate-semantic-core-boundary", () => {
       "the fixture must not already contain an unknown route finding",
     );
     assert.ok(
-      !baseline.errors.some((error) => /agent writer or domain api directly/i.test(error)),
+      !baseline.errors.some((error) =>
+        /agent writer or domain api directly/i.test(error),
+      ),
       "the fixture must not already contain a direct-call finding",
     );
     const manifest = path.join(
@@ -350,7 +352,9 @@ describe("validate-semantic-core-boundary", () => {
       result.errors.some((error) => /Domain API directly/i.test(error)),
     );
     assert.ok(
-      result.errors.some((error) => /agent writer or domain api directly/i.test(error)),
+      result.errors.some((error) =>
+        /agent writer or domain api directly/i.test(error),
+      ),
       "direct Chronicle and AI Tree command calls must stay inside the typed boundary",
     );
   });
@@ -465,9 +469,10 @@ describe("validate-semantic-core-boundary", () => {
       "policies/narrative/change-feed-writers.json",
     );
     const parsed = JSON.parse(readFileSync(manifest, "utf8"));
-    parsed.semanticBoundary.scanRoots = parsed.semanticBoundary.scanRoots.filter(
-      (relativeRoot) => relativeRoot !== "electron/main",
-    );
+    parsed.semanticBoundary.scanRoots =
+      parsed.semanticBoundary.scanRoots.filter(
+        (relativeRoot) => relativeRoot !== "electron/main",
+      );
     writeFileSync(manifest, JSON.stringify(parsed));
 
     const result = validateSemanticCoreBoundary({ repoRoot: root });
