@@ -1,12 +1,9 @@
 name: CI
 
 on:
-  push:
-    branches: [master]
-  pull_request:
-    types: [opened, synchronize, reopened]
-  schedule:
-    - cron: "17 18 * * *"
+  # Automatic PR, push, and scheduled runs are paused while this source
+  # repository is private. Keep explicit/manual and release-call entrypoints
+  # available so an operator can resume CI deliberately when needed.
   workflow_dispatch:
     inputs:
       product_journey_mode:
