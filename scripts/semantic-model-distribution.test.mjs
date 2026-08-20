@@ -20,7 +20,7 @@ describe("semantic model distribution boundary", () => {
     assert.equal(job.environment, "release");
     assert.equal(
       workflow.env.PUBLICATION_REPOSITORY,
-      "kazormia296/Grimodex-Releases",
+      "kazormia296/GrimodexReleases",
     );
     assert.match(definition, /secrets\.GITHUB_TOKEN/);
     assert.match(definition, /secrets\.GRIMODEX_RELEASES_TOKEN/);

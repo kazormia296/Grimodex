@@ -3489,7 +3489,7 @@ function LPVariantH() {
               </div>
             </a>
             <a
-              href="https://github.com/kazormia296/Grimodex-Releases/releases/latest"
+              href="https://github.com/kazormia296/GrimodexReleases/releases/latest"
               className="hz-shadow"
               style={{
                 background: HZ_HL,

@@ -8,7 +8,7 @@ permissions:
 
 env:
   SOURCE_REPOSITORY: ${{ github.repository }}
-  PUBLICATION_REPOSITORY: kazormia296/Grimodex-Releases
+  PUBLICATION_REPOSITORY: kazormia296/GrimodexReleases
   MODEL_TAG: semantic-models-v1
 
 jobs:

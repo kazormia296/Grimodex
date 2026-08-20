@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  PUBLICATION_REPOSITORY: kazormia296/Grimodex-Releases
+  PUBLICATION_REPOSITORY: kazormia296/GrimodexReleases
 
 jobs:
   verify:

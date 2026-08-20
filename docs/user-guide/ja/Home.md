@@ -40,7 +40,7 @@ Grimodexは、本文、AIチャット、Codex、プロット管理をひとつ�
 
 - [プライバシー通知（日本語）](../../../public/PRIVACY_ja.md)
 - [最新リリースノート](../../../public/RELEASE_NOTES/v2.0.10.ja.md)
-- [GitHub Releases](https://github.com/kazormia296/Grimodex-Releases/releases)
+- [GitHub Releases](https://github.com/kazormia296/GrimodexReleases/releases)
 - [Web Editor](https://grimodex-try.pages.dev/)
 
 ## 困ったとき

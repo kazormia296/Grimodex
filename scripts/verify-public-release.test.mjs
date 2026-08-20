@@ -12,7 +12,7 @@ function mockFetch() {
       "provenance.json",
       JSON.stringify({
         publication: {
-          repository: "kazormia296/Grimodex-Releases",
+          repository: "kazormia296/GrimodexReleases",
           tag: "v2.0.11",
         },
       }),
@@ -25,7 +25,7 @@ function mockFetch() {
       JSON.stringify({
         platforms: {
           win: {
-            url: "https://github.com/kazormia296/Grimodex-Releases/releases/download/v2.0.11/Grimodex-2.0.11-windows-x64.exe",
+            url: "https://github.com/kazormia296/GrimodexReleases/releases/download/v2.0.11/Grimodex-2.0.11-windows-x64.exe",
           },
         },
       }),
@@ -41,7 +41,7 @@ function mockFetch() {
   const assets = [...files.keys()].map((name, index) => ({
     id: index + 1,
     name,
-    browser_download_url: `https://github.com/kazormia296/Grimodex-Releases/releases/download/v2.0.11/${name}`,
+    browser_download_url: `https://github.com/kazormia296/GrimodexReleases/releases/download/v2.0.11/${name}`,
     digest: `sha256:${createHash("sha256").update(files.get(name)).digest("hex")}`,
   }));
   const release = { tag_name: "v2.0.11", draft: false, assets };
@@ -59,7 +59,7 @@ describe("public release smoke verifier", () => {
   it("verifies anonymous tagged assets and stable latest endpoints", async () => {
     const result = await verifyPublicRelease(
       {
-        repository: "kazormia296/Grimodex-Releases",
+        repository: "kazormia296/GrimodexReleases",
         tag: "v2.0.11",
         stable: true,
       },
@@ -81,7 +81,7 @@ describe("public release smoke verifier", () => {
     };
     await assert.rejects(
       verifyPublicRelease(
-        { repository: "kazormia296/Grimodex-Releases", tag: "v2.0.11" },
+        { repository: "kazormia296/GrimodexReleases", tag: "v2.0.11" },
         fetchImpl,
       ),
       /must be published/,

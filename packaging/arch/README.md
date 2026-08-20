@@ -48,7 +48,7 @@ sed 's/@PKGVER@/2.0.0/' /path/to/repo/packaging/arch/PKGBUILD > PKGBUILD
 cp /path/to/repo/packaging/arch/grimodex-launcher .
 cp /path/to/repo/packaging/arch/grimodex-ime-identity.c .
 # 公開前リリースを試す場合は target 配布repoの .deb と LICENSE をローカルに置く
-gh release download v2.0.0 --repo kazormia296/Grimodex-Releases --pattern 'Grimodex-2.0.0-linux-amd64.deb'
+gh release download v2.0.0 --repo kazormia296/GrimodexReleases --pattern 'Grimodex-2.0.0-linux-amd64.deb'
 cp /path/to/repo/LICENSE LICENSE-v2.0.0
 updpkgsums          # sha256sums を実値に更新（pacman-contrib）
 makepkg -fd         # 依存チェックをスキップして再パッケージ

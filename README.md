@@ -22,7 +22,7 @@ Grimodexは、AIチャットとナレッジ抽出を組み込んだデスクト�
 
 ## Installation / インストール
 
-Download the installer for your platform from the [latest public release](https://github.com/kazormia296/Grimodex-Releases/releases/latest).
+Download the installer for your platform from the [latest public release](https://github.com/kazormia296/GrimodexReleases/releases/latest).
 
 | Platform | File                           |
 | -------- | ------------------------------ |

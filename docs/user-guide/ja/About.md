@@ -51,7 +51,7 @@ Web Editorのデータはクラウドバックアップではありません。�
 
 ## 現行ランタイムについて
 
-現行のデスクトップ版はElectronをサポート対象としています。古いTauri版に関する内部移行コードは、現行版の導入方法やサポート対象を示すものではありません。インストールは[公式Release](https://github.com/kazormia296/Grimodex-Releases/releases)の配布物を使ってください。
+現行のデスクトップ版はElectronをサポート対象としています。古いTauri版に関する内部移行コードは、現行版の導入方法やサポート対象を示すものではありません。インストールは[公式Release](https://github.com/kazormia296/GrimodexReleases/releases)の配布物を使ってください。
 
 ## 保存されるデータ
 

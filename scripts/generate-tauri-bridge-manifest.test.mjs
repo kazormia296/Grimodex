@@ -49,7 +49,7 @@ describe("Tauri v1 to Electron v2 bridge manifest", () => {
       assetsDir,
       version: "2.3.4",
       tag: "v2.3.4",
-      repository: "kazormia296/Grimodex-Releases",
+      repository: "kazormia296/GrimodexReleases",
       notes: "Electron v2 migration bridge",
       pubDate: "2026-07-11T00:00:00.000Z",
     });
@@ -63,7 +63,7 @@ describe("Tauri v1 to Electron v2 bridge manifest", () => {
     ]);
     assert.deepEqual(manifest.platforms["windows-x86_64-nsis"], {
       signature: "sig-win",
-      url: "https://github.com/kazormia296/Grimodex-Releases/releases/download/v2.3.4/Grimodex-2.3.4-windows-x64.exe",
+      url: "https://github.com/kazormia296/GrimodexReleases/releases/download/v2.3.4/Grimodex-2.3.4-windows-x64.exe",
     });
     assert.equal(validateBridgeManifestSchema(manifest), true);
   });
@@ -78,7 +78,7 @@ describe("Tauri v1 to Electron v2 bridge manifest", () => {
         assetsDir,
         version: "2.0.0",
         tag: "v2.0.0",
-        repository: "kazormia296/Grimodex-Releases",
+        repository: "kazormia296/GrimodexReleases",
         notes: "bridge",
         pubDate: "2026-07-11T00:00:00.000Z",
       }),
@@ -99,7 +99,7 @@ describe("Tauri v1 to Electron v2 bridge manifest", () => {
         assetsDir,
         version: "2.0.0",
         tag: "v2.0.0",
-        repository: "kazormia296/Grimodex-Releases",
+        repository: "kazormia296/GrimodexReleases",
         notes: "bridge",
         pubDate: "2026-07-11T00:00:00.000Z",
       }),

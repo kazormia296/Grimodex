@@ -141,7 +141,7 @@ describe("release workflow boundary", () => {
     );
     assert.equal(
       workflow.env.PUBLICATION_REPOSITORY,
-      "kazormia296/Grimodex-Releases",
+      "kazormia296/GrimodexReleases",
     );
     assert.equal(workflow.jobs["release-state"].environment, "release");
     assert.equal(workflow.jobs.publish.environment, "release");
@@ -601,7 +601,7 @@ describe("release workflow boundary", () => {
     assert.deepEqual(workflow.on.release, undefined);
     assert.match(
       JSON.stringify(workflow.env),
-      /kazormia296\/Grimodex-Releases/,
+      /kazormia296\/GrimodexReleases/,
     );
     assert.match(publish.if, /github\.repository == 'kazormia296\/Grimodex'/);
     assert.equal(

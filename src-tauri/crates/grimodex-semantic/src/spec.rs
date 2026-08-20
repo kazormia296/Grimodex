@@ -135,7 +135,7 @@ pub static SPEC_JA: EmbeddingModelSpec = EmbeddingModelSpec {
     // int8 は非同梱 (tokenizer のみ同梱)。JA も EN 同様、初回利用時にここから
     // オンデマンド DL する。pinned to the semantic-models-v1 Release asset.
     artifact_url:
-        "https://github.com/kazormia296/Grimodex-Releases/releases/download/semantic-models-v1/ruri-v3-30m-model_int8.onnx",
+        "https://github.com/kazormia296/GrimodexReleases/releases/download/semantic-models-v1/ruri-v3-30m-model_int8.onnx",
     artifact_sha256: "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
     artifact_size: 37_074_051,
 };
@@ -170,7 +170,7 @@ pub static SPEC_EN: EmbeddingModelSpec = EmbeddingModelSpec {
     // int8 は非同梱: 初回利用時に app_data へオンデマンド DL する。
     // pinned to the semantic-models-v1 Release asset.
     artifact_url:
-        "https://github.com/kazormia296/Grimodex-Releases/releases/download/semantic-models-v1/bge-small-en-v15-model_int8.onnx",
+        "https://github.com/kazormia296/GrimodexReleases/releases/download/semantic-models-v1/bge-small-en-v15-model_int8.onnx",
     artifact_sha256: "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
     artifact_size: 34_041_756,
 };

@@ -101,24 +101,33 @@ export async function verifyPublicRelease(
     const asset = assetByName(release, name);
     await assertDownload(fetchImpl, asset.browser_download_url, name);
   }
-  requireAsset(
+  const windowsInstallers = requireAsset(
     release,
     new RegExp(`^Grimodex-${version}-windows-.*\\.exe$`),
     "Windows installer",
   );
+  for (const asset of windowsInstallers) {
+    await assertDownload(fetchImpl, asset.browser_download_url, asset.name);
+  }
   for (const extension of ["AppImage", "deb", "rpm"]) {
-    requireAsset(
+    const installers = requireAsset(
       release,
       new RegExp(`^Grimodex-${version}-linux-.*\\.${extension}$`),
       `Linux ${extension} installer`,
     );
+    for (const asset of installers) {
+      await assertDownload(fetchImpl, asset.browser_download_url, asset.name);
+    }
   }
   for (const extension of ["dmg", "zip", "app\\.tar\\.gz"]) {
-    requireAsset(
+    const installers = requireAsset(
       release,
       new RegExp(`^Grimodex-${version}-mac-.*\\.${extension}$`),
       `macOS ${extension} installer`,
     );
+    for (const asset of installers) {
+      await assertDownload(fetchImpl, asset.browser_download_url, asset.name);
+    }
   }
 
   const metadataNames = ["latest.yml", "latest-linux.yml", "latest-mac.yml"];

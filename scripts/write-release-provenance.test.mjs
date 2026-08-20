@@ -23,7 +23,7 @@ describe("release provenance", () => {
         ["source-commit", "a".repeat(40)],
         ["source-run-id", "123"],
         ["source-run-attempt", "2"],
-        ["publication-repository", "kazormia296/Grimodex-Releases"],
+        ["publication-repository", "kazormia296/GrimodexReleases"],
         ["publication-tag", "v2.0.11"],
       ]),
     );
@@ -35,7 +35,7 @@ describe("release provenance", () => {
     assert.equal(result.source.runAttempt, 2);
     assert.equal(
       result.publication.repository,
-      "kazormia296/Grimodex-Releases",
+      "kazormia296/GrimodexReleases",
     );
     assert.deepEqual(JSON.parse(await readFile(output, "utf8")), result);
   });
