@@ -1,0 +1,600 @@
+{
+  "version": 1,
+  "defaultBase": "origin/master",
+  "profiles": {
+    "quick": ["impact"],
+    "full": [
+      "bootstrap",
+      "quality",
+      "frontend",
+      "lfm-encoder-phase0",
+      "browser",
+      "webgl",
+      "storybook",
+      "security",
+      "electron",
+      "electron-native",
+      "rust",
+      "migration-recovery-gate",
+      "electron-runtime-performance",
+      "electron-product-journeys"
+    ]
+  },
+  "stages": {
+    "impact": {
+      "label": "Impact-selected local checks",
+      "commands": [
+        {
+          "label": "Select and run affected Light suites",
+          "command": "pnpm",
+          "args": ["eval:impact", "--"],
+          "comparison": true
+        }
+      ]
+    },
+    "bootstrap": {
+      "label": "Locked local dependencies",
+      "commands": [
+        {
+          "label": "Verify pnpm lockfile and dependencies",
+          "command": "pnpm",
+          "args": ["install", "--frozen-lockfile"]
+        },
+        {
+          "label": "Build shared workspace dependencies",
+          "command": "pnpm",
+          "args": ["build:workspace:dependencies"]
+        },
+        {
+          "label": "Ensure Playwright Chromium is available",
+          "command": "pnpm",
+          "args": ["exec", "playwright", "install", "chromium"]
+        }
+      ]
+    },
+    "quality": {
+      "label": "Quality contracts and evaluation fixtures",
+      "env": {
+        "GATE_B2_WORKTREE_SMOKE": "1"
+      },
+      "commands": [
+        {
+          "label": "Canonical quality workflow",
+          "command": "pnpm",
+          "args": ["verify:quality"]
+        }
+      ]
+    },
+    "frontend": {
+      "label": "Frontend checks and production artifact",
+      "commands": [
+        {
+          "label": "Renderer type-check",
+          "command": "pnpm",
+          "args": ["exec", "tsc", "--noEmit"]
+        },
+        {
+          "label": "Renderer lint",
+          "command": "pnpm",
+          "args": ["lint"]
+        },
+        {
+          "label": "Architecture baseline",
+          "command": "pnpm",
+          "args": ["validate:architecture"]
+        },
+        {
+          "label": "Browser CI performance contracts",
+          "command": "pnpm",
+          "args": ["test:browser-ci"]
+        },
+        {
+          "label": "Renderer unit tests",
+          "command": "pnpm",
+          "args": ["test:node", "--run"]
+        },
+        {
+          "label": "Web Editor production artifact",
+          "command": "pnpm",
+          "args": ["build:web-editor"]
+        }
+      ]
+    },
+    "lfm-encoder-phase0": {
+      "label": "LFM encoder offline contracts",
+      "commands": [
+        {
+          "label": "Sync fixed CPU environment",
+          "command": "uv",
+          "args": ["sync", "--frozen", "--extra", "cpu"],
+          "cwd": "experiments/lfm25-encoder-phase0"
+        },
+        {
+          "label": "LFM unit and contract tests",
+          "command": "uv",
+          "args": ["run", "--frozen", "--extra", "cpu", "pytest"],
+          "cwd": "experiments/lfm25-encoder-phase0"
+        },
+        {
+          "label": "Public dataset contracts",
+          "command": "uv",
+          "args": [
+            "run",
+            "--frozen",
+            "--extra",
+            "cpu",
+            "python",
+            "tools/validate_dataset.py",
+            "data/public"
+          ],
+          "cwd": "experiments/lfm25-encoder-phase0"
+        }
+      ]
+    },
+    "browser": {
+      "label": "Browser tests",
+      "commands": [
+        {
+          "label": "Browser suite with resource metrics",
+          "command": "pnpm",
+          "args": [
+            "benchmark:browser-ci",
+            "--",
+            "--suite",
+            "browser",
+            "--runs",
+            "1",
+            "--output",
+            ".artifacts/browser-ci/browser.json"
+          ]
+        }
+      ]
+    },
+    "webgl": {
+      "label": "Deterministic WebGL checks",
+      "commands": [
+        {
+          "label": "Zen shader WebGL contracts",
+          "command": "pnpm",
+          "args": ["test:zen-shader-webgl", "--run"]
+        },
+        {
+          "label": "WebGL suite with resource metrics",
+          "command": "pnpm",
+          "args": [
+            "benchmark:browser-ci",
+            "--",
+            "--suite",
+            "webgl",
+            "--runs",
+            "1",
+            "--file-parallelism",
+            "false",
+            "--max-workers",
+            "1",
+            "--output",
+            ".artifacts/browser-ci/webgl.json"
+          ]
+        }
+      ]
+    },
+    "storybook": {
+      "label": "Storybook browser checks",
+      "commands": [
+        {
+          "label": "Storybook suite with resource metrics",
+          "command": "pnpm",
+          "args": [
+            "benchmark:browser-ci",
+            "--",
+            "--suite",
+            "storybook",
+            "--runs",
+            "1",
+            "--output",
+            ".artifacts/browser-ci/storybook.json"
+          ]
+        }
+      ]
+    },
+    "security": {
+      "label": "Dependency and license security checks",
+      "commands": [
+        {
+          "label": "pnpm high-severity audit",
+          "command": "pnpm",
+          "args": [
+            "dlx",
+            "pnpm@11.13.0",
+            "--pm-on-fail=ignore",
+            "audit",
+            "--audit-level",
+            "high"
+          ]
+        },
+        {
+          "label": "Shared Rust dependency audit",
+          "command": "cargo",
+          "args": ["audit", "--file", "src-tauri/Cargo.lock"]
+        },
+        {
+          "label": "Electron native dependency audit",
+          "command": "cargo",
+          "args": [
+            "audit",
+            "--file",
+            "electron/native/grimodex-node/Cargo.lock"
+          ]
+        }
+      ]
+    },
+    "electron": {
+      "label": "Electron contracts, tests, and production build",
+      "commands": [
+        {
+          "label": "Release workflow and manifest contracts",
+          "command": "node",
+          "args": [
+            "--test",
+            "scripts/validate-release-version.test.mjs",
+            "scripts/resolve-release-workflow.test.mjs",
+            "scripts/compose-github-release-notes.test.mjs",
+            "scripts/generate-tauri-bridge-manifest.test.mjs",
+            "scripts/release-workflows.test.mjs",
+            "scripts/arch-electron-package.test.mjs",
+            "scripts/linux-release-abi.test.mjs",
+            "scripts/verify-electron-updater-metadata.test.mjs",
+            "scripts/windows-release-workflow.test.mjs",
+            "scripts/electron-v2-cleanup.test.mjs",
+            "scripts/electron-runtime-performance-workflow.test.mjs",
+            "scripts/impact/core.test.mjs",
+            "scripts/product-journey-impact.test.mjs",
+            "scripts/product-journey-ratchet-hardening.test.mjs",
+            "scripts/product-journey-explicit-all.test.mjs",
+            "scripts/product-journey-backlog.test.mjs",
+            "scripts/product-journey-mcp-client.test.mjs",
+            "scripts/electron-product-journey-results.test.mjs",
+            "scripts/electron-product-journey-cleanup-results.test.mjs",
+            "scripts/electron-product-journeys.test.mjs",
+            "scripts/generate-licenses.test.mjs",
+            "scripts/license-policy.test.mjs",
+            "scripts/semantic-reranker-release.test.mjs"
+          ]
+        },
+        {
+          "label": "Electron type-check",
+          "command": "pnpm",
+          "args": ["exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"]
+        },
+        {
+          "label": "Electron unit tests",
+          "command": "pnpm",
+          "args": ["test:electron", "--run"]
+        },
+        {
+          "label": "Electron production build",
+          "command": "pnpm",
+          "args": ["electron:build"]
+        },
+        {
+          "label": "Renderer performance budget",
+          "command": "pnpm",
+          "args": ["perf:budget"]
+        }
+      ]
+    },
+    "electron-native": {
+      "label": "Electron native and MCP checks",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "commands": [
+        {
+          "label": "Build development N-API module",
+          "command": "pnpm",
+          "args": ["napi:build"]
+        },
+        {
+          "label": "Test N-API public boundary",
+          "command": "pnpm",
+          "args": ["--dir", "electron/native/grimodex-node", "test"]
+        },
+        {
+          "label": "Check release-only native features",
+          "command": "cargo",
+          "args": [
+            "check",
+            "--manifest-path",
+            "electron/native/grimodex-node/Cargo.toml",
+            "--features",
+            "licensing,legacy-keyring-migration"
+          ]
+        },
+        {
+          "label": "Clippy release-only native features",
+          "command": "cargo",
+          "args": [
+            "clippy",
+            "--manifest-path",
+            "electron/native/grimodex-node/Cargo.toml",
+            "--all-targets",
+            "--features",
+            "licensing,legacy-keyring-migration",
+            "--",
+            "-D",
+            "warnings"
+          ]
+        },
+        {
+          "label": "Test release-only native features",
+          "command": "cargo",
+          "args": [
+            "test",
+            "--manifest-path",
+            "electron/native/grimodex-node/Cargo.toml",
+            "--features",
+            "licensing,legacy-keyring-migration"
+          ]
+        },
+        {
+          "label": "Test licensed MCP sidecar",
+          "command": "cargo",
+          "args": [
+            "test",
+            "--manifest-path",
+            "src-tauri/Cargo.toml",
+            "-p",
+            "grimodex-mcp",
+            "--features",
+            "licensing"
+          ]
+        }
+      ]
+    },
+    "rust": {
+      "label": "Shared Rust crates",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "commands": [
+        {
+          "label": "Shared Rust check",
+          "command": "cargo",
+          "args": [
+            "check",
+            "--workspace",
+            "--exclude",
+            "grimodex",
+            "--features",
+            "grimodex-semantic/semantic-embedding"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Shared Rust clippy",
+          "command": "cargo",
+          "args": [
+            "clippy",
+            "--workspace",
+            "--exclude",
+            "grimodex",
+            "--all-targets",
+            "--features",
+            "grimodex-semantic/semantic-embedding",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Shared Rust tests",
+          "command": "cargo",
+          "args": [
+            "test",
+            "--workspace",
+            "--exclude",
+            "grimodex",
+            "--features",
+            "grimodex-semantic/semantic-embedding"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Migration supervisor failpoints",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--test",
+            "workspace_migration_supervisor"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Narrative runtime authority",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--test",
+            "narrative_runtime_authority"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Licensed runtime",
+          "command": "cargo",
+          "args": ["test", "-p", "grimodex-license", "--features", "licensing"],
+          "cwd": "src-tauri"
+        }
+      ]
+    },
+    "migration-recovery-gate": {
+      "label": "Migration recovery checks",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "commands": [
+        {
+          "label": "Migration supervisor integration",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--test",
+            "workspace_migration_supervisor"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Migration supervisor failpoint suite",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--test",
+            "workspace_migration_supervisor"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Safe Mode structured outcome",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--test",
+            "workspace_safe_mode_outcome"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Release-schema migration fixture",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--test",
+            "release_schema_migration"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Subprocess crash recovery",
+          "command": "cargo",
+          "args": [
+            "test",
+            "-p",
+            "grimodex-db",
+            "--features",
+            "test-failpoints",
+            "--test",
+            "migration_subprocess_crash",
+            "--test",
+            "restore_subprocess_crash"
+          ],
+          "cwd": "src-tauri"
+        },
+        {
+          "label": "Safe Mode IPC contract",
+          "command": "pnpm",
+          "args": [
+            "test:electron",
+            "--run",
+            "electron/shared/ipcContract.test.ts"
+          ]
+        },
+        {
+          "label": "Recovery Shell frontend tests",
+          "command": "pnpm",
+          "args": [
+            "test",
+            "--run",
+            "src/features/workspace/store.test.ts",
+            "src/features/workspace/recovery/RecoveryShell.test.tsx"
+          ]
+        }
+      ]
+    },
+    "electron-runtime-performance": {
+      "label": "Electron runtime performance",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "commands": [
+        {
+          "label": "Runtime performance contracts",
+          "command": "pnpm",
+          "args": ["test:electron-perf"]
+        },
+        {
+          "label": "50k-character runtime performance gate",
+          "command": "pnpm",
+          "args": ["electron:perf:ci"]
+        }
+      ]
+    },
+    "electron-product-journeys": {
+      "label": "All Electron product journeys",
+      "env": {
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0",
+        "GRIMODEX_PRODUCT_JOURNEY_ARTIFACT_DIR": ".artifacts/product-journeys"
+      },
+      "commands": [
+        {
+          "label": "Build MCP journey dependency",
+          "command": "pnpm",
+          "args": ["mcp:build"]
+        },
+        {
+          "label": "Run every product journey",
+          "command": "pnpm",
+          "args": ["electron:product-journeys"]
+        }
+      ]
+    }
+  },
+  "hostedJobs": {
+    "quality": { "localStage": "quality" },
+    "frontend": { "localStage": "frontend" },
+    "lfm-encoder-phase0": { "localStage": "lfm-encoder-phase0" },
+    "browser": { "localStage": "browser" },
+    "webgl": { "localStage": "webgl" },
+    "storybook": { "localStage": "storybook" },
+    "security": { "localStage": "security" },
+    "electron": { "localStage": "electron" },
+    "electron-runtime-performance": {
+      "localStage": "electron-runtime-performance"
+    },
+    "electron-product-journeys": {
+      "localStage": "electron-product-journeys"
+    },
+    "electron-windows-installer-contract": {
+      "releaseOnly": true,
+      "reason": "Requires a Windows runner and final NSIS compilation; retained in manual and release Full CI."
+    },
+    "electron-native": { "localStage": "electron-native" },
+    "rust": { "localStage": "rust" },
+    "migration-recovery-gate": {
+      "localStage": "migration-recovery-gate"
+    }
+  }
+}

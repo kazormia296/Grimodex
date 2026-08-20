@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -17,27 +17,37 @@ async function readWorkflow(relativePath) {
 }
 
 test("automatic hosted CI triggers are paused for the private source repo", async () => {
-  const workflows = await Promise.all(
-    [
-      ".github/workflows/ci.yml",
-      ".github/workflows/codeql.yml",
-      ".github/workflows/dependency-review.yml",
-    ].map(readWorkflow),
-  );
+  const ci = await readWorkflow(".github/workflows/ci.yml");
 
-  for (const workflow of workflows) {
-    assert.equal(workflow.on.push, undefined);
-    assert.equal(workflow.on.pull_request, undefined);
-    assert.equal(workflow.on.schedule, undefined);
-    assert.ok(
-      Object.hasOwn(workflow.on, "workflow_dispatch"),
-      "manual recovery must remain available",
-    );
-  }
-
-  const ci = workflows[0];
+  assert.deepEqual(Object.keys(ci.on).sort(), [
+    "workflow_call",
+    "workflow_dispatch",
+  ]);
   assert.ok(
     ci.on.workflow_call,
     "release reusable CI call must remain available",
   );
+});
+
+test("unusable private-repository security workflows are not dispatchable", async () => {
+  for (const relativePath of [
+    ".github/workflows/codeql.yml",
+    ".github/workflows/dependency-review.yml",
+  ]) {
+    await assert.rejects(
+      access(path.join(repoRoot, relativePath)),
+      (error) => error?.code === "ENOENT",
+      `${relativePath} must stay removed instead of exposing a broken manual run`,
+    );
+  }
+});
+
+test("tag releases still call the complete reusable CI workflow", async () => {
+  const release = await readWorkflow(".github/workflows/release.yml");
+  const ciJob = release.jobs.ci;
+
+  assert.equal(ciJob.uses, "./.github/workflows/ci.yml");
+  assert.equal(ciJob.with.product_journey_mode, "all");
+  assert.match(ciJob.if, /github\.event_name == 'push'/);
+  assert.match(ciJob.if, /github\.ref_type == 'tag'/);
 });

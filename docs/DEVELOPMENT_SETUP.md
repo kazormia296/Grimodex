@@ -1,6 +1,6 @@
 # 開発環境構築ガイド
 
-> 最終更新: 2026-07-26
+> 最終更新: 2026-08-20
 
 > 推奨は下記の **devcontainer** です。Docker を使わずローカルホストへ直接構築したい場合は
 > [ネイティブ（非Docker）セットアップ](#ネイティブ非dockerセットアップ) を参照してください。
@@ -181,6 +181,45 @@ cargo test --manifest-path src-tauri/Cargo.toml --workspace --exclude grimodex -
 
 ---
 
+## ローカルCI運用
+
+private source repository では、通常のPR、branch push、scheduleからGitHub Actionsの
+CI runnerを起動しません。`.github/workflows/ci.yml` は、明示的な手動実行とtag releaseからの
+再利用呼び出しだけを受け付けます。
+
+通常の変更確認には、差分に対応するLight suiteだけを実行します。既定では
+`origin/master...HEAD`に加えてstaged、unstaged、untrackedの変更も対象です。
+
+```bash
+pnpm ci:local:quick
+
+# 比較元を明示する場合
+pnpm ci:local:quick -- --base <base-ref> --head HEAD
+```
+
+mergeまたはrelease候補を作る前は、ローカルで再現可能なFull CIを実行します。
+依存audit、Rust/N-API、Browser/WebGL/Storybook、Electron performance、全product journeyを
+含むため、初回は長時間かかります。`uv`、Rust toolchain、`cargo-audit`、Playwrightと
+Electronのホスト依存を先に導入してください。
+
+```bash
+pnpm ci:local:full
+
+# 失敗を直した後、指定stageから再開する場合
+pnpm ci:local:full -- --from security
+
+# profile、stage、release-only項目を確認する場合
+pnpm ci:local:list
+```
+
+実行結果は`.artifacts/local-ci/<profile>.json`へ保存されます。Linux/macOSでは再現できない
+Windows NSISの最終compileだけはrelease-onlyとして明示され、手動Full CIまたはtag releaseで
+検証します。現在のprivate repositoryプランでcode scanningを利用できないCodeQLと、手動起動時に
+必ずskipされるDependency Review workflowは公開しません。代わりにlocal fullの`security` stageと
+既存のlicense contractを使用します。
+
+---
+
 ## Electron デスクトップアプリ（サポート対象）
 
 現行のデスクトップランタイムは Electron です。呼び出し境界は次の順です。
@@ -248,6 +287,9 @@ pnpm electron:package         # 現在の OS 向け配布パッケージを作�
 | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | `pnpm electron:dev`                                                                                                               | Electron開発起動（renderer + main/preload）             |
 | `pnpm dev`                                                                                                                        | フロントエンドのみ起動（Vite）                          |
+| `pnpm ci:local:quick`                                                                                                             | 差分に対応するローカルLight suite                       |
+| `pnpm ci:local:full`                                                                                                              | release-only項目を除くローカルFull CI                   |
+| `pnpm ci:local:list`                                                                                                              | ローカルCI profileとstageの一覧                         |
 | `pnpm napi:build`                                                                                                                 | Electron用Rust N-APIモジュールをビルド                  |
 | `pnpm electron:build`                                                                                                             | Electron本番JavaScriptをビルド                          |
 | `pnpm electron:package`                                                                                                           | native release成果物と配布パッケージを作成              |
