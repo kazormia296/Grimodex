@@ -25,7 +25,9 @@ use super::cursor_reservation::{
     reserve_cursor_range_in_tx,
 };
 use super::dependency_edges::{find_edges_by_source, DependencyEdge};
-use super::evaluator::{evaluate_edge, EdgeComparisonInput, EdgeObservation};
+use super::evaluator::{
+    evaluate_edge, BuildAction, EdgeComparisonInput, EdgeObservation, EvidenceFreshness,
+};
 use super::execution_state::{
     supersede_run_in_tx, transition_run_status_in_tx, NarrativeRunStatus,
 };
@@ -1122,9 +1124,21 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
     let mut affected_edge_count = 0;
     for (index, edge) in edges.values().enumerate() {
         if !is_declared_consumer_kind(&edge.consumer_kind) {
-            // A corrupt legacy Edge cannot be published through the closed
-            // Consumer vocabulary. Repair/Verify owns that graph finding;
-            // it must not poison every later Change Feed range.
+            // Do not evaluate a Consumer this build cannot interpret, but do
+            // invalidate any authority published by a newer build before this
+            // Change Feed range is acknowledged.
+            by_consumer
+                .entry((edge.consumer_kind.clone(), edge.consumer_key.clone()))
+                .or_default()
+                .push((
+                    edge.id.clone(),
+                    EdgeObservation {
+                        freshness: EvidenceFreshness::Unknown,
+                        reason_code: None,
+                        build_action: BuildAction::Manual,
+                    },
+                ));
+            affected_edge_count += 1;
             continue;
         }
         if index % LEASE_HEARTBEAT_EDGE_INTERVAL == 0 {
@@ -2183,5 +2197,55 @@ mod tests {
             "unexpected publish failure: {error:#}"
         );
         assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn unknown_consumer_is_invalidated_before_its_change_range_is_acknowledged() {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET consumer_kind = 'application-contribution',
+                        consumer_key = 'contribution-c2-1-phase-cas'
+                  WHERE id = ?1",
+                [EDGE_ID],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
+                     semantic_epoch_id, updated_at)
+                 VALUES (?1, 'application-contribution', 'contribution-c2-1-phase-cas',
+                         'fresh', 'none', ?2, ?3)",
+                params![PROJECT_ID, EPOCH_ID, OCCURRED_AT],
+            )?;
+            Ok(())
+        })
+        .expect("seed authority published by a newer build");
+
+        let outcome = run_incremental_freshness_cycle(&db).expect("run incremental freshness");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed { .. }
+        ));
+
+        db.with_conn(|conn| {
+            let freshness: String = conn.query_row(
+                "SELECT evidence_freshness FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'application-contribution'
+                    AND consumer_key = 'contribution-c2-1-phase-cas'",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(freshness, "unknown");
+            let acknowledged: i64 = conn.query_row(
+                "SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| row.get(0),
+            )?;
+            assert_eq!(acknowledged, 1);
+            Ok(())
+        })
+        .expect("inspect invalidation and acknowledgement");
     }
 }

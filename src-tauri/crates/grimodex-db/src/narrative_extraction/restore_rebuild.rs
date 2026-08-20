@@ -497,9 +497,32 @@ fn rebuild_derived_state_edges_in_project(
                         target: "narrative.rebuild",
                         consumer_kind = %consumer_kind,
                         consumer_key = %consumer_key,
-                        "NEX_CONSUMER_KIND_INVALID: skipping a Consumer whose kind is outside \
-                         this build's declared vocabulary"
+                        "NEX_CONSUMER_KIND_INVALID: publishing Unknown for a Consumer whose kind \
+                         is outside this build's declared vocabulary"
                     );
+                    let observations = edges
+                        .iter()
+                        .map(|edge| {
+                            (
+                                edge.id.clone(),
+                                EdgeObservation {
+                                    freshness: EvidenceFreshness::Unknown,
+                                    reason_code: None,
+                                    build_action: BuildAction::Manual,
+                                },
+                            )
+                        })
+                        .collect::<Vec<_>>();
+                    publish_freshness_evaluation_edges_only_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &consumer_kind,
+                        &consumer_key,
+                        &observations,
+                        semantic_epoch_id,
+                        now,
+                    )?;
                     skipped += 1;
                     return Ok(());
                 }
@@ -2192,8 +2215,21 @@ mod tests {
             )
         })
         .expect("record an edge under an unimplemented consumer kind");
-        db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
+        let epoch_id = db
+            .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
             .expect("mint an epoch");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness, build_action,
+                     semantic_epoch_id, updated_at)
+                 VALUES ('project-1', 'application-contribution', 'contribution-1',
+                         'fresh', 'none', ?1, '2026-08-15T00:00:00.000Z')",
+                [epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed Freshness published by a newer build");
 
         let outcome =
             rebuild_narrative_derived_state_for_project(&db, "project-1").expect("rebuild derived");
@@ -2204,22 +2240,22 @@ mod tests {
         assert_eq!(summary.edges_evaluated, 1);
         assert_eq!(summary.consumers_skipped_unresolvable_scope, 1);
 
-        let published: Vec<String> = db
+        let unknown_freshness: String = db
             .with_conn(|conn| {
-                let mut statement = conn.prepare(
-                    "SELECT consumer_kind FROM narrative_consumer_freshness
-                      WHERE project_id = 'project-1'",
-                )?;
-                let rows = statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
-                Ok(rows)
+                conn.query_row(
+                    "SELECT evidence_freshness FROM narrative_consumer_freshness
+                      WHERE project_id = 'project-1'
+                        AND consumer_kind = 'application-contribution'
+                        AND consumer_key = 'contribution-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
             })
             .expect("read consumer freshness");
         assert_eq!(
-            published,
-            vec![RUN_CONSUMER_KIND.to_string()],
-            "only the Consumer this build understands may get a Freshness row"
+            unknown_freshness, "unknown",
+            "a verdict from a newer build must not survive this rebuild"
         );
     }
 
