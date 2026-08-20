@@ -27,6 +27,33 @@ function collectUses(value, result = []) {
 }
 
 describe("release workflow boundary", () => {
+  it("uses the user-selected public distribution repository everywhere", async () => {
+    const publicRepository = "kazormia296/GrimodexReleases";
+    const distributionFiles = [
+      ".github/workflows/release.yml",
+      ".github/workflows/aur-publish.yml",
+      ".github/workflows/migrate-semantic-models.yml",
+      ".github/workflows/release-public-smoke.yml",
+      "src-tauri/tauri.conf.json",
+      "src-tauri/crates/grimodex-semantic/src/spec.rs",
+      "packaging/arch/PKGBUILD",
+      "README.md",
+      "docs/user-guide/ja/Install-and-update.md",
+    ];
+    for (const relativePath of distributionFiles) {
+      const content = await readFile(path.join(repoRoot, relativePath), "utf8");
+      assert.match(content, new RegExp(publicRepository.replace("/", "\\/")));
+      assert.doesNotMatch(content, /kazormia296\/Grimodex-Releases/);
+    }
+    const electronBuilder = await readFile(
+      path.join(repoRoot, "electron-builder.yml"),
+      "utf8",
+    );
+    assert.match(electronBuilder, /owner:\s*kazormia296/);
+    assert.match(electronBuilder, /repo:\s*GrimodexReleases/);
+    assert.doesNotMatch(electronBuilder, /repo:\s*Grimodex-Releases/);
+  });
+
   it("freezes the existing Tauri v1 artifacts instead of retaining a mutable rebuild workflow", async () => {
     const workflowNames = await readdir(
       path.join(repoRoot, ".github", "workflows"),
@@ -388,6 +415,14 @@ describe("release workflow boundary", () => {
     );
     assert.match(publishDraftVerificationCommands, /LICENSE/);
     assert.match(publishDraftVerificationCommands, /provenance\.json/);
+    assert.match(
+      publish.steps.find(
+        (step) =>
+          step.name ===
+          "Stage legal and provenance assets for the public release",
+      )?.env?.SOURCE_RUN_ID ?? "",
+      /github\.event_name == 'push' && github\.run_id \|\| needs\.release-gate\.outputs\.source_run_id/,
+    );
     assert.match(recoverySource.run, /git\/ref\/tags/);
     assert.match(recoverySource.run, /requires an annotated release tag/);
     assert.match(recoverySource.run, /SOURCE_SHA/);
