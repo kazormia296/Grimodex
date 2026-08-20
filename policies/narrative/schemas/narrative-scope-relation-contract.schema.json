@@ -1,0 +1,455 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://grimodex.dev/schema/narrative/narrative-scope-relation-contract-v1.json",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "contract",
+    "adr",
+    "scopeSchemaVersion",
+    "registryVersion",
+    "implementationStatus",
+    "axes",
+    "unresolvedReasons",
+    "unresolvedSemantics",
+    "legalScope",
+    "relations",
+    "relationSemantics",
+    "basicRelationFixtures",
+    "compositionPrecedence",
+    "canonicalization",
+    "oracleContract",
+    "assertionScopeProfiles",
+    "consumerPolicies",
+    "v1Compatibility",
+    "nonEffects"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contract": { "const": "narrative-scope-relation-contract" },
+    "adr": {
+      "const": "docs/adr/009-narrative-scope-relation-contract.md"
+    },
+    "scopeSchemaVersion": { "const": 2 },
+    "registryVersion": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*/[1-9][0-9]*$"
+    },
+    "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
+    "axes": {
+      "type": "array",
+      "minItems": 9,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/axis" }
+    },
+    "unresolvedReasons": {
+      "const": [
+        "not-provided",
+        "ambiguous",
+        "missing-reference",
+        "unsupported-axis",
+        "legacy-axis-unknown"
+      ]
+    },
+    "unresolvedSemantics": {
+      "type": "object",
+      "required": [
+        "meaning",
+        "futureAnyPolicy",
+        "equalityPolicy",
+        "reasonAloneEstablishesIdentity"
+      ],
+      "properties": {
+        "meaning": { "const": "constrained-but-specific-value-unresolved" },
+        "futureAnyPolicy": { "const": "scope-revision-required" },
+        "equalityPolicy": {
+          "const": "same-scope-revision-or-stable-constraint-id"
+        },
+        "reasonAloneEstablishesIdentity": { "const": false }
+      },
+      "additionalProperties": false
+    },
+    "legalScope": {
+      "type": "object",
+      "required": [
+        "allAxesRequired",
+        "constraintsRepresentNonEmptySets",
+        "emptyResolutionOutcome",
+        "intervalRequiresBoundary",
+        "emptyReferencePolicy"
+      ],
+      "properties": {
+        "allAxesRequired": { "const": true },
+        "constraintsRepresentNonEmptySets": { "const": true },
+        "emptyResolutionOutcome": { "const": "validation-failure" },
+        "intervalRequiresBoundary": { "const": true },
+        "emptyReferencePolicy": { "const": "forbid" }
+      },
+      "additionalProperties": false
+    },
+    "relations": {
+      "const": [
+        "equal",
+        "contains",
+        "contained-by",
+        "overlaps",
+        "disjoint",
+        "unknown"
+      ]
+    },
+    "relationSemantics": {
+      "type": "object",
+      "required": [
+        "classification",
+        "containsIsStrict",
+        "containedByIsStrict",
+        "overlapsRequiresEstablishedNonEmptyIntersection",
+        "conflictingProofPolicy"
+      ],
+      "properties": {
+        "classification": { "const": "strongest-established-knowledge" },
+        "containsIsStrict": { "const": false },
+        "containedByIsStrict": { "const": false },
+        "overlapsRequiresEstablishedNonEmptyIntersection": { "const": true },
+        "conflictingProofPolicy": { "const": "fail-closed-contract-error" }
+      },
+      "additionalProperties": false
+    },
+    "basicRelationFixtures": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/basicRelationFixture" }
+    },
+    "compositionPrecedence": {
+      "const": [
+        "any-axis-disjoint=>disjoint",
+        "no-disjoint-and-any-axis-unknown=>unknown",
+        "all-axes-equal=>equal",
+        "all-equal-or-contains-and-at-least-one-contains=>contains",
+        "all-equal-or-contained-by-and-at-least-one-contained-by=>contained-by",
+        "all-intersections-non-empty-and-neither-whole-containment=>overlaps",
+        "otherwise=>unknown"
+      ]
+    },
+    "canonicalization": {
+      "type": "object",
+      "required": ["digestAlgorithm", "includes", "excludes"],
+      "properties": {
+        "digestAlgorithm": { "const": "sha256-canonical-json" },
+        "includes": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "excludes": {
+          "type": "array",
+          "minItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "oracleContract": {
+      "type": "object",
+      "required": [
+        "orderAxes",
+        "compareResults",
+        "revisionTokenRequired",
+        "basisRequiredWheneverOracleOrRegistryUsed",
+        "basisRequiredRelations",
+        "structuralResultMayPersistWithoutBasis"
+      ],
+      "properties": {
+        "orderAxes": { "const": ["storyTime", "readingOrder"] },
+        "compareResults": { "const": [-1, 0, 1, "unresolved"] },
+        "revisionTokenRequired": { "const": true },
+        "basisRequiredWheneverOracleOrRegistryUsed": { "const": true },
+        "basisRequiredRelations": {
+          "const": [
+            "equal",
+            "contains",
+            "contained-by",
+            "overlaps",
+            "disjoint",
+            "unknown"
+          ]
+        },
+        "structuralResultMayPersistWithoutBasis": { "const": true }
+      },
+      "additionalProperties": false
+    },
+    "assertionScopeProfiles": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/assertionScopeProfile" }
+    },
+    "consumerPolicies": {
+      "type": "array",
+      "minItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["consumer", "automaticRelations", "unknownPolicy"],
+        "properties": {
+          "consumer": { "$ref": "#/$defs/kebabId" },
+          "automaticRelations": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": { "$ref": "#/$defs/relation" }
+          },
+          "additionalBasisRequired": { "type": "boolean" },
+          "unknownPolicy": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "v1Compatibility": {
+      "type": "object",
+      "required": [
+        "currentType",
+        "migrationRequiredNow",
+        "adapterPurpose",
+        "ambiguousTemporalAxisPolicy",
+        "implicitGlobalPolicy"
+      ],
+      "properties": {
+        "currentType": { "$ref": "#/$defs/nonEmptyString" },
+        "migrationRequiredNow": { "const": false },
+        "adapterPurpose": {
+          "const": "short-lived-code-and-fixture-compatibility"
+        },
+        "ambiguousTemporalAxisPolicy": {
+          "const": "map-both-story-time-and-reading-order-to-unresolved"
+        },
+        "implicitGlobalPolicy": { "const": "forbid" }
+      },
+      "additionalProperties": false
+    },
+    "nonEffects": {
+      "const": [
+        "truth-verdict",
+        "automatic-retraction",
+        "automatic-merge-or-split",
+        "automatic-domain-mutation"
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonEmptyString": {
+      "type": "string",
+      "minLength": 1
+    },
+    "kebabId": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "relation": {
+      "enum": [
+        "equal",
+        "contains",
+        "contained-by",
+        "overlaps",
+        "disjoint",
+        "unknown"
+      ]
+    },
+    "implementationStatus": {
+      "type": "object",
+      "required": [
+        "state",
+        "productionEntryPoints",
+        "scanRoots",
+        "productionMarkers",
+        "blockedOn"
+      ],
+      "properties": {
+        "state": { "enum": ["declared", "shadow", "wired"] },
+        "productionEntryPoints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "scanRoots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "productionMarkers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "blockedOn": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/kebabId" }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "state": { "const": "declared" } },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "productionEntryPoints": { "maxItems": 0 },
+              "blockedOn": { "minItems": 1 }
+            }
+          },
+          "else": {
+            "properties": { "productionEntryPoints": { "minItems": 1 } }
+          }
+        }
+      ]
+    },
+    "axis": {
+      "type": "object",
+      "required": ["id", "axisKind", "allowedKinds"],
+      "properties": {
+        "id": {
+          "enum": [
+            "timeline",
+            "worldline",
+            "scene",
+            "viewpoint",
+            "knowledgeHolder",
+            "audience",
+            "narrativeLayer",
+            "storyTime",
+            "readingOrder"
+          ]
+        },
+        "axisKind": { "enum": ["reference", "temporal"] },
+        "allowedKinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["any", "exact", "interval", "unresolved"]
+          }
+        },
+        "reservedRefs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "axisKind": { "const": "reference" } },
+            "required": ["axisKind"]
+          },
+          "then": {
+            "properties": {
+              "allowedKinds": { "const": ["any", "exact", "unresolved"] }
+            }
+          },
+          "else": {
+            "properties": {
+              "allowedKinds": {
+                "const": ["any", "interval", "unresolved"]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "basicRelationFixture": {
+      "type": "object",
+      "required": ["id", "leftKind", "rightKind", "expected"],
+      "properties": {
+        "id": { "$ref": "#/$defs/kebabId" },
+        "leftKind": {
+          "enum": ["any", "exact", "interval", "unresolved"]
+        },
+        "rightKind": {
+          "enum": ["any", "exact", "interval", "unresolved"]
+        },
+        "sameReason": { "type": "boolean" },
+        "sameConstraintIdentity": { "type": "boolean" },
+        "expected": { "$ref": "#/$defs/relation" }
+      },
+      "additionalProperties": false
+    },
+    "axisProfile": {
+      "type": "object",
+      "required": ["axisKind", "allowedKinds"],
+      "properties": {
+        "axisKind": { "enum": ["reference", "temporal"] },
+        "allowedKinds": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": ["any", "exact", "interval", "unresolved"]
+          }
+        },
+        "resolutionRequiredBy": {
+          "enum": ["none", "before-review", "before-apply"]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "axisKind": { "const": "reference" } },
+            "required": ["axisKind"]
+          },
+          "then": {
+            "properties": {
+              "allowedKinds": {
+                "items": { "enum": ["any", "exact", "unresolved"] }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "allowedKinds": {
+                "items": { "enum": ["any", "interval", "unresolved"] }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "assertionScopeProfile": {
+      "type": "object",
+      "required": ["assertionKind", "axes"],
+      "properties": {
+        "assertionKind": { "$ref": "#/$defs/kebabId" },
+        "axes": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "enum": [
+              "timeline",
+              "worldline",
+              "scene",
+              "viewpoint",
+              "knowledgeHolder",
+              "audience",
+              "narrativeLayer",
+              "storyTime",
+              "readingOrder"
+            ]
+          },
+          "additionalProperties": { "$ref": "#/$defs/axisProfile" }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
