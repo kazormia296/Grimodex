@@ -2175,27 +2175,37 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_deduplicates_source_state_guards_for_shared_source() {
+    fn evaluation_deduplicates_source_state_guards_for_shared_proposal_revisions() {
         let db = fixture_db();
         db.with_conn(|conn| {
+            use super::super::dependency_edges::{
+                record_dependency_edge_in_tx, PROPOSAL_REVISION_CONSUMER_KIND,
+            };
+
             conn.execute(
-                "INSERT INTO narrative_dependency_edges
-                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
-                     read_set_json, generated_by_transaction_id, created_at, owning_run_id)
-                 VALUES ('edge-c2-1-phase-cas-shared-source', ?1,
-                         'narrative-extraction-run',
-                         'consumer-run-c2-1-phase-cas-shared', ?2, ?3, NULL, ?4, ?5)",
-                params![
-                    PROJECT_ID,
-                    format!("project:scene:{SCENE_ID}"),
-                    r#"["v1@2026-08-19T00:00:01.000Z"]"#,
-                    OCCURRED_AT,
-                    CONSUMER_RUN_ID,
-                ],
+                "DELETE FROM narrative_dependency_edges WHERE id = ?1 AND project_id = ?2",
+                params![EDGE_ID, PROJECT_ID],
             )?;
+            let source_object_identity = format!("project:scene:{SCENE_ID}");
+            for revision_id in [
+                "revision-c2-1-phase-cas-shared-1",
+                "revision-c2-1-phase-cas-shared-2",
+            ] {
+                record_dependency_edge_in_tx(
+                    conn,
+                    PROJECT_ID,
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    revision_id,
+                    &source_object_identity,
+                    r#"["v1@2026-08-19T00:00:01.000Z"]"#,
+                    None,
+                    Some(CONSUMER_RUN_ID),
+                    OCCURRED_AT,
+                )?;
+            }
             Ok(())
         })
-        .expect("seed a second Edge sharing the Source and owning Run");
+        .expect("seed two writer-valid Proposal Revision Edges sharing the Source and owning Run");
 
         let (_batch, plan) = reserve_and_evaluate_batch(&db);
         assert_eq!(plan.affected_edge_count, 2);
