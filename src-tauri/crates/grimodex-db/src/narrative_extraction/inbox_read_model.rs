@@ -211,21 +211,26 @@ pub struct InboxEntry {
 }
 
 /// Return the latest current-epoch observation for each Finding identity that
-/// is still active. Finding Observations are append-only history, so an older
-/// observation for an Edge must not keep a Consumer visible after its latest
-/// lifecycle transition resolved that Finding. Resolution must belong to the
-/// same Semantic Epoch and be at least as new as the Observation; otherwise a
-/// newer Observation without its expected lifecycle row would be hidden by
-/// stale evidence. A missing or stale lifecycle row is treated as active
-/// (fail-open): the Inbox must not hide a Finding when the state needed to
-/// prove resolution is absent. Legacy observations without an identity are
-/// reported separately for the same reason; no exact Attention row can cover
-/// them.
+/// is still active, plus the latest display candidate in the original
+/// observation order. Finding Observations are append-only history, so an
+/// older observation for an Edge must not keep a Consumer visible after its
+/// latest lifecycle transition resolved that Finding. Resolution must belong
+/// to the same Semantic Epoch and be at least as new as the Observation;
+/// otherwise a newer Observation without its expected lifecycle row would be
+/// hidden by stale evidence. A missing or stale lifecycle row is treated as
+/// active (fail-open): the Inbox must not hide a Finding when the state needed
+/// to prove resolution is absent. Legacy observations without an identity
+/// remain display candidates and are reported separately for the same reason;
+/// no exact Attention row can cover them.
 fn active_finding_observations<'a>(
     conn: &Connection,
     project_id: &str,
     observations: &'a [FindingObservationRow],
-) -> anyhow::Result<(Vec<&'a FindingObservationRow>, bool)> {
+) -> anyhow::Result<(
+    Vec<&'a FindingObservationRow>,
+    bool,
+    Option<&'a FindingObservationRow>,
+)> {
     let mut latest_by_identity = BTreeMap::new();
     let mut has_unresolved_identity = false;
 
@@ -253,7 +258,23 @@ fn active_finding_observations<'a>(
         }
     }
 
-    Ok((active_observations, has_unresolved_identity))
+    // `observations` is oldest-first, so choose the last candidate by walking
+    // the original slice backwards rather than by sorting the selected
+    // identity representatives independently. An unresolved legacy row is a
+    // fail-open display candidate even though it cannot join the exact
+    // identity set used by Attention applicability.
+    let latest_display_observation = observations.iter().rev().find(|observation| {
+        observation.finding_identity.is_none()
+            || active_observations
+                .iter()
+                .any(|candidate| candidate.id == observation.id)
+    });
+
+    Ok((
+        active_observations,
+        has_unresolved_identity,
+        latest_display_observation,
+    ))
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:
@@ -296,9 +317,9 @@ pub fn build_maintenance_inbox(
         // Consumer has several Edges under the same finding key.
         let observations =
             list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
-        let latest_observation = observations.last().cloned();
-        let (active_observations, has_unresolved_identity) =
+        let (active_observations, has_unresolved_identity, latest_observation) =
             active_finding_observations(conn, project_id, &observations)?;
+        let latest_observation = latest_observation.cloned();
 
         // Pure read; never mutates or clears a lapsed row (attention.rs's
         // own contract).
@@ -764,6 +785,30 @@ mod tests {
             assert!(
                 entries.is_empty(),
                 "a resolved sibling must not block an otherwise applicable snooze"
+            );
+
+            // With the snooze lapsed, the display-ready observation must be
+            // the newest still-active Finding (Edge A), not the newer but
+            // already-resolved Edge B observation.
+            set_attention_for_test(
+                conn,
+                "project-1",
+                finding_key,
+                AttentionDisposition::Snoozed,
+                &edge_a_basis,
+                Some("2026-08-01T00:00:00.000Z"),
+                "2026-08-15T00:00:03.500Z",
+                Some("user-1"),
+            )?;
+            let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+            assert_eq!(entries.len(), 1);
+            assert_eq!(
+                entries[0]
+                    .latest_observation
+                    .as_ref()
+                    .and_then(|observation| observation.edge_id.as_deref()),
+                Some("edge-a"),
+                "resolved Edge B history must not be presented as the current observation"
             );
 
             // If a newer Observation appears without its corresponding
