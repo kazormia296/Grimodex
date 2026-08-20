@@ -1290,7 +1290,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
-          SOURCE_RUN_ID: ${{ needs.release-gate.outputs.source_run_id }}
+          # A tag-triggered run is its own provenance source. Recovery/debug
+          # runs instead point at the explicitly supplied immutable source run.
+          SOURCE_RUN_ID: ${{ github.event_name == 'push' && github.run_id || needs.release-gate.outputs.source_run_id }}
           SOURCE_TAG: ${{ needs.release-gate.outputs.tag }}
           SOURCE_SHA: ${{ steps.recovery-source.outputs.source_sha || needs.release-gate.outputs.candidate_sha }}
           PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
