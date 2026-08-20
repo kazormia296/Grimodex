@@ -437,7 +437,7 @@ fn edge_material_basis_digest(
 /// [`acknowledge_cursor_reservation_in_tx`]'s own full-`WHERE` `UPDATE`:
 /// this is the up-front check before any write happens; that function's
 /// `WHERE` is the final authority at write time.
-fn verify_publish_reservation_in_tx(
+pub(crate) fn verify_publish_reservation_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
@@ -524,11 +524,11 @@ fn verify_publish_reservation_in_tx(
 /// let each individually commit, so a mid-sequence failure could leave
 /// durable state committed with no matching Run completion or cursor
 /// advance.
-/// No production caller yet -- `publish_freshness_evaluation_edges_only_in_tx`
-/// is the narrower variant the Run Kind Policy's Verify/Rebuild-Derived
-/// callers actually use; this wider Consumer-status-inclusive variant is
-/// designed for the full Change Feed-driven publish pipeline (see this
-/// module's doc comment), which has not landed.
+/// Gate C2-1's multi-Consumer Change Feed runtime composes the narrower
+/// `publish_freshness_evaluation_edges_only_in_tx` itself, then completes one
+/// Run and performs one acknowledgement after every affected Consumer. This
+/// single-Consumer wrapper remains available for callers whose range resolves
+/// to exactly one Consumer.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn publish_freshness_evaluation_in_tx(
@@ -715,7 +715,9 @@ pub(crate) fn publish_freshness_evaluation_edges_only_in_tx(
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::narrative_extraction::cursor_reservation::reserve_cursor_range_in_tx;
+    use crate::narrative_extraction::cursor_reservation::{
+        release_cursor_reservation_in_tx, reserve_cursor_range_in_tx,
+    };
     use crate::narrative_extraction::dependency_edges::{
         record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
     };
@@ -1603,8 +1605,20 @@ mod tests {
             // published).
             let epoch_e2 = create_epoch_in_tx(conn, "project-1", "restore", None)?;
 
-            // Run B reserves a fresh range against the new Epoch -- this
-            // UPSERTs the same cursor row, taking over its reservation.
+            // Recovery releases Run A's exact stale-Epoch reservation without
+            // acknowledging it. Run B can then reserve the same cursor under
+            // the new Epoch; the strengthened reservation CAS forbids a direct
+            // takeover while Run A is still active.
+            with_immediate_transaction(conn, |conn| {
+                release_cursor_reservation_in_tx(
+                    conn,
+                    "project-1",
+                    "consumer-a",
+                    "run-a",
+                    &epoch_e1,
+                    5,
+                )
+            })?;
             seed_run(conn, "run-b", "project-1", &epoch_e2);
             reserve_cursor(conn, "project-1", "consumer-a", &epoch_e2, "run-b", 8);
 

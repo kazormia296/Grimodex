@@ -30,6 +30,7 @@ import { registerImeShutdown } from "./imeShutdown.js";
 import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -391,13 +392,16 @@ if (!gotSingleInstanceLock) {
       backend,
       broadcastBackendEvent,
     );
+    const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
     licenseValidation.start();
+    narrativeFreshness.start();
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
       vivliostyle.disposeAll();
       updater.dispose();
       licenseValidation.dispose();
+      narrativeFreshness.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();

@@ -20,6 +20,7 @@ mod finding_observation;
 mod foreshadow_operations;
 mod foreshadow_undo;
 mod inbox_read_model;
+mod incremental_freshness;
 mod legacy_backfill;
 mod models;
 mod phase_operations;
@@ -45,10 +46,12 @@ mod temporal_snapshots;
 mod temporal_undo;
 mod undo;
 
-// Gate C2 Wave 1 / Wave 2 (core Rust modules only; no IPC/N-API entrypoint
-// is wired up yet, so every re-export below is unreachable from outside
-// its own module's tests until Transport Assembly (C2-T1/T2) adds a
-// caller).
+pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
+    "narrative-incremental-freshness/v1";
+
+// Gate C2 core primitives. C2-1 composes the Change Feed/cursor/evaluator/
+// publish pieces through `incremental_freshness`; other crate-private exports
+// remain shared building blocks for the maintenance Run Kinds below.
 #[allow(unused_imports)]
 pub(crate) use application_contributions::{
     list_contributions_for_application, list_contributions_for_target, record_contribution_in_tx,
@@ -104,6 +107,10 @@ pub(crate) use inbox_read_model::{list_consumer_freshness, ConsumerFreshnessRow}
 // C2-T1: called from narrative_maintenance_inbox_list
 // (electron/native/grimodex-node/src/lib.rs).
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
+pub use incremental_freshness::{
+    run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
+    IncrementalFreshnessCycleOutcome,
+};
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
 #[allow(unused_imports)]

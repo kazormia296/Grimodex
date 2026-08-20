@@ -46,7 +46,7 @@
 //! a property instead: a Revision is immutable, so its declared set never
 //! shrinks, and re-running the same Producer for it stays idempotent.
 
-use rusqlite::{params, Connection, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::consumer_identity::validate_consumer_identity;
 use super::semantic_index_diagnostics::compute_dependency_set_digest;
@@ -163,22 +163,31 @@ pub(crate) fn parse_snapshot_run_id_from_source_identity(
     Ok(Some(run_id))
 }
 
+/// The project that owns a persisted Run, or `None` when the Run id is
+/// dangling. Kept here because both the Producer-time writer and the tolerant
+/// read side must interpret `owning_run_id` against the same authority.
+pub(crate) fn project_id_for_run(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<Option<String>> {
+    conn.query_row(
+        "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+        [run_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// `true` only when `run_id` names a persisted Run owned by another project.
-/// A missing Run is deliberately not rejected here: for an otherwise
-/// well-formed Snapshot Edge that is genuine Source-missing evidence.
+/// A missing Run remains distinct from a cross-project Run so compatibility
+/// callers can preserve their existing missing-Source handling.
 pub(crate) fn run_id_belongs_to_another_project(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
 ) -> anyhow::Result<bool> {
-    Ok(conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM narrative_extraction_runs
-              WHERE id = ?1 AND project_id <> ?2
-         )",
-        params![run_id, project_id],
-        |row| row.get(0),
-    )?)
+    Ok(project_id_for_run(conn, run_id)?.is_some_and(|owner| owner != project_id))
 }
 
 /// The one place a `(source_kind, source_key)` pair becomes a
@@ -258,8 +267,10 @@ pub(crate) struct DependencyEdge {
     pub created_at: String,
     /// The Run that declared this Edge (SCHEMA 30). Provenance, not a
     /// derivation: it stays true after the Proposal the declaration came from
-    /// is gone. `None` for an Edge whose declaring Run could not be
-    /// identified -- `restore_rebuild` reports that instead of guessing.
+    /// is gone. A Proposal Revision Edge requires this value; a historical or
+    /// corrupt row missing it is reported by `restore_rebuild` instead of
+    /// guessed. Run Consumers retain the compatibility path documented by
+    /// `owning_run_id_for_consumer`.
     pub owning_run_id: Option<String>,
 }
 
@@ -300,10 +311,10 @@ fn row_to_edge(row: &Row<'_>) -> rusqlite::Result<DependencyEdge> {
 /// `owning_run_id` is provenance, not an arbitrary resolver hint. A supplied
 /// value must be an exact, non-blank id; for a Run Consumer it must equal the
 /// Consumer key, and for a `snapshot:<runId>` Source it is required to equal
-/// the embedded Run id. If that Run exists, it must belong to the Edge's
-/// project. Historical/corrupt rows can still bypass these code-only
-/// invariants, so `restore_rebuild` validates them again before it calls the
-/// Snapshot resolver.
+/// the embedded Run id. A Proposal Revision Edge must always name a persisted
+/// Run in the same project, regardless of Source kind. Historical/corrupt rows
+/// can still bypass these code-only invariants, so `restore_rebuild` validates
+/// them again before evaluating any Proposal Revision Edge.
 ///
 /// Returns the Edge's `id` (stable across upserts of the same key).
 #[allow(clippy::too_many_arguments)]
@@ -381,6 +392,27 @@ fn validate_owning_run_identity(
                 "NEX_DEPENDENCY_OWNING_RUN_MISMATCH: Run consumerKey '{consumer_key}' does not match owningRunId '{owning_run_id}'"
             );
         }
+    }
+
+    if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+        let owning_run_id = owning_run_id.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_DEPENDENCY_OWNING_RUN_REQUIRED: proposal-revision Edge must record its declaring Run"
+            )
+        })?;
+        let owning_project_id = project_id_for_run(conn, owning_run_id)?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_DEPENDENCY_OWNING_RUN_MISSING: owningRunId '{owning_run_id}' names no persisted Run"
+            )
+        })?;
+        anyhow::ensure!(
+            owning_project_id == project_id,
+            "NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH: owningRunId '{owning_run_id}' belongs to another project"
+        );
+    } else if let Some(owning_run_id) = owning_run_id {
+        // Preserve the Run-Consumer compatibility path: historical callers
+        // may declare a non-Snapshot Edge before its Run row is available, but
+        // a known foreign-project owner is never acceptable.
         anyhow::ensure!(
             !run_id_belongs_to_another_project(conn, project_id, owning_run_id)?,
             "NEX_DEPENDENCY_OWNING_RUN_PROJECT_MISMATCH: owningRunId '{owning_run_id}' belongs to another project"
@@ -448,10 +480,9 @@ pub(crate) fn consumer_dependency_set_digest(
 /// read of `source_object_identity` in this project. This is the core query
 /// the Freshness re-evaluation flow uses after a Source mutation lands on
 /// the Change Feed.
-/// No production caller yet -- the Change Feed-driven Freshness
-/// re-evaluation flow this Reverse Dependency Lookup is designed for
-/// (see `publish_runtime.rs`'s module doc pipeline diagram) has not
-/// landed.
+/// Gate C2-1's Change Feed-driven incremental Freshness runtime is the
+/// production caller; rebuild/diagnostic paths continue to use forward
+/// Consumer lookup.
 #[allow(dead_code)]
 pub(crate) fn find_edges_by_source(
     conn: &Connection,
@@ -691,7 +722,30 @@ mod tests {
     fn invalid_owning_run_identity_fails_closed_at_the_writer() {
         let db = test_db();
         db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('run-1', 'project-1', 'x', '{}', '{}', 'd',
+                         'completed', '{}', 'sha256:snap',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
             for (label, consumer_kind, consumer_key, source, owning_run_id) in [
+                (
+                    "missing proposal-revision owner on a non-snapshot Source",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-missing-scene",
+                    "project:scene:scene-1",
+                    None,
+                ),
+                (
+                    "dangling proposal-revision owner on a non-snapshot Source",
+                    PROPOSAL_REVISION_CONSUMER_KIND,
+                    "revision-dangling-scene",
+                    "project:scene:scene-1",
+                    Some("run-does-not-exist"),
+                ),
                 (
                     "empty owner",
                     PROPOSAL_REVISION_CONSUMER_KIND,

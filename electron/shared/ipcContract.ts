@@ -822,6 +822,9 @@ export interface NapiBackendLike {
   revalidateLicense?(): Promise<string>;
   deactivateLicense?(): Promise<string>;
   runLicenseValidateCycle?(): Promise<string | null>;
+  // renderer command ではなく、Change Feed を駆動する Electron main
+  // scheduler 専用。1回につきNative側の有界batchを最大1件処理する。
+  runNarrativeFreshnessCycle?(): Promise<string | null>;
   // post_effect run 系（Phase 3d）。settings は dispatch が1回だけ読んだ
   // AiSettings snapshot。API key は未登録時 null、safeStorage lookup 自体が
   // 失敗した場合は apiKeyError に生メッセージを載せる。native は cache hit なら

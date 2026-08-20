@@ -24,6 +24,7 @@ use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
     verify_task_lease, with_immediate_transaction,
 };
+use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
@@ -60,6 +61,47 @@ pub(crate) fn ensure_run_project(
         Some(_) => anyhow::bail!("narrative extraction run project mismatch"),
         None => anyhow::bail!("narrative extraction run not found"),
     }
+}
+
+fn ensure_generic_task_api_allowed(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
+    let (has_run_kind, has_consumer_id): (bool, bool) = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM pragma_table_info('narrative_extraction_runs')
+              WHERE name = 'run_kind'
+           ),
+           EXISTS(
+             SELECT 1 FROM pragma_table_info('narrative_extraction_runs')
+              WHERE name = 'consumer_id'
+           )",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    match (has_run_kind, has_consumer_id) {
+        // Pre-C2 compatibility schemas cannot represent a system-owned
+        // incremental Freshness Run, so their generic task APIs retain the
+        // legacy behavior. A half-upgraded schema is ambiguous and must not
+        // silently bypass the ownership guard.
+        (false, false) => return Ok(()),
+        (true, true) => {}
+        _ => anyhow::bail!(
+            "NEX_SYSTEM_RUN_SCHEMA_INVALID: run_kind and consumer_id must be upgraded together"
+        ),
+    }
+
+    let system_owned: bool = conn.query_row(
+        "SELECT EXISTS(
+           SELECT 1 FROM narrative_extraction_runs
+            WHERE id = ?1 AND run_kind = 'freshness-evaluation'
+              AND consumer_id = ?2
+         )",
+        params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        !system_owned,
+        "NEX_SYSTEM_RUN_API_FORBIDDEN: incremental Freshness lifecycle is owned by its automatic runtime"
+    );
+    Ok(())
 }
 
 pub(crate) fn insert_attempt(
@@ -616,6 +658,7 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
+            ensure_generic_task_api_allowed(conn, &run_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
                     SET status = 'cancelled',
@@ -652,6 +695,8 @@ pub fn claim_task(
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+            ensure_generic_task_api_allowed(conn, &payload.run_id)?;
             let claimed = claim_next_task(conn, &payload)?;
             Ok(match claimed {
                 Some(task) => json!({
@@ -675,6 +720,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+            ensure_generic_task_api_allowed(conn, &payload.run_id)?;
             verify_task_lease(
                 conn,
                 &payload.task_id,
@@ -738,6 +784,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &payload.run_id, &payload.project_id)?;
+            ensure_generic_task_api_allowed(conn, &payload.run_id)?;
             verify_task_lease(
                 conn,
                 &payload.task_id,

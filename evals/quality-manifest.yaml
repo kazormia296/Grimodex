@@ -201,10 +201,22 @@ requirements:
       - src/features/ai-policy/policyGuard.ts
       - src/features/chat/agent/toolExecutors.ts
       - agent-tool-manifest.json
+      - policies/narrative/narrative-run-kind-policy.json
+      - scripts/quality/validate-run-kind-policy.mjs
+      - policies/narrative/narrative-failure-policy.json
+      - scripts/quality/validate-execution-state-authority.mjs
+      - electron/main/narrativeFreshness.ts
+      - electron/shared/ipcContract.ts
+      - electron/native/grimodex-node/src/lib.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
+      - scripts/quality/validate-run-kind-policy.test.mjs
+      - scripts/quality/validate-execution-state-authority.test.mjs
+      - electron/main/narrativeFreshness.test.ts
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
+      - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:

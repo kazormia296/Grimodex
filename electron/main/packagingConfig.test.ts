@@ -184,7 +184,7 @@ describe("Electron release packaging contract", () => {
     expect(config.publish).toEqual({
       provider: "github",
       owner: "kazormia296",
-      repo: "Grimodex",
+      repo: "GrimodexReleases",
     });
   });
 });

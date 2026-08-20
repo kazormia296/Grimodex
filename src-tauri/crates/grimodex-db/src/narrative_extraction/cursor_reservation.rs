@@ -18,8 +18,9 @@
 //! ack-only, no reservation awareness — the pre-C2 write path some
 //! consumers still use): this module's `acknowledge_cursor_in_tx` also
 //! clears `active_run_id`/`reserved_through_sequence`/`semantic_epoch_id`
-//! back to NULL, and stamps its own `updated_at` rather than taking one as
-//! a parameter. Both live under `narrative_change_cursors` and remain safe
+//! and the row lease back to NULL, and stamps its own `updated_at` rather
+//! than taking one as a parameter. Both live under
+//! `narrative_change_cursors` and remain safe
 //! to mix — a pre-C2 consumer that only ever calls the `change_feed`
 //! version keeps its reservation columns NULL forever, exactly as
 //! `migrate_narrative_change_cursors_v23` leaves them.
@@ -32,12 +33,9 @@
 //! function's doc comment for the exact contract and the five conditions it
 //! checks.
 //!
-//! Nothing in production code calls any of this yet — same Wave 2 status as
-//! Wave 1's Lane A/Lane B: no IPC/N-API entrypoint exists, so every item
-//! here is reachable only from this module's own tests until a later
-//! Transport Assembly pass wires up a caller. That is also why this module
-//! silences `dead_code` at module scope (mirroring `execution_state.rs`)
-//! rather than sprinkling per-item `#[allow(dead_code)]`.
+//! Gate C2-1's `incremental_freshness` runtime is the production caller of
+//! the reservation/CAS path. Legacy ack-only consumers still use the older
+//! Change Feed helper described above.
 #![allow(dead_code)]
 
 use rusqlite::{params, Connection, OptionalExtension};
@@ -125,7 +123,7 @@ pub(crate) fn reserve_cursor_range_in_tx(
     );
 
     let updated_at = now_string();
-    conn.execute(
+    let updated = conn.execute(
         "INSERT INTO narrative_change_cursors (
             project_id, consumer_id, acknowledged_through_sequence, updated_at,
             semantic_epoch_id, reserved_through_sequence, active_run_id
@@ -134,7 +132,9 @@ pub(crate) fn reserve_cursor_range_in_tx(
             semantic_epoch_id = excluded.semantic_epoch_id,
             reserved_through_sequence = excluded.reserved_through_sequence,
             active_run_id = excluded.active_run_id,
-            updated_at = excluded.updated_at",
+            updated_at = excluded.updated_at
+          WHERE narrative_change_cursors.active_run_id IS NULL
+             OR narrative_change_cursors.active_run_id = excluded.active_run_id",
         params![
             project_id,
             consumer_id,
@@ -144,13 +144,77 @@ pub(crate) fn reserve_cursor_range_in_tx(
             active_run_id,
         ],
     )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_CURSOR_RESERVATION_CONFLICT: cursor for consumer '{consumer_id}' in project \
+         '{project_id}' is already reserved by another Run"
+    );
+    Ok(())
+}
+
+/// Release one exact reservation without advancing the acknowledged cursor.
+///
+/// This is the recovery counterpart of
+/// [`acknowledge_cursor_reservation_in_tx`]: an interrupted Run bound to a
+/// superseded Semantic Epoch must give the range back so a fresh Run can
+/// evaluate it, but acknowledging that range would silently skip work.  The
+/// full reservation identity stays in the `WHERE` clause, so a stale recovery
+/// attempt cannot clear a newer Run's reservation.
+pub(crate) fn release_cursor_reservation_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_id: &str,
+    run_id: &str,
+    semantic_epoch_id: &str,
+    through_sequence: i64,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Change Feed cursor release requires a caller-owned transaction"
+    );
+    require_non_empty(project_id, "projectId")?;
+    require_non_empty(consumer_id, "consumerId")?;
+    require_non_empty(run_id, "runId")?;
+    require_non_empty(semantic_epoch_id, "semanticEpochId")?;
+    anyhow::ensure!(
+        through_sequence >= 0,
+        "NEX_CURSOR_RESERVATION_INVALID: throughSequence must not be negative"
+    );
+
+    let updated = conn.execute(
+        "UPDATE narrative_change_cursors
+            SET semantic_epoch_id = NULL,
+                reserved_through_sequence = NULL,
+                active_run_id = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                updated_at = ?1
+          WHERE project_id = ?2
+            AND consumer_id = ?3
+            AND active_run_id = ?4
+            AND semantic_epoch_id = ?5
+            AND reserved_through_sequence = ?6",
+        params![
+            now_string(),
+            project_id,
+            consumer_id,
+            run_id,
+            semantic_epoch_id,
+            through_sequence,
+        ],
+    )?;
+    anyhow::ensure!(
+        updated == 1,
+        "NEX_CURSOR_RESERVATION_STALE: cursor for consumer '{consumer_id}' in project \
+         '{project_id}' no longer holds the reservation being released"
+    );
     Ok(())
 }
 
 /// Confirm a reservation: advance `acknowledged_through_sequence` to
 /// `max(current, through_sequence)` (never move it backward) and release
 /// the reservation — `active_run_id`/`reserved_through_sequence`/
-/// `semantic_epoch_id` all go back to NULL in the same statement, so the
+/// `semantic_epoch_id` and lease fields all go back to NULL in the same statement, so the
 /// row is never observably "acknowledged but still reserved". Safe to call
 /// on a row with no active reservation (those columns are already NULL and
 /// stay NULL); this is also the correct way to release a reservation
@@ -186,6 +250,9 @@ pub(crate) fn acknowledge_cursor_in_tx(
                 semantic_epoch_id = NULL,
                 reserved_through_sequence = NULL,
                 active_run_id = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = NULL,
                 updated_at = ?2
           WHERE project_id = ?3 AND consumer_id = ?4",
         params![through_sequence, updated_at, project_id, consumer_id],
@@ -255,6 +322,9 @@ pub(crate) fn acknowledge_cursor_reservation_in_tx(
                 semantic_epoch_id = NULL,
                 reserved_through_sequence = NULL,
                 active_run_id = NULL,
+                lease_owner = NULL,
+                lease_expires_at = NULL,
+                last_error = NULL,
                 updated_at = ?2
           WHERE project_id = ?3
             AND consumer_id = ?4
@@ -455,6 +525,13 @@ mod tests {
             with_immediate_transaction(conn, |conn| {
                 reserve_cursor_range_in_tx(conn, "project-1", "consumer-a", &epoch_id, "run-1", 10)
             })?;
+            conn.execute(
+                "UPDATE narrative_change_cursors
+                    SET lease_owner = 'worker-a', lease_expires_at = '2099-01-01T00:00:00.000Z',
+                        last_error = 'old retryable failure'
+                  WHERE project_id = 'project-1' AND consumer_id = 'consumer-a'",
+                [],
+            )?;
 
             let reserved = get_cursor(conn, "project-1", "consumer-a")?.expect("row exists");
             assert_eq!(reserved.acknowledged_through_sequence, 0);
@@ -474,9 +551,68 @@ mod tests {
             assert_eq!(acknowledged.semantic_epoch_id, None);
             assert_eq!(acknowledged.reserved_through_sequence, None);
             assert_eq!(acknowledged.active_run_id, None);
+            assert_eq!(acknowledged.lease_owner, None);
+            assert_eq!(acknowledged.lease_expires_at, None);
+            assert_eq!(acknowledged.last_error, None);
             Ok(())
         })
         .expect("reserve/ack round trip succeeds");
+    }
+
+    #[test]
+    fn a_second_run_cannot_overwrite_an_active_reservation() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch(conn, "project-1");
+            insert_run(conn, "run-1", "project-1", "running");
+            insert_run(conn, "run-2", "project-1", "running");
+            with_immediate_transaction(conn, |conn| {
+                reserve_cursor_range_in_tx(conn, "project-1", "consumer-a", &epoch_id, "run-1", 10)
+            })?;
+
+            let error = with_immediate_transaction(conn, |conn| {
+                reserve_cursor_range_in_tx(conn, "project-1", "consumer-a", &epoch_id, "run-2", 20)
+            })
+            .expect_err("a different Run must not steal an active reservation");
+            assert!(error
+                .to_string()
+                .starts_with("NEX_CURSOR_RESERVATION_CONFLICT"));
+            let row = get_cursor(conn, "project-1", "consumer-a")?.expect("row exists");
+            assert_eq!(row.active_run_id.as_deref(), Some("run-1"));
+            assert_eq!(row.reserved_through_sequence, Some(10));
+            Ok(())
+        })
+        .expect("reservation conflict is fail-closed");
+    }
+
+    #[test]
+    fn release_returns_a_stale_epoch_range_without_acknowledging_it() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let epoch_id = create_epoch(conn, "project-1");
+            insert_run(conn, "run-1", "project-1", "running");
+            with_immediate_transaction(conn, |conn| {
+                reserve_cursor_range_in_tx(conn, "project-1", "consumer-a", &epoch_id, "run-1", 10)
+            })?;
+            with_immediate_transaction(conn, |conn| {
+                release_cursor_reservation_in_tx(
+                    conn,
+                    "project-1",
+                    "consumer-a",
+                    "run-1",
+                    &epoch_id,
+                    10,
+                )
+            })?;
+
+            let row = get_cursor(conn, "project-1", "consumer-a")?.expect("row exists");
+            assert_eq!(row.acknowledged_through_sequence, 0);
+            assert_eq!(row.active_run_id, None);
+            assert_eq!(row.reserved_through_sequence, None);
+            assert_eq!(row.semantic_epoch_id, None);
+            Ok(())
+        })
+        .expect("stale reservation is returned without data loss");
     }
 
     #[test]

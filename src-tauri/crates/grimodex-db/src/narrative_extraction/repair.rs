@@ -1869,6 +1869,34 @@ mod tests {
     }
 
     #[test]
+    fn sealing_rejects_a_version_three_verify_before_deserializing_its_report() {
+        let (_workspace_path, db) = test_workspace("verify-v3");
+        let epoch_id = seed_epoch(&db, "project-1");
+        // Deliberately omit report/reportDigest. Version 3 predates
+        // `consumerKeysWithUncomputedDependencySetDigest`; the version gate
+        // must reject it before any attempt to deserialize the old shape.
+        seed_raw_run(
+            &db,
+            "verify-v3",
+            "project-1",
+            VERIFY_RUN_KIND,
+            "completed",
+            &epoch_id,
+            Some(&json!({ "verifyContractVersion": "3" })),
+        );
+
+        let error = db
+            .with_conn(|conn| seal_repair_plan(conn, "project-1", "verify-v3", &epoch_id))
+            .expect_err("a version-3 Verify result must not seal a version-4 Repair plan");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_REPAIR_VERIFY_CONTRACT_VERSION_MISMATCH"),
+            "the contract-version gate must run before report deserialization: {error}"
+        );
+    }
+
+    #[test]
     fn sealing_against_a_failed_or_running_verify_run_fails_closed() {
         let (_workspace_path, db) = test_workspace("case");
         let epoch_id = seed_epoch(&db, "project-1");

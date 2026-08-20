@@ -138,11 +138,45 @@ Gate C2 — IN PROGRESS
   Contract / Registry / Ledger Spine (C2-00): complete
   Schema / Transport Extension Spine (C2-01): complete
   Wave 1 foundation lanes:                    complete
-  Wave 1 Transport Assembly (C2-T1):          in progress (see below)
+  Wave 1 Transport Assembly (C2-T1):          complete
   Wave 2 runtime / read-model lanes:          complete
-  Wave 2 Transport / Quality Assembly (C2-T2): blocked (see below)
+  C2-1 incremental Freshness runtime:         complete (see below)
+  C2-3 Finding identity / Attention re-home:  planned
+  C2-5 shared triggers / lifecycle recovery:  planned
   Canonical Authority Cutover (C2-Z):         blocked (see below)
 ```
+
+### C2-1 Change-Feed-driven incremental Freshness runtime
+
+The production runtime is
+`src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs`.
+It reserves a bounded canonical Change Feed range, resolves event object keys
+to Source identities, performs reverse Dependency lookup, evaluates the
+affected Edges, and publishes every affected Consumer before one cursor
+acknowledgement in the same transaction. Ratified component-schema and
+restore/Epoch-reset markers conservatively fan out to the full graph. Semantic
+Epoch, Task lease, cursor reservation, evaluated Source state, and Edge
+declaration checks guard publication. Only running work is resumable; a
+completed Run cannot acknowledge an unacknowledged range, and bounded
+Run/Task/Attempt recovery stops after three failed Attempts until a canonical
+Epoch rotation releases the held range for a new runtime-owned Run.
+
+`electron/native/grimodex-node/src/lib.rs` exposes this as a main-only Native
+cycle. `electron/main/narrativeFreshness.ts` owns the single-flight scheduler
+and bounded backlog pacing; it deliberately adds no renderer IPC or preload
+surface. Contract-level fixtures live in
+`src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs`
+and `electron/main/narrativeFreshness.test.ts`.
+
+This completion is intentionally narrower than the remaining Gate work. C2-3
+still owns three-layer Finding identity and orphaned Attention re-homing. C2-5
+still owns automatic Backfill / Verify / Rebuild-Derived scheduling and shared
+cross-Run-Kind lifecycle recovery. C2-Z remains blocked, and Generic Consumer
+Freshness remains shadow rather than the canonical read authority.
+
+The paragraphs below preserve the landing rationale for earlier C2 slices;
+their historical environment-specific validation caveats are not the current
+Gate status.
 
 C2-T1 has wired its first slice end-to-end: Lane D's Attention typed writer
 (`narrative_maintenance_attention_set`/`_clear`) and Lane O's Maintenance
@@ -1007,7 +1041,8 @@ mirror, not a second authority. `dependencySetDigest` fixes
 `narrative_consumer_freshness.dependency_set_digest` as a digest over the
 set of `source_object_identity` values declared under the Consumer, and
 records that `NULL` means "not evaluated since SCHEMA 24 added the
-column", never "inconsistent".
+column", never "inconsistent". Verify reports that state separately as
+incomplete evidence; it does not disappear into a clean result.
 
 That column now has a writer and a check. Publishing a Freshness
 evaluation stamps the digest, and
@@ -1015,23 +1050,27 @@ evaluation stamps the digest, and
 `consumer-freshness-dependency-set-digest` — the "is this Consumer still
 reading the same things?" question no per-Edge Freshness value can answer,
 since a Consumer that stopped depending on a Source has no Edge left to go
-stale. Verify coverage is therefore **7 of the 13 named checks**, not 6,
-and `VERIFY_CONTRACT_VERSION` moved to `"3"`: a stored version-`"1"`
-result is refused by `seal_repair_plan`, so an in-flight Verify has to be
-re-run before a Repair can be sealed from it. The Semantic Index half of
+stale. Verify coverage is therefore **7 of the 13 named checks**, not 6.
+The Semantic Index half of
 `dependency-set-digest` is still unimplemented — nothing writes
 `narrative_semantic_index_metadata` yet.
 
-`"3"` rather than `"2"` because the report gained three fields in one
-Gate, not one: `consumer_keys_with_stale_dependency_set_digest` (the check
-above), `edge_ids_with_unresolvable_consumer_scope`, and
-`orphaned_attention_finding_keys`. None of the three is a _new_ named
-check — the 13 are unchanged — but each is a field a version-`"1"` report
-does not carry, and none is `#[serde(default)]`, so an older stored report
-cannot be deserialized rather than being read as a clean bill of health
-over a smaller set of questions. `"2"` existed only mid-branch, between the
-second field and the third, and was never released; a real workspace only
-ever experiences `"1"` → `"3"`.
+Gate C2-2 originally moved `VERIFY_CONTRACT_VERSION` to `"3"` rather than
+`"2"` because the report gained three fields in one Gate, not one:
+`consumer_keys_with_stale_dependency_set_digest`,
+`edge_ids_with_unresolvable_consumer_scope`, and
+`orphaned_attention_finding_keys`. `"2"` existed only mid-branch and was
+never released.
+
+The current version is `"4"`. It adds
+`consumer_keys_with_uncomputed_dependency_set_digest`, keeping a NULL
+digest out of the inconsistency list while making the incomplete check
+visible. `DependencyGraphVerifyReport::is_consistent()` answers whether the
+covered checks found a defect, `is_complete()` answers whether every
+Consumer had a computed dependency-set baseline, and `is_clean()` requires
+both. A stored version-`"3"` result lacks that field and could otherwise
+false-PASS, so `seal_repair_plan` refuses older versions and an in-flight
+Verify must be re-run before Repair can be sealed.
 
 The `keyFormat` shape rules are enforced by the typed writers
 (`record_dependency_edge_in_tx` and `write_consumer_freshness_in_tx` both
@@ -1071,6 +1110,14 @@ SCHEMA 29 made for Contribution provenance: it is a _provenance_ fact, so
 it stays true after the Proposal it came from is deleted. Rows whose
 declaring Run cannot be identified keep `NULL` rather than being given a
 wrong one.
+
+For a `proposal-revision` Edge, current Producers can always identify that
+Run. The writer therefore requires `owning_run_id` to be nonblank and to
+name a persisted Run in the same project for every Source kind, not only
+`snapshot-document`. Verify applies the same rule to historical/corrupt
+rows; Rebuild publishes `unknown` and skips Source evaluation when the
+provenance is absent, dangling, or cross-project. Run Consumers retain their
+compatibility fallback from `consumer_key` for older rows.
 
 The re-key reads its finer attribution out of
 `narrative_revision_source_basis`, which already records, per Revision,
@@ -1147,20 +1194,9 @@ it), and a `finding_key` convention mismatch between Lane J's writer and
 Lane O's reader that made every real diagnostic Finding Observation
 invisible to the Inbox. Both are now regression-tested.
 
-**C2-T1 / C2-T2 / C2-Z are blocked on this environment's Rust toolchain**,
-not on design or implementation gaps. `cargo check`/`cargo test` fail with
-a `libsqlite3-sys` build-script error (`cfg_select` unstable library
-feature) that reproduces identically on an unmodified checkout — a
-toolchain/dependency incompatibility, not something introduced by Gate C2.
-Writing N-API bindings (`electron/native/grimodex-node/src/lib.rs`) or
-Electron IPC entries without any way to compile-check them carries a
-materially higher risk than the pure-Rust-logic work above (a wrong type
-signature would break the whole crate's build, and rustfmt/Python-sqlite3
-verification — the substitute used throughout C2-00/C2-01/Wave 1/Wave 2 —
-cannot catch that class of error). All 15 Wave 1+2 lane modules are
-therefore complete, integrated, and tested, but reachable only from their
-own `#[cfg(test)]` modules until a working toolchain allows Transport
-Assembly to proceed.
+The earlier C2 lane's environment-specific Rust toolchain block is historical,
+not a current dependency for C2-1 or C2-T1. Current implementation evidence is
+the production and fixture paths recorded in the status section above.
 
 Wave 1 landed 7 new core Rust modules under
 `src-tauri/crates/grimodex-db/src/narrative_extraction/` — Lane A
