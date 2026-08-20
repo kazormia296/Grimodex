@@ -108,4 +108,4 @@ rpm:
 publish:
   provider: github
   owner: kazormia296
-  repo: Grimodex
+  repo: GrimodexReleases

@@ -56,6 +56,11 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  SOURCE_REPOSITORY: ${{ github.repository }}
+  PUBLICATION_REPOSITORY: kazormia296/GrimodexReleases
+  PUBLICATION_TARGET: main
+
 jobs:
   ci:
     name: CI Checks
@@ -152,6 +157,7 @@ jobs:
     needs: release-gate
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    environment: release
     permissions:
       contents: read
     outputs:
@@ -164,7 +170,8 @@ jobs:
       - name: Verify an existing completion marker
         id: state
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GRIMODEX_RELEASES_TOKEN }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           VERSION: ${{ needs.release-gate.outputs.version }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
@@ -176,7 +183,7 @@ jobs:
           fi
           RELEASES_JSON="$RUNNER_TEMP/releases.json"
           gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+            "repos/${PUBLICATION_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
           RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
             '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
           if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
@@ -202,7 +209,7 @@ jobs:
             '.[][] | select(.tag_name == $tag) | .assets[]? | select(.name == "latest.json") | .id' \
             "$RELEASES_JSON")
           gh api -H "Accept: application/octet-stream" \
-            "repos/${GITHUB_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
+            "repos/${PUBLICATION_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
             > "$EXISTING_DIR/latest.json"
           node --input-type=module -e \
             "import fs from 'node:fs'; import {validateBridgeManifestSchema} from './scripts/generate-tauri-bridge-manifest.mjs'; const m=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); validateBridgeManifestSchema(m); if(m.version!==process.env.VERSION) throw new Error('Existing bridge version mismatch');" \
@@ -550,6 +557,9 @@ jobs:
       - name: Verify Tauri v0.10.4 to Electron migration
         if: matrix.id == 'windows'
         shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           $Installer = @(Get-ChildItem -Path release/electron -Filter 'Grimodex-*-windows-x64.exe' -File)
           if ($Installer.Count -ne 1) {
@@ -856,6 +866,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
           VERSION: ${{ needs.release-gate.outputs.version }}
           TAG: ${{ needs.release-gate.outputs.tag }}
         run: |
@@ -885,7 +896,7 @@ jobs:
             --assets-dir release-assets \
             --version "$VERSION" \
             --tag "$TAG" \
-            --repository "$GITHUB_REPOSITORY" \
+            --repository "$PUBLICATION_REPOSITORY" \
             --notes "Grimodex Electron v${VERSION} migration bridge debug" \
             --pub-date "$PUB_DATE" \
             --output release-assets/latest.json
@@ -940,9 +951,10 @@ jobs:
         needs.bridge-signing-preflight.result == 'success'))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    environment: release
     permissions:
       actions: read
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -1156,7 +1168,8 @@ jobs:
       - name: Detect an already completed immutable bridge release
         id: release-state
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GRIMODEX_RELEASES_TOKEN }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           VERSION: ${{ needs.release-gate.outputs.version }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
@@ -1168,7 +1181,7 @@ jobs:
           fi
           RELEASES_JSON="$RUNNER_TEMP/releases.json"
           gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+            "repos/${PUBLICATION_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
           RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
             '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
           if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
@@ -1193,7 +1206,7 @@ jobs:
             "$RELEASES_JSON")
           mkdir -p existing-release-assets
           gh api -H "Accept: application/octet-stream" \
-            "repos/${GITHUB_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
+            "repos/${PUBLICATION_REPOSITORY}/releases/assets/${LATEST_ASSET_ID}" \
             > existing-release-assets/latest.json
           cp existing-release-assets/latest.json release-assets/latest.json
           node --input-type=module -e \
@@ -1251,6 +1264,7 @@ jobs:
           VERSION: ${{ needs.release-gate.outputs.version }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           SOURCE_SHA: ${{ steps.recovery-source.outputs.source_sha || needs.release-gate.outputs.candidate_sha }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
         run: |
           set -euo pipefail
           PUB_DATE=$(git show -s --format=%cI "$SOURCE_SHA")
@@ -1258,7 +1272,7 @@ jobs:
             --assets-dir release-assets \
             --version "$VERSION" \
             --tag "$TAG" \
-            --repository "$GITHUB_REPOSITORY" \
+            --repository "$PUBLICATION_REPOSITORY" \
             --notes "Grimodex Electron v${VERSION} migration bridge" \
             --pub-date "$PUB_DATE" \
             --output release-assets/latest.json
@@ -1272,9 +1286,44 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Create or update the single draft GitHub release
+      - name: Stage legal and provenance assets for the public release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
+          SOURCE_RUN_ID: ${{ needs.release-gate.outputs.source_run_id }}
+          SOURCE_TAG: ${{ needs.release-gate.outputs.tag }}
+          SOURCE_SHA: ${{ steps.recovery-source.outputs.source_sha || needs.release-gate.outputs.candidate_sha }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
+          PUBLICATION_TAG: ${{ needs.release-gate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          cp LICENSE release-assets/LICENSE
+          cp NOTICE release-assets/NOTICE
+          cp "$RELEASE_NOTES_FILE" release-assets/RELEASE_NOTES.md
+          SOURCE_RUN_ATTEMPT=$(gh api \
+            "repos/${SOURCE_REPOSITORY}/actions/runs/${SOURCE_RUN_ID}" \
+            --jq .run_attempt)
+          if ! [[ "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::Source run attempt is invalid: ${SOURCE_RUN_ATTEMPT}" >&2
+            exit 1
+          fi
+          node scripts/write-release-provenance.mjs \
+            --assets-dir release-assets \
+            --output release-assets/provenance.json \
+            --source-repository "$SOURCE_REPOSITORY" \
+            --source-tag "$SOURCE_TAG" \
+            --source-commit "$SOURCE_SHA" \
+            --source-run-id "$SOURCE_RUN_ID" \
+            --source-run-attempt "$SOURCE_RUN_ATTEMPT" \
+            --publication-repository "$PUBLICATION_REPOSITORY" \
+            --publication-tag "$PUBLICATION_TAG"
+
+      - name: Create or update the single draft GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GRIMODEX_RELEASES_TOKEN }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
+          PUBLICATION_TARGET: ${{ env.PUBLICATION_TARGET }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           VERSION: ${{ needs.release-gate.outputs.version }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
@@ -1288,26 +1337,9 @@ jobs:
             exit 0
           fi
 
-          if [ "$RECOVER_DRAFT" = "true" ]; then
-            TAG_REF_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}")
-            TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_REF_JSON")
-            TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_REF_JSON")
-            if [ "$TAG_OBJECT_TYPE" != "tag" ]; then
-              echo "::error::Draft recovery tag is no longer annotated: ${TAG}" >&2
-              exit 1
-            fi
-            TAG_OBJECT_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}")
-            TAG_OBJECT_TYPE=$(jq -r .object.type <<<"$TAG_OBJECT_JSON")
-            TAG_OBJECT_SHA=$(jq -r .object.sha <<<"$TAG_OBJECT_JSON")
-            if [ "$TAG_OBJECT_TYPE" != "commit" ] || [ "$TAG_OBJECT_SHA" != "$SOURCE_SHA" ]; then
-              echo "::error::Draft recovery tag moved before Release mutation: ${TAG}" >&2
-              exit 1
-            fi
-          fi
-
           RELEASES_JSON="$RUNNER_TEMP/releases-before-mutation.json"
           gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+            "repos/${PUBLICATION_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
           RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
             '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
           if [ "$RELEASE_MATCH_COUNT" -gt 1 ]; then
@@ -1331,10 +1363,16 @@ jobs:
               '{name: $name, body: $body, draft: true, prerelease: $prerelease}' \
               > "$UPDATE_JSON"
             gh api --method PATCH \
-              "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
+              "repos/${PUBLICATION_REPOSITORY}/releases/${RELEASE_ID}" \
               --input "$UPDATE_JSON" >/dev/null
           else
-            CREATE_ARGS=(--draft --verify-tag --title "Grimodex v${VERSION}" \
+            if gh api "repos/${PUBLICATION_REPOSITORY}/git/ref/tags/${TAG}" \
+              > "$RUNNER_TEMP/publication-tag.json" 2>/dev/null; then
+              echo "::error::Publication tag ${TAG} already exists without a matching release; refusing to attach a new release to it." >&2
+              exit 1
+            fi
+            CREATE_ARGS=(--repo "$PUBLICATION_REPOSITORY" --draft --target "$PUBLICATION_TARGET" \
+              --title "Grimodex v${VERSION}" \
               --notes-file "$RELEASE_NOTES_FILE")
             if [ "$PRERELEASE" = "true" ]; then
               CREATE_ARGS+=(--prerelease)
@@ -1347,17 +1385,18 @@ jobs:
             if [ "$(basename "$asset")" = "latest.json" ]; then
               continue
             fi
-            gh release upload "$TAG" "$asset" --clobber
+            gh release upload "$TAG" "$asset" --repo "$PUBLICATION_REPOSITORY" --clobber
           done
           if [ "$PRERELEASE" = "false" ]; then
             # Completion marker: upload only after every installer, signature,
             # and electron-updater metadata asset succeeded. Never clobber it.
-            gh release upload "$TAG" release-assets/latest.json
+            gh release upload "$TAG" release-assets/latest.json --repo "$PUBLICATION_REPOSITORY"
           fi
 
       - name: Verify Draft identity and exact body through the GitHub API
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GRIMODEX_RELEASES_TOKEN }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
           TAG: ${{ needs.release-gate.outputs.tag }}
           PRERELEASE: ${{ needs.release-gate.outputs.prerelease }}
         run: |
@@ -1365,7 +1404,7 @@ jobs:
           RELEASES_JSON="$RUNNER_TEMP/releases-after-mutation.json"
           RELEASE_JSON="$RUNNER_TEMP/release.json"
           gh api --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
+            "repos/${PUBLICATION_REPOSITORY}/releases?per_page=100" > "$RELEASES_JSON"
           RELEASE_MATCH_COUNT=$(jq --arg tag "$TAG" \
             '[.[][] | select(.tag_name == $tag)] | length' "$RELEASES_JSON")
           if [ "$RELEASE_MATCH_COUNT" -ne 1 ]; then
@@ -1375,5 +1414,5 @@ jobs:
           jq --arg tag "$TAG" \
             '.[][] | select(.tag_name == $tag)' "$RELEASES_JSON" > "$RELEASE_JSON"
           node --input-type=module -e \
-            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.env.RELEASE_NOTES_FILE,'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; if(release.tag_name!==process.env.TAG) throw new Error('Draft tag mismatch'); if(release.draft!==true) throw new Error('Release must remain a Draft'); if(release.prerelease!==expectedPrerelease) throw new Error('Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Draft body does not match authored release notes'); if(!Number.isSafeInteger(release.id) || release.id <= 0) throw new Error('Draft release ID is invalid'); console.log('Draft Release verified:', release.html_url);" \
+            "import fs from 'node:fs'; const release=JSON.parse(fs.readFileSync(process.argv[1],'utf8')); const expectedBody=fs.readFileSync(process.env.RELEASE_NOTES_FILE,'utf8'); const expectedPrerelease=process.env.PRERELEASE==='true'; const names=new Set(release.assets.map((asset)=>asset.name)); for(const name of ['LICENSE','NOTICE','RELEASE_NOTES.md','provenance.json']) if(!names.has(name)) throw new Error('Draft is missing required distribution asset: '+name); if(release.tag_name!==process.env.TAG) throw new Error('Draft tag mismatch'); if(release.draft!==true) throw new Error('Release must remain a Draft'); if(release.prerelease!==expectedPrerelease) throw new Error('Draft prerelease state mismatch'); if(release.body!==expectedBody) throw new Error('Draft body does not match authored release notes'); if(!Number.isSafeInteger(release.id) || release.id <= 0) throw new Error('Draft release ID is invalid'); console.log('Draft Release verified:', release.html_url);" \
             "$RELEASE_JSON"

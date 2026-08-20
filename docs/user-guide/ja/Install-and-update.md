@@ -8,7 +8,7 @@
 
 ## 使う配布物を選ぶ
 
-最新の公開状態、チェックサム、Assetsの実在は、必ず[GitHub Releases](https://github.com/kazormia296/Grimodex/releases)で確認してください。v2.0.10の配布形式は次の構成です。
+最新の公開状態、チェックサム、Assetsの実在は、必ず[GitHub Releases](https://github.com/kazormia296/GrimodexReleases/releases)で確認してください。v2.0.10の配布形式は次の構成です。
 
 | 環境 | 公開区分 | 手動導入用形式 |
 | --- | --- | --- |
