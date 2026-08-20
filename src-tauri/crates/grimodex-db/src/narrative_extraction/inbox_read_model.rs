@@ -54,12 +54,14 @@
 //! `build_maintenance_inbox_never_mutates_attention_rows` test below).
 //! Instead, expiry is applied purely at read time, per entry:
 //!
-//! - `disposition == Snoozed` and still applicable
+//! - `disposition == Snoozed` and still applicable for every currently active
+//!   Finding identity under the Consumer
 //!   ([`attention::is_attention_applicable`] returns `true`, i.e. the
 //!   Attention row's `material_basis_digest` still matches the current
 //!   evidence *and* `snoozed_until` is still in the future) -- the Consumer
-//!   is **excluded** from the returned Vec entirely. This is what "snoozed"
-//!   means: temporarily hidden.
+//!   is **excluded** from the returned Vec entirely. A Consumer with another
+//!   active Edge/Finding that the Attention row does not exactly cover stays
+//!   visible; a snooze must not broaden from one Edge to its siblings.
 //! - `disposition == Snoozed` but no longer applicable (`snoozed_until` has
 //!   lapsed, or the material basis moved out from under it) -- the Consumer
 //!   is **included**, `is_snoozed_and_active` is `false`, and `attention`
@@ -104,13 +106,17 @@
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use std::collections::BTreeMap;
 
 use super::attention::{
     get_attention, is_attention_applicable, AttentionDisposition, AttentionRow,
 };
 use super::consumer_identity::consumer_finding_key;
 use super::evaluator::{BuildAction, EvidenceFreshness};
-use super::finding_observation::{list_observations_for_epoch, FindingObservationRow};
+use super::finding_observation::{
+    latest_finding_lifecycle_for_identity, list_observations_for_epoch, FindingLifecycleState,
+    FindingObservationRow,
+};
 use super::semantic_epoch::get_current_epoch;
 
 /// One `narrative_consumer_freshness` row exactly as stored -- the current
@@ -204,6 +210,52 @@ pub struct InboxEntry {
     pub is_snoozed_and_active: bool,
 }
 
+/// Return the latest current-epoch observation for each Finding identity that
+/// is still active. Finding Observations are append-only history, so an older
+/// observation for an Edge must not keep a Consumer visible after its latest
+/// lifecycle transition resolved that Finding. Resolution must belong to the
+/// same Semantic Epoch and be at least as new as the Observation; otherwise a
+/// newer Observation without its expected lifecycle row would be hidden by
+/// stale evidence. A missing or stale lifecycle row is treated as active
+/// (fail-open): the Inbox must not hide a Finding when the state needed to
+/// prove resolution is absent. Legacy observations without an identity are
+/// reported separately for the same reason; no exact Attention row can cover
+/// them.
+fn active_finding_observations<'a>(
+    conn: &Connection,
+    project_id: &str,
+    observations: &'a [FindingObservationRow],
+) -> anyhow::Result<(Vec<&'a FindingObservationRow>, bool)> {
+    let mut latest_by_identity = BTreeMap::new();
+    let mut has_unresolved_identity = false;
+
+    for observation in observations {
+        let Some(finding_identity) = observation.finding_identity.as_deref() else {
+            has_unresolved_identity = true;
+            continue;
+        };
+        // Observations are ordered oldest first, so the final row inserted for
+        // an identity is its freshest current-epoch evidence.
+        latest_by_identity.insert(finding_identity.to_string(), observation);
+    }
+
+    let mut active_observations = Vec::with_capacity(latest_by_identity.len());
+    for (finding_identity, observation) in latest_by_identity {
+        let latest_lifecycle =
+            latest_finding_lifecycle_for_identity(conn, project_id, &finding_identity)?;
+        let is_proven_resolved = latest_lifecycle.as_ref().is_some_and(|row| {
+            row.state == FindingLifecycleState::Resolved
+                && row.semantic_epoch_id == observation.semantic_epoch_id
+                && row.observed_at >= observation.observed_at
+        });
+        if !is_proven_resolved {
+            active_observations.push(observation);
+        }
+    }
+
+    Ok((active_observations, has_unresolved_identity))
+}
+
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:
 /// this function issues no `INSERT`/`UPDATE`/`DELETE` of its own, and calls
 /// nothing that does -- see the module's `build_maintenance_inbox_never_mutates_attention_rows`
@@ -213,8 +265,9 @@ pub struct InboxEntry {
 ///
 /// Returns entries ordered the same as [`list_consumer_freshness`]
 /// (`consumer_kind`, `consumer_key`), minus any Consumer currently hidden by
-/// an active, unexpired snooze (see module doc). Returns an empty Vec when
-/// `project_id` has no current Semantic Epoch yet.
+/// an active, unexpired snooze that covers every active Finding identity (see
+/// module doc). Returns an empty Vec when `project_id` has no current Semantic
+/// Epoch yet.
 ///
 /// `pub`: called directly from `grimodex-node`'s
 /// `narrative_maintenance_inbox_list` N-API binding (C2-T1).
@@ -244,6 +297,8 @@ pub fn build_maintenance_inbox(
         let observations =
             list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
         let latest_observation = observations.last().cloned();
+        let (active_observations, has_unresolved_identity) =
+            active_finding_observations(conn, project_id, &observations)?;
 
         // Pure read; never mutates or clears a lapsed row (attention.rs's
         // own contract).
@@ -251,29 +306,23 @@ pub fn build_maintenance_inbox(
 
         let is_snoozed_and_active = match &attention {
             Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
-                // Prefer the freshest evidence's digest when one exists;
-                // fall back to the Attention row's own digest otherwise
-                // (module doc, "Snooze expiry" section).
-                // Applicability is identity-scoped. Comparing against the
-                // Consumer-wide latest observation would let a different
-                // Edge invalidate this Attention merely because both Edges
-                // share the same finding key.
-                let matching_observation = attention_row
-                    .finding_identity
-                    .as_deref()
-                    .filter(|_| attention_row.identity_resolution_status == "resolved")
-                    .and_then(|finding_identity| {
-                        observations.iter().rev().find(|observation| {
-                            observation.finding_identity.as_deref() == Some(finding_identity)
-                        })
-                    });
-                matching_observation.is_some_and(|observation| {
-                    is_attention_applicable(
-                        attention_row,
-                        observation.material_basis_digest.as_str(),
-                        now,
-                    )
-                })
+                // The Attention row is one Consumer-grained record, but its
+                // resolved Finding identity is Edge-scoped. Hide the row only
+                // when every currently active identity is exactly that one
+                // identity and its latest evidence still satisfies the
+                // snooze. A sibling Edge must keep the Consumer visible.
+                !active_observations.is_empty()
+                    && !has_unresolved_identity
+                    && attention_row.identity_resolution_status == "resolved"
+                    && active_observations.iter().all(|observation| {
+                        observation.finding_identity.as_deref()
+                            == attention_row.finding_identity.as_deref()
+                            && is_attention_applicable(
+                                attention_row,
+                                observation.material_basis_digest.as_str(),
+                                now,
+                            )
+                    })
             }
             // Dismissed/Flagged never hide the entry; no Attention row at
             // all obviously does not either.
@@ -308,7 +357,11 @@ mod tests {
         get_attention, set_attention_in_tx, SetAttentionRequest,
     };
     use crate::narrative_extraction::evaluator::FindingReasonCode;
-    use crate::narrative_extraction::finding_observation::record_finding_observation_in_tx;
+    use crate::narrative_extraction::finding_identity::stable_finding_identity;
+    use crate::narrative_extraction::finding_observation::{
+        record_finding_lifecycle_in_tx, record_finding_observation_in_tx, FindingLifecycleState,
+        FindingLifecycleWrite,
+    };
     use crate::narrative_extraction::semantic_epoch::create_epoch_in_tx;
     use crate::narrative_extraction::{
         material_basis_digest, MaterialBasisInput, BUNDLED_FINDING_RULE_ID,
@@ -606,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn active_snooze_uses_the_attention_identity_when_a_consumer_has_multiple_edges() {
+    fn active_snooze_leaves_an_uncovered_active_sibling_visible() {
         let db = test_db();
         db.with_conn(|conn| {
             let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
@@ -669,9 +722,71 @@ mod tests {
             )?;
 
             let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+            assert_eq!(
+                entries.len(),
+                1,
+                "Edge B's active Finding must remain visible"
+            );
+            assert_eq!(
+                entries[0]
+                    .latest_observation
+                    .as_ref()
+                    .and_then(|observation| observation.edge_id.as_deref()),
+                Some("edge-b")
+            );
+            assert!(!entries[0].is_snoozed_and_active);
+
+            // A historical sibling that has since been explicitly resolved
+            // must not keep the Consumer visible forever.
+            let edge_b_identity = stable_finding_identity(
+                BUNDLED_FINDING_RULE_ID,
+                BUNDLED_FINDING_RULE_VERSION,
+                "edge-b",
+            )?;
+            record_finding_lifecycle_in_tx(
+                conn,
+                FindingLifecycleWrite {
+                    project_id: "project-1",
+                    finding_identity: &edge_b_identity,
+                    finding_key,
+                    rule_id: BUNDLED_FINDING_RULE_ID,
+                    rule_version: BUNDLED_FINDING_RULE_VERSION,
+                    state: FindingLifecycleState::Resolved,
+                    observation_digest: None,
+                    material_basis_digest: Some(&edge_b_basis),
+                    run_id: "run-b-resolved",
+                    semantic_epoch_id: &epoch_id,
+                    observed_at: "2026-08-15T00:00:03.000Z",
+                },
+            )?;
+
+            let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
             assert!(
                 entries.is_empty(),
-                "Edge B's later observation must not invalidate Edge A's applicable Attention"
+                "a resolved sibling must not block an otherwise applicable snooze"
+            );
+
+            // If a newer Observation appears without its corresponding
+            // lifecycle transition, stale resolution evidence must not hide
+            // it. This fail-open path also protects partially migrated or
+            // otherwise incomplete diagnostic history.
+            record_finding_observation_in_tx(
+                conn,
+                "project-1",
+                "run-b-reobserved",
+                &epoch_id,
+                Some("edge-b"),
+                finding_key,
+                FindingReasonCode::SourceMissing,
+                EvidenceFreshness::SourceMissing,
+                &edge_b_basis,
+                "2026-08-15T00:00:04.000Z",
+            )?;
+            let entries = build_maintenance_inbox(conn, "project-1", "2026-08-15T01:00:00.000Z")?;
+            assert_eq!(
+                entries.len(),
+                1,
+                "a newer Observation without lifecycle proof must remain visible"
             );
             Ok(())
         })

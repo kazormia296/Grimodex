@@ -40,11 +40,26 @@ export interface NarrativeMaintenanceCycleRequest {
   wakeProjectIds: readonly string[];
 }
 
+/**
+ * A cycle is only drained after the backend explicitly accepts it.  In
+ * particular, workspace-unavailable is not an empty/successful cycle: the
+ * scheduler must put the claimed work back on its queue so a later wake can
+ * deliver the original trigger.
+ */
+export type NarrativeMaintenanceCycleResult =
+  | { status: "accepted"; hasMore: boolean }
+  | { status: "workspace-unavailable" }
+  | { status: "coalesced" };
+
 export interface NarrativeMaintenanceBackendLike {
-  /** JSON summary; null means no durable mutation/available workspace. */
+  /**
+   * The backend must acknowledge ownership of the request explicitly.  The
+   * scheduler retains/requeues work until it receives `accepted` or
+   * `coalesced`.
+   */
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
-  ): Promise<string | null>;
+  ): Promise<NarrativeMaintenanceCycleResult>;
 }
 
 export interface NarrativeMaintenanceScheduler {
@@ -170,24 +185,43 @@ export function coalesceNarrativeMaintenanceWork(
   return result;
 }
 
-function cycleHasMore(raw: string | null): boolean {
-  if (raw === null) return false;
-  let value: unknown;
-  try {
-    value = JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error("native maintenance cycle returned malformed JSON");
+function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
+  // Keep the old JSON wire form readable while the main-only boundary moves
+  // to the explicit status contract.  A raw null is specifically an
+  // unavailable workspace, never a successful drain.
+  if (raw === null) return { status: "workspace-unavailable" };
+  if (typeof raw === "string") {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native maintenance cycle returned malformed JSON");
+    }
+    return normalizeCycleResult(parsed);
   }
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    Array.isArray(value) ||
-    !("hasMore" in value) ||
-    typeof value.hasMore !== "boolean"
-  ) {
-    throw new Error("native maintenance cycle returned invalid hasMore");
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("native maintenance cycle returned invalid status");
   }
-  return value.hasMore;
+
+  const value = raw as Record<string, unknown>;
+  if (typeof value.status === "string") {
+    if (value.status === "accepted" && typeof value.hasMore === "boolean") {
+      return { status: "accepted", hasMore: value.hasMore };
+    }
+    if (value.status === "workspace-unavailable") {
+      return { status: "workspace-unavailable" };
+    }
+    if (value.status === "coalesced") {
+      return { status: "coalesced" };
+    }
+    throw new Error("native maintenance cycle returned invalid status");
+  }
+
+  // Backward-compatible JSON summary from the pre-status native adapter.
+  if (typeof value.hasMore === "boolean") {
+    return { status: "accepted", hasMore: value.hasMore };
+  }
+  throw new Error("native maintenance cycle returned invalid status");
 }
 
 interface SharedProjectCoordinator {
@@ -368,6 +402,7 @@ export function createNarrativeMaintenanceScheduler(
     inFlight = true;
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+    let workspaceUnavailable = false;
     try {
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
@@ -375,9 +410,18 @@ export function createNarrativeMaintenanceScheduler(
         wakeProjectIds: sendingWakeProjects,
       });
       // Validate the response before clearing retry state.  A malformed
-      // native response is a failed cycle and must consume the same bounded
-      // retry budget as a rejected backend call.
-      const hasMore = cycleHasMore(result);
+      // native response is a failed cycle and consumes the same bounded retry
+      // budget as a rejected backend call.  Workspace-unavailable is handled
+      // separately below and retains the trigger until acceptance.  This is
+      // intentionally after the await and before clearing the claimed work:
+      // the catch path requeues the exact batch and wake scope.
+      const cycleResult = normalizeCycleResult(result);
+      if (cycleResult.status === "workspace-unavailable") {
+        workspaceUnavailable = true;
+        throw new Error(
+          "native maintenance cycle could not acquire an active workspace",
+        );
+      }
       for (const projectId of [
         ...new Set([
           ...sendingWakeProjects,
@@ -390,7 +434,11 @@ export function createNarrativeMaintenanceScheduler(
         retryCounts.delete(canonicalNarrativeMaintenanceWorkKey(work));
       }
       shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
-      if (!disposed && hasMore) {
+      if (
+        !disposed &&
+        cycleResult.status === "accepted" &&
+        cycleResult.hasMore
+      ) {
         const wakeProjects = [
           ...new Set([
             ...sendingWakeProjects,
@@ -410,39 +458,56 @@ export function createNarrativeMaintenanceScheduler(
       }
     } catch (error) {
       if (!disposed) {
-        for (const work of batch) {
-          const key = canonicalNarrativeMaintenanceWorkKey(work);
-          const retryCount = (retryCounts.get(key) ?? 0) + 1;
-          if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
-            retryCounts.set(key, retryCount);
-            requeueWork(work);
-          } else {
-            retryCounts.delete(key);
-            warn(
-              `[narrative-maintenance] retry exhausted for canonical key ${key}; stopping`,
-              error,
-            );
-          }
-        }
-        if (sendingWakeProjects.length > 0) {
+        if (workspaceUnavailable) {
+          // This is an expected, recoverable state while a workspace is
+          // closed or switching.  It is not a failed delivery and must not
+          // consume the bounded error retry budget: dropping this batch would
+          // lose the only trigger until another event happens to arrive.
+          for (const work of batch) requeueWork(work);
           for (const projectId of sendingWakeProjects) {
-            const retryCount = (durableWakeRetryCounts.get(projectId) ?? 0) + 1;
+            durableWakeProjects.add(projectId);
+          }
+          warn(
+            "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
+          );
+          nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
+          shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+        } else {
+          for (const work of batch) {
+            const key = canonicalNarrativeMaintenanceWorkKey(work);
+            const retryCount = (retryCounts.get(key) ?? 0) + 1;
             if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
-              durableWakeRetryCounts.set(projectId, retryCount);
-              durableWakeProjects.add(projectId);
+              retryCounts.set(key, retryCount);
+              requeueWork(work);
             } else {
-              durableWakeRetryCounts.delete(projectId);
-              durableWakeProjects.delete(projectId);
+              retryCounts.delete(key);
               warn(
-                `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; stopping`,
+                `[narrative-maintenance] retry exhausted for canonical key ${key}; stopping`,
                 error,
               );
             }
           }
+          if (sendingWakeProjects.length > 0) {
+            for (const projectId of sendingWakeProjects) {
+              const retryCount =
+                (durableWakeRetryCounts.get(projectId) ?? 0) + 1;
+              if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
+                durableWakeRetryCounts.set(projectId, retryCount);
+                durableWakeProjects.add(projectId);
+              } else {
+                durableWakeRetryCounts.delete(projectId);
+                durableWakeProjects.delete(projectId);
+                warn(
+                  `[narrative-maintenance] durable backlog retry exhausted for project ${projectId}; stopping`,
+                  error,
+                );
+              }
+            }
+          }
+          warn("[narrative-maintenance] background cycle failed:", error);
+          nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
+          shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
         }
-        warn("[narrative-maintenance] background cycle failed:", error);
-        nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
-        shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
       }
     } finally {
       sharedCoordinator?.release(claimedProjects);

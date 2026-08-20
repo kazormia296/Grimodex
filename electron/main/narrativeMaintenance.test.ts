@@ -5,6 +5,7 @@ import {
   coalesceNarrativeMaintenanceWork,
   createNarrativeMaintenanceScheduler,
   NARRATIVE_MAINTENANCE_MAX_RETRIES,
+  type NarrativeMaintenanceCycleResult,
   type NarrativeMaintenanceRequest,
 } from "./narrativeMaintenance.js";
 
@@ -28,6 +29,10 @@ function deferred<T>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
+  return { status: "accepted", hasMore };
 }
 
 describe("narrative maintenance scheduler", () => {
@@ -80,7 +85,7 @@ describe("narrative maintenance scheduler", () => {
     ).toThrow(/slash|separator|must not/i);
 
     const { scheduler } = createScheduler({
-      runNarrativeMaintenanceCycle: vi.fn().mockResolvedValue(null),
+      runNarrativeMaintenanceCycle: vi.fn().mockResolvedValue(acceptedCycle()),
     });
     expect(() =>
       scheduler.request({
@@ -117,11 +122,11 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("one in-flight main cycle serializes cross-kind work for a project", async () => {
-    const first = deferred<string | null>();
+    const first = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockReturnValueOnce(first.promise)
-      .mockResolvedValue(null);
+      .mockResolvedValue(acceptedCycle());
     const { scheduler } = createScheduler({ runNarrativeMaintenanceCycle });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -150,7 +155,7 @@ describe("narrative maintenance scheduler", () => {
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
 
-    first.resolve(null);
+    first.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
@@ -177,7 +182,9 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("pending work is coalesced before the first cycle", async () => {
-    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue(null);
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
     const { scheduler } = createScheduler({ runNarrativeMaintenanceCycle });
 
     scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
@@ -202,11 +209,104 @@ describe("narrative maintenance scheduler", () => {
     });
   });
 
+  it.each([
+    ["legacy null", null],
+    ["explicit unavailable status", { status: "workspace-unavailable" }],
+  ])(
+    "%s requeues the claimed batch until the backend accepts it",
+    async (_label, unavailableResponse) => {
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValueOnce(unavailableResponse)
+        .mockResolvedValueOnce(acceptedCycle());
+      const { scheduler, warn } = createScheduler({
+        runNarrativeMaintenanceCycle,
+      });
+      const originalWork = work(
+        "project-1",
+        "backfill",
+        "backfill:v2",
+        "workspace-open",
+      );
+
+      scheduler.request(originalWork);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+      expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toEqual(
+        runNarrativeMaintenanceCycle.mock.calls[0]?.[0],
+      );
+    },
+  );
+
+  it("keeps an unavailable-workspace trigger beyond the bounded error budget", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "workspace-unavailable" });
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(
+      work("project-1", "backfill", "backfill:v2", "workspace-open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (
+      let retry = 0;
+      retry < NARRATIVE_MAINTENANCE_MAX_RETRIES + 1;
+      retry += 1
+    ) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 2,
+    );
+    expect(
+      warn.mock.calls.some((args) =>
+        String(args[0]).toLowerCase().includes("retry exhausted"),
+      ),
+    ).toBe(false);
+  });
+
+  it("retains a project-scoped durable wake when its workspace is unavailable", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(acceptedCycle());
+    const { scheduler } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(
+      work("project-1", "backfill", "backfill:v2", "workspace-open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toEqual({
+      work: [],
+      wakeProjectIds: ["project-1"],
+    });
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle.mock.calls[2]?.[0]).toEqual({
+      work: [],
+      wakeProjectIds: ["project-1"],
+    });
+  });
+
   it("hasMore keeps a durable backlog wake and invokes the next cycle with an empty batch", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValueOnce('{"hasMore":true}')
-      .mockResolvedValueOnce(null);
+      .mockResolvedValueOnce(acceptedCycle());
     const { scheduler } = createScheduler({
       runNarrativeMaintenanceCycle,
     });
@@ -225,12 +325,12 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("scopes an empty hasMore wake to its project and leaves another project independent", async () => {
-    const p1Wake = deferred<string | null>();
+    const p1Wake = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValueOnce('{"hasMore":true}')
       .mockReturnValueOnce(p1Wake.promise)
-      .mockResolvedValue(null);
+      .mockResolvedValue(acceptedCycle());
     const backend = { runNarrativeMaintenanceCycle };
     const { scheduler: firstScheduler } = createScheduler(backend);
     const { scheduler: sameProjectScheduler } = createScheduler(backend);
@@ -274,7 +374,7 @@ describe("narrative maintenance scheduler", () => {
       wakeProjectIds: [],
     });
 
-    p1Wake.resolve(null);
+    p1Wake.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
@@ -297,7 +397,7 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockRejectedValueOnce(new Error("native unavailable"))
-      .mockResolvedValue(null);
+      .mockResolvedValue(acceptedCycle());
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
     });
@@ -315,7 +415,7 @@ describe("narrative maintenance scheduler", () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValueOnce("{not-json")
-      .mockResolvedValueOnce(null);
+      .mockResolvedValueOnce(acceptedCycle());
     const { scheduler, warn } = createScheduler({
       runNarrativeMaintenanceCycle,
     });
@@ -356,7 +456,7 @@ describe("narrative maintenance scheduler", () => {
       const runNarrativeMaintenanceCycle = vi
         .fn()
         .mockResolvedValueOnce(malformedResponse)
-        .mockResolvedValueOnce(null);
+        .mockResolvedValueOnce(acceptedCycle());
       const { scheduler, warn } = createScheduler({
         runNarrativeMaintenanceCycle,
       });
@@ -474,7 +574,7 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("disposeはin-flight完了後の再scheduleを抑止する", async () => {
-    const first = deferred<string | null>();
+    const first = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi.fn().mockReturnValue(first.promise);
     const { scheduler } = createScheduler({ runNarrativeMaintenanceCycle });
 
@@ -482,7 +582,7 @@ describe("narrative maintenance scheduler", () => {
     scheduler.start();
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     scheduler.dispose();
-    first.resolve(null);
+    first.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);
@@ -490,11 +590,11 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("複数schedulerで同一projectを共有single-flightし、dispose後に解放する", async () => {
-    const first = deferred<string | null>();
+    const first = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockReturnValueOnce(first.promise)
-      .mockResolvedValue(null);
+      .mockResolvedValue(acceptedCycle());
     const backend = { runNarrativeMaintenanceCycle };
     const { scheduler: firstScheduler } = createScheduler(backend);
     const { scheduler: secondScheduler } = createScheduler(backend);
@@ -512,7 +612,7 @@ describe("narrative maintenance scheduler", () => {
     expect(vi.getTimerCount()).toBe(0);
 
     firstScheduler.dispose();
-    first.resolve(null);
+    first.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS * 2);
@@ -532,13 +632,13 @@ describe("narrative maintenance scheduler", () => {
   });
 
   it("partial claim rechecks a project released before blocked-wait registration", async () => {
-    const firstProject = deferred<string | null>();
-    const partialClaim = deferred<string | null>();
+    const firstProject = deferred<NarrativeMaintenanceCycleResult>();
+    const partialClaim = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockReturnValueOnce(firstProject.promise)
       .mockReturnValueOnce(partialClaim.promise)
-      .mockResolvedValue(null);
+      .mockResolvedValue(acceptedCycle());
     const backend = { runNarrativeMaintenanceCycle };
     const { scheduler: owner } = createScheduler(backend);
     const { scheduler: partial } = createScheduler(backend);
@@ -571,10 +671,10 @@ describe("narrative maintenance scheduler", () => {
     // Release project-1 before the partial scheduler reaches its finally
     // block.  Its subsequent wait registration must notice that the project
     // is already free and schedule the pending verify work.
-    firstProject.resolve(null);
+    firstProject.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
-    partialClaim.resolve(null);
+    partialClaim.resolve(acceptedCycle());
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
