@@ -1153,14 +1153,14 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
             let state = db.with_conn(|conn| {
                 resolve_edge_source_state(conn, &batch.project_id, resolving_run_id, edge)
             })?;
+            source_state_guards.push(SourceStateGuard {
+                edge: edge.clone(),
+                resolving_run_id: resolving_run_id.to_string(),
+                state: state.clone(),
+            });
             source_states.insert(source_cache_key, state.clone());
             state
         };
-        source_state_guards.push(SourceStateGuard {
-            edge: edge.clone(),
-            resolving_run_id: resolving_run_id.to_string(),
-            state: source_state.clone(),
-        });
         let mut comparison = build_edge_comparison_input_from_source_state(edge, &source_state)?;
         let producer_epoch_matched =
             db.with_conn(|conn| edge_producer_epoch_matches(conn, edge, &batch.semantic_epoch_id))?;
@@ -2085,7 +2085,7 @@ mod tests {
         Ok(())
     }
 
-    fn reserve_and_evaluate(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
+    fn reserve_and_evaluate_batch(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
         let reservation = db
             .with_conn(|conn| with_immediate_transaction(conn, reserve_or_resume_batch_in_tx))
             .expect("reserve deterministic Feed range");
@@ -2093,8 +2093,13 @@ mod tests {
             panic!("fixture must produce a claimed batch");
         };
         let plan = evaluate_batch(db, &batch).expect("evaluate claimed batch");
-        assert_eq!(plan.affected_edge_count, 1);
         (*batch, plan)
+    }
+
+    fn reserve_and_evaluate(db: &Database) -> (ClaimedBatch, EvaluationPlan) {
+        let (batch, plan) = reserve_and_evaluate_batch(db);
+        assert_eq!(plan.affected_edge_count, 1);
+        (batch, plan)
     }
 
     fn assert_publish_rolled_back(db: &Database, batch: &ClaimedBatch) {
@@ -2167,6 +2172,36 @@ mod tests {
             "unexpected publish failure: {error:#}"
         );
         assert_publish_rolled_back(&db, &batch);
+    }
+
+    #[test]
+    fn evaluation_deduplicates_source_state_guards_for_shared_source() {
+        let db = fixture_db();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_dependency_edges
+                    (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                     read_set_json, generated_by_transaction_id, created_at, owning_run_id)
+                 VALUES ('edge-c2-1-phase-cas-shared-source', ?1,
+                         'narrative-extraction-run',
+                         'consumer-run-c2-1-phase-cas-shared', ?2, ?3, NULL, ?4, ?5)",
+                params![
+                    PROJECT_ID,
+                    format!("project:scene:{SCENE_ID}"),
+                    r#"["v1@2026-08-19T00:00:01.000Z"]"#,
+                    OCCURRED_AT,
+                    CONSUMER_RUN_ID,
+                ],
+            )?;
+            Ok(())
+        })
+        .expect("seed a second Edge sharing the Source and owning Run");
+
+        let (_batch, plan) = reserve_and_evaluate_batch(&db);
+        assert_eq!(plan.affected_edge_count, 2);
+        assert_eq!(plan.edge_declaration_guards.len(), 2);
+        assert_eq!(plan.source_state_guards.len(), 1);
+        assert_eq!(plan.producer_epoch_guards.len(), 2);
     }
 
     #[test]
