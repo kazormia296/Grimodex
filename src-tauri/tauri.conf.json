@@ -62,7 +62,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/kazormia296/Grimodex/releases/latest/download/latest.json"
+        "https://github.com/kazormia296/Grimodex-Releases/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkyQTkxODVEMTVEMDQwOQpSV1FKQkYzUmhaRXFDUUlYUTNDUVhHako1TVZnbVB4dkZndHZ0bS93MW56WU91TSt5Zm5DQUtBRQo=",
       "windows": {

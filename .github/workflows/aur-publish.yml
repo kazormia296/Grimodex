@@ -4,8 +4,6 @@
 name: AUR Publish
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -15,6 +13,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  PUBLICATION_REPOSITORY: kazormia296/Grimodex-Releases
 
 concurrency:
   group: aur-publish
@@ -53,7 +54,7 @@ jobs:
           version="${tag#v}"
 
           release_json="$RUNNER_TEMP/release.json"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" \
+          gh api "repos/${PUBLICATION_REPOSITORY}/releases/tags/${tag}" \
             > "$release_json"
           if [[ "$(jq -r '.draft' "$release_json")" != false ]] ||
              [[ "$(jq -r '.published_at // empty' "$release_json")" == "" ]]; then
@@ -97,9 +98,17 @@ jobs:
           [[ "$DEB_DIGEST" =~ ^[0-9a-f]{64}$ ]]
 
           license_path="$RUNNER_TEMP/LICENSE-v${RELEASE_VERSION}"
+          license_count="$(jq --arg name LICENSE \
+            '[.assets[] | select(.name == $name)] | length' "$RUNNER_TEMP/release.json")"
+          if [[ "$license_count" != 1 ]]; then
+            echo "::error::Published release must contain exactly one LICENSE asset." >&2
+            exit 1
+          fi
+          license_asset_id="$(jq -r --arg name LICENSE \
+            '.assets[] | select(.name == $name) | .id' "$RUNNER_TEMP/release.json")"
           gh api \
-            --header "Accept: application/vnd.github.raw+json" \
-            "repos/${GITHUB_REPOSITORY}/contents/LICENSE?ref=${RELEASE_TAG}" \
+            --header "Accept: application/octet-stream" \
+            "repos/${PUBLICATION_REPOSITORY}/releases/assets/${license_asset_id}" \
             > "$license_path"
           test -s "$license_path"
           license_digest="$(sha256sum "$license_path" | awk '{print $1}')"

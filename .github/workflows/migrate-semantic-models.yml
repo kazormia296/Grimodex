@@ -1,0 +1,79 @@
+name: Migrate semantic model assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPOSITORY: ${{ github.repository }}
+  PUBLICATION_REPOSITORY: kazormia296/Grimodex-Releases
+  MODEL_TAG: semantic-models-v1
+
+jobs:
+  migrate:
+    name: Publish pinned semantic models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Download pinned models from the source release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SOURCE_REPOSITORY: ${{ env.SOURCE_REPOSITORY }}
+          MODEL_TAG: ${{ env.MODEL_TAG }}
+        run: |
+          set -euo pipefail
+          mkdir -p semantic-model-assets
+          gh release download "$MODEL_TAG" \
+            --repo "$SOURCE_REPOSITORY" \
+            --pattern 'ruri-v3-30m-model_int8.onnx' \
+            --pattern 'bge-small-en-v15-model_int8.onnx' \
+            --dir semantic-model-assets
+          sha256sum -c <<'EOF'
+          946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf  semantic-model-assets/ruri-v3-30m-model_int8.onnx
+          4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b  semantic-model-assets/bge-small-en-v15-model_int8.onnx
+          EOF
+
+      - name: Create or verify the public semantic model release
+        env:
+          GH_TOKEN: ${{ secrets.GRIMODEX_RELEASES_TOKEN }}
+          PUBLICATION_REPOSITORY: ${{ env.PUBLICATION_REPOSITORY }}
+          MODEL_TAG: ${{ env.MODEL_TAG }}
+        run: |
+          set -euo pipefail
+          release_json="$RUNNER_TEMP/semantic-model-release.json"
+          if ! gh api "repos/${PUBLICATION_REPOSITORY}/releases/tags/${MODEL_TAG}" > "$release_json" 2>/dev/null; then
+            gh release create "$MODEL_TAG" \
+              --repo "$PUBLICATION_REPOSITORY" \
+              --target main \
+              --title "Grimodex semantic models v1" \
+              --notes "Pinned ONNX semantic model assets used by Grimodex semantic search."
+            gh api "repos/${PUBLICATION_REPOSITORY}/releases/tags/${MODEL_TAG}" > "$release_json"
+          fi
+          if [ "$(jq -r .draft "$release_json")" != "false" ]; then
+            echo "::error::Semantic model release must be published." >&2
+            exit 1
+          fi
+          for asset in semantic-model-assets/*.onnx; do
+            name=$(basename "$asset")
+            expected="sha256:$(sha256sum "$asset" | awk '{print $1}')"
+            count=$(jq --arg name "$name" '[.assets[] | select(.name == $name)] | length' "$release_json")
+            if [ "$count" -eq 0 ]; then
+              gh release upload "$MODEL_TAG" "$asset" --repo "$PUBLICATION_REPOSITORY"
+              continue
+            fi
+            if [ "$count" -ne 1 ]; then
+              echo "::error::Duplicate public semantic model asset: $name" >&2
+              exit 1
+            fi
+            actual=$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .digest // empty' "$release_json")
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::Public semantic model digest mismatch: $name" >&2
+              exit 1
+            fi
+          done
+          echo "Public semantic model assets verified in ${PUBLICATION_REPOSITORY}/${MODEL_TAG}."
