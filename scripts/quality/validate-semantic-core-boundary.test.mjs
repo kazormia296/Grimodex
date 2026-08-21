@@ -491,12 +491,58 @@ describe("validate-semantic-core-boundary", () => {
       "benign-computed.mts",
       [
         'await import("./literal-module");',
+        "await import(`./literal-template-module`);",
         'const registry = { lookup: () => true };',
         'registry["lookup"]();',
       ].join("\n"),
     );
 
     assert.deepEqual(errors, []);
+  });
+
+  it("rejects concatenated dynamic loader specifiers", () => {
+    const errors = validateInterpreterSourceFixture(
+      "concatenated-import.mts",
+      [
+        'const suffix = "client";',
+        'await import("@/db/" + suffix);',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*concatenated-import\.mts/i.test(error)),
+      `concatenated dynamic imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects interpolated template dynamic loader specifiers", () => {
+    const errors = validateInterpreterSourceFixture(
+      "interpolated-import.mts",
+      [
+        'const suffix = "client";',
+        "await import(`@/db/${suffix}`);",
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*interpolated-import\.mts/i.test(error)),
+      `interpolated template imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects computed mutations on call and parenthesized receivers", () => {
+    const errors = validateInterpreterSourceFixture(
+      "computed-receivers.mts",
+      [
+        'getStorage()["execute"]("DELETE FROM narrative_proposal_revisions");',
+        '(storage)["execute"]("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*computed-receivers\.mts/i.test(error)),
+      `computed mutations on arbitrary receivers must be rejected: ${JSON.stringify(errors)}`,
+    );
   });
 
   it("detects an unauthorized local Freshness authority in code", () => {

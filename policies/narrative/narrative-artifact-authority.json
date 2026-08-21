@@ -156,7 +156,7 @@
       {
         "id": "non-literal-dynamic-import",
         "patterns": [
-          "\\b(?:import|require)\\s*\\(\\s*(?![\\\"'`])[^)]*\\)"
+          "\\b(?:import|require)\\s*\\(\\s*(?!(?:\\x22(?:\\\\.|[^\\x22\\\\])*\\x22|\\x27(?:\\\\.|[^\\x27\\\\])*\\x27|\\x60(?:\\\\.|(?!\\$\\{)[^\\x60\\\\])*\\x60)\\s*\\))[^)]*\\)"
         ]
       },
       {
@@ -172,7 +172,7 @@
           "\\b(?:db|database|conn|connection|tx|transaction)\\s*(?:\\.|\\?\\.)\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*(?:\\?\\.)?\\s*\\(",
           "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
           "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
-          "\\b[A-Za-z_$][A-Za-z0-9_$]*\\s*(?:\\?\\.)?\\s*\\[\\s*[\\\"'`](?:execute|exec|run|prepare|query|insert|update|delete)[\\\"'`]\\s*\\]\\s*(?:\\?\\.)?\\s*\\("
+          "(?:\\b[A-Za-z_$][A-Za-z0-9_$]*|\\)|\\])\\s*(?:\\?\\.)?\\s*\\[\\s*[\\x22\\x27\\x60](?:execute|exec|run|prepare|query|insert|update|delete)[\\x22\\x27\\x60]\\s*\\]\\s*(?:\\?\\.)?\\s*\\("
         ]
       },
       {
