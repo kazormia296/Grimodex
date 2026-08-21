@@ -1822,14 +1822,34 @@ function taintedInvocationValue(source = "computed", defined = undefined) {
   };
 }
 
-function reflectCapabilityValue(method, via = undefined, mode = undefined) {
+function reflectCapabilityValue(
+  method,
+  via = undefined,
+  mode = undefined,
+  boundArguments = undefined,
+) {
   return {
     tainted: false,
     source: undefined,
     defined: true,
-    capability: { kind: "reflect", method, via, mode },
+    capability: {
+      kind: "reflect",
+      method,
+      via,
+      mode,
+      boundArguments,
+    },
     container: undefined,
   };
+}
+
+function invocationArgumentListsEqual(left, right) {
+  if (left === right) return true;
+  if (!Array.isArray(left) || !Array.isArray(right)) return false;
+  return (
+    left.length === right.length &&
+    left.every((argument, index) => argument === right[index])
+  );
 }
 
 function createInvocationContainer(kind) {
@@ -1857,7 +1877,8 @@ function mergeInvocationCapabilities(left, right) {
     left.kind === right.kind &&
     left.method === right.method &&
     left.via === right.via &&
-    left.mode === right.mode
+    left.mode === right.mode &&
+    invocationArgumentListsEqual(left.boundArguments, right.boundArguments)
   ) {
     return left;
   }
@@ -1868,6 +1889,12 @@ function mergeInvocationCapabilities(left, right) {
         left.method === right.method ? left.method : undefined,
       via: left.via === right.via ? left.via : undefined,
       mode: left.mode === right.mode ? left.mode : undefined,
+      boundArguments: invocationArgumentListsEqual(
+        left.boundArguments,
+        right.boundArguments,
+      )
+        ? left.boundArguments
+        : undefined,
     };
   }
   return undefined;
@@ -2009,7 +2036,11 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
     left.capability?.kind !== right.capability?.kind ||
     left.capability?.method !== right.capability?.method ||
     left.capability?.via !== right.capability?.via ||
-    left.capability?.mode !== right.capability?.mode
+    left.capability?.mode !== right.capability?.mode ||
+    !invocationArgumentListsEqual(
+      left.capability?.boundArguments,
+      right.capability?.boundArguments,
+    )
   ) {
     return false;
   }
@@ -2368,6 +2399,15 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return knownArrayLength(value);
   };
 
+  const reflectBoundArgument = (node, capability, index) => {
+    if (capability.mode !== "bound") return node.arguments[index];
+    if (!Array.isArray(capability.boundArguments)) return undefined;
+    if (index < capability.boundArguments.length) {
+      return capability.boundArguments[index];
+    }
+    return node.arguments[index - capability.boundArguments.length];
+  };
+
   const reflectGetResult = (node, capability, seenBindings, depth) => {
     let receiverExpression;
     let keyExpression;
@@ -2378,6 +2418,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       } else if (capability.via === "apply") {
         return taintedInvocationValue("computed");
       }
+    } else if (capability.mode === "bound") {
+      receiverExpression = reflectBoundArgument(node, capability, 0);
+      keyExpression = reflectBoundArgument(node, capability, 1);
     } else {
       receiverExpression = node.arguments[0];
       keyExpression = node.arguments[1];
@@ -2679,6 +2722,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           calleeValue.capability.method,
           "bind",
           "bound",
+          unwrapped.arguments.slice(1),
         );
       }
       if (
@@ -2976,8 +3020,23 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return result ?? cleanInvocationValue();
   };
 
-  const isInvocationTainted = (expression) =>
-    expressionValue(expression).tainted;
+  const isBoundReflectTargetTainted = (capability) => {
+    if (
+      capability?.kind !== "reflect" ||
+      capability.mode !== "bound" ||
+      (capability.method !== "apply" && capability.method !== "construct")
+    ) {
+      return false;
+    }
+    if (!Array.isArray(capability.boundArguments)) return true;
+    if (capability.boundArguments.length === 0) return false;
+    return expressionValue(capability.boundArguments[0]).tainted;
+  };
+
+  const isInvocationTainted = (expression) => {
+    const value = expressionValue(expression);
+    return value.tainted || isBoundReflectTargetTainted(value.capability);
+  };
 
   const isReflectInvocationTainted = (node) => {
     if (!ts.isCallExpression(node) || node.arguments.length === 0) return false;
@@ -2991,7 +3050,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       return false;
     }
     let targetExpression = node.arguments[0];
-    if (
+    if (callee.capability.mode === "bound") {
+      if (!Array.isArray(callee.capability.boundArguments)) return true;
+      targetExpression =
+        callee.capability.boundArguments[0] ?? node.arguments[0];
+    } else if (
       callee.capability.mode === "indirect" &&
       callee.capability.via === "call"
     ) {
