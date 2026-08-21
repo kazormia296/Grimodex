@@ -474,6 +474,60 @@ const REQUIRED_ARTIFACT_FIXTURES = Object.freeze([
   "interpreter-malformed-source-rejected",
 ]);
 
+// The fixture file is evidence, not the oracle. Keep the required case
+// identity, target, claim/source semantics, rule, and disposition ratified in
+// validator-owned data so a fixture cannot rewrite itself into a passing case.
+const REQUIRED_ARTIFACT_FIXTURE_ORACLES = Object.freeze({
+  "raw-model-response-durable-rejected": Object.freeze({
+    kind: "artifact-lifecycle",
+    target: "raw-model-response",
+    claim: Object.freeze({ lifecycle: "durable" }),
+    expected: "reject",
+  }),
+  "raw-model-response-retained-rejected": Object.freeze({
+    kind: "artifact-retention",
+    target: "raw-model-response",
+    claim: Object.freeze({ retention: "retained" }),
+    expected: "reject",
+  }),
+  "semantic-index-authority-rejected": Object.freeze({
+    kind: "authority-classification",
+    target: "semantic-index",
+    claim: Object.freeze({ authoritative: true }),
+    expected: "reject",
+  }),
+  "interpreter-sql-import-rejected": Object.freeze({
+    kind: "interpreter-boundary",
+    rule: "sql-import",
+    source: 'import { sql } from "drizzle-orm";',
+    expected: "reject",
+  }),
+  "interpreter-typed-writer-rejected": Object.freeze({
+    kind: "interpreter-boundary",
+    rule: "typed-writer",
+    source: "typedWriter.commit({});",
+    expected: "reject",
+  }),
+  "interpreter-freshness-store-rejected": Object.freeze({
+    kind: "interpreter-boundary",
+    rule: "freshness-store",
+    source: "const localFreshnessStore = new Map();",
+    expected: "reject",
+  }),
+  "interpreter-type-only-vocabulary-allowed": Object.freeze({
+    kind: "interpreter-boundary",
+    rule: "type-only-domain-vocabulary",
+    source: 'import type { PlotPhaseType } from "@/db/schema";',
+    expected: "accept",
+  }),
+  "interpreter-malformed-source-rejected": Object.freeze({
+    kind: "interpreter-boundary",
+    rule: "parse-diagnostics",
+    source: "const broken = ;",
+    expected: "reject",
+  }),
+});
+
 const EXPECTED_ALLOWED_CALLERS = Object.freeze({
   "human-direct": ["human-ui", "manual-wrapper", "typed-domain-api"],
   "interactive-agent-command": [
@@ -1218,6 +1272,54 @@ function validateRegexRule(rule, label, errors) {
   return valid;
 }
 
+function normalizedFixtureClaim(claim) {
+  if (!isObject(claim)) return undefined;
+  return Object.fromEntries(
+    Object.entries(claim).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function validateArtifactAuthorityFixtureOracle(fixtureCase, oracle, errors) {
+  const fixtureId = String(fixtureCase?.id);
+  for (const field of ["kind", "target", "expected"]) {
+    if (fixtureCase?.[field] !== oracle[field]) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} ${field} does not match ratified semantics: expected ${String(oracle[field])}, got ${String(fixtureCase?.[field])}`,
+      );
+    }
+  }
+  const expectedClaim = normalizedFixtureClaim(oracle.claim);
+  const actualClaim = normalizedFixtureClaim(fixtureCase?.claim);
+  if (JSON.stringify(actualClaim) !== JSON.stringify(expectedClaim)) {
+    errors.push(
+      `narrative artifact authority fixture ${fixtureId} claim does not match ratified semantics`,
+    );
+  }
+  if (oracle.source !== undefined) {
+    if (fixtureCase?.source !== oracle.source) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} source does not match ratified semantics`,
+      );
+    }
+    if (fixtureCase?.rule !== oracle.rule) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} rule does not match ratified semantics: expected ${String(oracle.rule)}, got ${String(fixtureCase?.rule)}`,
+      );
+    }
+  } else {
+    if (Object.prototype.hasOwnProperty.call(fixtureCase ?? {}, "source")) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} must remain a claim case`,
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(fixtureCase ?? {}, "rule")) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} must not declare a source rule`,
+      );
+    }
+  }
+}
+
 function evaluateArtifactAuthorityFixtureClaim(contract, fixtureCase, errors) {
   const fixtureId = String(fixtureCase?.id);
   const target = fixtureCase?.target;
@@ -1394,6 +1496,23 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
   const cases = new Map(
     fixture.cases.map((fixtureCase) => [fixtureCase?.id, fixtureCase]),
   );
+  const seenCaseIds = new Set();
+  for (const fixtureCase of fixture.cases) {
+    const fixtureId = fixtureCase?.id;
+    if (!isNonEmptyString(fixtureId)) {
+      errors.push("narrative artifact authority fixture cases must have unique non-empty ids");
+      continue;
+    }
+    if (seenCaseIds.has(fixtureId)) {
+      errors.push(`duplicate narrative artifact authority fixture case: ${fixtureId}`);
+      continue;
+    }
+    seenCaseIds.add(fixtureId);
+    const oracle = REQUIRED_ARTIFACT_FIXTURE_ORACLES[fixtureId];
+    if (oracle) {
+      validateArtifactAuthorityFixtureOracle(fixtureCase, oracle, errors);
+    }
+  }
   for (const fixtureId of REQUIRED_ARTIFACT_FIXTURES) {
     const fixtureCase = cases.get(fixtureId);
     if (!fixtureCase) {
