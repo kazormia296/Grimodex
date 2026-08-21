@@ -2,6 +2,8 @@ export * from "./assertionState";
 export * from "./disclosure";
 export * from "./evidencePolicy";
 export * from "./mutationAuthority";
+export * from "./narrativeIr";
 export * from "./projectionState";
 export * from "./scope";
+export * from "./scopeV2";
 export * from "./stateVocabulary";

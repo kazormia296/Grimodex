@@ -31,6 +31,7 @@ pub fn now_rfc3339_millis() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
+pub mod canonical_json;
 pub mod change_events;
 pub mod chronicle_time;
 pub mod codex_matching;
@@ -41,3 +42,8 @@ pub mod snapshots;
 pub mod undo_journal;
 pub mod workspace_schema;
 pub mod writes;
+
+pub use canonical_json::{
+    canonical_json_bytes, canonical_json_digest, canonical_json_sha256, canonical_json_string,
+    CanonicalJsonError,
+};

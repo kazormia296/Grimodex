@@ -35,7 +35,11 @@ describe("Narrative Scope V2 structural contract", () => {
   });
 
   it.each([
-    ["unknown schema version", { schemaVersion: 3 }, "unsupported-schema-version"],
+    [
+      "unknown schema version",
+      { schemaVersion: 3 },
+      "unsupported-schema-version",
+    ],
     [
       "unknown registry version",
       { registryVersion: "narrative-scope/3" },
@@ -45,7 +49,7 @@ describe("Narrative Scope V2 structural contract", () => {
     ["unknown axis", { futureAxis: { kind: "any" } }, "unknown-axis"],
   ] as const)("refuses %s", (_label, patch, reason) => {
     const candidate = { ...validScope(), ...patch } as unknown;
-    if (patch.readingOrder === undefined) {
+    if ("readingOrder" in patch && patch.readingOrder === undefined) {
       delete (candidate as Record<string, unknown>).readingOrder;
     }
     expect(validateNarrativeScopeV2(candidate)).toMatchObject({

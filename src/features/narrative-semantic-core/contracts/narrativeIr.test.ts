@@ -22,7 +22,9 @@ const scope = {
   readingOrder: { kind: "any" as const },
 };
 
-const validEnvelope = (): NarrativeRevisionEnvelopeV2<Record<string, unknown>> => ({
+const validEnvelope = (): NarrativeRevisionEnvelopeV2<
+  Record<string, unknown>
+> => ({
   schemaVersion: 2,
   assertion: {
     assertionId: null,
@@ -80,7 +82,9 @@ describe("Narrative IR V2 registry and structural schema", () => {
   it("exposes the ratified assertion and shared vocabulary registry", () => {
     expect(NARRATIVE_IR_REGISTRY.contractVersion).toBe("narrative-ir/2");
     expect(NARRATIVE_IR_REGISTRY.assertionKinds).toEqual(["scene-event@1"]);
-    expect(NARRATIVE_IR_REGISTRY.producerKinds).toContain("reconciler-proposal");
+    expect(NARRATIVE_IR_REGISTRY.producerKinds).toContain(
+      "reconciler-proposal",
+    );
     expect(NARRATIVE_IR_REGISTRY.supportClasses).toContain("direct-source");
     expect(NARRATIVE_IR_REGISTRY.changeKinds).toEqual([
       "add",
@@ -98,7 +102,11 @@ describe("Narrative IR V2 registry and structural schema", () => {
   });
 
   it.each([
-    ["unknown envelope version", { schemaVersion: 1 }, "unsupported-schema-version"],
+    [
+      "unknown envelope version",
+      { schemaVersion: 1 },
+      "unsupported-schema-version",
+    ],
     [
       "unknown assertion kind",
       { assertion: { assertionKind: "future-event@1" } },
@@ -125,7 +133,10 @@ describe("Narrative IR V2 registry and structural schema", () => {
       "unsupported-change-kind",
     ],
   ] as const)("refuses %s", (_label, patch, reason) => {
-    const candidate = structuredClone(validEnvelope()) as Record<string, unknown>;
+    const candidate = structuredClone(validEnvelope()) as unknown as Record<
+      string,
+      unknown
+    >;
     for (const [key, value] of Object.entries(patch)) {
       if (value && typeof value === "object" && !Array.isArray(value)) {
         candidate[key] = {
