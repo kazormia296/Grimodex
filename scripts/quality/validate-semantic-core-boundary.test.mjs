@@ -533,6 +533,62 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("rejects sensitive computed BindingElement properties while allowing benign lookup destructuring", () => {
+    const sensitiveCases = [
+      {
+        name: "direct literal",
+        source: [
+          'const { ["execute"]: mutate } = database;',
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "const identifier exact repro",
+        source: [
+          'const method = "execute";',
+          "const { [method]: mutate } = database;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "concatenated string",
+        source: [
+          'const { ["exec" + "ute"]: mutate } = database;',
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "template expression",
+        source: [
+          'const { [`exec${"ute"}`]: mutate } = database;',
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `computed-binding-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} computed sensitive bindings must be rejected: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const benignErrors = validateInterpreterSourceFixture(
+      "benign-computed-binding.mts",
+      [
+        'const registry = { lookup: () => true };',
+        'const method = "lookup";',
+        "const { [method]: lookup } = registry;",
+        "lookup();",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(benignErrors, []);
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
