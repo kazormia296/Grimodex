@@ -410,6 +410,7 @@ requirements:
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
       - policies/narrative/fixtures/dependency-role-contract.json
+      - policies/narrative/fixtures/canonical-json-number-parity.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
@@ -422,6 +423,7 @@ requirements:
       - src/features/narrative-semantic-core/contracts/narrativeIr.ts
       - src/features/narrative-semantic-core/contracts/scopeRelation.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src/features/narrative-extraction/source/digest.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
@@ -449,6 +451,7 @@ requirements:
       - src/features/narrative-semantic-core/contracts/narrativeIr.test.ts
       - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs

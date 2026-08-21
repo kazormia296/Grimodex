@@ -182,7 +182,10 @@ rules:
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
       - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/**
+      - policies/narrative/fixtures/canonical-json-number-parity.json
       - src/features/narrative-semantic-core/**
+      - src/features/narrative-extraction/source/digest.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
