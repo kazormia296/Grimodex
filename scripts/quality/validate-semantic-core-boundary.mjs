@@ -3730,6 +3730,10 @@ function scanInterpreterSourceWithAst(file, source) {
       }
     }
   };
+  const addStaticAuthorityKeyFindings = (expression) => {
+    const key = staticStringResolver.fold(expression);
+    if (key !== undefined) addNormalizedIdentifierFindings(key);
+  };
   const visit = (node) => {
     if (ts.isIdentifier(node)) {
       // TypeScript resolves Unicode escapes in identifiers to their semantic
@@ -3750,12 +3754,25 @@ function scanInterpreterSourceWithAst(file, source) {
     ) {
       addModuleFindings(node.moduleSpecifier.text);
     }
+    if (ts.isComputedPropertyName(node)) {
+      const parent = node.parent;
+      if (
+        ts.isPropertyAssignment(parent) ||
+        ts.isMethodDeclaration(parent) ||
+        ts.isGetAccessorDeclaration(parent) ||
+        ts.isSetAccessorDeclaration(parent) ||
+        ts.isPropertyDeclaration(parent)
+      ) {
+        addStaticAuthorityKeyFindings(node.expression);
+      }
+    }
     if (ts.isPropertyAccessExpression(node)) {
       if (REQUIRED_DB_MUTATION_METHODS.has(node.name.text)) {
         findings.add("db-mutation");
       }
     }
     if (ts.isElementAccessExpression(node)) {
+      addStaticAuthorityKeyFindings(node.argumentExpression);
       const method = staticStringResolver.fold(node.argumentExpression);
       if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
         findings.add("db-mutation");
@@ -3778,6 +3795,7 @@ function scanInterpreterSourceWithAst(file, source) {
       ) {
         findings.add("db-mutation");
       }
+      if (method !== undefined) addNormalizedIdentifierFindings(method);
     }
     if (ts.isCallExpression(node)) {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
