@@ -453,6 +453,8 @@ describe("validate-semantic-core-boundary", () => {
         "lifecycle",
         "authority",
         "authoritative",
+        "storage",
+        "retention.default",
         "retention.scope",
       ]) {
         const contract = structuredClone(original);
@@ -465,6 +467,13 @@ describe("validate-semantic-core-boundary", () => {
           candidate[field] = artifact.authority === "none" ? "source-identity" : "none";
         } else if (field === "retention.scope") {
           candidate.retention.scope = `${artifact.retention.scope}-mutated`;
+        } else if (field === "storage") {
+          candidate.storage = `${artifact.storage}-mutated`;
+        } else if (field === "retention.default") {
+          candidate.retention.default =
+            artifact.retention.default === "retained"
+              ? "not-retained"
+              : "retained";
         } else {
           candidate[field] = !artifact.authoritative;
         }
