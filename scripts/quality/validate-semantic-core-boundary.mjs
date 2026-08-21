@@ -2072,7 +2072,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
 
   const readContainerProperty = (value, key) => {
     if (!value) return { found: false, value: cleanInvocationValue() };
-    if (value.tainted) return { found: true, value: taintedInvocationValue() };
+    if (value.tainted && !value.container) {
+      return { found: true, value: taintedInvocationValue() };
+    }
     if (!value.container) return { found: false, value: cleanInvocationValue() };
     if (value.container.entries.has(key)) {
       return {
@@ -2083,9 +2085,16 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         ),
       };
     }
+    if (value.container.unknown !== undefined) {
+      return {
+        found: false,
+        value: value.container.unknown,
+      };
+    }
+    if (value.tainted) return { found: true, value: taintedInvocationValue() };
     return {
       found: false,
-      value: value.container.unknown ?? cleanInvocationValue(),
+      value: cleanInvocationValue(),
     };
   };
 
@@ -2225,8 +2234,18 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         depth + 1,
       );
       const key = staticElementAccessKey(unwrapped.argumentExpression);
-      if (key === undefined) return taintedInvocationValue("computed");
+      if (key === undefined) {
+        const selected = readContainerProperty(receiver, key);
+        if (receiver.container?.unknown !== undefined) return selected.value;
+        return taintedInvocationValue("computed");
+      }
       if (receiver.tainted) {
+        if (receiver.container) {
+          const selected = readContainerProperty(receiver, key);
+          if (selected.found || receiver.container.unknown !== undefined) {
+            return selected.value;
+          }
+        }
         return INVOCATION_ALIAS_METHODS.has(key)
           ? taintedInvocationValue(receiver.source ?? "computed")
           : receiver.source === "computed"
@@ -2248,6 +2267,15 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         depth + 1,
       );
       if (receiver.tainted) {
+        if (receiver.container) {
+          const selected = readContainerProperty(receiver, unwrapped.name.text);
+          if (
+            selected.found ||
+            receiver.container.unknown !== undefined
+          ) {
+            return selected.value;
+          }
+        }
         return INVOCATION_ALIAS_METHODS.has(unwrapped.name.text)
           ? taintedInvocationValue(receiver.source ?? "computed")
           : receiver.source === "computed"
