@@ -11,7 +11,10 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { validateNarrativeIrContract } from "./validate-narrative-ir-contract.mjs";
+import {
+  validateNarrativeIrContract,
+  validateNarrativeIrContractFromRepo,
+} from "./validate-narrative-ir-contract.mjs";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -568,6 +571,66 @@ describe("NIR-0 Narrative IR contract", () => {
       ),
       "expected fail-closed activation marker vocabulary validation",
     );
+  });
+
+  it("runs the activation filesystem scan only in repo-level validation", () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "nir0-repo-scan-"));
+    try {
+      const artifacts = [
+        "policies/narrative/narrative-ir-contract.json",
+        "policies/narrative/narrative-scope-relation-contract.json",
+        "policies/narrative/narrative-consumer-contract.json",
+        "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+      ];
+      for (const relativePath of artifacts) {
+        const target = path.join(tempRoot, relativePath);
+        mkdirSync(path.dirname(target), { recursive: true });
+        writeFileSync(
+          target,
+          `${JSON.stringify(readJson(relativePath), null, 2)}\n`,
+        );
+      }
+      mkdirSync(path.join(tempRoot, "src"), { recursive: true });
+      writeFileSync(
+        path.join(tempRoot, "src", "producer.ts"),
+        "export const marker = 'CHRONICLE_SCENE_EVENT_V2_PRODUCTION';\n",
+      );
+
+      const contract = readJson(
+        "policies/narrative/narrative-ir-contract.json",
+      );
+      const scope = readJson(
+        "policies/narrative/narrative-scope-relation-contract.json",
+      );
+      const consumer = readJson(
+        "policies/narrative/narrative-consumer-contract.json",
+      );
+      const pureErrors = [];
+      validateNarrativeIrContract(
+        tempRoot,
+        contract,
+        scope,
+        consumer,
+        pureErrors,
+      );
+      assert.equal(
+        pureErrors.some((error) =>
+          /activation marker.*appears in production/i.test(error),
+        ),
+        false,
+        "pure contract mutation checks must not rescan production",
+      );
+
+      const repoResult = validateNarrativeIrContractFromRepo(tempRoot);
+      assert.ok(
+        repoResult.errors.some((error) =>
+          /activation marker.*appears in production/i.test(error),
+        ),
+        `expected repo-level activation marker error: ${JSON.stringify(repoResult.errors)}`,
+      );
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("declares every required key in each fail-closed object schema", () => {
