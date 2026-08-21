@@ -1528,7 +1528,270 @@ function unwrapExpression(expression) {
   return current;
 }
 
-function foldStaticStringExpression(expression) {
+function isFunctionScopeNode(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  );
+}
+
+function isLexicalScopeNode(node) {
+  return (
+    ts.isBlock(node) ||
+    ts.isModuleBlock(node) ||
+    ts.isCaseBlock(node) ||
+    ts.isCatchClause(node) ||
+    ts.isForStatement(node) ||
+    ts.isForInStatement(node) ||
+    ts.isForOfStatement(node) ||
+    ts.isClassStaticBlockDeclaration(node)
+  );
+}
+
+function collectBindingIdentifiers(name, callback) {
+  if (!name) return;
+  if (ts.isIdentifier(name)) {
+    callback(name);
+    return;
+  }
+  if (ts.isObjectBindingPattern(name) || ts.isArrayBindingPattern(name)) {
+    for (const element of name.elements) {
+      if (ts.isBindingElement(element)) {
+        collectBindingIdentifiers(element.name, callback);
+      }
+    }
+  }
+}
+
+function createStaticStringResolver(sourceFile) {
+  const rootScope = { node: sourceFile, parent: null, bindings: new Map() };
+  const scopeByNode = new WeakMap();
+
+  const visitScopes = (node, parentScope) => {
+    let scope = parentScope;
+    if (
+      node !== sourceFile &&
+      (isFunctionScopeNode(node) || isLexicalScopeNode(node))
+    ) {
+      scope = { node, parent: parentScope, bindings: new Map() };
+    }
+    scopeByNode.set(node, scope);
+    ts.forEachChild(node, (child) => visitScopes(child, scope));
+  };
+  visitScopes(sourceFile, rootScope);
+
+  const bindingIdentifierNodes = new WeakSet();
+
+  const registerBinding = (scope, identifier, kind, declaration) => {
+    if (!scope || !ts.isIdentifier(identifier)) return;
+    bindingIdentifierNodes.add(identifier);
+    const binding = {
+      name: identifier.text,
+      kind,
+      declaration,
+      reassigned: false,
+    };
+    const bindings = scope.bindings.get(identifier.text) ?? [];
+    bindings.push(binding);
+    scope.bindings.set(identifier.text, bindings);
+  };
+
+  const nearestVariableScope = (scope) => {
+    let current = scope;
+    while (current && current.node !== sourceFile) {
+      if (isFunctionScopeNode(current.node)) return current;
+      current = current.parent;
+    }
+    return rootScope;
+  };
+
+  const registerDeclarationBindings = (node) => {
+    if (ts.isVariableDeclaration(node)) {
+      const variableList = ts.isVariableDeclarationList(node.parent)
+        ? node.parent
+        : undefined;
+      const isConst =
+        variableList && (variableList.flags & ts.NodeFlags.Const) !== 0;
+      const isLet =
+        variableList && (variableList.flags & ts.NodeFlags.Let) !== 0;
+      const kind = isConst ? "const" : "mutable";
+      const lexicalScope = scopeByNode.get(node);
+      const scope =
+        !isConst && !isLet
+          ? nearestVariableScope(lexicalScope)
+          : lexicalScope;
+      collectBindingIdentifiers(node.name, (identifier) =>
+        registerBinding(scope, identifier, kind, node),
+      );
+      return;
+    }
+    if (ts.isParameter(node)) {
+      const scope = scopeByNode.get(node);
+      collectBindingIdentifiers(node.name, (identifier) =>
+        registerBinding(scope, identifier, "parameter", node),
+      );
+      return;
+    }
+    if (ts.isImportDeclaration(node)) {
+      const scope = scopeByNode.get(node);
+      const clause = node.importClause;
+      if (!clause) return;
+      if (clause.name) {
+        registerBinding(scope, clause.name, "other", node);
+      }
+      if (clause.namedBindings) {
+        if (ts.isNamespaceImport(clause.namedBindings)) {
+          registerBinding(scope, clause.namedBindings.name, "other", node);
+        } else {
+          for (const specifier of clause.namedBindings.elements) {
+            registerBinding(scope, specifier.name, "other", node);
+          }
+        }
+      }
+      return;
+    }
+    if (ts.isImportEqualsDeclaration(node)) {
+      registerBinding(scopeByNode.get(node), node.name, "other", node);
+      return;
+    }
+    if (
+      ts.isFunctionDeclaration(node) ||
+      ts.isClassDeclaration(node) ||
+      ts.isEnumDeclaration(node) ||
+      ts.isModuleDeclaration(node)
+    ) {
+      if (node.name) {
+        registerBinding(
+          scopeByNode.get(node.parent),
+          node.name,
+          "other",
+          node,
+        );
+      }
+      return;
+    }
+    if (ts.isFunctionExpression(node) && node.name) {
+      registerBinding(scopeByNode.get(node), node.name, "other", node);
+    }
+  };
+  const collectBindings = (node) => {
+    registerDeclarationBindings(node);
+    ts.forEachChild(node, collectBindings);
+  };
+  collectBindings(sourceFile);
+
+  const lookupBinding = (identifier) => {
+    let scope = scopeByNode.get(identifier);
+    while (scope) {
+      const bindings = scope.bindings.get(identifier.text);
+      if (bindings) {
+        return bindings.length === 1
+          ? { binding: bindings[0], ambiguous: false }
+          : { binding: undefined, bindings, ambiguous: true };
+      }
+      scope = scope.parent;
+    }
+    return undefined;
+  };
+
+  const markWriteTarget = (target) => {
+    if (!target) return;
+    const unwrapped = unwrapExpression(target);
+    if (ts.isIdentifier(unwrapped)) {
+      if (bindingIdentifierNodes.has(unwrapped)) return;
+      const result = lookupBinding(unwrapped);
+      if (!result) return;
+      if (result.ambiguous) {
+        for (const binding of result.bindings) binding.reassigned = true;
+      } else {
+        result.binding.reassigned = true;
+      }
+      return;
+    }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      for (const property of unwrapped.properties) {
+        if (ts.isShorthandPropertyAssignment(property)) {
+          markWriteTarget(property.name);
+        } else if (ts.isPropertyAssignment(property)) {
+          markWriteTarget(property.initializer);
+        } else if (ts.isSpreadAssignment(property)) {
+          markWriteTarget(property.expression);
+        }
+      }
+      return;
+    }
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      for (const element of unwrapped.elements) {
+        if (!ts.isOmittedExpression(element)) markWriteTarget(element);
+      }
+      return;
+    }
+    if (ts.isObjectBindingPattern(unwrapped) || ts.isArrayBindingPattern(unwrapped)) {
+      for (const element of unwrapped.elements) {
+        if (ts.isBindingElement(element)) markWriteTarget(element.name);
+      }
+    }
+  };
+
+  const markWrites = (node) => {
+    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+      markWriteTarget(node.left);
+    }
+    if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
+      if (
+        node.operator === ts.SyntaxKind.PlusPlusToken ||
+        node.operator === ts.SyntaxKind.MinusMinusToken
+      ) {
+        markWriteTarget(node.operand);
+      }
+    }
+    if (ts.isForInStatement(node) || ts.isForOfStatement(node)) {
+      if (!ts.isVariableDeclarationList(node.initializer)) {
+        markWriteTarget(node.initializer);
+      }
+    }
+    ts.forEachChild(node, markWrites);
+  };
+  markWrites(sourceFile);
+
+  const resolveIdentifier = (identifier, seenBindings) => {
+    const result = lookupBinding(identifier);
+    if (
+      !result ||
+      result.ambiguous ||
+      result.binding.kind !== "const" ||
+      result.binding.reassigned ||
+      !result.binding.declaration.initializer
+    ) {
+      return undefined;
+    }
+    if (seenBindings.has(result.binding)) return undefined;
+    const nextSeenBindings = new Set(seenBindings);
+    nextSeenBindings.add(result.binding);
+    return foldStaticStringExpression(
+      result.binding.declaration.initializer,
+      resolveIdentifier,
+      nextSeenBindings,
+    );
+  };
+
+  return {
+    fold(expression) {
+      return foldStaticStringExpression(expression, resolveIdentifier, new Set());
+    },
+  };
+}
+
+function foldStaticStringExpression(
+  expression,
+  resolveIdentifier = () => undefined,
+  seenBindings = new Set(),
+) {
   if (!expression) return undefined;
   if (
     ts.isStringLiteral(expression) ||
@@ -1537,27 +1800,37 @@ function foldStaticStringExpression(expression) {
     return expression.text;
   }
   if (ts.isParenthesizedExpression(expression)) {
-    return foldStaticStringExpression(expression.expression);
+    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
   }
   if (
     ts.isAsExpression(expression) ||
     ts.isTypeAssertionExpression(expression) ||
     ts.isNonNullExpression(expression)
   ) {
-    return foldStaticStringExpression(expression.expression);
+    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
+  }
+  if (ts.isSatisfiesExpression(expression)) {
+    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
+  }
+  if (ts.isIdentifier(expression)) {
+    return resolveIdentifier(expression, seenBindings);
   }
   if (
     ts.isBinaryExpression(expression) &&
     expression.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const left = foldStaticStringExpression(expression.left);
-    const right = foldStaticStringExpression(expression.right);
+    const left = foldStaticStringExpression(expression.left, resolveIdentifier, seenBindings);
+    const right = foldStaticStringExpression(expression.right, resolveIdentifier, seenBindings);
     return left === undefined || right === undefined ? undefined : left + right;
   }
   if (ts.isTemplateExpression(expression)) {
     let value = expression.head.text;
     for (const span of expression.templateSpans) {
-      const expressionValue = foldStaticStringExpression(span.expression);
+      const expressionValue = foldStaticStringExpression(
+        span.expression,
+        resolveIdentifier,
+        seenBindings,
+      );
       if (expressionValue === undefined) return undefined;
       value += expressionValue + span.literal.text;
     }
@@ -1616,6 +1889,7 @@ function scanInterpreterSourceWithAst(file, source) {
   }
 
   const findings = new Set();
+  const staticStringResolver = createStaticStringResolver(sourceFile);
   const addModuleFindings = (moduleSpecifier) => {
     for (const ruleId of findRequiredImportDependencyRules(moduleSpecifier)) {
       findings.add(ruleId);
@@ -1625,6 +1899,36 @@ function scanInterpreterSourceWithAst(file, source) {
     if (ts.isImportDeclaration(node)) {
       if (ts.isStringLiteral(node.moduleSpecifier)) {
         addModuleFindings(node.moduleSpecifier.text);
+      }
+    }
+    if (
+      ts.isExportDeclaration(node) &&
+      node.moduleSpecifier &&
+      ts.isStringLiteral(node.moduleSpecifier)
+    ) {
+      addModuleFindings(node.moduleSpecifier.text);
+    }
+    if (ts.isPropertyAccessExpression(node)) {
+      if (REQUIRED_DB_MUTATION_METHODS.has(node.name.text)) {
+        findings.add("db-mutation");
+      }
+    }
+    if (ts.isElementAccessExpression(node)) {
+      const method = staticStringResolver.fold(node.argumentExpression);
+      if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
+        findings.add("db-mutation");
+      }
+    }
+    if (ts.isBindingElement(node)) {
+      const propertyName = node.propertyName ?? node.name;
+      let method;
+      if (ts.isIdentifier(propertyName)) {
+        method = propertyName.text;
+      } else {
+        method = staticStringResolver.fold(propertyName);
+      }
+      if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
+        findings.add("db-mutation");
       }
     }
     if (ts.isCallExpression(node)) {
@@ -1640,15 +1944,15 @@ function scanInterpreterSourceWithAst(file, source) {
           addModuleFindings(moduleSpecifier);
         }
       }
-      let method;
       const callee = unwrapExpression(node.expression);
       if (ts.isElementAccessExpression(callee)) {
-        method = foldStaticStringExpression(callee.argumentExpression);
-      } else if (ts.isPropertyAccessExpression(callee)) {
-        method = callee.name.text;
-      }
-      if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
-        findings.add("db-mutation");
+        const method = staticStringResolver.fold(callee.argumentExpression);
+        if (
+          method === undefined ||
+          REQUIRED_DB_MUTATION_METHODS.has(method)
+        ) {
+          findings.add("db-mutation");
+        }
       }
     }
     ts.forEachChild(node, visit);
