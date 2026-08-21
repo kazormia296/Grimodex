@@ -1,7 +1,6 @@
 import type {
   ContextSetEntry,
   DependencySetEntry,
-  HumanDerivedRevisionBasisV2,
   InterpretationRevisionBasisV2,
   NarrativeAssertionDigests,
   NarrativeAssertionProducer,
@@ -42,36 +41,11 @@ type V2AssertionWithoutProducer<TPayload> = Omit<
   "producer"
 >;
 
-type RevisionBasisInput =
-  | {
-      readonly kind: "interpretation";
-      readonly runId: string;
-      readonly taskId: string;
-      readonly producer: NarrativeAssertionProducer;
-      readonly contextSet: readonly ContextSetEntry[];
-      readonly contextSetDigest: string;
-      readonly componentContractDigest: string;
-      readonly finalRequestDigest: string;
-    }
-  | {
-      readonly kind: "human-derived";
-      readonly parentRevisionId: string;
-      readonly expectedParentEnvelopeDigest: string;
-      readonly parentAssertionDigest: string;
-      readonly rootInterpretationRevisionId: string;
-      readonly derivation: {
-        readonly adapterId: string;
-        readonly adapterVersion: string;
-        readonly kind: "projection-only" | "scope-override";
-        readonly proposalPayloadChangedPaths: readonly string[];
-      };
-      readonly revisionActor: {
-        readonly kind: "human";
-        readonly surfaceId: string;
-      };
-      readonly derivationContextSet: readonly ContextSetEntry[];
-      readonly derivationContextSetDigest: string;
-    };
+type RevisionBasisInput = {
+  readonly kind: "interpretation";
+  readonly componentContractDigest: string;
+  readonly finalRequestDigest: string;
+};
 
 type ProjectionBindingInput = Omit<
   NarrativeProjectionBindingV2,
@@ -104,6 +78,46 @@ function requireNonEmpty(
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new Error(`Narrative Revision Envelope V2 ${name} must be non-empty`);
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function assertMinimalInterpretationRevisionBasis(
+  value: unknown,
+): asserts value is RevisionBasisInput {
+  if (!isRecord(value)) {
+    throw new Error(
+      "Narrative Revision Envelope V1 adapter revisionBasis must be an interpretation input",
+    );
+  }
+  if (value.kind !== "interpretation") {
+    throw new Error(
+      "Narrative Revision Envelope V1 adapter only accepts interpretation revisionBasis input",
+    );
+  }
+
+  const allowedFields = new Set([
+    "kind",
+    "componentContractDigest",
+    "finalRequestDigest",
+  ]);
+  const unknownField = [
+    ...Object.getOwnPropertyNames(value),
+    ...Object.getOwnPropertySymbols(value).map(String),
+  ].find((field) => !allowedFields.has(field));
+  if (unknownField !== undefined) {
+    throw new Error(
+      `Narrative Revision Envelope V1 adapter rejects caller-owned revisionBasis field '${unknownField}'`,
+    );
+  }
+
+  requireNonEmpty(
+    value.componentContractDigest,
+    "revisionBasis.componentContractDigest",
+  );
+  requireNonEmpty(value.finalRequestDigest, "revisionBasis.finalRequestDigest");
 }
 
 function buildProducer(
@@ -179,14 +193,7 @@ export function adaptReconciliationEnvelopeV1ToV2<TPayload>(
       "Narrative Revision Envelope V1 adapter requires the registered canonical adapter",
     );
   }
-  if (
-    input.revisionBasis.kind === "interpretation" &&
-    input.revisionBasis.contextSetDigest !== input.contextSetDigest
-  ) {
-    throw new Error(
-      "Narrative Revision Envelope V1 adapter contextSetDigest does not match interpretation basis",
-    );
-  }
+  assertMinimalInterpretationRevisionBasis(input.revisionBasis);
 
   const producer = buildProducer(envelope);
   const result: NarrativeRevisionEnvelopeV2<TPayload> = {
@@ -211,9 +218,19 @@ export function adaptReconciliationEnvelopeV1ToV2<TPayload>(
       materialBasisDigest:
         input.materialBasisDigest as NarrativeAssertionDigests["assertionCoreDigest"],
     },
-    revisionBasis: input.revisionBasis as
-      | InterpretationRevisionBasisV2
-      | HumanDerivedRevisionBasisV2,
+    revisionBasis: {
+      kind: "interpretation",
+      runId: envelope.runId,
+      taskId: envelope.taskId,
+      producer,
+      contextSet: input.contextSet,
+      contextSetDigest:
+        input.contextSetDigest as InterpretationRevisionBasisV2["contextSetDigest"],
+      componentContractDigest: input.revisionBasis
+        .componentContractDigest as InterpretationRevisionBasisV2["componentContractDigest"],
+      finalRequestDigest: input.revisionBasis
+        .finalRequestDigest as InterpretationRevisionBasisV2["finalRequestDigest"],
+    },
     projectionBinding: input.projectionBinding as NarrativeProjectionBindingV2,
   };
   assertNarrativeRevisionEnvelopeV2(result);
