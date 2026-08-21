@@ -283,6 +283,9 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - .agents/skills/adversarial-review/SKILL.md
       - src/features/chat/agent/toolExecutors.ts
       - src/features/chat/agent/chronicleWriteTools.ts
@@ -300,6 +303,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
@@ -381,7 +385,7 @@ requirements:
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-SEMANTIC-CONTRACT-001
-    title: Narrative authority, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
+    title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - docs/adr/005-narrative-semantic-core-boundary.md
@@ -391,6 +395,8 @@ requirements:
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
@@ -400,6 +406,7 @@ requirements:
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
       - scripts/quality/validate-semantic-core-boundary.mjs
     lightTests:
@@ -553,6 +560,9 @@ requirements:
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/grimodex-impact-gate/SKILL.md

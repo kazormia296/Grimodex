@@ -1,0 +1,232 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-artifact-authority",
+  "adr": [
+    "docs/adr/005-narrative-semantic-core-boundary.md",
+    "docs/adr/011-narrative-ir-revision-semantics-contract.md"
+  ],
+  "requirementIds": [
+    "GDX-NARR-SEMANTIC-CONTRACT-001",
+    "GDX-ARTIFACT-001",
+    "GDX-TRACE-001"
+  ],
+  "lifecycleClasses": ["durable", "ephemeral", "rebuildable"],
+  "authorityKinds": [
+    "source-identity",
+    "immutable-interpretation",
+    "review",
+    "evidence-freshness",
+    "projection-execution",
+    "application-contribution",
+    "rebuildable-acceleration",
+    "none"
+  ],
+  "artifacts": [
+    {
+      "id": "source-snapshot",
+      "lifecycle": "durable",
+      "authority": "source-identity",
+      "authoritative": true,
+      "storage": "source-revision-and-canonical-text",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "stage-execution",
+      "lifecycle": "durable",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "narrative-extraction-run-task-stage-identity",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "raw-model-response",
+      "lifecycle": "ephemeral",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "provider-response-buffer",
+      "retention": {"default": "not-retained", "scope": "request-scoped"}
+    },
+    {
+      "id": "response-digest",
+      "lifecycle": "durable",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "stage-execution-response-digest",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "extraction-artifact",
+      "lifecycle": "durable",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "narrative_extraction_artifacts",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "narrative-ir-revision",
+      "lifecycle": "durable",
+      "authority": "immutable-interpretation",
+      "authoritative": true,
+      "storage": "narrative_proposal_revisions",
+      "retention": {"default": "retained", "scope": "while-project-exists"}
+    },
+    {
+      "id": "review-decision",
+      "lifecycle": "durable",
+      "authority": "review",
+      "authoritative": true,
+      "storage": "decision-ledger",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "consumer-freshness",
+      "lifecycle": "durable",
+      "authority": "evidence-freshness",
+      "authoritative": true,
+      "storage": "narrative_consumer_freshness",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "projection-application",
+      "lifecycle": "durable",
+      "authority": "projection-execution",
+      "authoritative": true,
+      "storage": "application-and-commit-ledger",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "application-contribution",
+      "lifecycle": "durable",
+      "authority": "application-contribution",
+      "authoritative": true,
+      "storage": "narrative_application_contributions",
+      "retention": {"default": "retained", "scope": "project-scoped"}
+    },
+    {
+      "id": "semantic-index",
+      "lifecycle": "rebuildable",
+      "authority": "rebuildable-acceleration",
+      "authoritative": false,
+      "storage": "semantic-index-and-metadata",
+      "retention": {"default": "reconstructable", "scope": "project-scoped"}
+    },
+    {
+      "id": "renderer-state",
+      "lifecycle": "ephemeral",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "renderer-memory",
+      "retention": {"default": "not-retained", "scope": "window-scoped"}
+    }
+  ],
+  "rawResponsePolicy": {
+    "artifactId": "raw-model-response",
+    "defaultLifecycle": "ephemeral",
+    "defaultRetention": "not-retained",
+    "digestArtifactId": "response-digest",
+    "parsedResultArtifactId": "extraction-artifact",
+    "fullRetentionRequiresContract": "privacy-capacity-and-audit"
+  },
+  "authorityRules": {
+    "secondaryFreshnessAuthority": "forbid",
+    "rendererFreshnessAuthority": "forbid",
+    "featureLocalFreshnessAuthority": "forbid",
+    "semanticIndexAuthority": "rebuildable-acceleration-only",
+    "interpreterDomainMutation": "forbid"
+  },
+  "interpreterBoundary": {
+    "interpreterRoots": [
+      "src/features/narrative-semantic-core",
+      "src/features/narrative-extraction/ir",
+      "src/application/narrative-extraction/aiTasks"
+    ],
+    "allowlist": {
+      "files": [],
+      "imports": [
+        {
+          "id": "type-only-domain-vocabulary",
+          "pattern": "@/db/schema",
+          "mode": "type-only"
+        }
+      ]
+    },
+    "forbiddenDependencies": [
+      {
+        "id": "sql-import",
+        "patterns": [
+          "\\bfrom\\s+[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]"
+        ]
+      },
+      {
+        "id": "db-mutation",
+        "patterns": [
+          "\\b(?:db|database|conn|connection|tx|transaction)\\s*\\.\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*\\(",
+          "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]"
+        ]
+      },
+      {
+        "id": "prepared-commit",
+        "patterns": [
+          "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]"
+        ]
+      },
+      {
+        "id": "typed-writer",
+        "patterns": [
+          "\\b(?:TypedWriter|typedWriter|typed_writer|runTypedWriter|writeWithTypedWriter)\\b",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]"
+        ]
+      },
+      {
+        "id": "agent-writer",
+        "patterns": [
+          "\\b(?:AgentWriter|agentWriter|agent_writer|agent_writes|writeWithAgentWriter)\\b",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]"
+        ]
+      },
+      {
+        "id": "generic-mcp-sql",
+        "patterns": [
+          "\\b(?:mcpSql|mcp_sql|genericMcpSql|generic_mcp_sql)\\b",
+          "\\b(?:mcp|Mcp)[A-Za-z0-9_]*(?:sql|query|execute)\\s*\\(",
+          "\\b(?:mcp|Mcp)[A-Za-z0-9_]*::(?:sql|query|execute)\\b",
+          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]"
+        ]
+      }
+    ],
+    "forbiddenFreshnessAuthorityPatterns": [
+      {
+        "id": "freshness-store",
+        "pattern": "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*Freshness(?:Store|Cache|ReadModel|Flag|State|Map|Index)|freshness(?:Store|Cache|ReadModel|Flag|State|Map|Index))\\b"
+      },
+      {
+        "id": "freshness-authority",
+        "pattern": "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*FreshnessAuthority|freshnessAuthority|isAuthoritativeFresh|assertionFresh|isFresh|hasFreshness|semanticTruth)\\b"
+      },
+      {
+        "id": "stale-store",
+        "pattern": "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*Stale(?:Store|Cache|ReadModel|Flag|State|Map|Index)|stale(?:Store|Cache|ReadModel|Flag|State|Map|Index))\\b"
+      }
+    ],
+    "fixtures": [
+      "policies/narrative/fixtures/artifact-authority.json"
+    ]
+  },
+  "fixtures": [
+    "policies/narrative/fixtures/artifact-authority.json"
+  ],
+  "implementationStatus": {
+    "state": "wired",
+    "productionEntryPoints": [
+      "scripts/quality/validate-semantic-core-boundary.mjs"
+    ],
+    "scanRoots": ["scripts/quality"],
+    "productionMarkers": [
+      "validateArtifactAuthorityContract",
+      "validateInterpreterBoundary"
+    ]
+  }
+}

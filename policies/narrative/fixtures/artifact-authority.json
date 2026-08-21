@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "fixtureKind": "narrative-artifact-authority-negative-and-positive",
+  "cases": [
+    {
+      "id": "raw-model-response-durable-rejected",
+      "kind": "artifact-lifecycle",
+      "target": "raw-model-response",
+      "claim": {"lifecycle": "durable"},
+      "expected": "reject"
+    },
+    {
+      "id": "raw-model-response-retained-rejected",
+      "kind": "artifact-retention",
+      "target": "raw-model-response",
+      "claim": {"retention": "retained"},
+      "expected": "reject"
+    },
+    {
+      "id": "semantic-index-authority-rejected",
+      "kind": "authority-classification",
+      "target": "semantic-index",
+      "claim": {"authoritative": true},
+      "expected": "reject"
+    },
+    {
+      "id": "interpreter-sql-import-rejected",
+      "kind": "interpreter-boundary",
+      "rule": "sql-import",
+      "source": "import { sql } from \\\"drizzle-orm\\\";",
+      "expected": "reject"
+    },
+    {
+      "id": "interpreter-typed-writer-rejected",
+      "kind": "interpreter-boundary",
+      "rule": "typed-writer",
+      "source": "typedWriter.commit({});",
+      "expected": "reject"
+    },
+    {
+      "id": "interpreter-freshness-store-rejected",
+      "kind": "interpreter-boundary",
+      "rule": "freshness-store",
+      "source": "const localFreshnessStore = new Map();",
+      "expected": "reject"
+    },
+    {
+      "id": "interpreter-type-only-vocabulary-allowed",
+      "kind": "interpreter-boundary",
+      "rule": "type-only-domain-vocabulary",
+      "source": "import type { PlotPhaseType } from \\\"@/db/schema\\\";",
+      "expected": "accept"
+    }
+  ]
+}

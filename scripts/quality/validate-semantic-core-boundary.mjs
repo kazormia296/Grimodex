@@ -228,6 +228,46 @@ const REQUIRED_DEPENDENCY_CONTRACT_FIXTURES = Object.freeze([
   "utf16-range-rejects-surrogate-interior",
 ]);
 
+const REQUIRED_ARTIFACT_IDS = Object.freeze([
+  "source-snapshot",
+  "stage-execution",
+  "raw-model-response",
+  "response-digest",
+  "extraction-artifact",
+  "narrative-ir-revision",
+  "review-decision",
+  "consumer-freshness",
+  "projection-application",
+  "application-contribution",
+  "semantic-index",
+  "renderer-state",
+]);
+
+const REQUIRED_INTERPRETER_DEPENDENCY_RULES = Object.freeze([
+  "sql-import",
+  "db-mutation",
+  "prepared-commit",
+  "typed-writer",
+  "agent-writer",
+  "generic-mcp-sql",
+]);
+
+const REQUIRED_FRESHNESS_AUTHORITY_RULES = Object.freeze([
+  "freshness-store",
+  "freshness-authority",
+  "stale-store",
+]);
+
+const REQUIRED_ARTIFACT_FIXTURES = Object.freeze([
+  "raw-model-response-durable-rejected",
+  "raw-model-response-retained-rejected",
+  "semantic-index-authority-rejected",
+  "interpreter-sql-import-rejected",
+  "interpreter-typed-writer-rejected",
+  "interpreter-freshness-store-rejected",
+  "interpreter-type-only-vocabulary-allowed",
+]);
+
 const EXPECTED_ALLOWED_CALLERS = Object.freeze({
   "human-direct": ["human-ui", "manual-wrapper", "typed-domain-api"],
   "interactive-agent-command": [
@@ -930,6 +970,452 @@ function validateAuthorityMatrix(matrix, errors) {
   }
 }
 
+function validateRegexRule(rule, label, errors) {
+  if (!isObject(rule) || !isNonEmptyString(rule.id)) {
+    errors.push(`${label} must declare a non-empty id`);
+    return false;
+  }
+  const patterns = Array.isArray(rule.patterns)
+    ? rule.patterns
+    : [rule.pattern];
+  if (patterns.length === 0 || patterns.some((pattern) => !isNonEmptyString(pattern))) {
+    errors.push(`${label} must declare non-empty regex patterns`);
+    return false;
+  }
+  let valid = true;
+  for (const [index, pattern] of patterns.entries()) {
+    try {
+      // Compile every policy-owned expression before scanning any source. A
+      // malformed deny rule must fail closed instead of silently shrinking
+      // the boundary scan.
+      new RegExp(pattern);
+    } catch (error) {
+      errors.push(
+        `${label} pattern ${index} is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      valid = false;
+    }
+  }
+  return valid;
+}
+
+function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
+  const fixturePaths = Array.isArray(contract?.fixtures)
+    ? contract.fixtures
+    : [];
+  if (fixturePaths.length === 0) {
+    errors.push("narrative artifact authority contract must declare fixtures");
+    return;
+  }
+  const fixturePath = fixturePaths.find((entry) =>
+    entry.endsWith("policies/narrative/fixtures/artifact-authority.json"),
+  );
+  if (!fixturePath) {
+    errors.push(
+      "narrative artifact authority contract must reference artifact-authority.json",
+    );
+    return;
+  }
+  const fixture = readJson(
+    repoRoot,
+    fixturePath,
+    errors,
+    "narrative artifact authority fixtures",
+  );
+  if (
+    !fixture ||
+    fixture.schemaVersion !== 1 ||
+    fixture.fixtureKind !== "narrative-artifact-authority-negative-and-positive" ||
+    !Array.isArray(fixture.cases)
+  ) {
+    errors.push(
+      "narrative artifact authority fixtures must declare schemaVersion 1, fixtureKind, and cases",
+    );
+    return;
+  }
+  const cases = new Map(
+    fixture.cases.map((fixtureCase) => [fixtureCase?.id, fixtureCase]),
+  );
+  for (const fixtureId of REQUIRED_ARTIFACT_FIXTURES) {
+    const fixtureCase = cases.get(fixtureId);
+    if (!fixtureCase) {
+      errors.push(
+        `narrative artifact authority fixtures are missing case: ${fixtureId}`,
+      );
+      continue;
+    }
+    if (!new Set(["accept", "reject"]).has(fixtureCase.expected)) {
+      errors.push(
+        `narrative artifact authority fixture ${fixtureId} must declare accept or reject`,
+      );
+    }
+  }
+  if (
+    !fixture.cases.some((fixtureCase) => fixtureCase?.expected === "accept") ||
+    !fixture.cases.some((fixtureCase) => fixtureCase?.expected === "reject")
+  ) {
+    errors.push(
+      "narrative artifact authority fixtures must contain both accept and reject cases",
+    );
+  }
+}
+
+export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
+  if (!isObject(contract) || contract.schemaVersion !== 1) {
+    errors.push("narrative artifact authority contract schemaVersion must be 1");
+    return;
+  }
+  if (contract.contract !== "narrative-artifact-authority") {
+    errors.push("narrative artifact authority contract id is invalid");
+  }
+  if (
+    !sameStringSet(contract.requirementIds, [
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-ARTIFACT-001",
+      "GDX-TRACE-001",
+    ])
+  ) {
+    errors.push(
+      "narrative artifact authority contract must retain GDX-NARR-SEMANTIC-CONTRACT-001, GDX-ARTIFACT-001, and GDX-TRACE-001 traceability",
+    );
+  }
+  if (
+    !sameStringSet(contract.lifecycleClasses, [
+      "durable",
+      "ephemeral",
+      "rebuildable",
+    ])
+  ) {
+    errors.push(
+      "narrative artifact authority lifecycle classes must be durable, ephemeral, and rebuildable",
+    );
+  }
+  const authorityKinds = new Set(
+    Array.isArray(contract.authorityKinds) ? contract.authorityKinds : [],
+  );
+  const artifacts = Array.isArray(contract.artifacts)
+    ? contract.artifacts
+    : [];
+  if (artifacts.length === 0) {
+    errors.push("narrative artifact authority contract must list artifacts");
+    return;
+  }
+  const artifactById = new Map();
+  for (const artifact of artifacts) {
+    if (!isObject(artifact) || !isNonEmptyString(artifact.id)) {
+      errors.push("narrative artifact authority entry must have an id");
+      continue;
+    }
+    if (artifactById.has(artifact.id)) {
+      errors.push(`duplicate narrative artifact authority entry: ${artifact.id}`);
+    }
+    artifactById.set(artifact.id, artifact);
+    if (!new Set(["durable", "ephemeral", "rebuildable"]).has(artifact.lifecycle)) {
+      errors.push(`narrative artifact ${artifact.id} has unknown lifecycle: ${String(artifact.lifecycle)}`);
+    }
+    if (!authorityKinds.has(artifact.authority)) {
+      errors.push(`narrative artifact ${artifact.id} has unknown authority: ${String(artifact.authority)}`);
+    }
+    if (!isObject(artifact.retention) || !isNonEmptyString(artifact.retention.default)) {
+      errors.push(`narrative artifact ${artifact.id} must declare retention.default`);
+    }
+    if (!isNonEmptyString(artifact.storage)) {
+      errors.push(`narrative artifact ${artifact.id} must declare storage`);
+    }
+    if (artifact.lifecycle === "durable" && artifact.retention?.default !== "retained") {
+      errors.push(`durable narrative artifact ${artifact.id} must be retained`);
+    }
+    if (artifact.lifecycle === "ephemeral" && artifact.retention?.default === "reconstructable") {
+      errors.push(`ephemeral narrative artifact ${artifact.id} cannot be reconstructable`);
+    }
+    if (artifact.lifecycle === "rebuildable" && artifact.authoritative !== false) {
+      errors.push(`rebuildable narrative artifact ${artifact.id} must not be authoritative`);
+    }
+    if (artifact.authoritative === true && artifact.lifecycle === "ephemeral") {
+      errors.push(`ephemeral narrative artifact ${artifact.id} cannot be authoritative`);
+    }
+  }
+  for (const artifactId of REQUIRED_ARTIFACT_IDS) {
+    if (!artifactById.has(artifactId)) {
+      errors.push(`narrative artifact authority contract is missing artifact: ${artifactId}`);
+    }
+  }
+
+  const rawResponse = artifactById.get("raw-model-response");
+  if (rawResponse?.lifecycle === "durable") {
+    errors.push("raw-model-response must not be durable");
+  }
+  if (rawResponse?.retention?.default !== "not-retained") {
+    errors.push("raw-model-response default retention must be not-retained");
+  }
+  const digest = artifactById.get("response-digest");
+  if (digest?.retention?.default !== "retained") {
+    errors.push("response-digest must be retained");
+  }
+  const extractionArtifact = artifactById.get("extraction-artifact");
+  if (extractionArtifact?.retention?.default !== "retained") {
+    errors.push("extraction-artifact must be retained");
+  }
+  const freshnessAuthorities = artifacts.filter(
+    (artifact) => artifact.authority === "evidence-freshness",
+  );
+  if (
+    freshnessAuthorities.length !== 1 ||
+    freshnessAuthorities[0]?.id !== "consumer-freshness" ||
+    freshnessAuthorities[0]?.storage !== "narrative_consumer_freshness"
+  ) {
+    errors.push(
+      "narrative artifact authority must have exactly one canonical consumer-freshness authority",
+    );
+  }
+  const semanticIndex = artifactById.get("semantic-index");
+  if (
+    semanticIndex?.authoritative !== false ||
+    semanticIndex?.authority !== "rebuildable-acceleration"
+  ) {
+    errors.push(
+      "semantic-index must remain rebuildable-acceleration-only and non-authoritative",
+    );
+  }
+  const rendererState = artifactById.get("renderer-state");
+  if (rendererState?.authority === "evidence-freshness" || rendererState?.authoritative === true) {
+    errors.push("renderer-state must not claim Freshness or semantic authority");
+  }
+  const rawResponsePolicy = contract.rawResponsePolicy;
+  if (
+    !isObject(rawResponsePolicy) ||
+    rawResponsePolicy.artifactId !== "raw-model-response" ||
+    rawResponsePolicy.defaultLifecycle !== "ephemeral" ||
+    rawResponsePolicy.defaultRetention !== "not-retained" ||
+    rawResponsePolicy.digestArtifactId !== "response-digest" ||
+    rawResponsePolicy.parsedResultArtifactId !== "extraction-artifact" ||
+    !isNonEmptyString(rawResponsePolicy.fullRetentionRequiresContract)
+  ) {
+    errors.push(
+      "raw response policy must make ephemeral/non-retained default and name digest and parsed result artifacts",
+    );
+  }
+  const authorityRules = contract.authorityRules;
+  if (
+    !isObject(authorityRules) ||
+    authorityRules.secondaryFreshnessAuthority !== "forbid" ||
+    authorityRules.rendererFreshnessAuthority !== "forbid" ||
+    authorityRules.featureLocalFreshnessAuthority !== "forbid" ||
+    authorityRules.semanticIndexAuthority !== "rebuildable-acceleration-only" ||
+    authorityRules.interpreterDomainMutation !== "forbid"
+  ) {
+    errors.push(
+      "narrative artifact authority rules must forbid secondary/renderer/feature-local Freshness and Interpreter mutation",
+    );
+  }
+  validateArtifactAuthorityFixtures(repoRoot, contract, errors);
+  validateImplementationStatus(
+    repoRoot,
+    "narrative artifact authority contract",
+    contract.implementationStatus,
+    errors,
+  );
+}
+
+function allowlistedSourcePath(repoRoot, file, allowlistedFiles) {
+  const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
+  return allowlistedFiles.has(relativeFile);
+}
+
+function removeAllowlistedTypeOnlyImports(source, allowlistedImports) {
+  const compiled = allowlistedImports.flatMap((entry) => {
+    if (entry?.mode !== "type-only" || !isNonEmptyString(entry.pattern)) {
+      return [];
+    }
+    try {
+      return [new RegExp(entry.pattern)];
+    } catch {
+      return [];
+    }
+  });
+  return source.replace(
+    /^\s*import\s+type[\s\S]*?from\s+["']([^"']+)["']\s*;?\s*$/gm,
+    (statement, moduleSpecifier) =>
+      compiled.some((pattern) => pattern.test(moduleSpecifier)) ? "" : statement,
+  );
+}
+
+export function validateInterpreterBoundary(repoRoot, contract, errors) {
+  const boundary = contract?.interpreterBoundary;
+  if (!isObject(boundary)) {
+    errors.push("narrative Interpreter boundary must be an object");
+    return;
+  }
+  const roots = Array.isArray(boundary.interpreterRoots)
+    ? boundary.interpreterRoots
+    : [];
+  if (roots.length === 0) {
+    errors.push("Interpreter boundary must declare interpreterRoots");
+  }
+  if (!isObject(boundary.allowlist)) {
+    errors.push("Interpreter boundary must declare an allowlist");
+  }
+  const allowlist = isObject(boundary.allowlist) ? boundary.allowlist : {};
+  if (!Array.isArray(allowlist.files)) {
+    errors.push("Interpreter boundary allowlist.files must be an array");
+  }
+  if (!Array.isArray(allowlist.imports)) {
+    errors.push("Interpreter boundary allowlist.imports must be an array");
+  }
+  const allowlistedFiles = new Set(
+    Array.isArray(allowlist.files)
+      ? allowlist.files.filter(isNonEmptyString)
+      : [],
+  );
+  const allowlistedImports = Array.isArray(allowlist.imports)
+    ? allowlist.imports
+    : [];
+  if (!Array.isArray(boundary.forbiddenDependencies) || boundary.forbiddenDependencies.length === 0) {
+    errors.push("Interpreter boundary must declare forbidden dependencies");
+  }
+  if (
+    !Array.isArray(boundary.forbiddenFreshnessAuthorityPatterns) ||
+    boundary.forbiddenFreshnessAuthorityPatterns.length === 0
+  ) {
+    errors.push("Interpreter boundary must declare freshness authority patterns");
+  }
+  for (const relativeFile of allowlistedFiles) {
+    if (path.isAbsolute(relativeFile) || relativeFile.split(/[\\/]/).includes("..")) {
+      errors.push(`Interpreter boundary allowlist file must be repository-relative: ${relativeFile}`);
+    } else if (!existsSync(path.join(repoRoot, relativeFile))) {
+      errors.push(`Interpreter boundary allowlist file is missing: ${relativeFile}`);
+    }
+  }
+  for (const [index, entry] of allowlistedImports.entries()) {
+    if (!isObject(entry) || !isNonEmptyString(entry.id) || !isNonEmptyString(entry.pattern)) {
+      errors.push(`Interpreter boundary allowlist import ${index} must declare id and pattern`);
+      continue;
+    }
+    if (!new Set(["type-only", "exact-file"]).has(entry.mode)) {
+      errors.push(`Interpreter boundary allowlist import ${entry.id} has unknown mode: ${String(entry.mode)}`);
+    }
+    try {
+      new RegExp(entry.pattern);
+    } catch (error) {
+      errors.push(
+        `Interpreter boundary allowlist import ${entry.id} has invalid pattern: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const dependencyRules = Array.isArray(boundary.forbiddenDependencies)
+    ? boundary.forbiddenDependencies
+    : [];
+  const freshnessRules = Array.isArray(boundary.forbiddenFreshnessAuthorityPatterns)
+    ? boundary.forbiddenFreshnessAuthorityPatterns
+    : [];
+  const dependencyRuleIds = new Set();
+  for (const rule of dependencyRules) {
+    validateRegexRule(rule, `Interpreter forbidden dependency rule ${rule?.id ?? "unknown"}`, errors);
+    if (isNonEmptyString(rule?.id)) {
+      if (dependencyRuleIds.has(rule.id)) {
+        errors.push(`Interpreter boundary duplicates forbidden dependency rule: ${rule.id}`);
+      }
+      dependencyRuleIds.add(rule.id);
+    }
+  }
+  for (const requiredRule of REQUIRED_INTERPRETER_DEPENDENCY_RULES) {
+    if (!dependencyRuleIds.has(requiredRule)) {
+      errors.push(`Interpreter boundary is missing forbidden dependency rule: ${requiredRule}`);
+    }
+  }
+  const freshnessRuleIds = new Set();
+  for (const rule of freshnessRules) {
+    validateRegexRule(rule, `Interpreter Freshness authority rule ${rule?.id ?? "unknown"}`, errors);
+    if (isNonEmptyString(rule?.id)) {
+      if (freshnessRuleIds.has(rule.id)) {
+        errors.push(`Interpreter boundary duplicates Freshness authority rule: ${rule.id}`);
+      }
+      freshnessRuleIds.add(rule.id);
+    }
+  }
+  for (const requiredRule of REQUIRED_FRESHNESS_AUTHORITY_RULES) {
+    if (!freshnessRuleIds.has(requiredRule)) {
+      errors.push(`Interpreter boundary is missing freshness authority rule: ${requiredRule}`);
+    }
+  }
+  const boundaryFixtures = Array.isArray(boundary.fixtures)
+    ? boundary.fixtures
+    : [];
+  if (boundaryFixtures.length === 0) {
+    errors.push("Interpreter boundary must declare fixtures");
+  }
+  for (const fixture of boundaryFixtures) {
+    if (!isNonEmptyString(fixture) || path.isAbsolute(fixture)) {
+      errors.push(`Interpreter boundary fixture must be repository-relative: ${String(fixture)}`);
+    } else if (!existsSync(path.join(repoRoot, fixture))) {
+      errors.push(`Interpreter boundary fixture is missing: ${fixture}`);
+    }
+  }
+
+  const compiledDependencies = dependencyRules.flatMap((rule) =>
+    (Array.isArray(rule?.patterns) ? rule.patterns : []).flatMap((pattern) => {
+      try {
+        return [{id: rule.id, expression: new RegExp(pattern)}];
+      } catch {
+        return [];
+      }
+    }),
+  );
+  const compiledFreshness = freshnessRules.flatMap((rule) => {
+    try {
+      return [{id: rule.id, expression: new RegExp(rule.pattern)}];
+    } catch {
+      return [];
+    }
+  });
+  for (const root of roots) {
+    if (!isNonEmptyString(root) || path.isAbsolute(root)) {
+      errors.push(`Interpreter boundary root must be repository-relative: ${String(root)}`);
+      continue;
+    }
+    if (root.split(/[\\/]/).includes("..")) {
+      errors.push(`Interpreter boundary root escapes repository: ${root}`);
+      continue;
+    }
+    const absoluteRoot = path.resolve(repoRoot, root);
+    const relativeRoot = path.relative(repoRoot, absoluteRoot);
+    if (
+      relativeRoot.startsWith("..") ||
+      path.isAbsolute(relativeRoot) ||
+      !existsSync(absoluteRoot)
+    ) {
+      errors.push(`Interpreter boundary root is missing: ${root}`);
+      continue;
+    }
+    for (const file of listProductionSourceFiles(repoRoot, root)) {
+      const relativeFile = path.relative(repoRoot, file).replaceAll("\\", "/");
+      const source = readFileSync(file, "utf8");
+      const dependencySource = allowlistedSourcePath(
+        repoRoot,
+        file,
+        allowlistedFiles,
+      )
+        ? ""
+        : removeAllowlistedTypeOnlyImports(source, allowlistedImports);
+      for (const rule of compiledDependencies) {
+        if (rule.expression.test(dependencySource)) {
+          errors.push(
+            `Interpreter boundary forbidden dependency '${rule.id}' in ${relativeFile}`,
+          );
+        }
+      }
+      for (const rule of compiledFreshness) {
+        if (rule.expression.test(source)) {
+          errors.push(
+            `Interpreter boundary detected unauthorized Freshness authority '${rule.id}' in ${relativeFile}`,
+          );
+        }
+      }
+    }
+  }
+}
+
 function validateDisclosurePolicy(policy, errors) {
   if (!isObject(policy) || policy.schemaVersion !== 1) {
     errors.push("retrieval disclosure policy schemaVersion must be 1");
@@ -1625,6 +2111,10 @@ function validatePolicySchemas(repoRoot, errors) {
     ["mutation-authority-routes.schema.json", "mutation-authority-routes.json"],
     ["semantic-state-vocabulary.schema.json", "semantic-state-vocabulary.json"],
     ["semantic-core-authorities.schema.json", "semantic-core-authorities.json"],
+    [
+      "narrative-artifact-authority.schema.json",
+      "narrative-artifact-authority.json",
+    ],
     ["retrieval-disclosure.schema.json", "retrieval-disclosure.json"],
     [
       "narrative-consumer-contract.schema.json",
@@ -1706,6 +2196,8 @@ export function validateSemanticCoreBoundary({
   routeRegistryPath = "policies/narrative/mutation-authority-routes.json",
   stateVocabularyPath = "policies/narrative/semantic-state-vocabulary.json",
   authorityMatrixPath = "policies/narrative/semantic-core-authorities.json",
+  artifactAuthorityContractPath =
+    "policies/narrative/narrative-artifact-authority.json",
   disclosurePolicyPath = "policies/narrative/retrieval-disclosure.json",
   consumerContractPath = "policies/narrative/narrative-consumer-contract.json",
   findingContractPath = "policies/narrative/narrative-finding-contract.json",
@@ -1744,6 +2236,20 @@ export function validateSemanticCoreBoundary({
     "semantic authority matrix",
   );
   validateAuthorityMatrix(authorityMatrix, errors);
+  const artifactAuthorityContract = readJson(
+    repoRoot,
+    artifactAuthorityContractPath,
+    errors,
+    "narrative artifact authority contract",
+  );
+  const artifactAuthorityErrorsBefore = errors.length;
+  validateArtifactAuthorityContract(
+    repoRoot,
+    artifactAuthorityContract,
+    errors,
+  );
+  const artifactAuthorityContractValid =
+    errors.length === artifactAuthorityErrorsBefore;
   const disclosurePolicy = readJson(
     repoRoot,
     disclosurePolicyPath,
@@ -1788,6 +2294,14 @@ export function validateSemanticCoreBoundary({
   );
   validatePolicySchemas(repoRoot, errors);
   validateArchitectureImports(repoRoot, writerManifest, errors);
+  const interpreterBoundaryErrorsBefore = errors.length;
+  validateInterpreterBoundary(
+    repoRoot,
+    artifactAuthorityContract,
+    errors,
+  );
+  const interpreterBoundaryValid =
+    errors.length === interpreterBoundaryErrorsBefore;
   validateMutationCommandInventory(repoRoot, writerManifest, errors);
   const schemaVersion = validateSchemaVersion(repoRoot, errors);
 
@@ -1801,6 +2315,8 @@ export function validateSemanticCoreBoundary({
       writerClassification: writerResult.operationCount > 0,
       stateVocabulary: errors.length === 0,
       authorityMatrix: errors.length === 0,
+      artifactAuthorityContract: artifactAuthorityContractValid,
+      interpreterBoundary: interpreterBoundaryValid,
       disclosurePolicy: errors.length === 0,
       scopeRelationContract: errors.length === 0,
       dependencyRoleContract: errors.length === 0,
