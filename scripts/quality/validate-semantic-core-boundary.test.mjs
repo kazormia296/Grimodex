@@ -1292,6 +1292,15 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "possibly missing object default",
+        source: [
+          "const safe = () => true;",
+          "const source = flag ? { fn: safe } : {};",
+          "const { fn = database[key] } = source;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
         name: "Reflect.apply call indirection",
         source: [
           "const fn = database[key];",
@@ -1390,6 +1399,9 @@ describe("validate-semantic-core-boundary", () => {
         "definedArray();",
         "const [nullArray = database[key]] = [null];",
         "nullArray();",
+        "const completeSource = flag ? { fn: safe } : { fn: safe };",
+        "const { fn: completeFn = database[key] } = completeSource;",
+        "completeFn();",
         "const { definedObject = database[key] } = { definedObject: safe };",
         "definedObject();",
         "const { nullObject = database[key] } = { nullObject: null };",
