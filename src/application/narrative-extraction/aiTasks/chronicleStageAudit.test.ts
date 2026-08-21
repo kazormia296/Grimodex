@@ -20,9 +20,9 @@ const parent = createStageExecutionContext({
 });
 
 const digests = {
-  contextSetDigest: "sha256:context" as const,
-  componentContractDigest: "sha256:component" as const,
-  finalRequestDigest: "sha256:request" as const,
+  contextSetDigest: `sha256:${"1".repeat(64)}` as const,
+  componentContractDigest: `sha256:${"2".repeat(64)}` as const,
+  finalRequestDigest: `sha256:${"3".repeat(64)}` as const,
 };
 
 describe("Chronicle Stage AI Audit binding", () => {
@@ -103,5 +103,32 @@ describe("Chronicle Stage AI Audit binding", () => {
     });
     expect(terminal).not.toHaveProperty("responseText");
     expect(JSON.stringify(terminal)).not.toContain("observations");
+  });
+
+  it("fails closed when the audit digest seam is not a SHA-256 digest", async () => {
+    expect(() =>
+      bindChronicleStageAuditContext(
+        {
+          projectId: parent.projectId,
+          pathId: "narrative_observation_extract",
+        },
+        parent,
+        {
+          ...digests,
+          contextSetDigest: "sha256:context" as never,
+        },
+      ),
+    ).toThrow(/digest/i);
+
+    await expect(
+      buildChronicleStageAuditTerminal({
+        stageExecution: parent,
+        ...digests,
+        finalRequestDigest: "sha256:request" as never,
+        responseText: '{"observations":[]}',
+        parseStatus: "parsed",
+        terminalStatus: "succeeded",
+      }),
+    ).rejects.toThrow(/digest/i);
   });
 });

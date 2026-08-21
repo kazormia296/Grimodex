@@ -22,7 +22,7 @@ const contractEntry: ContextSetEntry = {
   selector: {
     kind: "component-contract",
     contractId: "chronicle.observation.prompt",
-    contractDigest: "sha256:contract" as const,
+    contractDigest: `sha256:${"b".repeat(64)}` as const,
   },
 };
 
@@ -105,5 +105,56 @@ describe("Chronicle context-only prompt builder", () => {
     expect(artifact.messages[0]?.content).not.toContain(
       "chronicle-observation-contract",
     );
+  });
+
+  it("orders Context Set IDs by deterministic UTF-16 code units", async () => {
+    const astralEntry: ContextSetEntry = {
+      ...contractEntry,
+      contextId: "😀",
+      inputRef: "context-emoji",
+    };
+    const bmpEntry: ContextSetEntry = {
+      ...contractEntry,
+      contextId: "\uE000",
+      inputRef: "context-private-use",
+    };
+    const first = buildChroniclePromptArtifact({
+      stageId: "narrative_observation_extract",
+      componentContract: contract,
+      contextSet: [astralEntry, bmpEntry],
+      modelInputs: [],
+    });
+    const second = buildChroniclePromptArtifact({
+      stageId: "narrative_observation_extract",
+      componentContract: contract,
+      contextSet: [bmpEntry, astralEntry],
+      modelInputs: [],
+    });
+
+    expect(first.contextSet.map((entry) => entry.contextId)).toEqual([
+      "😀",
+      "\uE000",
+    ]);
+    await expect(buildChroniclePromptDigests(first)).resolves.toEqual(
+      await buildChroniclePromptDigests(second),
+    );
+  });
+
+  it("rejects a Context Set entry with an invalid selector at runtime", () => {
+    expect(() =>
+      buildChroniclePromptArtifact({
+        stageId: "narrative_observation_extract",
+        componentContract: contract,
+        contextSet: [
+          {
+            ...observationEntry,
+            selector: { kind: "unknown-selector" } as never,
+          },
+        ],
+        modelInputs: [
+          { contextId: observationEntry.contextId, value: "本文の引用" },
+        ],
+      }),
+    ).toThrow(/selector/i);
   });
 });

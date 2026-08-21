@@ -21,6 +21,8 @@ import {
 } from "./chronicleSceneEventAdapter";
 
 const DIGEST = `sha256:${"a".repeat(64)}` as const;
+const CONTEXT_SET_DIGEST =
+  "sha256:60f2af4ce9d437ea3a6f5416924b23f661bdf34815abf1f45c4c9de28a861cfc" as const;
 
 const nonSecretCase = goldenCorpus.cases.find(
   (entry) => entry.id === "non-secret-event",
@@ -45,6 +47,17 @@ const observation: RawChronicleEventObservation = {
   },
 };
 
+const observationTwo: RawChronicleEventObservation = {
+  ...observation,
+  localId: "observation:departure",
+  evidence: [{ sourceRef: "source:scene:1", quote: "Departure." }],
+  payload: {
+    ...observation.payload,
+    predicate: "departure",
+    semanticType: "departure",
+  },
+};
+
 const hypothesis: EventHypothesis = {
   hypothesisId: "hypothesis:arrival",
   clusterRef: "cluster:arrival",
@@ -62,6 +75,13 @@ const anchor = {
   documentRef: proposal.evidenceDocumentRefs[0],
   quote: "Arrival.",
   quoteDigest: DIGEST,
+} as unknown as ResolvedEvidenceAnchor;
+
+const anchorTwo = {
+  ...anchor,
+  id: "anchor:departure",
+  documentRef: "document:2",
+  quote: "Departure.",
 } as unknown as ResolvedEvidenceAnchor;
 
 const sourceBasis: SourceBasis = [
@@ -94,15 +114,19 @@ const dependencyDeclarations: readonly DependencySetEntry[] = [
 
 const existingEventMatch: ChronicleExistingMatch = { status: "none" };
 
+const execution = {
+  runId: "run:chronicle",
+  taskId: "task:event-synthesis",
+  reconcilerId: "chronicle.reconciler",
+  reconcilerVersion: "1",
+  contextSetDigest: CONTEXT_SET_DIGEST,
+  componentContractDigest: DIGEST,
+  finalRequestDigest: DIGEST,
+};
+
 const adapterInput: ChronicleSceneEventAdapterInput = {
-  execution: {
-    runId: "run:chronicle",
-    taskId: "task:event-synthesis",
-    reconcilerId: "chronicle.reconciler",
-    reconcilerVersion: "1",
-    componentContractDigest: DIGEST,
-    finalRequestDigest: DIGEST,
-  },
+  execution:
+    execution as unknown as ChronicleSceneEventAdapterInput["execution"],
   sceneRef: nonSecretCase.input.sceneRef,
   proposalPayload: proposal,
   hypothesis,
@@ -144,6 +168,9 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
     expect(result.envelope.assertion.payload).not.toHaveProperty(
       "revealDocumentRef",
     );
+    expect(result.envelope.revisionBasis).toMatchObject({
+      contextSetDigest: CONTEXT_SET_DIGEST,
+    });
     expect(result.existingEventMatch).toEqual(existingEventMatch);
     expect(validateChronicleSceneEventV2(result.envelope)).toEqual({
       valid: true,
@@ -186,6 +213,104 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
     expect(result.proposalPayloadDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(result.envelope.assertion.payloadSchemaRef).not.toEqual(
       result.envelope.projectionBinding.proposalSchemaRef,
+    );
+  });
+
+  it("rejects a Context Set that does not match the audited E2 digest seam", async () => {
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        contextManifests: [
+          {
+            ...contextManifests[0]!,
+            inputRef: "source:scene:tampered",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/context.?set.*digest/i);
+  });
+
+  it("rejects an invalid Context Set selector before accepting its audit seam", async () => {
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        contextManifests: [
+          {
+            ...contextManifests[0]!,
+            selector: { kind: "unknown-selector" } as never,
+          },
+        ],
+      }),
+    ).rejects.toThrow(/selector/i);
+  });
+
+  it("requires exact observation and hypothesis provenance coverage", async () => {
+    const multiInput = {
+      ...adapterInput,
+      proposalPayload: {
+        ...proposal,
+        evidenceAnchorIds: [anchor.id, anchorTwo.id],
+        evidenceDocumentRefs: [anchor.documentRef, anchorTwo.documentRef],
+      },
+      hypothesis: {
+        ...hypothesis,
+        observationRefs: [observation.localId, observationTwo.localId],
+      },
+      originalObservations: [observation, observationTwo],
+      mergedObservations: [observation, observationTwo],
+      originalObservationRefs: [observation.localId, observationTwo.localId],
+      mergedObservationRefs: [observation.localId, observationTwo.localId],
+      evidenceAnchors: [anchor, anchorTwo],
+    } satisfies ChronicleSceneEventAdapterInput;
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...multiInput,
+        originalObservationRefs: [observation.localId],
+      }),
+    ).rejects.toThrow(/originalObservationRefs|observation refs/i);
+    await expect(
+      buildChronicleSceneEventV2({
+        ...multiInput,
+        hypothesis: {
+          ...multiInput.hypothesis,
+          observationRefs: [observation.localId],
+        },
+      }),
+    ).rejects.toThrow(/hypothesis|observation refs/i);
+  });
+
+  it("requires resolved Evidence Anchor and document refs to exactly cover observations", async () => {
+    const extraAnchor = {
+      ...anchor,
+      id: "anchor:unused",
+      documentRef: "document:unused",
+      quote: "Unused.",
+    } as unknown as ResolvedEvidenceAnchor;
+    const multiInput = {
+      ...adapterInput,
+      proposalPayload: {
+        ...proposal,
+        evidenceAnchorIds: [anchor.id, anchorTwo.id, extraAnchor.id],
+        evidenceDocumentRefs: [
+          anchor.documentRef,
+          anchorTwo.documentRef,
+          extraAnchor.documentRef,
+        ],
+      },
+      hypothesis: {
+        ...hypothesis,
+        observationRefs: [observation.localId, observationTwo.localId],
+      },
+      originalObservations: [observation, observationTwo],
+      mergedObservations: [observation, observationTwo],
+      originalObservationRefs: [observation.localId, observationTwo.localId],
+      mergedObservationRefs: [observation.localId, observationTwo.localId],
+      evidenceAnchors: [anchor, anchorTwo, extraAnchor],
+    } satisfies ChronicleSceneEventAdapterInput;
+
+    await expect(buildChronicleSceneEventV2(multiInput)).rejects.toThrow(
+      /evidence|provenance/i,
     );
   });
 

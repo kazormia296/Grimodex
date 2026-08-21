@@ -46,6 +46,8 @@ const dependencySet: readonly DependencySetEntry[] = [
   },
 ];
 
+const DIGEST = `sha256:${"a".repeat(64)}` as const;
+
 const v1: ReconciliationEnvelopeV1 = {
   schemaVersion: 1,
   runId: "run-1",
@@ -66,6 +68,7 @@ const v1: ReconciliationEnvelopeV1 = {
       evidenceRef: "anchor:1",
       documentRef: "document:1",
       quote: "Arrival.",
+      sourceKey: "source:1",
     },
   ],
   readSet: [
@@ -75,7 +78,7 @@ const v1: ReconciliationEnvelopeV1 = {
       revisionToken: "v1",
     },
   ],
-  readSetDigest: "sha256:read-set",
+  readSetDigest: DIGEST,
   changeKind: "add",
 };
 
@@ -96,22 +99,22 @@ function buildInput() {
       supportClass: "direct-source" as const,
     },
     assertionDigests: {
-      assertionCoreDigest: "sha256:core",
-      scopeDigest: "sha256:scope",
-      assertionDigest: "sha256:assertion",
+      assertionCoreDigest: DIGEST,
+      scopeDigest: DIGEST,
+      assertionDigest: DIGEST,
     },
     contextSet,
-    contextSetDigest: "sha256:context",
+    contextSetDigest: DIGEST,
     dependencySet,
-    dependencySetDigest: "sha256:dependency",
-    materialBasisDigest: "sha256:material",
+    dependencySetDigest: DIGEST,
+    materialBasisDigest: DIGEST,
     projectionBinding: {
       proposalKind: "chronicle.create-event@1",
       proposalSchemaRef: {
         id: "narrative.chronicle-event.create",
         version: "1",
       },
-      proposalPayloadDigest: "sha256:payload",
+      proposalPayloadDigest: DIGEST,
       adapterContractId: "chronicle.scene-event",
       adapterContractVersion: "1",
     },
@@ -125,9 +128,9 @@ function buildInput() {
         version: "1",
       },
       contextSet,
-      contextSetDigest: "sha256:context",
-      componentContractDigest: "sha256:component",
-      finalRequestDigest: "sha256:request",
+      contextSetDigest: DIGEST,
+      componentContractDigest: DIGEST,
+      finalRequestDigest: DIGEST,
     },
   };
 }
@@ -146,18 +149,18 @@ describe("Narrative Revision Envelope V2 adapter", () => {
     expect(envelope.projectionBinding.proposalKind).toBe(
       "chronicle.create-event@1",
     );
-    expect(envelope.effectiveMaterialBasis.sourceBasis).toEqual(
-      v1.sourceBasis,
-    );
-    expect(envelope.effectiveMaterialBasis.evidenceSet).toEqual(
-      v1.evidenceSet,
-    );
+    expect(envelope.effectiveMaterialBasis.sourceBasis).toEqual(v1.sourceBasis);
+    expect(envelope.effectiveMaterialBasis.evidenceSet).toEqual(v1.evidenceSet);
   });
 
   it("preserves retract target and rejects an add target", () => {
     const retract = adaptReconciliationEnvelopeV1ToV2({
       ...buildInput(),
-      envelope: { ...v1, changeKind: "retract", targetProjectionRef: "event:1" },
+      envelope: {
+        ...v1,
+        changeKind: "retract",
+        targetProjectionRef: "event:1",
+      },
     });
     expect(retract.changeIntent).toEqual({
       changeKind: "retract",
@@ -187,10 +190,34 @@ describe("Narrative Revision Envelope V2 adapter", () => {
       }),
     ).toThrow(/producer/);
     expect(() =>
-      assertV2LineageMonotonicity(
-        envelope,
-        { schemaVersion: 1 } as never,
-      ),
+      assertV2LineageMonotonicity(envelope, { schemaVersion: 1 } as never),
     ).toThrow(/downgrade/);
+  });
+
+  it("uses the canonical K1 validator and registered adapter authority", () => {
+    const envelope = adaptReconciliationEnvelopeV1ToV2(buildInput());
+
+    expect(() =>
+      assertNarrativeRevisionEnvelopeV2({
+        ...envelope,
+        assertion: {
+          ...envelope.assertion,
+          scope: {
+            ...envelope.assertion.scope,
+            futureAxis: { kind: "any" },
+          } as unknown as NarrativeScopeV2,
+        },
+      }),
+    ).toThrow(/unknown|invalid/i);
+
+    expect(() =>
+      adaptReconciliationEnvelopeV1ToV2({
+        ...buildInput(),
+        projectionBinding: {
+          ...buildInput().projectionBinding,
+          adapterContractId: "unregistered.adapter",
+        },
+      }),
+    ).toThrow(/adapter/i);
   });
 });
