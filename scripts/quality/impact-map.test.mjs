@@ -199,9 +199,11 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
   }
 
   const implementations = [
+    "policies/narrative/fixtures/canonical-json-number-parity.json",
     "src/features/narrative-semantic-core/contracts/scopeV2.ts",
     "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
     "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
+    "src/features/narrative-extraction/source/digest.ts",
     "src-tauri/crates/grimodex-core/src/canonical_json.rs",
     "src-tauri/crates/grimodex-core/src/narrative_ir.rs",
     "src/features/narrative-extraction/reconciler/stageExecution.ts",
@@ -219,12 +221,14 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
     "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
     "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
+    "src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts",
     "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
     "src-tauri/crates/grimodex-core/tests/narrative_ir.rs",
     "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
     "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
     "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
     "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
     "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
     "scripts/quality/impact-map.test.mjs",
   ];

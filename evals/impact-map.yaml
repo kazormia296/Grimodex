@@ -206,6 +206,7 @@ rules:
       - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
       - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
       - src/application/narrative-extraction/extractionCoordinator.ts
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs

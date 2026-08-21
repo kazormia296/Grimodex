@@ -461,6 +461,7 @@ requirements:
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
       - scripts/quality/impact-map.test.mjs
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
