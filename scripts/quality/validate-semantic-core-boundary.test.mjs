@@ -1500,6 +1500,73 @@ describe("validate-semantic-core-boundary", () => {
           'fn("DELETE FROM narrative_proposal_revisions");',
         ].join("\n"),
       },
+      {
+        name: "globalThis direct self alias",
+        source: [
+          "const root = globalThis.globalThis;",
+          "root.Reflect.apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis computed self alias",
+        source: [
+          "const root = globalThis['globalThis'];",
+          "root.Reflect.apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis repeated self alias",
+        source: [
+          "const root = globalThis.globalThis.globalThis;",
+          "root.Reflect.construct(database[key], []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis repeated computed self alias",
+        source: [
+          "const root = globalThis['globalThis']['globalThis'];",
+          "const fn = root.Reflect.get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis self get alias",
+        source: [
+          "const root = globalThis.globalThis;",
+          "const fn = root.Reflect.get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.get globalThis self alias",
+        source: [
+          "const root = Reflect.get(globalThis, 'globalThis');",
+          "root.Reflect.apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis self undefined default",
+        source: [
+          "const root = globalThis.globalThis;",
+          "const [fn = database[key]] = [root.undefined];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis nested self undefined default",
+        source: [
+          "const [fn = database[key]] = [globalThis.globalThis.undefined];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis computed self undefined default",
+        source: [
+          "const root = globalThis['globalThis'];",
+          "const [fn = database[key]] = [root['undefined']];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -1555,7 +1622,7 @@ describe("validate-semantic-core-boundary", () => {
         "Reflect.apply.call(Reflect, safe, null, []);",
         "Reflect.apply.bind(Reflect)(safe, null, []);",
         "Reflect.construct.call(Reflect, safe, []);",
-        "const globalThis = { Reflect: { apply: () => true, construct: () => true, get: () => safe }, undefined: safe };",
+        "const globalThis = { Reflect: { apply: () => true, construct: () => true, get: () => safe }, undefined: safe, globalThis: { Reflect: { apply: () => true, construct: () => true, get: () => safe }, undefined: safe } };",
         "globalThis.Reflect.apply(safe, null, []);",
         "const shadowGet = globalThis.Reflect.get?.bind(globalThis.Reflect);",
         "shadowGet?.({}, 'fn');",
@@ -1563,6 +1630,15 @@ describe("validate-semantic-core-boundary", () => {
         "shadowRoot.Reflect.apply(safe, null, []);",
         "const [shadowUndefined = database[key]] = [shadowRoot.undefined];",
         "shadowUndefined();",
+        "const shadowSelf = globalThis.globalThis;",
+        "shadowSelf.Reflect.apply(safe, null, []);",
+        "const shadowComputedSelf = globalThis['globalThis'];",
+        "const [shadowSelfUndefined = database[key]] = [shadowComputedSelf['undefined']];",
+        "shadowSelfUndefined();",
+        "const shadowReflectSelf = Reflect.get(globalThis, 'globalThis');",
+        "shadowReflectSelf.Reflect.apply(safe, null, []);",
+        "const [shadowNestedUndefined = database[key]] = [globalThis.globalThis.undefined];",
+        "shadowNestedUndefined();",
         "const partialApply = Reflect.apply.bind(null, safe);",
         "partialApply(null, []);",
         "const partialConstruct = Reflect.construct.bind(null, safe);",
