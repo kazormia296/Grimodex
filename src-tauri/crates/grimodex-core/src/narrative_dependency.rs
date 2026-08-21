@@ -411,7 +411,7 @@ pub fn validate_dependency_selector(
             normalizer_version,
             anchor_digest,
         } => {
-            if unit != "utf16" || from >= to || normalizer_version.trim().is_empty() {
+            if unit != "utf16" || from >= to || !is_trimmed_non_empty(normalizer_version) {
                 return Err(DependencyContractError::InvalidTextRange);
             }
             if *from > 9_007_199_254_740_991 || *to > 9_007_199_254_740_991 {
