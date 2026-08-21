@@ -189,6 +189,19 @@
       },
       "expected": "reject",
       "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-whitespace-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": " gdx-canonical-text/1 "
+      },
+      "expected": "reject",
+      "error": "invalid-range"
     }
   ]
 }

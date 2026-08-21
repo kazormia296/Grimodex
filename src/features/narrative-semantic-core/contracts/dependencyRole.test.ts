@@ -120,6 +120,17 @@ describe("narrative dependency role contract", () => {
     });
   });
 
+  it("rejects a text range whose normalizer version is not trimmed", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) =>
+        candidate.id === "utf16-range-rejects-whitespace-normalizer",
+    )!;
+    expect(validateDependencySelector(fixtureCase.selector)).toEqual({
+      valid: false,
+      error: { code: "invalid-range" },
+    });
+  });
+
   it("fails closed when the registry omits a consumer kind", () => {
     const incomplete = {
       ...DEFAULT_DEPENDENCY_EFFECT_REGISTRY,

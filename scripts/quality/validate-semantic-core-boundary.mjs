@@ -240,6 +240,7 @@ const REQUIRED_DEPENDENCY_ROLE_FIXTURE_CASES = Object.freeze([
   "utf16-range-rejects-surrogate-interior",
   "whole-source-dependency-key-golden",
   "mixed-actions-stay-independent",
+  "utf16-range-rejects-whitespace-normalizer",
 ]);
 
 const REQUIRED_ARTIFACT_IDS = Object.freeze([

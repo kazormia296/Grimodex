@@ -146,6 +146,22 @@ fn rejects_dependency_text_ranges_beyond_javascript_safe_integer() {
 }
 
 #[test]
+fn rejects_dependency_text_ranges_with_whitespace_normalizer_version() {
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/dependency-role-contract.json"
+    ))
+    .expect("dependency role fixture parses");
+    let case = fixture
+        .cases
+        .iter()
+        .find(|case| case["id"] == "utf16-range-rejects-whitespace-normalizer")
+        .expect("trimmed normalizer version golden");
+    let selector: DependencySelector =
+        serde_json::from_value(case["selector"].clone()).expect("text range selector");
+    assert!(validate_dependency_selector(&selector, None).is_err());
+}
+
+#[test]
 fn required_and_advisory_actions_are_aggregated_independently() {
     let effects = vec![
         DependencyEffect {
