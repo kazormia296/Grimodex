@@ -1218,6 +1218,69 @@ function validateRegexRule(rule, label, errors) {
   return valid;
 }
 
+function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
+  const source = fixtureCase?.source;
+  if (!isNonEmptyString(source)) {
+    errors.push(
+      `narrative artifact authority fixture ${String(fixtureCase?.id)} must declare a non-empty source`,
+    );
+    return;
+  }
+
+  const boundary = isObject(contract?.interpreterBoundary)
+    ? contract.interpreterBoundary
+    : {};
+  const sourceFile = `artifact-authority-fixture-${String(fixtureCase.id)}.ts`;
+  const parsed = scanInterpreterSourceWithAst(sourceFile, source);
+  const dependencySource = removeAllowlistedTypeOnlyImports(
+    source,
+    Array.isArray(boundary.allowlist?.imports)
+      ? boundary.allowlist.imports
+      : [],
+  );
+  const dependencyScan = scanInterpreterSourceWithAst(
+    sourceFile,
+    dependencySource,
+  );
+  const findings = new Set(dependencyScan.findings);
+  for (const rule of Array.isArray(boundary.forbiddenDependencies)
+    ? boundary.forbiddenDependencies
+    : []) {
+    for (const pattern of Array.isArray(rule?.patterns) ? rule.patterns : []) {
+      try {
+        if (new RegExp(pattern).test(dependencySource)) {
+          findings.add(rule.id);
+        }
+      } catch (error) {
+        errors.push(
+          `narrative artifact authority fixture ${String(fixtureCase.id)} could not evaluate dependency rule ${String(rule?.id)}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  for (const rule of Array.isArray(boundary.forbiddenFreshnessAuthorityPatterns)
+    ? boundary.forbiddenFreshnessAuthorityPatterns
+    : []) {
+    try {
+      if (new RegExp(rule.pattern).test(source)) {
+        findings.add(rule.id);
+      }
+    } catch (error) {
+      errors.push(
+        `narrative artifact authority fixture ${String(fixtureCase.id)} could not evaluate Freshness rule ${String(rule?.id)}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const actual =
+    parsed.parseDiagnostics.length > 0 || findings.size > 0 ? "reject" : "accept";
+  if (actual !== fixtureCase.expected) {
+    errors.push(
+      `narrative artifact authority fixture ${String(fixtureCase.id)} expected ${String(fixtureCase.expected)} but got ${actual}`,
+    );
+  }
+}
+
 function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
   const fixturePaths = Array.isArray(contract?.fixtures)
     ? contract.fixtures
@@ -1267,6 +1330,11 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
       errors.push(
         `narrative artifact authority fixture ${fixtureId} must declare accept or reject`,
       );
+    }
+  }
+  for (const fixtureCase of fixture.cases) {
+    if (isNonEmptyString(fixtureCase?.source)) {
+      evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors);
     }
   }
   if (
