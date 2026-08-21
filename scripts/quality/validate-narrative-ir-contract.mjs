@@ -726,27 +726,6 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   pushIf(errors, JSON.stringify(activation?.productionMarkers) === JSON.stringify(REQUIRED_ACTIVATION_MARKERS), "NIR-0 activation productionMarkers must match the exact reserved vocabulary");
   pushIf(errors, activation?.v2Emission === "blocked-until-c2b" && activation?.humanDerivedV2Ui === "blocked-until-c2b" && activation?.currentRevisionPromotion === "blocked-until-c2b", "Chronicle V2 production and Human-derived UI must remain disabled until C2B");
   pushIf(errors, hasPaths(activation?.prerequisites, ["C2A","D1","D2","C2B","focused-persistence-freshness-journeys","implementation-status-atomic"]), "NIR-0 activation prerequisites are incomplete");
-  if (
-    activation?.state === "disabled" &&
-    Array.isArray(activation?.productionEntryPoints) &&
-    activation.productionEntryPoints.length === 0
-  ) {
-    try {
-      for (const finding of scanNarrativeIrProductionMarkers(
-        repoRoot,
-        activation?.scanRoots,
-        activation?.productionMarkers,
-      )) {
-        errors.push(
-          `NIR-0 activation marker ${finding.marker} appears in production at ${finding.path} while activation is disabled`,
-        );
-      }
-    } catch (error) {
-      errors.push(
-        `NIR-0 activation production scan failed closed: ${error instanceof Error ? error.message : String(error)}`,
-      );
-    }
-  }
 
   pushIf(errors, scopeContract?.adoptionTrack?.owner === "adr-009-scope-contract" && scopeContract?.adoptionTrack?.independentFrom === "narrative-ir-contract" && scopeContract?.adoptionTrack?.lifecycleAuthority === "adr-009-scope-contract", "Scope Disclosure adoption must remain an independent ADR 009-owned track");
   pushIf(errors, scopeContract?.implementationStatus?.capabilities && ["structuralValidation","relationComparison","disclosureAdmission"].every((key) => scopeContract.implementationStatus.capabilities[key]?.state === "declared"), "ADR 009 capability status must distinguish structural validation, relation comparison, and disclosure admission");
@@ -772,6 +751,28 @@ export function validateNarrativeIrContractFromRepo(repoRoot) {
   const consumerContract = readJson(repoRoot, "policies/narrative/narrative-consumer-contract.json", errors, "narrative Consumer contract");
   if (contract && scopeContract && consumerContract) {
     validateNarrativeIrContract(repoRoot, contract, scopeContract, consumerContract, errors);
+    const activation = contract.activation;
+    if (
+      activation?.state === "disabled" &&
+      Array.isArray(activation?.productionEntryPoints) &&
+      activation.productionEntryPoints.length === 0
+    ) {
+      try {
+        for (const finding of scanNarrativeIrProductionMarkers(
+          repoRoot,
+          activation?.scanRoots,
+          activation?.productionMarkers,
+        )) {
+          errors.push(
+            `NIR-0 activation marker ${finding.marker} appears in production at ${finding.path} while activation is disabled`,
+          );
+        }
+      } catch (error) {
+        errors.push(
+          `NIR-0 activation production scan failed closed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
   }
   return {errors, requiredCaseCount: REQUIRED_CASE_IDS.length};
 }
