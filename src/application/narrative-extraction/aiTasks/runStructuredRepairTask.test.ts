@@ -6,9 +6,11 @@ import {
   type ObservationExtractionSend,
 } from "./runObservationExtractionTask";
 import {
+  NARRATIVE_STRUCTURED_REPAIR_PATH,
   runStructuredRepairTask,
   type StructuredRepairSend,
 } from "./runStructuredRepairTask";
+import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import {
   createStageExecutionContext,
   NARRATIVE_STAGE_IDS,
@@ -39,6 +41,7 @@ vi.mock("@/features/tree/treeStore", () => ({
 }));
 
 const usage = { inputTokens: 1, outputTokens: 1 } as const;
+const recordAiUsageMock = vi.mocked(recordAiUsage);
 
 function captureRepairSend(responseText: string): {
   readonly send: StructuredRepairSend;
@@ -136,6 +139,7 @@ describe("structured repair root-object contract", () => {
         expectedShape,
         projectId: "project-test",
         stageExecution,
+        responseValidator: () => "parsed",
         send: repair.send,
       }),
     ).resolves.toBe(repairedObservations);
@@ -160,6 +164,113 @@ describe("structured repair root-object contract", () => {
       },
     });
   });
+
+  it("fails closed before dispatch when a Chronicle stage omits its schema validator", async () => {
+    const repair = captureRepairSend(repairedObservations);
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-missing-validator",
+      taskId: "task-missing-validator",
+      attemptId: "attempt-missing-validator",
+      stageId: NARRATIVE_STAGE_IDS.structuredRepair,
+      stageExecutionId: "repair-stage-missing-validator",
+    });
+
+    await expect(
+      runStructuredRepairTask({
+        brokenText: "not-json",
+        expectedShape: '{"observations":[]}',
+        projectId: "project-test",
+        stageExecution,
+        send: repair.send,
+      }),
+    ).rejects.toThrow(/responseValidator/);
+    expect(repair.captured()).toBeNull();
+  });
+
+  it.each([
+    {
+      label: "empty object",
+      responseText: "{}",
+      expectedStatus: "invalid",
+      expectedResult: null,
+    },
+    {
+      label: "legacy wrapper",
+      responseText: '{"repairedJson":{"observations":[]}}',
+      expectedStatus: "invalid",
+      expectedResult: null,
+    },
+    {
+      label: "schema-invalid direct root",
+      responseText: '{"observations":[{}]}',
+      expectedStatus: "invalid",
+      expectedResult: null,
+    },
+    {
+      label: "valid direct root",
+      responseText: repairedObservations,
+      expectedStatus: "parsed",
+      expectedResult: repairedObservations,
+    },
+  ] as const)(
+    "binds $label to the caller validator, terminal metadata, usage audit, and return value",
+    async ({ responseText, expectedStatus, expectedResult }) => {
+      const repair = captureRepairSend(responseText);
+      const responseValidator = vi.fn(
+        (candidate: string): "parsed" | "invalid" =>
+          candidate === repairedObservations ? "parsed" : "invalid",
+      );
+      const stageExecution = createStageExecutionContext({
+        projectId: "project-test",
+        runId: `run-${expectedStatus}-${responseText.length}`,
+        taskId: "task-repair-contract",
+        attemptId: "attempt-repair-contract",
+        stageId: NARRATIVE_STAGE_IDS.structuredRepair,
+        stageExecutionId: `repair-stage-${expectedStatus}-${responseText.length}`,
+      });
+
+      recordAiUsageMock.mockClear();
+      await expect(
+        runStructuredRepairTask({
+          brokenText: "not-json",
+          expectedShape: '{"observations":[]}',
+          projectId: "project-test",
+          stageExecution,
+          responseValidator,
+          send: repair.send,
+        }),
+      ).resolves.toBe(expectedResult);
+      expect(responseValidator).toHaveBeenCalledWith(responseText);
+
+      const captured = repair.captured();
+      expect(captured).not.toBeNull();
+      const terminalMetadata =
+        await captured?.options.onTerminalMetadata?.(responseText);
+      expect(terminalMetadata).toMatchObject({
+        chronicleStage: {
+          parseStatus: expectedStatus,
+          terminalStatus: expectedStatus === "parsed" ? "succeeded" : "failed",
+        },
+      });
+
+      const childAudit = recordAiUsageMock.mock.calls
+        .map(([payload]) => payload)
+        .find(
+          (payload) => payload.surface === NARRATIVE_STRUCTURED_REPAIR_PATH,
+        );
+      expect(childAudit).toMatchObject({
+        surface: NARRATIVE_STRUCTURED_REPAIR_PATH,
+        metadata: {
+          chronicleStageAudit: {
+            parseStatus: expectedStatus,
+            terminalStatus:
+              expectedStatus === "parsed" ? "succeeded" : "failed",
+          },
+        },
+      });
+    },
+  );
 
   it("preserves the legacy no-stage prompt and returns its root JSON unchanged", async () => {
     const expectedShape = '{"events":[]}';
@@ -222,6 +333,54 @@ describe("structured repair root-object contract", () => {
     });
   });
 
+  it.each([
+    ["empty object", "{}"],
+    ["legacy wrapper", '{"repairedJson":{"observations":[]}}'],
+    ["schema-invalid direct root", '{"observations":[{}]}'],
+  ] as const)(
+    "returns no observations and audits a failed child for %s repair output",
+    async (_label, responseText) => {
+      const repair = captureRepairSend(responseText);
+      const parentStage = createStageExecutionContext({
+        projectId: "project-test",
+        runId: "run-observation-invalid",
+        taskId: "task-observation-invalid",
+        attemptId: "attempt-observation-invalid",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: "observation-stage-invalid",
+      });
+      const send: ObservationExtractionSend = async () => ({
+        text: "not-json",
+        ...usage,
+      });
+
+      recordAiUsageMock.mockClear();
+      const result = await runObservationExtractionTask({
+        windows: [{ sourceRef: "S0001", text: "門が開いた。" }],
+        projectId: "project-test",
+        stageExecution: parentStage,
+        send,
+        createStageExecutionId: () => "repair-stage-observation-invalid",
+        repairSend: repair.send,
+      });
+
+      expect(result).toEqual([]);
+      const childAudit = recordAiUsageMock.mock.calls
+        .map(([payload]) => payload)
+        .find(
+          (payload) => payload.surface === NARRATIVE_STRUCTURED_REPAIR_PATH,
+        );
+      expect(childAudit).toMatchObject({
+        metadata: {
+          chronicleStageAudit: {
+            parseStatus: "invalid",
+            terminalStatus: "failed",
+          },
+        },
+      });
+    },
+  );
+
   it("keeps repaired event output at the caller's root schema", async () => {
     const expectedShape =
       '{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}';
@@ -262,6 +421,45 @@ describe("structured repair root-object contract", () => {
       stageExecution: {
         stageId: NARRATIVE_STAGE_IDS.structuredRepair,
         parentStageExecutionId: "event-stage-1",
+      },
+    });
+  });
+
+  it("returns no events and audits a failed child for a wrapper repair output", async () => {
+    const repair = captureRepairSend(
+      '{"repairedJson":{"clusterRef":"cluster-1","events":[]}}',
+    );
+    const parentStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-event-invalid",
+      taskId: "task-event-invalid",
+      attemptId: "attempt-event-invalid",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "event-stage-invalid",
+    });
+    const send = async () => ({ text: "not-json", ...usage });
+
+    recordAiUsageMock.mockClear();
+    const result = await runEventSynthesisTask({
+      clusterRef: "cluster-1",
+      observations: [observation],
+      projectId: "project-test",
+      stageExecution: parentStage,
+      send,
+      createStageExecutionId: () => "repair-stage-event-invalid",
+      repairSend: repair.send,
+    });
+
+    expect(result).toEqual([]);
+    const childAudit = recordAiUsageMock.mock.calls
+      .map(([payload]) => payload)
+      .find((payload) => payload.surface === NARRATIVE_STRUCTURED_REPAIR_PATH);
+    expect(childAudit).toMatchObject({
+      metadata: {
+        chronicleStageAudit: {
+          parseStatus: "invalid",
+          terminalStatus: "failed",
+        },
       },
     });
   });

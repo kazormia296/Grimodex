@@ -338,6 +338,9 @@ export async function runEventSynthesisTask(
     expectedShape: `{"clusterRef":"${input.clusterRef}","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
     projectId,
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
+    ...(repairStageExecution
+      ? { responseValidator: synthesisParseStatus }
+      : {}),
     send: input.repairSend,
   });
   if (!repaired) {

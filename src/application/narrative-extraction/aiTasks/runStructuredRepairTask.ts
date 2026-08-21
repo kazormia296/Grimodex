@@ -30,9 +30,17 @@ export interface RunStructuredRepairTaskInput {
   readonly projectId?: string | null;
   /** Child Stage identity when called from a Chronicle pilot stage. */
   readonly stageExecution?: NarrativeStageExecutionContext;
+  /** Caller-owned schema status validator; required for Chronicle stages. */
+  readonly responseValidator?: StructuredRepairResponseValidator;
   /** Live eval / tests may inject the child-stage transport. */
   readonly send?: StructuredRepairSend;
 }
+
+export type StructuredRepairParseStatus = "parsed" | "invalid";
+
+export type StructuredRepairResponseValidator = (
+  responseText: string,
+) => StructuredRepairParseStatus;
 
 export type StructuredRepairSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
@@ -108,7 +116,7 @@ ${input.brokenText}`;
 
 function structuredRepairParseStatus(
   responseText: string,
-): "parsed" | "invalid" {
+): StructuredRepairParseStatus {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return "invalid";
   try {
@@ -119,10 +127,40 @@ function structuredRepairParseStatus(
   }
 }
 
+function assertStructuredRepairStageContract(
+  input: RunStructuredRepairTaskInput,
+): void {
+  if (input.stageExecution && typeof input.responseValidator !== "function") {
+    throw new TypeError(
+      "Structured repair Chronicle stage requires responseValidator",
+    );
+  }
+}
+
+function resolveStructuredRepairParseStatus(
+  input: RunStructuredRepairTaskInput,
+  responseText: string,
+): StructuredRepairParseStatus {
+  if (!input.stageExecution) return structuredRepairParseStatus(responseText);
+
+  const responseValidator = input.responseValidator;
+  if (typeof responseValidator !== "function") {
+    throw new TypeError(
+      "Structured repair Chronicle stage requires responseValidator",
+    );
+  }
+  try {
+    return responseValidator(responseText) === "parsed" ? "parsed" : "invalid";
+  } catch {
+    return "invalid";
+  }
+}
+
 async function recordStructuredRepairStageAudit(
   input: RunStructuredRepairTaskInput,
   promptArtifact: ChroniclePromptArtifact,
   responseText: string,
+  parseStatus: StructuredRepairParseStatus,
   usage: {
     readonly model: string | null | undefined;
     readonly provider: string | null | undefined;
@@ -132,7 +170,6 @@ async function recordStructuredRepairStageAudit(
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
-  const parseStatus = structuredRepairParseStatus(responseText);
   const terminal = await buildChronicleStageAuditTerminal({
     stageExecution: input.stageExecution,
     ...digests,
@@ -179,6 +216,7 @@ export async function runStructuredRepairTask(
         `Structured repair requires stageId '${NARRATIVE_STAGE_IDS.structuredRepair}'`,
       );
     }
+    assertStructuredRepairStageContract(input);
   }
 
   const promptArtifact = input.stageExecution
@@ -210,7 +248,10 @@ export async function runStructuredRepairTask(
             promptDigests,
           ),
           onTerminalMetadata: async (responseText: string) => {
-            const parseStatus = structuredRepairParseStatus(responseText);
+            const parseStatus = resolveStructuredRepairParseStatus(
+              input,
+              responseText,
+            );
             const terminal = await buildChronicleStageAuditTerminal({
               stageExecution: input.stageExecution!,
               ...promptDigests,
@@ -246,11 +287,13 @@ export async function runStructuredRepairTask(
         ov.endpointId,
       );
   const repaired = extractJsonObject(response.text);
+  const parseStatus = resolveStructuredRepairParseStatus(input, response.text);
   if (input.stageExecution && promptArtifact) {
     await recordStructuredRepairStageAudit(
       input,
       promptArtifact,
       response.text,
+      parseStatus,
       {
         model: ov.model,
         provider: ov.provider,
@@ -270,5 +313,5 @@ export async function runStructuredRepairTask(
     });
   }
 
-  return repaired;
+  return input.stageExecution && parseStatus !== "parsed" ? null : repaired;
 }

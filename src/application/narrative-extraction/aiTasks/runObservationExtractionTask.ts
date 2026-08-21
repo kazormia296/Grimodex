@@ -336,6 +336,9 @@ export async function runObservationExtractionTask(
       '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
+    ...(repairStageExecution
+      ? { responseValidator: observationParseStatus }
+      : {}),
     send: input.repairSend,
   });
   if (!repaired) {
