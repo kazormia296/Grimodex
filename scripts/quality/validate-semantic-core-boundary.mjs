@@ -1780,11 +1780,675 @@ function createStaticStringResolver(sourceFile) {
     );
   };
 
+  const fold = (expression) =>
+    foldStaticStringExpression(expression, resolveIdentifier, new Set());
+  const invocationTaintResolver = createInvocationTaintResolver(
+    sourceFile,
+    lookupBinding,
+    fold,
+  );
+
   return {
-    fold(expression) {
-      return foldStaticStringExpression(expression, resolveIdentifier, new Set());
+    fold,
+    isInvocationTainted(expression) {
+      return invocationTaintResolver.isInvocationTainted(expression);
+    },
+    isReflectInvocationTainted(node) {
+      return invocationTaintResolver.isReflectInvocationTainted(node);
     },
   };
+}
+
+const INVOCATION_ALIAS_METHODS = new Set(["call", "apply", "bind"]);
+
+function cleanInvocationValue() {
+  return { tainted: false, source: undefined, container: undefined };
+}
+
+function taintedInvocationValue(source = "computed") {
+  return { tainted: true, source, container: undefined };
+}
+
+function createInvocationContainer(kind) {
+  return { kind, entries: new Map(), unknown: undefined };
+}
+
+function cloneInvocationContainer(container) {
+  if (!container) return undefined;
+  return {
+    kind: container.kind,
+    entries: new Map(container.entries),
+    unknown: container.unknown,
+  };
+}
+
+function mergeInvocationValues(left, right) {
+  if (!left) return right ?? cleanInvocationValue();
+  if (!right) return left;
+  const leftContainer = left.container;
+  const rightContainer = right.container;
+  let container;
+  if (leftContainer || rightContainer) {
+    container = createInvocationContainer(
+      leftContainer?.kind ?? rightContainer?.kind ?? "object",
+    );
+    for (const [key, value] of leftContainer?.entries ?? []) {
+      container.entries.set(key, value);
+    }
+    for (const [key, value] of rightContainer?.entries ?? []) {
+      container.entries.set(
+        key,
+        mergeInvocationValues(container.entries.get(key), value),
+      );
+    }
+    container.unknown = mergeInvocationValues(
+      leftContainer?.unknown,
+      rightContainer?.unknown,
+    );
+    if (!leftContainer?.unknown && !rightContainer?.unknown) {
+      container.unknown = undefined;
+    }
+  }
+  return {
+    tainted: left.tainted || right.tainted,
+    source: left.tainted ? left.source : right.source,
+    container,
+  };
+}
+
+function invocationValuesEqual(left, right, seen = new WeakMap()) {
+  if (left === right) return true;
+  if (
+    !left ||
+    !right ||
+    left.tainted !== right.tainted ||
+    left.source !== right.source
+  ) {
+    return false;
+  }
+  if (left.container === right.container) return true;
+  if (!left.container || !right.container) return false;
+  if (left.container.kind !== right.container.kind) return false;
+  const seenRights = seen.get(left.container);
+  if (seenRights?.has(right.container)) return true;
+  if (seenRights) {
+    seenRights.add(right.container);
+  } else {
+    seen.set(left.container, new WeakSet([right.container]));
+  }
+  if (
+    !invocationValuesEqual(left.container.unknown, right.container.unknown, seen)
+  ) {
+    return false;
+  }
+  const keys = new Set([
+    ...left.container.entries.keys(),
+    ...right.container.entries.keys(),
+  ]);
+  for (const key of keys) {
+    if (
+      !invocationValuesEqual(
+        left.container.entries.get(key),
+        right.container.entries.get(key),
+        seen,
+      )
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticString) {
+  const bindingValues = new Map();
+
+  const valueForBinding = (binding) =>
+    bindingValues.get(binding) ?? cleanInvocationValue();
+
+  const assignBinding = (binding, value) => {
+    if (!binding || !value) return false;
+    const merged = mergeInvocationValues(valueForBinding(binding), value);
+    if (invocationValuesEqual(valueForBinding(binding), merged)) return false;
+    bindingValues.set(binding, merged);
+    return true;
+  };
+
+  const assignIdentifier = (identifier, value) => {
+    if (!identifier || !ts.isIdentifier(identifier)) return false;
+    const result = lookupBinding(identifier);
+    if (!result) return false;
+    if (result.ambiguous) {
+      return result.bindings.reduce(
+        (changed, binding) => assignBinding(binding, value) || changed,
+        false,
+      );
+    }
+    return assignBinding(result.binding, value);
+  };
+
+  const staticPropertyKey = (expression) => {
+    if (!expression) return undefined;
+    if (ts.isComputedPropertyName(expression)) {
+      return staticElementAccessKey(expression.expression);
+    }
+    if (ts.isIdentifier(expression)) return expression.text;
+    if (
+      ts.isStringLiteral(expression) ||
+      ts.isNoSubstitutionTemplateLiteral(expression)
+    ) {
+      return expression.text;
+    }
+    if (ts.isNumericLiteral(expression)) return expression.text;
+    return foldStaticString(expression);
+  };
+
+  const staticElementAccessKey = (expression) => {
+    if (!expression) return undefined;
+    if (
+      ts.isStringLiteral(expression) ||
+      ts.isNoSubstitutionTemplateLiteral(expression) ||
+      ts.isNumericLiteral(expression)
+    ) {
+      return expression.text;
+    }
+    return foldStaticString(expression);
+  };
+
+  const propertyKeyForAccess = (node) => {
+    if (ts.isPropertyAccessExpression(node)) return node.name.text;
+    if (ts.isElementAccessExpression(node)) {
+      return staticElementAccessKey(node.argumentExpression);
+    }
+    return undefined;
+  };
+
+  const unknownContainerValue = (value) => {
+    if (!value) return cleanInvocationValue();
+    if (value.tainted) return taintedInvocationValue();
+    if (!value.container) return cleanInvocationValue();
+    let result = value.container.unknown;
+    for (const entry of value.container.entries.values()) {
+      result = mergeInvocationValues(result, entry);
+    }
+    return result ?? cleanInvocationValue();
+  };
+
+  const readContainerProperty = (value, key) => {
+    if (!value) return { found: false, value: cleanInvocationValue() };
+    if (value.tainted) return { found: true, value: taintedInvocationValue() };
+    if (!value.container) return { found: false, value: cleanInvocationValue() };
+    if (value.container.entries.has(key)) {
+      return { found: true, value: value.container.entries.get(key) };
+    }
+    return {
+      found: false,
+      value: value.container.unknown ?? cleanInvocationValue(),
+    };
+  };
+
+  const writeContainerProperty = (value, key, propertyValue) => {
+    const container = cloneInvocationContainer(value?.container) ??
+      createInvocationContainer("object");
+    container.entries.set(
+      key,
+      mergeInvocationValues(container.entries.get(key), propertyValue),
+    );
+    return {
+      tainted: value?.tainted ?? false,
+      source: value?.source,
+      container,
+    };
+  };
+
+  const mergeContainer = (target, source) => {
+    if (!source) return target;
+    if (source.tainted) {
+      target.unknown = mergeInvocationValues(
+        target.unknown,
+        taintedInvocationValue(),
+      );
+    }
+    if (!source.container) return target;
+    for (const [key, value] of source.container.entries) {
+      target.entries.set(
+        key,
+        mergeInvocationValues(target.entries.get(key), value),
+      );
+    }
+    target.unknown = mergeInvocationValues(
+      target.unknown,
+      source.container.unknown,
+    );
+    return target;
+  };
+
+  const restContainerValue = (value, excludedKeys, arrayStart) => {
+    if (!value) return cleanInvocationValue();
+    if (value.tainted) return taintedInvocationValue();
+    if (!value.container) return cleanInvocationValue();
+    const container = createInvocationContainer(value.container.kind);
+    const excluded = new Set(excludedKeys ?? []);
+    for (const [key, entry] of value.container.entries) {
+      if (arrayStart !== undefined) {
+        const numericKey = Number(key);
+        if (Number.isInteger(numericKey) && numericKey >= arrayStart) {
+          container.entries.set(
+            String(numericKey - arrayStart),
+            mergeInvocationValues(container.entries.get(String(numericKey - arrayStart)), entry),
+          );
+        }
+        continue;
+      }
+      if (!excluded.has(key)) container.entries.set(key, entry);
+    }
+    container.unknown = value.container.unknown;
+    return { tainted: false, container };
+  };
+
+  const expressionValue = (expression, seenBindings = new Set(), depth = 0) => {
+    if (!expression || depth > 24) return cleanInvocationValue();
+    const unwrapped = unwrapExpression(expression);
+    if (!unwrapped) return cleanInvocationValue();
+    if (unwrapped !== expression) {
+      return expressionValue(unwrapped, seenBindings, depth + 1);
+    }
+    if (ts.isSatisfiesExpression(unwrapped)) {
+      return expressionValue(unwrapped.expression, seenBindings, depth + 1);
+    }
+    if (ts.isIdentifier(unwrapped)) {
+      const result = lookupBinding(unwrapped);
+      if (!result || result.ambiguous || seenBindings.has(result.binding)) {
+        return cleanInvocationValue();
+      }
+      const nextSeenBindings = new Set(seenBindings);
+      nextSeenBindings.add(result.binding);
+      return valueForBinding(result.binding);
+    }
+    if (ts.isElementAccessExpression(unwrapped)) {
+      const receiver = expressionValue(
+        unwrapped.expression,
+        seenBindings,
+        depth + 1,
+      );
+      const key = staticElementAccessKey(unwrapped.argumentExpression);
+      if (key === undefined) return taintedInvocationValue("computed");
+      if (receiver.tainted) {
+        return INVOCATION_ALIAS_METHODS.has(key)
+          ? taintedInvocationValue(receiver.source ?? "computed")
+          : receiver.source === "computed"
+            ? cleanInvocationValue()
+            : taintedInvocationValue(receiver.source ?? "computed");
+      }
+      const selected = readContainerProperty(receiver, key);
+      if (!selected.found && !receiver.container && REQUIRED_DB_MUTATION_METHODS.has(key)) {
+        return taintedInvocationValue("sensitive");
+      }
+      return selected.value;
+    }
+    if (ts.isPropertyAccessExpression(unwrapped)) {
+      const receiver = expressionValue(
+        unwrapped.expression,
+        seenBindings,
+        depth + 1,
+      );
+      if (receiver.tainted) {
+        return INVOCATION_ALIAS_METHODS.has(unwrapped.name.text)
+          ? taintedInvocationValue(receiver.source ?? "computed")
+          : receiver.source === "computed"
+            ? cleanInvocationValue()
+            : taintedInvocationValue(receiver.source ?? "computed");
+      }
+      return readContainerProperty(receiver, unwrapped.name.text).value;
+    }
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      const container = createInvocationContainer("array");
+      let index = 0;
+      for (const element of unwrapped.elements) {
+        if (ts.isOmittedExpression(element)) {
+          index += 1;
+          continue;
+        }
+        if (ts.isSpreadElement(element)) {
+          const spreadValue = expressionValue(
+            element.expression,
+            seenBindings,
+            depth + 1,
+          );
+          mergeContainer(container, spreadValue);
+          if (spreadValue.tainted || spreadValue.container?.unknown) {
+            container.unknown = mergeInvocationValues(
+              container.unknown,
+              unknownContainerValue(spreadValue),
+            );
+          }
+          index += 1;
+          continue;
+        }
+        container.entries.set(
+          String(index),
+          expressionValue(element, seenBindings, depth + 1),
+        );
+        index += 1;
+      }
+      return { tainted: false, container };
+    }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      const container = createInvocationContainer("object");
+      for (const property of unwrapped.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          mergeContainer(
+            container,
+            expressionValue(property.expression, seenBindings, depth + 1),
+          );
+          continue;
+        }
+        if (ts.isShorthandPropertyAssignment(property)) {
+          container.entries.set(
+            property.name.text,
+            expressionValue(property.name, seenBindings, depth + 1),
+          );
+          continue;
+        }
+        if (ts.isPropertyAssignment(property)) {
+          const key = staticPropertyKey(property.name);
+          const propertyValue = expressionValue(
+            property.initializer,
+            seenBindings,
+            depth + 1,
+          );
+          if (key === undefined) {
+            container.unknown = mergeInvocationValues(
+              container.unknown,
+              propertyValue,
+            );
+          } else {
+            container.entries.set(
+              key,
+              mergeInvocationValues(container.entries.get(key), propertyValue),
+            );
+          }
+        }
+      }
+      return { tainted: false, container };
+    }
+    if (ts.isConditionalExpression(unwrapped)) {
+      return mergeInvocationValues(
+        expressionValue(unwrapped.whenTrue, seenBindings, depth + 1),
+        expressionValue(unwrapped.whenFalse, seenBindings, depth + 1),
+      );
+    }
+    if (ts.isBinaryExpression(unwrapped)) {
+      if (unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+        return expressionValue(unwrapped.right, seenBindings, depth + 1);
+      }
+      if (
+        unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ) {
+        return mergeInvocationValues(
+          expressionValue(unwrapped.left, seenBindings, depth + 1),
+          expressionValue(unwrapped.right, seenBindings, depth + 1),
+        );
+      }
+      return cleanInvocationValue();
+    }
+    if (ts.isCallExpression(unwrapped)) {
+      return isReflectInvocationTainted(unwrapped) ||
+        isInvocationTainted(unwrapped.expression)
+        ? taintedInvocationValue("invocation")
+        : cleanInvocationValue();
+    }
+    if (ts.isAwaitExpression(unwrapped) || ts.isYieldExpression(unwrapped)) {
+      return expressionValue(unwrapped.expression, seenBindings, depth + 1);
+    }
+    if (ts.isSpreadElement(unwrapped)) {
+      return expressionValue(unwrapped.expression, seenBindings, depth + 1);
+    }
+    return cleanInvocationValue();
+  };
+
+  const bindingPatternValue = (pattern, value, depth = 0) => {
+    if (!pattern || depth > 24) return false;
+    if (ts.isIdentifier(pattern)) return assignIdentifier(pattern, value);
+    if (ts.isObjectBindingPattern(pattern)) {
+      const excludedKeys = [];
+      let changed = false;
+      for (const element of pattern.elements) {
+        if (!ts.isBindingElement(element)) continue;
+        if (element.dotDotDotToken) {
+          changed =
+            bindingPatternValue(
+              element.name,
+              restContainerValue(value, excludedKeys),
+              depth + 1,
+            ) || changed;
+          continue;
+        }
+        const property = element.propertyName ?? element.name;
+        const key = staticPropertyKey(property);
+        if (key !== undefined) excludedKeys.push(key);
+        const selected =
+          key === undefined
+            ? { found: false, value: unknownContainerValue(value) }
+            : readContainerProperty(value, key);
+        let selectedValue = selected.value;
+        if (!selected.found && element.initializer) {
+          selectedValue = mergeInvocationValues(
+            selectedValue,
+            expressionValue(element.initializer),
+          );
+        }
+        changed =
+          bindingPatternValue(element.name, selectedValue, depth + 1) || changed;
+      }
+      return changed;
+    }
+    if (ts.isArrayBindingPattern(pattern)) {
+      let changed = false;
+      let index = 0;
+      for (const element of pattern.elements) {
+        if (ts.isOmittedExpression(element)) {
+          index += 1;
+          continue;
+        }
+        if (!ts.isBindingElement(element)) continue;
+        if (element.dotDotDotToken) {
+          changed =
+            bindingPatternValue(
+              element.name,
+              restContainerValue(value, [], index),
+              depth + 1,
+            ) || changed;
+          continue;
+        }
+        const selected = readContainerProperty(value, String(index));
+        let selectedValue = selected.value;
+        if (!selected.found && element.initializer) {
+          selectedValue = mergeInvocationValues(
+            selectedValue,
+            expressionValue(element.initializer),
+          );
+        }
+        changed =
+          bindingPatternValue(element.name, selectedValue, depth + 1) || changed;
+        index += 1;
+      }
+      return changed;
+    }
+    return false;
+  };
+
+  const assignMemberTarget = (target, value) => {
+    const receiver = unwrapExpression(target.expression);
+    const key = propertyKeyForAccess(target);
+    if (!receiver || key === undefined) return false;
+    if (ts.isIdentifier(receiver)) {
+      const result = lookupBinding(receiver);
+      if (!result || result.ambiguous) return false;
+      return assignBinding(
+        result.binding,
+        writeContainerProperty(valueForBinding(result.binding), key, value),
+      );
+    }
+    return false;
+  };
+
+  const assignTarget = (target, value, depth = 0) => {
+    if (!target || depth > 24) return false;
+    const unwrapped = unwrapExpression(target);
+    if (ts.isIdentifier(unwrapped)) return assignIdentifier(unwrapped, value);
+    if (ts.isObjectBindingPattern(unwrapped) || ts.isArrayBindingPattern(unwrapped)) {
+      return bindingPatternValue(unwrapped, value, depth + 1);
+    }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      let changed = false;
+      for (const property of unwrapped.properties) {
+        if (ts.isShorthandPropertyAssignment(property)) {
+          changed = assignTarget(property.name, value, depth + 1) || changed;
+        } else if (ts.isPropertyAssignment(property)) {
+          const key = staticPropertyKey(property.name);
+          const selected =
+            key === undefined
+              ? unknownContainerValue(value)
+              : readContainerProperty(value, key).value;
+          changed = assignTarget(property.initializer, selected, depth + 1) || changed;
+        } else if (ts.isSpreadAssignment(property)) {
+          changed = assignTarget(property.expression, value, depth + 1) || changed;
+        }
+      }
+      return changed;
+    }
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      let changed = false;
+      let index = 0;
+      for (const element of unwrapped.elements) {
+        if (ts.isOmittedExpression(element)) {
+          index += 1;
+          continue;
+        }
+        if (ts.isSpreadElement(element)) {
+          changed = assignTarget(element.expression, restContainerValue(value, [], index), depth + 1) || changed;
+          continue;
+        }
+        changed =
+          assignTarget(
+            element,
+            readContainerProperty(value, String(index)).value,
+            depth + 1,
+          ) || changed;
+        index += 1;
+      }
+      return changed;
+    }
+    if (
+      ts.isPropertyAccessExpression(unwrapped) ||
+      ts.isElementAccessExpression(unwrapped)
+    ) {
+      return assignMemberTarget(unwrapped, value);
+    }
+    return false;
+  };
+
+  const operations = [];
+  const collectOperations = (node) => {
+    if (ts.isVariableDeclaration(node) && node.initializer) {
+      operations.push({ position: node.pos, target: node.name, value: node.initializer });
+    }
+    if (ts.isParameter(node) && node.initializer) {
+      operations.push({ position: node.pos, target: node.name, value: node.initializer });
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      ts.isAssignmentOperator(node.operatorToken.kind)
+    ) {
+      operations.push({ position: node.pos, target: node.left, value: node.right });
+    }
+    if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
+      if (!ts.isVariableDeclarationList(node.initializer)) {
+        operations.push({
+          position: node.pos,
+          target: node.initializer,
+          value: node.expression,
+          iteration: true,
+          forIn: ts.isForInStatement(node),
+        });
+      } else {
+        for (const declaration of node.initializer.declarations) {
+          operations.push({
+            position: declaration.pos,
+            target: declaration.name,
+            value: node.expression,
+            iteration: true,
+            forIn: ts.isForInStatement(node),
+          });
+        }
+      }
+    }
+    ts.forEachChild(node, collectOperations);
+  };
+  collectOperations(sourceFile);
+  operations.sort((left, right) => left.position - right.position);
+
+  const iterationValue = (value, isObjectKeys) => {
+    if (isObjectKeys) return cleanInvocationValue();
+    if (!value) return cleanInvocationValue();
+    if (value.tainted) return taintedInvocationValue();
+    if (!value.container) return cleanInvocationValue();
+    let result;
+    for (const entry of value.container.entries.values()) {
+      result = mergeInvocationValues(result, entry);
+    }
+    result = mergeInvocationValues(result, value.container.unknown);
+    return result ?? cleanInvocationValue();
+  };
+
+  const isInvocationTainted = (expression) =>
+    expressionValue(expression).tainted;
+
+  const isReflectInvocationTainted = (node) => {
+    if (!ts.isCallExpression(node) || node.arguments.length === 0) return false;
+    const target = unwrapExpression(node.expression);
+    let method;
+    let receiver;
+    if (ts.isPropertyAccessExpression(target)) {
+      method = target.name.text;
+      receiver = unwrapExpression(target.expression);
+    } else if (ts.isElementAccessExpression(target)) {
+      method = staticElementAccessKey(target.argumentExpression);
+      receiver = unwrapExpression(target.expression);
+    }
+    if (
+      !receiver ||
+      !ts.isIdentifier(receiver) ||
+      receiver.text !== "Reflect" ||
+      lookupBinding(receiver)
+    ) {
+      return false;
+    }
+    if (method !== "apply" && method !== "construct") return false;
+    return isInvocationTainted(node.arguments[0]);
+  };
+
+  const resolve = () => {
+    const maxIterations = Math.max(8, operations.length + 4);
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      let changed = false;
+      for (const operation of operations) {
+        const value = operation.iteration
+          ? iterationValue(
+              expressionValue(operation.value),
+              operation.forIn,
+            )
+          : expressionValue(operation.value);
+        changed = assignTarget(operation.target, value) || changed;
+      }
+      if (!changed) break;
+    }
+  };
+
+  resolve();
+  return { isInvocationTainted, isReflectInvocationTainted };
 }
 
 function foldStaticStringExpression(
@@ -1960,6 +2624,24 @@ function scanInterpreterSourceWithAst(file, source) {
           findings.add("db-mutation");
         }
       }
+      if (
+        staticStringResolver.isInvocationTainted(node.expression) ||
+        staticStringResolver.isReflectInvocationTainted(node)
+      ) {
+        findings.add("db-mutation");
+      }
+    }
+    if (
+      ts.isNewExpression(node) &&
+      staticStringResolver.isInvocationTainted(node.expression)
+    ) {
+      findings.add("db-mutation");
+    }
+    if (
+      ts.isTaggedTemplateExpression(node) &&
+      staticStringResolver.isInvocationTainted(node.tag)
+    ) {
+      findings.add("db-mutation");
     }
     ts.forEachChild(node, visit);
   };
