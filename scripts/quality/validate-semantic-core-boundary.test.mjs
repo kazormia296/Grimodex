@@ -923,11 +923,78 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "object container alias assignment",
+        source: [
+          "const outer = { box: {} };",
+          "const box = outer.box;",
+          "box.fn = database[key];",
+          "const fn = outer.box.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array container alias assignment",
+        source: [
+          "const safe = () => true;",
+          "const xs = [safe];",
+          "const ys = xs;",
+          "ys[0] = database[key];",
+          "const fn = xs[0];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "computed member assignment",
+        source: [
+          "const obj = {};",
+          "obj[key] = database[key];",
+          "const fn = obj.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array hole spread position",
+        source: [
+          "const xs = [safe, ,];",
+          "const ys = [...xs, database[key]];",
+          "const fn = ys[2];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "string spread position",
+        source: [
+          'const ys = [..."ab", database[key]];',
+          "const fn = ys[2];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "multiple unknown spread positions",
+        source: [
+          "const first = database[key];",
+          "const second = database[key];",
+          "const ys = [...first, ...second, database[key]];",
+          "const fn = ys[0];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
         name: "object spread extraction",
         source: [
           "const aliases = { fn: database[key] };",
           "const copy = { safe: () => true, ...aliases };",
           "const fn = copy.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "nested object spread identity",
+        source: [
+          "const source = { inner: {} };",
+          "const copy = { ...source };",
+          "copy.inner.fn = database[key];",
+          "const fn = source.inner.fn;",
           'fn("DELETE FROM narrative_proposal_revisions");',
         ].join("\n"),
       },
@@ -938,6 +1005,84 @@ describe("validate-semantic-core-boundary", () => {
           "outer.boxes[0].fn = database[key];",
           "const fn = outer.boxes[0].fn;",
           'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "assignment expression result",
+        source: [
+          "let tmp;",
+          "const fn = (tmp = database[key]);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "logical assignment results",
+        source: [
+          "const safe = () => true;",
+          "let fn = safe;",
+          "fn ||= database[key];",
+          "fn &&= database[key];",
+          "fn ??= database[key];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array destructuring assignment default",
+        source: [
+          "const safe = () => true;",
+          "let fn;",
+          "[fn = safe] = [database[key]];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "object shorthand destructuring assignment",
+        source: [
+          "let fn;",
+          "({ fn } = { fn: database[key] });",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply alias",
+        source: [
+          "const fn = database[key];",
+          "const invoke = Reflect.apply;",
+          "invoke(fn, null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.construct alias",
+        source: [
+          "const fn = database[key];",
+          "const construct = Reflect.construct;",
+          "construct(fn, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.get result",
+        source: [
+          "const fn = Reflect.get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "computed Reflect capability aliases",
+        source: [
+          "const fn = database[key];",
+          'const invoke = Reflect["apply"];',
+          'const construct = Reflect["construct"];',
+          "invoke(fn, null, []);",
+          "construct(fn, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect object and destructured aliases",
+        source: [
+          "const R = Reflect;",
+          "const { apply } = R;",
+          "const fn = database[key];",
+          "apply(fn, null, []);",
         ].join("\n"),
       },
     ];
@@ -957,6 +1102,38 @@ describe("validate-semantic-core-boundary", () => {
       [
         "const v = record[key];",
         "v.trim();",
+        "const safe = () => true;",
+        "Reflect.apply(safe, null, []);",
+        "Reflect.get(record, key);",
+        "const Reflect = { apply: () => true, get: () => true };",
+        "const invoke = Reflect.apply;",
+        "invoke(safe, null, []);",
+        "const cleanObject = {};",
+        "cleanObject[key] = safe;",
+        "const cleanFn = cleanObject.fn;",
+        "cleanFn();",
+        "const safeXs = [safe, ,];",
+        "const safeYs = [...safeXs, safe];",
+        "const safeFn = safeYs[2];",
+        "safeFn();",
+        "let assigned;",
+        "[assigned = safe] = [];",
+        "assigned();",
+        "let safeTmp;",
+        "const safeAlias = (safeTmp = safe);",
+        "safeAlias();",
+        "let safeAssigned;",
+        "({ safeAssigned = safe } = {});",
+        "safeAssigned();",
+        "const sourceObject = { safe };",
+        "const copyObject = { ...sourceObject };",
+        "copyObject.fn = database[key];",
+        "sourceObject.safe();",
+        "const sourceArray = [safe];",
+        "const copyArray = [...sourceArray];",
+        "copyArray[0] = database[key];",
+        "const sourceArrayFn = sourceArray[0];",
+        "sourceArrayFn();",
       ].join("\n"),
     );
     assert.deepEqual(benignErrors, []);
