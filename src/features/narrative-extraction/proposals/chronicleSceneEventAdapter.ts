@@ -735,6 +735,28 @@ function assertObservationProvenance(
       assertNonEmpty(evidence.quote, "observation evidence quote");
     }
   }
+
+  const originalsById = new Map(
+    input.originalObservations.map(
+      (observation) => [observation.localId, observation] as const,
+    ),
+  );
+  for (const mergedObservation of input.mergedObservations) {
+    const originalObservation = originalsById.get(mergedObservation.localId);
+    if (!originalObservation) {
+      throw new TypeError(
+        `merged observation '${mergedObservation.localId}' is absent from original provenance`,
+      );
+    }
+    if (
+      stableJsonStringify(originalObservation) !==
+      stableJsonStringify(mergedObservation)
+    ) {
+      throw new TypeError(
+        `merged observation '${mergedObservation.localId}' does not preserve original provenance`,
+      );
+    }
+  }
 }
 
 function assertEvidenceProvenance(
