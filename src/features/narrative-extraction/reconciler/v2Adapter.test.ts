@@ -47,6 +47,7 @@ const dependencySet: readonly DependencySetEntry[] = [
 ];
 
 const DIGEST = `sha256:${"a".repeat(64)}` as const;
+const OTHER_DIGEST = `sha256:${"b".repeat(64)}` as const;
 
 const v1: ReconciliationEnvelopeV1 = {
   schemaVersion: 1,
@@ -120,22 +121,93 @@ function buildInput() {
     },
     revisionBasis: {
       kind: "interpretation" as const,
-      runId: "run-1",
-      taskId: "task-1",
-      producer: {
-        kind: "reconciler-proposal" as const,
-        id: "grimodex.chronicle-extraction",
-        version: "1",
-      },
-      contextSet,
-      contextSetDigest: DIGEST,
       componentContractDigest: DIGEST,
       finalRequestDigest: DIGEST,
     },
   };
 }
 
+function buildCallerOwnedHumanDerivedBasis() {
+  return {
+    kind: "human-derived" as const,
+    parentRevisionId: "parent-revision",
+    expectedParentEnvelopeDigest: DIGEST,
+    parentAssertionDigest: DIGEST,
+    rootInterpretationRevisionId: "root-revision",
+    derivation: {
+      adapterId: "chronicle.scene-event",
+      adapterVersion: "1",
+      kind: "projection-only" as const,
+      proposalPayloadChangedPaths: ["/title"],
+    },
+    revisionActor: {
+      kind: "human" as const,
+      surfaceId: "editor",
+    },
+    derivationContextSet: contextSet,
+    derivationContextSetDigest: DIGEST,
+  } as never;
+}
+
 describe("Narrative Revision Envelope V2 adapter", () => {
+  it("rejects a caller-supplied human-derived basis", () => {
+    expect(() =>
+      adaptReconciliationEnvelopeV1ToV2({
+        ...buildInput(),
+        revisionBasis: buildCallerOwnedHumanDerivedBasis(),
+      }),
+    ).toThrow(/revisionBasis|interpretation/i);
+  });
+
+  it("rejects unknown revision basis authority fields at runtime", () => {
+    expect(() =>
+      adaptReconciliationEnvelopeV1ToV2({
+        ...buildInput(),
+        revisionBasis: {
+          kind: "interpretation" as const,
+          componentContractDigest: DIGEST,
+          finalRequestDigest: DIGEST,
+          extraAuthorityDigest: OTHER_DIGEST,
+        } as never,
+      }),
+    ).toThrow(/unknown|unsupported|revisionBasis/i);
+  });
+
+  it("rejects caller-supplied interpretation identity and context authority", () => {
+    const minimalBasis = buildInput().revisionBasis;
+    const cases = [
+      { ...minimalBasis, runId: "spoofed-run" },
+      { ...minimalBasis, taskId: "spoofed-task" },
+      {
+        ...minimalBasis,
+        producer: {
+          kind: "reconciler-proposal" as const,
+          id: "spoofed-producer",
+          version: "spoofed-version",
+        },
+      },
+      {
+        ...minimalBasis,
+        contextSet: [
+          {
+            ...contextSet[0],
+            contextId: "spoofed-context",
+          },
+        ],
+      },
+      { ...minimalBasis, contextSetDigest: DIGEST },
+    ];
+
+    for (const candidateBasis of cases) {
+      expect(() =>
+        adaptReconciliationEnvelopeV1ToV2({
+          ...buildInput(),
+          revisionBasis: candidateBasis as never,
+        }),
+      ).toThrow(/caller-owned revisionBasis field/);
+    }
+  });
+
   it("maps the V1 reconciler identity to a reconciler-proposal producer", () => {
     const envelope = adaptReconciliationEnvelopeV1ToV2(buildInput());
 
@@ -151,6 +223,20 @@ describe("Narrative Revision Envelope V2 adapter", () => {
     );
     expect(envelope.effectiveMaterialBasis.sourceBasis).toEqual(v1.sourceBasis);
     expect(envelope.effectiveMaterialBasis.evidenceSet).toEqual(v1.evidenceSet);
+    expect(envelope.revisionBasis).toEqual({
+      kind: "interpretation",
+      runId: v1.runId,
+      taskId: v1.taskId,
+      producer: {
+        kind: "reconciler-proposal",
+        id: v1.reconcilerId,
+        version: v1.reconcilerVersion,
+      },
+      contextSet,
+      contextSetDigest: DIGEST,
+      componentContractDigest: DIGEST,
+      finalRequestDigest: DIGEST,
+    });
   });
 
   it("preserves retract target and rejects an add target", () => {
