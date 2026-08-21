@@ -374,6 +374,77 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("does not let the Interpreter policy shrink roots or replace deny semantics", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.interpreterBoundary.interpreterRoots = contract.interpreterBoundary.interpreterRoots.filter(
+      (root) => root !== "src/features/narrative-extraction/reconciler",
+    );
+    contract.interpreterBoundary.forbiddenDependencies.find(
+      (rule) => rule.id === "sql-import",
+    ).patterns = ["(?!)"];
+    const errors = [];
+
+    validateInterpreterBoundary(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) =>
+        /required Interpreter boundary root.*narrative-extraction\/reconciler/i.test(
+          error,
+        ),
+      ),
+      `expected the ratified reconciler root to remain mandatory: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /ratified.*forbidden dependency patterns.*sql-import/i.test(error)),
+      `expected the ratified SQL import deny semantics to remain mandatory: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("pins every required artifact's lifecycle and authority classification", () => {
+    const original = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    for (const artifact of original.artifacts) {
+      for (const field of ["lifecycle", "authority", "authoritative"]) {
+        const contract = structuredClone(original);
+        const candidate = contract.artifacts.find(
+          (entry) => entry.id === artifact.id,
+        );
+        if (field === "lifecycle") {
+          candidate[field] = artifact.lifecycle === "durable" ? "ephemeral" : "durable";
+        } else if (field === "authority") {
+          candidate[field] = artifact.authority === "none" ? "source-identity" : "none";
+        } else {
+          candidate[field] = !artifact.authoritative;
+        }
+        const errors = [];
+
+        validateArtifactAuthorityContract(REPO_ROOT, contract, errors);
+
+        assert.ok(
+          errors.some((error) =>
+            new RegExp(`artifact ${artifact.id}.*ratified`, "i").test(error),
+          ),
+          `expected ${artifact.id}.${field} mutation to fail closed: ${JSON.stringify(errors)}`,
+        );
+      }
+    }
+  });
+
   it("rejects strict Scope containment and unresolved-reason identity", () => {
     const contract = structuredClone(
       JSON.parse(
