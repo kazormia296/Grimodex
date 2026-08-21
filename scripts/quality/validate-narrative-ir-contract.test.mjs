@@ -268,4 +268,80 @@ describe("NIR-0 Narrative IR contract", () => {
     );
   });
 
+
+  it("separates observed changed path classes from cumulative allowed sets", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+    const classification = contract.humanDerived.classification;
+
+    assert.deepEqual(
+      classification.cumulativeAllowedPathClasses,
+      {
+        projectionOnly: ["projection-only"],
+        scopeOverride: ["projection-only", "scope-affecting"],
+        assertionOverride: [],
+      },
+      "derivation-level allowed sets remain cumulative and authoritative",
+    );
+
+    for (const fixture of classification.fixtures) {
+      assert.equal(
+        Object.hasOwn(fixture, "allowedPathClasses"),
+        false,
+        `${fixture.id} must not overload allowedPathClasses with observed data`,
+      );
+      if (fixture.expectedDisposition === "accept") {
+        assert.ok(
+          Array.isArray(fixture.changedPathClasses),
+          `${fixture.id} must record its observed changedPathClasses`,
+        );
+      }
+    }
+
+    assert.deepEqual(
+      classification.fixtures.find(
+        (fixture) => fixture.id === "secret-only-edit",
+      ).changedPathClasses,
+      ["scope-affecting"],
+    );
+    assert.deepEqual(
+      classification.fixtures.find(
+        (fixture) => fixture.id === "mixed-title-secret-uses-scope-override",
+      ).changedPathClasses,
+      ["projection-only", "scope-affecting"],
+    );
+
+    const corpus = readJson(
+      "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+    );
+    for (const fixture of corpus.cases.filter(
+      (entry) =>
+        entry.kind === "human-derivation" &&
+        entry.expected?.disposition === "accept",
+    )) {
+      assert.equal(
+        Object.hasOwn(fixture.expected, "allowedPathClasses"),
+        false,
+        `${fixture.id} golden output must not overload allowedPathClasses`,
+      );
+      assert.ok(
+        Array.isArray(fixture.expected.changedPathClasses),
+        `${fixture.id} golden output must expose observed changedPathClasses`,
+      );
+    }
+
+    const ambiguous = structuredClone(contract);
+    const ambiguousFixture = ambiguous.humanDerived.classification.fixtures.find(
+      (fixture) => fixture.id === "secret-only-edit",
+    );
+    ambiguousFixture.allowedPathClasses = ambiguousFixture.changedPathClasses;
+    delete ambiguousFixture.changedPathClasses;
+    const errors = validate(ambiguous);
+    assert.ok(
+      errors.some((error) =>
+        /allowedPathClasses.*ambiguous|changedPathClasses.*observed/i.test(error),
+      ),
+      `expected ambiguous path-class field error: ${JSON.stringify(errors)}`,
+    );
+  });
+
 });
