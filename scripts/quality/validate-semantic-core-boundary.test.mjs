@@ -12,7 +12,9 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  validateArtifactAuthorityContract,
   validateDependencyRoleContract,
+  validateInterpreterBoundary,
   validateScopeRelationContract,
   validateSemanticCoreBoundary,
 } from "./validate-semantic-core-boundary.mjs";
@@ -207,6 +209,169 @@ describe("validate-semantic-core-boundary", () => {
     assert.equal(result.schemaVersion, 31);
     assert.equal(result.checks.scopeRelationContract, true);
     assert.equal(result.checks.dependencyRoleContract, true);
+    assert.equal(result.checks.artifactAuthorityContract, true);
+    assert.equal(result.checks.interpreterBoundary, true);
+  });
+
+  it("keeps raw model response ephemeral while retaining a response digest", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const errors = [];
+
+    validateArtifactAuthorityContract(REPO_ROOT, contract, errors);
+
+    assert.deepEqual(errors, []);
+    assert.equal(
+      contract.artifacts.find((artifact) => artifact.id === "raw-model-response")
+        ?.lifecycle,
+      "ephemeral",
+    );
+    assert.equal(
+      contract.artifacts.find((artifact) => artifact.id === "raw-model-response")
+        ?.retention?.default,
+      "not-retained",
+    );
+    assert.equal(
+      contract.artifacts.find((artifact) => artifact.id === "response-digest")
+        ?.retention?.default,
+      "retained",
+    );
+  });
+
+  it("rejects a policy that falsely claims durable raw response retention", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const rawResponse = contract.artifacts.find(
+      (artifact) => artifact.id === "raw-model-response",
+    );
+    rawResponse.lifecycle = "durable";
+    rawResponse.retention.default = "retained";
+    const errors = [];
+
+    validateArtifactAuthorityContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /raw-model-response.*not be durable/i.test(error)),
+    );
+    assert.ok(
+      errors.some((error) => /raw-model-response.*not-retained/i.test(error)),
+    );
+  });
+
+  it("fails closed for forbidden Interpreter dependencies", () => {
+    const root = minimalFixtureRoot();
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const interpreterRoot = "src/features/narrative-extraction/ir";
+    contract.interpreterBoundary.interpreterRoots = [interpreterRoot];
+    mkdirSync(path.join(root, interpreterRoot), { recursive: true });
+    writeFileSync(
+      path.join(root, interpreterRoot, "bad.ts"),
+      [
+        'import { sql } from "drizzle-orm";',
+        'import { PreparedCommit } from "@/application/narrative-extraction/preparedCommit";',
+        'import { agentWriter } from "@/features/agent-writes";',
+        'import { mcpSql } from "@/mcp/sql";',
+        'const db = useDb();',
+        'db.execute("UPDATE narrative_proposal_revisions SET payload_json = ?");',
+        'typedWriter.commit({});',
+        'mcpSql.query("SELECT 1");',
+      ].join("\n"),
+    );
+    const errors = [];
+
+    validateInterpreterBoundary(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(errors.some((error) => /sql-import/i.test(error)));
+    assert.ok(errors.some((error) => /prepared-commit/i.test(error)));
+    assert.ok(errors.some((error) => /agent-writer/i.test(error)));
+    assert.ok(errors.some((error) => /db-mutation/i.test(error)));
+    assert.ok(errors.some((error) => /typed-writer/i.test(error)));
+    assert.ok(errors.some((error) => /generic-mcp-sql/i.test(error)));
+  });
+
+  it("detects an unauthorized local Freshness authority in code", () => {
+    const root = minimalFixtureRoot();
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const interpreterRoot = "src/features/narrative-extraction/ir";
+    contract.interpreterBoundary.interpreterRoots = [interpreterRoot];
+    mkdirSync(path.join(root, interpreterRoot), { recursive: true });
+    writeFileSync(
+      path.join(root, interpreterRoot, "second-authority.ts"),
+      [
+        'export const localFreshnessStore = new Map();',
+        'export const freshnessCache = new Map();',
+        'export const featureFreshnessReadModel = { isFresh: true };',
+        'export const freshnessAuthority = "local";',
+      ].join("\n"),
+    );
+    const errors = [];
+
+    validateInterpreterBoundary(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(
+      errors.some((error) => /unauthorized freshness authority/i.test(error)),
+    );
+    assert.ok(errors.some((error) => /second-authority\.ts/i.test(error)));
+  });
+
+  it("rejects an Interpreter boundary with no roots or no deny rules", () => {
+    const root = minimalFixtureRoot();
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.interpreterBoundary.interpreterRoots = [];
+    contract.interpreterBoundary.forbiddenDependencies = [];
+    contract.interpreterBoundary.forbiddenFreshnessAuthorityPatterns = [];
+    const errors = [];
+
+    validateInterpreterBoundary(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(errors.some((error) => /must declare interpreterRoots/i.test(error)));
+    assert.ok(
+      errors.some((error) => /must declare forbidden dependencies/i.test(error)),
+    );
+    assert.ok(
+      errors.some((error) => /must declare freshness authority patterns/i.test(error)),
+    );
   });
 
   it("rejects strict Scope containment and unresolved-reason identity", () => {
