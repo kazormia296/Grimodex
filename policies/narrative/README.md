@@ -133,9 +133,10 @@ production on the existing V1 path:
   and the independent Scope Disclosure adoption reference;
 - `schemas/narrative-ir-contract.schema.json` — machine-readable contract
   schema;
-- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — TypeScript/Rust
-  Adapter golden corpus for Scope derivation, mixed-edit strongest
-  classification, stale validation, and activation;
+- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — executable
+  TypeScript/Rust Adapter golden corpus for Scope derivation, Human-derived
+  old/new payload classification, unsupported-path refusal, and cross-runtime
+  parity; stale validation and activation remain semantic contract tests;
 - `validate-narrative-ir-contract.mjs` — semantic checks for identity,
   Human-derived boundaries, cumulative mixed-edit classification,
   cross-runtime parity, and disabled activation.

@@ -99,6 +99,8 @@
       "type": "object",
       "required": [
         "assertionKinds",
+        "assertionModalities",
+        "assertionPolarities",
         "producerKinds",
         "supportClasses",
         "changeKinds",
@@ -108,6 +110,25 @@
         "assertionKinds": {
           "const": [
             "scene-event@1"
+          ]
+        },
+        "assertionModalities": {
+          "const": [
+            "modality-explicit-text",
+            "modality-narrator-claim",
+            "modality-hearsay",
+            "modality-character-belief",
+            "modality-inference",
+            "modality-hypothesis",
+            "modality-author-declaration",
+            "modality-imported-assertion"
+          ]
+        },
+        "assertionPolarities": {
+          "const": [
+            "affirmative",
+            "negative",
+            "uncertain"
           ]
         },
         "producerKinds": {
@@ -590,13 +611,11 @@
           }
         },
         "requiredFamilies": {
-          "type": "array",
-          "minItems": 5,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "scope-derivation",
+            "human-derivation",
+            "cross-runtime-parity"
+          ]
         },
         "humanDerivedCaseIds": {
           "type": "array",

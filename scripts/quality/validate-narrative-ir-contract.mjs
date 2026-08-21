@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const REQUIRED_CASE_IDS = Object.freeze([
   "non-secret-event",
@@ -16,6 +17,51 @@ const REQUIRED_CASE_IDS = Object.freeze([
   "unsupported-path-refused",
   "canonical-scope-digest-parity",
 ]);
+
+const REQUIRED_CASE_FAMILIES = Object.freeze([
+  "scope-derivation",
+  "human-derivation",
+  "cross-runtime-parity",
+]);
+
+const REQUIRED_CASE_KINDS = new Map([
+  ["non-secret-event", "scope-derivation"],
+  ["secret-event-with-resolved-reveal", "scope-derivation"],
+  ["secret-event-with-unresolved-reveal", "scope-derivation"],
+  ["title-only-edit", "human-derivation"],
+  ["secret-only-edit", "human-derivation"],
+  ["reveal-document-only-edit", "human-derivation"],
+  ["mixed-title-secret-uses-scope-override", "human-derivation"],
+  ["mixed-note-reveal-document-uses-scope-override", "human-derivation"],
+  ["unsupported-path-refused", "human-derivation"],
+  ["canonical-scope-digest-parity", "cross-runtime-parity"],
+]);
+
+const REQUIRED_ASSERTION_MODALITIES = Object.freeze([
+  "modality-explicit-text",
+  "modality-narrator-claim",
+  "modality-hearsay",
+  "modality-character-belief",
+  "modality-inference",
+  "modality-hypothesis",
+  "modality-author-declaration",
+  "modality-imported-assertion",
+]);
+
+const REQUIRED_ASSERTION_POLARITIES = Object.freeze([
+  "affirmative",
+  "negative",
+  "uncertain",
+]);
+
+const HUMAN_PATH_CLASSES = Object.freeze({
+  projectionOnly: ["/title", "/note"],
+  scopeAffecting: [
+    "/disclosure/secret",
+    "/disclosure/revealDocumentRef",
+  ],
+  assertionAffecting: [],
+});
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -43,6 +89,431 @@ function pushIf(errors, condition, message) {
   if (!condition) errors.push(message);
 }
 
+function sameStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    new Set(actual).size === actual.length &&
+    expected.every((value) => actual.includes(value))
+  );
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
+  }
+  if (isObject(value)) {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function jsonPointerSegment(value) {
+  return value.replaceAll("~", "~0").replaceAll("/", "~1");
+}
+
+function collectChangedPaths(before, after, prefix = "") {
+  if (canonicalJson(before) === canonicalJson(after)) return [];
+  if (isObject(before) && isObject(after)) {
+    const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])];
+    return keys.flatMap((key) =>
+      collectChangedPaths(
+        before[key],
+        after[key],
+        `${prefix}/${jsonPointerSegment(key)}`,
+      ),
+    );
+  }
+  return [prefix || "/"];
+}
+
+function classifyChangedPaths(changedPaths) {
+  const pathClasses = [];
+  const addClass = (value) => {
+    if (!pathClasses.includes(value)) pathClasses.push(value);
+  };
+  for (const changedPath of changedPaths) {
+    if (HUMAN_PATH_CLASSES.projectionOnly.includes(changedPath)) {
+      addClass("projection-only");
+    } else if (HUMAN_PATH_CLASSES.scopeAffecting.includes(changedPath)) {
+      addClass("scope-affecting");
+    } else if (HUMAN_PATH_CLASSES.assertionAffecting.includes(changedPath)) {
+      addClass("assertion-affecting");
+    } else {
+      return {
+        disposition: "reject",
+        reason: "unsupported-path",
+        pathClasses,
+      };
+    }
+  }
+  return {
+    disposition: "accept",
+    derivationKind: pathClasses.includes("assertion-affecting")
+      ? "assertion-override"
+      : pathClasses.includes("scope-affecting")
+        ? "scope-override"
+        : "projection-only",
+    pathClasses,
+  };
+}
+
+function validateBoundary(boundary, label, errors) {
+  pushIf(
+    errors,
+    isObject(boundary) &&
+      typeof boundary.ref === "string" &&
+      boundary.ref.length > 0 &&
+      typeof boundary.inclusive === "boolean" &&
+      sameStringSet(Object.keys(boundary), ["ref", "inclusive"]),
+    `${label} must be a {ref,inclusive} temporal boundary`,
+  );
+}
+
+function validateScopeConstraint(axis, constraint, scopeContract, label, errors) {
+  if (!isObject(constraint)) {
+    errors.push(`${label} must be an object`);
+    return;
+  }
+  pushIf(
+    errors,
+    axis.allowedKinds.includes(constraint.kind),
+    `${label} kind is not allowed by ADR 009`,
+  );
+  if (constraint.kind === "any") {
+    pushIf(
+      errors,
+      sameStringSet(Object.keys(constraint), ["kind"]),
+      `${label} any constraint has unknown fields`,
+    );
+  } else if (constraint.kind === "exact") {
+    pushIf(
+      errors,
+      axis.axisKind === "reference" &&
+        typeof constraint.ref === "string" &&
+        constraint.ref.length > 0 &&
+        sameStringSet(Object.keys(constraint), ["kind", "ref"]),
+      `${label} exact constraint is structurally invalid`,
+    );
+  } else if (constraint.kind === "interval") {
+    const keys = Object.keys(constraint);
+    pushIf(
+      errors,
+      axis.axisKind === "temporal" &&
+        (constraint.from !== undefined || constraint.until !== undefined) &&
+        keys.every((key) => ["kind", "from", "until"].includes(key)),
+      `${label} interval constraint is structurally invalid`,
+    );
+    if (constraint.from !== undefined) {
+      validateBoundary(constraint.from, `${label}.from`, errors);
+    }
+    if (constraint.until !== undefined) {
+      validateBoundary(constraint.until, `${label}.until`, errors);
+    }
+  } else if (constraint.kind === "unresolved") {
+    const allowedKeys = ["kind", "reason", "constraintId"];
+    pushIf(
+      errors,
+      scopeContract.unresolvedReasons.includes(constraint.reason) &&
+        Object.keys(constraint).every((key) => allowedKeys.includes(key)) &&
+        (constraint.constraintId === undefined ||
+          (typeof constraint.constraintId === "string" &&
+            constraint.constraintId.length > 0)),
+      `${label} unresolved constraint is structurally invalid`,
+    );
+  }
+}
+
+function validateCanonicalScope(scope, scopeContract, label, errors) {
+  if (!isObject(scope)) {
+    errors.push(`${label} must decode to a Scope object`);
+    return;
+  }
+  const axisIds = scopeContract.axes.map((axis) => axis.id);
+  pushIf(
+    errors,
+    sameStringSet(Object.keys(scope), [
+      "schemaVersion",
+      "registryVersion",
+      ...axisIds,
+    ]),
+    `${label} must contain exactly the ADR 009 Scope axes`,
+  );
+  pushIf(
+    errors,
+    scope.schemaVersion === scopeContract.scopeSchemaVersion &&
+      scope.registryVersion === scopeContract.registryVersion,
+    `${label} Scope schema/registry version differs from ADR 009`,
+  );
+  for (const axis of scopeContract.axes) {
+    validateScopeConstraint(
+      axis,
+      scope[axis.id],
+      scopeContract,
+      `${label}.${axis.id}`,
+      errors,
+    );
+  }
+}
+
+function deriveScopeFromInput(entry, scopeContract, errors) {
+  const input = entry.input;
+  if (!isObject(input)) {
+    errors.push(`Narrative IR golden fixture ${entry.id} input is required`);
+    return null;
+  }
+  const expectedOperation = entry.kind === "human-derivation"
+    ? "human-derived-scope-derivation"
+    : entry.kind === "cross-runtime-parity"
+      ? "cross-runtime-scope-parity"
+      : "initial-scope-derivation";
+  pushIf(
+    errors,
+    input.operation === expectedOperation,
+    `Narrative IR golden fixture ${entry.id} input operation is invalid`,
+  );
+  pushIf(
+    errors,
+    typeof input.sceneRef === "string" && input.sceneRef.length > 0,
+    `Narrative IR golden fixture ${entry.id} input sceneRef is required`,
+  );
+
+  const proposalPayload = entry.kind === "human-derivation"
+    ? input.editedPayload
+    : input.proposalPayload;
+  if (!isObject(proposalPayload) || !isObject(proposalPayload.disclosure)) {
+    errors.push(
+      `Narrative IR golden fixture ${entry.id} input Proposal disclosure is required`,
+    );
+    return null;
+  }
+  if (
+    entry.kind === "human-derivation" &&
+    (!isObject(input.parentPayload) || !isObject(input.editedPayload))
+  ) {
+    errors.push(
+      `Narrative IR golden fixture ${entry.id} parent/edited payloads are required`,
+    );
+    return null;
+  }
+
+  const scope = {
+    schemaVersion: scopeContract.scopeSchemaVersion,
+    registryVersion: scopeContract.registryVersion,
+  };
+  for (const axis of scopeContract.axes) scope[axis.id] = {kind: "any"};
+  scope.scene = {kind: "exact", ref: input.sceneRef};
+
+  const revealBasis = input.revealBasis;
+  if (!isObject(revealBasis)) {
+    errors.push(
+      `Narrative IR golden fixture ${entry.id} reveal basis is required`,
+    );
+    return null;
+  }
+  if (proposalPayload.disclosure.secret !== true) {
+    pushIf(
+      errors,
+      revealBasis.status === "not-secret",
+      `Narrative IR golden fixture ${entry.id} non-secret input must use a not-secret reveal basis`,
+    );
+    return scope;
+  }
+
+  pushIf(
+    errors,
+    proposalPayload.disclosure.revealDocumentRef === revealBasis.documentRef,
+    `Narrative IR golden fixture ${entry.id} reveal basis documentRef must match the Proposal`,
+  );
+  if (revealBasis.status === "resolved") {
+    scope.audience = {kind: "exact", ref: revealBasis.audienceRef};
+    scope.readingOrder = {kind: "interval", ...revealBasis.readingOrder};
+    scope.storyTime = {kind: "interval", ...revealBasis.storyTime};
+  } else if (revealBasis.status === "unresolved") {
+    scope.audience = {kind: "unresolved", ...revealBasis.audience};
+    scope.readingOrder = {
+      kind: "unresolved",
+      ...revealBasis.readingOrder,
+    };
+  } else {
+    errors.push(
+      `Narrative IR golden fixture ${entry.id} secret input needs a resolved or unresolved reveal basis`,
+    );
+  }
+  return scope;
+}
+
+export function validateNarrativeIrGoldenFixture(
+  fixture,
+  scopeContract,
+  errors = [],
+) {
+  if (!isObject(fixture) || !isObject(scopeContract)) {
+    errors.push("Narrative IR golden fixture and ADR 009 Scope contract are required");
+    return errors;
+  }
+  pushIf(
+    errors,
+    fixture.schemaVersion === 1 &&
+      fixture.fixtureKind === "narrative-ir-cross-runtime-golden",
+    "Narrative IR golden fixture corpus identity/version is invalid",
+  );
+  pushIf(
+    errors,
+    fixture.canonicalization === "sorted-object-keys-json",
+    "Narrative IR golden fixture canonicalization must sort object keys",
+  );
+
+  const entries = Array.isArray(fixture.cases) ? fixture.cases : [];
+  const ids = entries.map((entry) => entry?.id);
+  pushIf(
+    errors,
+    new Set(ids).size === ids.length,
+    "Narrative IR golden fixture case IDs must be unique",
+  );
+  const families = new Set(entries.map((entry) => entry?.kind));
+  for (const family of REQUIRED_CASE_FAMILIES) {
+    if (!families.has(family)) {
+      errors.push(`Narrative IR golden fixture is missing case family: ${family}`);
+    }
+  }
+
+  const cases = new Map(entries.map((entry) => [entry?.id, entry]));
+  for (const id of REQUIRED_CASE_IDS) {
+    const entry = cases.get(id);
+    if (!entry) {
+      errors.push(`Narrative IR golden fixture is missing case: ${id}`);
+      continue;
+    }
+    pushIf(
+      errors,
+      entry.kind === REQUIRED_CASE_KINDS.get(id),
+      `Narrative IR golden fixture ${id} has the wrong case family`,
+    );
+    pushIf(
+      errors,
+      entry.input?.adapter?.id === fixture.adapter?.id &&
+        entry.input?.adapter?.version === fixture.adapter?.version,
+      `Narrative IR golden fixture ${id} needs the versioned Adapter input`,
+    );
+    pushIf(
+      errors,
+      isObject(entry.expected) &&
+        !Object.hasOwn(entry.expected, "typescript") &&
+        !Object.hasOwn(entry.expected, "rust"),
+      `Narrative IR golden fixture ${id} must have one authoritative expected result`,
+    );
+
+    const derivedScope = deriveScopeFromInput(entry, scopeContract, errors);
+    if (entry.kind === "human-derivation") {
+      const changedPaths =
+        isObject(entry.input?.parentPayload) && isObject(entry.input?.editedPayload)
+          ? collectChangedPaths(
+              entry.input.parentPayload,
+              entry.input.editedPayload,
+            )
+          : [];
+      const classification = classifyChangedPaths(changedPaths);
+      pushIf(
+        errors,
+        sameStringSet(entry.expected?.changedPaths, changedPaths),
+        `Narrative IR golden fixture ${id} changedPaths differ from the parent/edited payload diff`,
+      );
+      pushIf(
+        errors,
+        entry.expected?.disposition === classification.disposition,
+        `Narrative IR golden fixture ${id} disposition differs from path classification`,
+      );
+      if (classification.disposition === "reject") {
+        pushIf(
+          errors,
+          entry.expected?.reason === classification.reason,
+          `Narrative IR golden fixture ${id} rejection reason is invalid`,
+        );
+        continue;
+      }
+      pushIf(
+        errors,
+        entry.expected?.derivationKind === classification.derivationKind &&
+          sameStringSet(
+            entry.expected?.allowedPathClasses,
+            classification.pathClasses,
+          ),
+        `Narrative IR golden fixture ${id} strongest derivation classification is invalid`,
+      );
+    } else {
+      pushIf(
+        errors,
+        !Object.hasOwn(entry.expected ?? {}, "derivationKind"),
+        `Narrative IR golden fixture ${id} derivationKind is Human-derived only`,
+      );
+    }
+
+    if (
+      typeof entry.expected?.canonicalScopeJson !== "string" ||
+      typeof entry.expected?.scopeDigest !== "string"
+    ) {
+      errors.push(
+        `Narrative IR golden fixture ${id} canonical Scope JSON and scopeDigest are required`,
+      );
+      continue;
+    }
+    let parsedScope;
+    try {
+      parsedScope = JSON.parse(entry.expected.canonicalScopeJson);
+    } catch (error) {
+      errors.push(
+        `Narrative IR golden fixture ${id} canonical Scope JSON is invalid: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    const canonicalScopeJson = canonicalJson(parsedScope);
+    pushIf(
+      errors,
+      entry.expected.canonicalScopeJson === canonicalScopeJson,
+      `Narrative IR golden fixture ${id} canonical Scope JSON key order is invalid`,
+    );
+    const computedDigest = `sha256:${createHash("sha256")
+      .update(entry.expected.canonicalScopeJson, "utf8")
+      .digest("hex")}`;
+    pushIf(
+      errors,
+      entry.expected.scopeDigest === computedDigest,
+      `Narrative IR golden fixture ${id} scopeDigest does not match the canonical JSON SHA-256`,
+    );
+    validateCanonicalScope(
+      parsedScope,
+      scopeContract,
+      `Narrative IR golden fixture ${id}`,
+      errors,
+    );
+    if (derivedScope) {
+      pushIf(
+        errors,
+        canonicalJson(derivedScope) === entry.expected.canonicalScopeJson,
+        `Narrative IR golden fixture ${id} expected Scope does not match its Adapter input`,
+      );
+    }
+  }
+
+  return errors;
+}
+
+export function resolveRepoRootFromModuleUrl(
+  moduleUrl = import.meta.url,
+  platform = process.platform,
+) {
+  const windows = platform === "win32";
+  const pathApi = windows ? path.win32 : path;
+  return pathApi.resolve(
+    pathApi.dirname(fileURLToPath(moduleUrl, {windows})),
+    "../..",
+  );
+}
+
 export function validateNarrativeIrContract(repoRoot, contract, scopeContract, consumerContract, errors = []) {
   if (!isObject(contract)) {
     errors.push("narrative IR contract must be an object");
@@ -61,9 +532,16 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
 
   const vocab = contract.vocabularies;
   pushIf(errors, JSON.stringify(vocab?.assertionKinds) === JSON.stringify(["scene-event@1"]), "NIR-0 must wire only scene-event@1");
+  pushIf(errors, JSON.stringify(vocab?.assertionModalities) === JSON.stringify(REQUIRED_ASSERTION_MODALITIES), "AssertionModality must match the exact ADR 005 vocabulary");
+  pushIf(errors, JSON.stringify(vocab?.assertionPolarities) === JSON.stringify(REQUIRED_ASSERTION_POLARITIES), "AssertionPolarity must contain exactly affirmative, negative, and uncertain");
   pushIf(errors, JSON.stringify(vocab?.changeKinds) === JSON.stringify(["add","revise","retract","merge","split"]), "changeKind vocabulary must retain add/revise/retract/merge/split");
   pushIf(errors, JSON.stringify(vocab?.producerKinds) === JSON.stringify(["ai-inference","reconciler-proposal","author-declaration","import-metadata","legacy-migration"]), "Producer Kind vocabulary must reuse the ratified values");
   pushIf(errors, JSON.stringify(vocab?.supportClasses) === JSON.stringify(["author-declared","direct-source","reported-source","single-source-inference","multi-source-inference","imported-assertion","unresolved"]), "Support Class vocabulary must reuse the ratified values");
+  const importedVocabularyIds = new Set([
+    ...(vocab?.producerKinds ?? []),
+    ...(vocab?.supportClasses ?? []),
+  ]);
+  pushIf(errors, REQUIRED_ASSERTION_MODALITIES.every((id) => !importedVocabularyIds.has(id)), "AssertionModality machine IDs must not collide with imported Producer Kind or Support Class IDs");
 
   pushIf(errors, contract.envelope?.schemaVersion === 2, "Narrative Revision Envelope must be V2");
   pushIf(errors, hasPaths(contract.envelope?.requiredFields, ["assertion","assertionDigests","changeIntent","effectiveMaterialBasis","revisionBasis","projectionBinding"]), "Narrative Revision Envelope V2 required fields are incomplete");
@@ -102,26 +580,8 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   const fixturePath = adapter?.fixtureFile;
   const fixture = fixturePath ? readJson(repoRoot, fixturePath, errors, "Narrative IR golden fixture corpus") : null;
   if (fixture) {
-    pushIf(errors, fixture.schemaVersion === 1 && fixture.fixtureKind === "narrative-ir-cross-runtime-golden", "Narrative IR golden fixture corpus identity/version is invalid");
     pushIf(errors, fixture.adapter?.id === adapter.id && fixture.adapter?.version === adapter.version, "golden fixture corpus Adapter binding is invalid");
-    const cases = new Map((fixture.cases ?? []).map((entry) => [entry?.id, entry]));
-    for (const id of REQUIRED_CASE_IDS) {
-      const entry = cases.get(id);
-      if (!entry) {
-        errors.push(`Narrative IR golden fixture is missing case: ${id}`);
-        continue;
-      }
-      if (entry.kind === "human-derivation" && entry.expectedDerivationKind === "scope-override" && !hasPaths(entry.allowedPathClasses, ["projection-only","scope-affecting"]) && id.startsWith("mixed-")) {
-        errors.push(`Narrative IR golden fixture ${id} must carry the cumulative allowed path classes`);
-      }
-      if (entry.expected) {
-        const ts=entry.expected.typescript;
-        const rust=entry.expected.rust;
-        if (!ts || !rust || ts.canonicalScopeJson !== rust.canonicalScopeJson || ts.scopeDigest !== rust.scopeDigest) {
-          errors.push(`Narrative IR golden fixture ${id} has TypeScript/Rust Scope parity drift`);
-        }
-      }
-    }
+    validateNarrativeIrGoldenFixture(fixture, scopeContract, errors);
   }
 
   const activation = contract.activation;
@@ -141,10 +601,7 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   pushIf(errors, binding?.consumerKind === "proposal-revision" && binding?.revisionTable === "narrative_proposal_revisions" && binding?.revisionIdColumn === "id" && binding?.projectScoped === true && binding?.independentConsumerStatus === "not-yet-modelled", "Consumer contract revision identity binding is incomplete");
 
   pushIf(errors, contract.fixtures?.corpusFile === adapter?.fixtureFile && JSON.stringify(contract.fixtures?.requiredCaseIds) === JSON.stringify(REQUIRED_CASE_IDS), "Narrative IR fixture manifest is incomplete");
-  const families = new Set(contract.fixtures?.requiredFamilies ?? []);
-  for (const family of ["scope-derivation","human-derivation","cross-runtime-parity","stale-validation","activation"]) {
-    if (!families.has(family)) errors.push(`Narrative IR fixture manifest is missing family: ${family}`);
-  }
+  pushIf(errors, JSON.stringify(contract.fixtures?.requiredFamilies) === JSON.stringify(REQUIRED_CASE_FAMILIES), "Narrative IR fixture manifest families must match the executable golden corpus");
 
   return errors;
 }
@@ -161,7 +618,7 @@ export function validateNarrativeIrContractFromRepo(repoRoot) {
 }
 
 function main() {
-  const result = validateNarrativeIrContractFromRepo(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../.."));
+  const result = validateNarrativeIrContractFromRepo(resolveRepoRootFromModuleUrl());
   if (result.errors.length > 0) {
     for (const error of result.errors) console.error(`FAIL: ${error}`);
     process.exitCode=1;

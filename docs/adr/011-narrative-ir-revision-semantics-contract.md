@@ -57,9 +57,27 @@ fields `secret` and `revealDocumentRef` are Scope/disclosure inputs, not
 Assertion Core fields.
 
 Producer identity (the component that produced an assertion) is distinct from
-the actor who requested or accepted a change. The contract retains the
-versioned vocabularies for Assertion Kind, Change Kind, Producer Kind, and
-Support Class.
+the actor who requested or accepted a change. ADR 005 remains the semantic
+authority for Assertion Modality and Assertion Polarity; ADR 011 binds those
+categories to the following machine IDs for Narrative IR interchange:
+
+| ADR 005 category | Machine ID |
+| --- | --- |
+| 本文での明示 | `modality-explicit-text` |
+| Narrator claim | `modality-narrator-claim` |
+| 伝聞 | `modality-hearsay` |
+| Character belief | `modality-character-belief` |
+| Inference | `modality-inference` |
+| Hypothesis | `modality-hypothesis` |
+| Author declaration | `modality-author-declaration` |
+| Imported assertion | `modality-imported-assertion` |
+
+Assertion Polarity uses exactly `affirmative`, `negative`, and
+`uncertain`. The `modality-` namespace deliberately avoids collisions with
+the imported Producer Kind and Support Class IDs. Their ratified vocabularies
+remain owned by their existing contracts; the Narrative IR policy mirrors them
+only as a fail-closed compatibility binding and neither redefines their meaning
+nor creates a second registry.
 
 ### 3. Native-verified Human-derived revisions
 
@@ -103,9 +121,11 @@ Chronicle's versioned `chronicle.scene-event` Adapter has one golden fixture
 corpus. Initial Scope derivation runs in TypeScript; Human-derived Scope
 re-derivation runs in Rust. Both must produce byte-identical canonical Scope
 JSON and identical Scope Digest for every supported case. Unsupported paths
-must be rejected, not interpreted differently by runtime. The corpus includes
-mixed-edit strongest classification, stale validation, activation, and parity
-cases.
+must be rejected, not interpreted differently by runtime. The executable
+corpus covers initial Scope derivation, Human-derived old/new payload diffs,
+mixed-edit strongest classification, unsupported-path refusal, and
+cross-runtime canonical/digest parity. The stale-validation split and activation
+gate remain contract-level JavaScript tests rather than duplicate golden cases.
 
 ### 6. Activation and Scope adoption
 
@@ -147,8 +167,9 @@ fixture maintenance, and explicit future cutover evidence.
 
 - Policy and schema bind to this ADR and validate the exact Envelope, identity,
   Human-derived, stale-validation, Adapter, and activation invariants.
-- The fixture corpus covers all required Scope, mixed-edit, stale-validation,
-  activation, and cross-runtime parity cases.
+- The executable fixture corpus covers Scope derivation, Human-derived
+  classification, unsupported-path refusal, and cross-runtime parity; separate
+  semantic contract tests cover stale validation and activation.
 - ADR 009 capability status and its independent Scope Disclosure track are
   machine-readable and remain declared with empty production entry points.
 - No NIR-0 commit changes runtime code or database schema/migrations.

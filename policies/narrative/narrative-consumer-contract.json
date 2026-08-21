@@ -1,6 +1,23 @@
 {
   "schemaVersion": 1,
   "contract": "narrative-consumer-contract",
+  "revisionIdentityBinding": {
+    "consumerKind": "proposal-revision",
+    "revisionTable": "narrative_proposal_revisions",
+    "revisionIdColumn": "id",
+    "projectScoped": true,
+    "durability": "while-project-exists",
+    "humanDerivedRevisionUsesSameConsumer": true,
+    "independentConsumer": "narrative-ir-revision",
+    "independentConsumerStatus": "not-yet-modelled",
+    "heuristicIdentity": "forbid",
+    "portableReference": [
+      "projectId",
+      "revisionId",
+      "envelopeDigest",
+      "contractVersion"
+    ]
+  },
   "consumerKinds": [
     {
       "kind": "narrative-extraction-run",
@@ -97,11 +114,7 @@
   },
   "freshnessAuthority": {
     "canonicalTable": "narrative_consumer_freshness",
-    "canonicalKey": [
-      "project_id",
-      "consumer_kind",
-      "consumer_key"
-    ],
+    "canonicalKey": ["project_id", "consumer_kind", "consumer_key"],
     "compatibilityMirror": "narrative_projection_freshness",
     "compatibilityMirrorRole": "compatibility-only",
     "secondaryFreshnessAuthorityPolicy": "forbid",
@@ -119,22 +132,5 @@
     ],
     "note": "The digest is over the Consumer's whole Dependency set, so adding or removing one Edge changes it even when every surviving Edge's own state is unchanged -- that is what lets Verify tell 'evaluated against a different dependency set' apart from 'evaluated against the same set and still fresh'. The column is nullable and NULL for every row written before SCHEMA 24 added it; a NULL means this Consumer has not been evaluated since, and Verify must report it as not-yet-evaluated rather than as a graph inconsistency."
   },
-  "negativeFixture": "a finding_key must never be split on its last colon: 'semantic-index:embeddings:v2' parses to consumerKind 'semantic-index' and consumerKey 'embeddings:v2', while last-colon parsing would silently mint the unregistered consumer kind 'semantic-index:embeddings'",
-  "revisionIdentityBinding": {
-    "consumerKind": "proposal-revision",
-    "revisionTable": "narrative_proposal_revisions",
-    "revisionIdColumn": "id",
-    "projectScoped": true,
-    "durability": "while-project-exists",
-    "humanDerivedRevisionUsesSameConsumer": true,
-    "independentConsumer": "narrative-ir-revision",
-    "independentConsumerStatus": "not-yet-modelled",
-    "heuristicIdentity": "forbid",
-    "portableReference": [
-      "projectId",
-      "revisionId",
-      "envelopeDigest",
-      "contractVersion"
-    ]
-  }
+  "negativeFixture": "a finding_key must never be split on its last colon: 'semantic-index:embeddings:v2' parses to consumerKind 'semantic-index' and consumerKey 'embeddings:v2', while last-colon parsing would silently mint the unregistered consumer kind 'semantic-index:embeddings'"
 }

@@ -10,182 +10,513 @@
     {
       "id": "non-secret-event",
       "kind": "scope-derivation",
-      "changedPaths": [],
-      "expectedDerivationKind": "projection-only",
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": null
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
         }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
       }
     },
     {
       "id": "secret-event-with-resolved-reveal",
       "kind": "scope-derivation",
-      "changedPaths": [],
-      "expectedDerivationKind": "scope-override",
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     },
     {
       "id": "secret-event-with-unresolved-reveal",
       "kind": "scope-derivation",
-      "changedPaths": [],
-      "expectedDerivationKind": "scope-override",
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"constraintId\":\"scope:scene-event:1:audience\",\"kind\":\"unresolved\",\"reason\":\"missing-reference\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"constraintId\":\"scope:scene-event:1:reading-order\",\"kind\":\"unresolved\",\"reason\":\"ambiguous\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:3af313649dd45a4a2abfca33cf40eaa39576fa5849563013bb0de3a6accb91a5"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"constraintId\":\"scope:scene-event:1:audience\",\"kind\":\"unresolved\",\"reason\":\"missing-reference\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"constraintId\":\"scope:scene-event:1:reading-order\",\"kind\":\"unresolved\",\"reason\":\"ambiguous\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:3af313649dd45a4a2abfca33cf40eaa39576fa5849563013bb0de3a6accb91a5"
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:missing"
+          }
+        },
+        "revealBasis": {
+          "status": "unresolved",
+          "documentRef": "document:missing",
+          "audience": {
+            "reason": "missing-reference",
+            "constraintId": "scope:scene-event:1:audience"
+          },
+          "readingOrder": {
+            "reason": "ambiguous",
+            "constraintId": "scope:scene-event:1:reading-order"
+          }
         }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"constraintId\":\"scope:scene-event:1:audience\",\"kind\":\"unresolved\",\"reason\":\"missing-reference\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"constraintId\":\"scope:scene-event:1:reading-order\",\"kind\":\"unresolved\",\"reason\":\"ambiguous\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:3af313649dd45a4a2abfca33cf40eaa39576fa5849563013bb0de3a6accb91a5"
       }
     },
     {
       "id": "title-only-edit",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/title"
-      ],
-      "expectedDerivationKind": "projection-only",
-      "allowedPathClasses": [
-        "projection-only"
-      ],
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": null
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival at Dawn",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": null
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
         }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/title"
+        ],
+        "derivationKind": "projection-only",
+        "allowedPathClasses": [
+          "projection-only"
+        ],
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
       }
     },
     {
       "id": "secret-only-edit",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/disclosure/secret"
-      ],
-      "expectedDerivationKind": "scope-override",
-      "allowedPathClasses": [
-        "scope-affecting"
-      ],
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/disclosure/secret"
+        ],
+        "derivationKind": "scope-override",
+        "allowedPathClasses": [
+          "scope-affecting"
+        ],
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     },
     {
       "id": "reveal-document-only-edit",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/disclosure/revealDocumentRef"
-      ],
-      "expectedDerivationKind": "scope-override",
-      "allowedPathClasses": [
-        "scope-affecting"
-      ],
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:2"
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/disclosure/revealDocumentRef"
+        ],
+        "derivationKind": "scope-override",
+        "allowedPathClasses": [
+          "scope-affecting"
+        ],
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     },
     {
       "id": "mixed-title-secret-uses-scope-override",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/title",
-        "/disclosure/secret"
-      ],
-      "expectedDerivationKind": "scope-override",
-      "allowedPathClasses": [
-        "projection-only",
-        "scope-affecting"
-      ],
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival at Dawn",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/title",
+          "/disclosure/secret"
+        ],
+        "derivationKind": "scope-override",
+        "allowedPathClasses": [
+          "projection-only",
+          "scope-affecting"
+        ],
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     },
     {
       "id": "mixed-note-reveal-document-uses-scope-override",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/note",
-        "/disclosure/revealDocumentRef"
-      ],
-      "expectedDerivationKind": "scope-override",
-      "allowedPathClasses": [
-        "projection-only",
-        "scope-affecting"
-      ],
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": "first note",
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:2"
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival",
+          "note": "revised note",
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/note",
+          "/disclosure/revealDocumentRef"
+        ],
+        "derivationKind": "scope-override",
+        "allowedPathClasses": [
+          "projection-only",
+          "scope-affecting"
+        ],
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     },
     {
       "id": "unsupported-path-refused",
       "kind": "human-derivation",
-      "changedPaths": [
-        "/semanticPayload/actuality"
-      ],
-      "expectedDisposition": "reject"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": null
+          },
+          "semanticPayload": {
+            "actuality": "asserted"
+          }
+        },
+        "editedPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": null
+          },
+          "semanticPayload": {
+            "actuality": "uncertain"
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
+        }
+      },
+      "expected": {
+        "disposition": "reject",
+        "reason": "unsupported-path",
+        "changedPaths": [
+          "/semanticPayload/actuality"
+        ]
+      }
     },
     {
       "id": "canonical-scope-digest-parity",
       "kind": "cross-runtime-parity",
-      "changedPaths": [],
-      "expectedDerivationKind": "projection-only",
-      "expected": {
-        "typescript": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
         },
-        "rust": {
-          "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-          "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "operation": "cross-runtime-scope-parity",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "title": "Arrival",
+          "note": null,
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
         }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
       }
     }
   ]

@@ -31,6 +31,21 @@
     "assertionKinds": [
       "scene-event@1"
     ],
+    "assertionModalities": [
+      "modality-explicit-text",
+      "modality-narrator-claim",
+      "modality-hearsay",
+      "modality-character-belief",
+      "modality-inference",
+      "modality-hypothesis",
+      "modality-author-declaration",
+      "modality-imported-assertion"
+    ],
+    "assertionPolarities": [
+      "affirmative",
+      "negative",
+      "uncertain"
+    ],
     "producerKinds": [
       "ai-inference",
       "reconciler-proposal",
@@ -424,9 +439,7 @@
     "requiredFamilies": [
       "scope-derivation",
       "human-derivation",
-      "cross-runtime-parity",
-      "stale-validation",
-      "activation"
+      "cross-runtime-parity"
     ],
     "humanDerivedCaseIds": [
       "title-only-edit",

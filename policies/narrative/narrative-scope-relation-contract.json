@@ -26,110 +26,76 @@
       "structuralValidation": {
         "state": "declared",
         "productionEntryPoints": [],
-        "blockedOn": [
-          "scope-v2-contract-adapter"
-        ]
+        "blockedOn": ["scope-v2-contract-adapter"]
       },
       "relationComparison": {
         "state": "declared",
         "productionEntryPoints": [],
-        "blockedOn": [
-          "scope-order-oracle"
-        ]
+        "blockedOn": ["scope-order-oracle"]
       },
       "disclosureAdmission": {
         "state": "declared",
         "productionEntryPoints": [],
-        "blockedOn": [
-          "disclosure-shadow-wiring"
-        ]
+        "blockedOn": ["disclosure-shadow-wiring"]
       }
     }
+  },
+  "adoptionTrack": {
+    "id": "scope-disclosure-adoption",
+    "owner": "adr-009-scope-contract",
+    "independentFrom": "narrative-ir-contract",
+    "states": ["declared", "shadow", "wired"],
+    "lifecycleAuthority": "adr-009-scope-contract",
+    "firstLikelyConsumer": "NIR-1 pre-ranking disclosure",
+    "nir1OwnsLifecycle": false,
+    "productionEntryPointPolicy": "declared-is-empty-entry-points"
   },
   "axes": [
     {
       "id": "timeline",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "worldline",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "scene",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "viewpoint",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "knowledgeHolder",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "audience",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ],
-      "reservedRefs": [
-        "reader"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"],
+      "reservedRefs": ["reader"]
     },
     {
       "id": "narrativeLayer",
       "axisKind": "reference",
-      "allowedKinds": [
-        "any",
-        "exact",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "exact", "unresolved"]
     },
     {
       "id": "storyTime",
       "axisKind": "temporal",
-      "allowedKinds": [
-        "any",
-        "interval",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "interval", "unresolved"]
     },
     {
       "id": "readingOrder",
       "axisKind": "temporal",
-      "allowedKinds": [
-        "any",
-        "interval",
-        "unresolved"
-      ]
+      "allowedKinds": ["any", "interval", "unresolved"]
     }
   ],
   "unresolvedReasons": [
@@ -236,16 +202,8 @@
     ]
   },
   "oracleContract": {
-    "orderAxes": [
-      "storyTime",
-      "readingOrder"
-    ],
-    "compareResults": [
-      -1,
-      0,
-      1,
-      "unresolved"
-    ],
+    "orderAxes": ["storyTime", "readingOrder"],
+    "compareResults": [-1, 0, 1, "unresolved"],
     "revisionTokenRequired": true,
     "basisRequiredWheneverOracleOrRegistryUsed": true,
     "basisRequiredRelations": [
@@ -264,17 +222,11 @@
       "axes": {
         "scene": {
           "axisKind": "reference",
-          "allowedKinds": [
-            "any",
-            "unresolved"
-          ]
+          "allowedKinds": ["any", "unresolved"]
         },
         "storyTime": {
           "axisKind": "temporal",
-          "allowedKinds": [
-            "interval",
-            "unresolved"
-          ],
+          "allowedKinds": ["interval", "unresolved"],
           "resolutionRequiredBy": "before-apply"
         }
       }
@@ -284,10 +236,7 @@
       "axes": {
         "scene": {
           "axisKind": "reference",
-          "allowedKinds": [
-            "exact",
-            "unresolved"
-          ],
+          "allowedKinds": ["exact", "unresolved"],
           "resolutionRequiredBy": "before-review"
         }
       }
@@ -296,36 +245,23 @@
   "consumerPolicies": [
     {
       "consumer": "retrieval-disclosure",
-      "automaticRelations": [
-        "equal",
-        "contains"
-      ],
+      "automaticRelations": ["equal", "contains"],
       "unknownPolicy": "reject-before-ranking"
     },
     {
       "consumer": "review-reuse",
-      "automaticRelations": [
-        "equal"
-      ],
+      "automaticRelations": ["equal"],
       "unknownPolicy": "review-only"
     },
     {
       "consumer": "correction-memory",
-      "automaticRelations": [
-        "equal",
-        "contains"
-      ],
+      "automaticRelations": ["equal", "contains"],
       "additionalBasisRequired": true,
       "unknownPolicy": "review-only"
     },
     {
       "consumer": "contradiction-diagnostic",
-      "automaticRelations": [
-        "equal",
-        "contains",
-        "contained-by",
-        "overlaps"
-      ],
+      "automaticRelations": ["equal", "contains", "contained-by", "overlaps"],
       "unknownPolicy": "scope-unresolved-conflict-candidate"
     }
   ],
@@ -341,19 +277,5 @@
     "automatic-retraction",
     "automatic-merge-or-split",
     "automatic-domain-mutation"
-  ],
-  "adoptionTrack": {
-    "id": "scope-disclosure-adoption",
-    "owner": "adr-009-scope-contract",
-    "independentFrom": "narrative-ir-contract",
-    "states": [
-      "declared",
-      "shadow",
-      "wired"
-    ],
-    "lifecycleAuthority": "adr-009-scope-contract",
-    "firstLikelyConsumer": "NIR-1 pre-ranking disclosure",
-    "nir1OwnsLifecycle": false,
-    "productionEntryPointPolicy": "declared-is-empty-entry-points"
-  }
+  ]
 }
