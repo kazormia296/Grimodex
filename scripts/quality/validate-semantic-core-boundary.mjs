@@ -2113,6 +2113,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   };
   globalThisContainer.entries.set("Reflect", globalReflectValue);
   globalThisContainer.entries.set("undefined", cleanInvocationValue(false));
+  globalThisContainer.entries.set("globalThis", globalThisValue);
 
   const valueForBinding = (binding) =>
     bindingValues.get(binding) ?? cleanInvocationValue();
