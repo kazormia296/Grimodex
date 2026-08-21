@@ -68,7 +68,13 @@ fn valid_envelope() -> Value {
         "effectiveMaterialBasis": {
             "sourceBasis": [{"sourceKind": "scene", "sourceKey": "scene:1", "revisionToken": "rev:1"}],
             "evidenceSet": [{"evidenceRef": "anchor:1"}],
-            "dependencySet": [],
+            "dependencySet": [{
+                "dependencyId": "dependency:1",
+                "inputRef": "anchor:1",
+                "contextIds": [],
+                "role": "direct-evidence",
+                "selector": {"kind": "whole-source"}
+            }],
             "dependencySetDigest": DIGEST,
             "materialBasisDigest": DIGEST
         },
@@ -160,6 +166,105 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
         candidate["assertion"]["payload"] = payload;
         assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
     }
+}
+
+#[test]
+fn enforces_dependency_role_selector_and_adr010_coverage() {
+    let mut candidate = valid_envelope();
+    candidate["effectiveMaterialBasis"]["dependencySet"][0]["role"] =
+        json!("future-role");
+    assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+
+    let mut candidate = valid_envelope();
+    candidate["effectiveMaterialBasis"]["dependencySet"][0]["selector"] =
+        json!({"kind": "future-selector"});
+    assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+
+    let mut candidate = valid_envelope();
+    candidate["effectiveMaterialBasis"]["dependencySet"] = json!([]);
+    assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+
+    let mut candidate = valid_envelope();
+    candidate["effectiveMaterialBasis"]["dependencySet"][0]["inputRef"] =
+        json!("anchor:other");
+    assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+
+    let model_visible_context = json!({
+        "contextId": "context:1",
+        "inputRef": "source:context",
+        "stageId": "stage:1",
+        "exposure": "model-visible",
+        "selector": {"kind": "whole-source"}
+    });
+    let mut without_coverage = valid_envelope();
+    without_coverage["revisionBasis"]["contextSet"] = json!([model_visible_context]);
+    assert!(validate_narrative_revision_envelope_v2(&without_coverage).is_err());
+
+    let mut unproven_purpose = without_coverage.clone();
+    unproven_purpose["effectiveMaterialBasis"]["dependencySet"] = json!([{
+        "dependencyId": "dependency:1",
+        "inputRef": "anchor:1",
+        "contextIds": [],
+        "role": "direct-evidence",
+        "selector": {"kind": "whole-source"}
+    }, {
+        "dependencyId": "dependency:context",
+        "inputRef": "source:context",
+        "contextIds": ["context:1"],
+        "role": "entity-resolution",
+        "selector": {"kind": "whole-source"}
+    }]);
+    assert!(validate_narrative_revision_envelope_v2(&unproven_purpose).is_err());
+
+    let mut selector_mismatch = without_coverage.clone();
+    selector_mismatch["effectiveMaterialBasis"]["dependencySet"] = json!([{
+        "dependencyId": "dependency:1",
+        "inputRef": "anchor:1",
+        "contextIds": [],
+        "role": "direct-evidence",
+        "selector": {"kind": "whole-source"}
+    }, {
+        "dependencyId": "dependency:context",
+        "inputRef": "source:context",
+        "contextIds": ["context:1"],
+        "role": "opaque-model-context",
+        "selector": {
+            "kind": "field-path",
+            "objectIdentity": "object:1",
+            "fieldPath": "title"
+        }
+    }]);
+    assert!(validate_narrative_revision_envelope_v2(&selector_mismatch).is_err());
+
+    let mut direct_evidence_context = without_coverage.clone();
+    direct_evidence_context["effectiveMaterialBasis"]["evidenceSet"] = json!([
+        {"evidenceRef": "anchor:1"},
+        {"evidenceRef": "anchor:context", "sourceKey": "source:context"}
+    ]);
+    direct_evidence_context["effectiveMaterialBasis"]["dependencySet"] = json!([{
+        "dependencyId": "dependency:context",
+        "inputRef": "source:context",
+        "contextIds": ["context:1"],
+        "role": "direct-evidence",
+        "selector": {"kind": "whole-source"}
+    }]);
+    assert!(validate_narrative_revision_envelope_v2(&direct_evidence_context).is_ok());
+
+    let mut conservative_fallback = without_coverage;
+    conservative_fallback["effectiveMaterialBasis"]["dependencySet"] = json!([{
+        "dependencyId": "dependency:1",
+        "inputRef": "anchor:1",
+        "contextIds": [],
+        "role": "direct-evidence",
+        "selector": {"kind": "whole-source"}
+    }, {
+        "dependencyId": "dependency:context",
+        "inputRef": "source:context",
+        "contextIds": ["context:1"],
+        "role": "opaque-model-context",
+        "selector": {"kind": "whole-source"}
+    }]);
+    assert!(validate_narrative_revision_envelope_v2(&conservative_fallback).is_ok());
 }
 
 #[test]

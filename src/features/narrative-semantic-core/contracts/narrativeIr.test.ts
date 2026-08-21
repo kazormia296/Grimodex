@@ -52,7 +52,15 @@ const validEnvelope = (): NarrativeRevisionEnvelopeV2<
       { sourceKind: "scene", sourceKey: "scene:1", revisionToken: "rev:1" },
     ],
     evidenceSet: [{ evidenceRef: "anchor:1" }],
-    dependencySet: [],
+    dependencySet: [
+      {
+        dependencyId: "dependency:1",
+        inputRef: "anchor:1",
+        contextIds: [],
+        role: "direct-evidence",
+        selector: { kind: "whole-source" },
+      },
+    ],
     dependencySetDigest: DIGEST,
     materialBasisDigest: DIGEST,
   },
@@ -77,6 +85,18 @@ const validEnvelope = (): NarrativeRevisionEnvelopeV2<
     adapterContractVersion: "1",
   },
 });
+
+type MutableEnvelope = {
+  effectiveMaterialBasis: {
+    dependencySet: Array<Record<string, unknown>>;
+  };
+  revisionBasis: {
+    contextSet: unknown[];
+  };
+};
+
+const mutableEnvelope = (): MutableEnvelope =>
+  structuredClone(validEnvelope()) as unknown as MutableEnvelope;
 
 describe("Narrative IR V2 registry and structural schema", () => {
   it("exposes the ratified assertion and shared vocabulary registry", () => {
@@ -177,5 +197,110 @@ describe("Narrative IR V2 registry and structural schema", () => {
         },
       }),
     ).toMatchObject({ valid: false, reason: "invalid-digest" });
+  });
+
+  it("requires D0 Dependency roles/selectors and ADR010 evidence coverage", () => {
+    const unknownRole = mutableEnvelope();
+    unknownRole.effectiveMaterialBasis.dependencySet[0].role = "future-role";
+    expect(validateNarrativeRevisionEnvelopeV2(unknownRole)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const invalidSelector = mutableEnvelope();
+    invalidSelector.effectiveMaterialBasis.dependencySet[0].selector = {
+      kind: "future-selector",
+    };
+    expect(validateNarrativeRevisionEnvelopeV2(invalidSelector)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const missingEvidenceDependency = mutableEnvelope();
+    missingEvidenceDependency.effectiveMaterialBasis.dependencySet = [];
+    expect(
+      validateNarrativeRevisionEnvelopeV2(missingEvidenceDependency),
+    ).toMatchObject({ valid: false, reason: "invalid-material-basis" });
+
+    const mismatchedEvidenceDependency = mutableEnvelope();
+    mismatchedEvidenceDependency.effectiveMaterialBasis.dependencySet[0].inputRef =
+      "anchor:other";
+    expect(
+      validateNarrativeRevisionEnvelopeV2(mismatchedEvidenceDependency),
+    ).toMatchObject({ valid: false, reason: "invalid-material-basis" });
+  });
+
+  it("requires model-visible Context coverage and a conservative role", () => {
+    const modelVisibleContext = {
+      contextId: "context:1",
+      inputRef: "source:context",
+      stageId: "stage:1",
+      exposure: "model-visible",
+      selector: { kind: "whole-source" },
+    } as const;
+    const withoutCoverage = mutableEnvelope();
+    withoutCoverage.revisionBasis.contextSet = [modelVisibleContext];
+    expect(validateNarrativeRevisionEnvelopeV2(withoutCoverage)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const unprovenPurpose = structuredClone(withoutCoverage);
+    unprovenPurpose.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:context",
+      inputRef: "source:context",
+      contextIds: ["context:1"],
+      role: "entity-resolution",
+      selector: { kind: "whole-source" },
+    });
+    expect(validateNarrativeRevisionEnvelopeV2(unprovenPurpose)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const selectorMismatch = structuredClone(withoutCoverage);
+    selectorMismatch.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:context",
+      inputRef: "source:context",
+      contextIds: ["context:1"],
+      role: "opaque-model-context",
+      selector: {
+        kind: "field-path",
+        objectIdentity: "object:1",
+        fieldPath: "title",
+      },
+    });
+    expect(validateNarrativeRevisionEnvelopeV2(selectorMismatch)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const directEvidenceContext = structuredClone(withoutCoverage);
+    directEvidenceContext.effectiveMaterialBasis.evidenceSet.push({
+      evidenceRef: "anchor:context",
+      sourceKey: "source:context",
+    });
+    directEvidenceContext.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:context",
+      inputRef: "source:context",
+      contextIds: ["context:1"],
+      role: "direct-evidence",
+      selector: { kind: "whole-source" },
+    });
+    expect(
+      validateNarrativeRevisionEnvelopeV2(directEvidenceContext),
+    ).toEqual({ valid: true });
+
+    const conservativeFallback = structuredClone(withoutCoverage);
+    conservativeFallback.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:context",
+      inputRef: "source:context",
+      contextIds: ["context:1"],
+      role: "opaque-model-context",
+      selector: { kind: "whole-source" },
+    });
+    expect(validateNarrativeRevisionEnvelopeV2(conservativeFallback)).toEqual({
+      valid: true,
+    });
   });
 });
