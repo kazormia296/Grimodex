@@ -1218,11 +1218,56 @@ function validateRegexRule(rule, label, errors) {
   return valid;
 }
 
+function evaluateArtifactAuthorityFixtureClaim(contract, fixtureCase, errors) {
+  const fixtureId = String(fixtureCase?.id);
+  const target = fixtureCase?.target;
+  const claim = fixtureCase?.claim;
+  const artifact = Array.isArray(contract?.artifacts)
+    ? contract.artifacts.find((candidate) => candidate?.id === target)
+    : undefined;
+  if (!isNonEmptyString(target) || !artifact) {
+    errors.push(
+      `narrative artifact authority fixture ${fixtureId} targets an unknown artifact: ${String(target)}`,
+    );
+    return;
+  }
+  if (!isObject(claim) || Object.keys(claim).length === 0) {
+    errors.push(
+      `narrative artifact authority fixture ${fixtureId} must declare a non-empty claim`,
+    );
+    return;
+  }
+
+  const mismatches = [];
+  for (const [field, expected] of Object.entries(claim)) {
+    let actual;
+    if (field === "retention") {
+      actual = artifact.retention?.default;
+    } else if (Object.prototype.hasOwnProperty.call(artifact, field)) {
+      actual = artifact[field];
+    } else {
+      mismatches.push(`unknown claim field ${field}`);
+      continue;
+    }
+    if (actual !== expected) {
+      mismatches.push(`${field} expected ${String(expected)} got ${String(actual)}`);
+    }
+  }
+
+  const actual = mismatches.length === 0 ? "accept" : "reject";
+  if (actual !== fixtureCase.expected) {
+    errors.push(
+      `narrative artifact authority fixture ${fixtureId} expected ${String(fixtureCase.expected)} but got ${actual}: ${mismatches.join(", ")}`,
+    );
+  }
+}
+
 function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
   const source = fixtureCase?.source;
+  const fixtureId = String(fixtureCase?.id);
   if (!isNonEmptyString(source)) {
     errors.push(
-      `narrative artifact authority fixture ${String(fixtureCase?.id)} must declare a non-empty source`,
+      `narrative artifact authority fixture ${fixtureId} must declare a non-empty source`,
     );
     return;
   }
@@ -1242,17 +1287,23 @@ function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
     sourceFile,
     dependencySource,
   );
-  const findings = new Set([
+  const actualRules = new Set([
     ...dependencyScan.findings,
     ...(dependencyScan.freshnessFindings ?? []),
   ]);
+  if (
+    parsed.parseDiagnostics.length > 0 ||
+    dependencyScan.parseDiagnostics.length > 0
+  ) {
+    actualRules.add("parse-diagnostics");
+  }
   for (const rule of Array.isArray(boundary.forbiddenDependencies)
     ? boundary.forbiddenDependencies
     : []) {
     for (const pattern of Array.isArray(rule?.patterns) ? rule.patterns : []) {
       try {
         if (new RegExp(pattern).test(dependencySource)) {
-          findings.add(rule.id);
+          actualRules.add(rule.id);
         }
       } catch (error) {
         errors.push(
@@ -1266,7 +1317,7 @@ function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
     : []) {
     try {
       if (new RegExp(rule.pattern).test(source)) {
-        findings.add(rule.id);
+        actualRules.add(rule.id);
       }
     } catch (error) {
       errors.push(
@@ -1275,11 +1326,33 @@ function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
     }
   }
 
+  if (
+    actualRules.size === 0 &&
+    dependencySource !== source &&
+    dependencySource.trim() === ""
+  ) {
+    actualRules.add("type-only-domain-vocabulary");
+  }
+
+  const declaredRule = fixtureCase?.rule;
+  if (
+    !isNonEmptyString(declaredRule) ||
+    actualRules.size !== 1 ||
+    !actualRules.has(declaredRule)
+  ) {
+    errors.push(
+      `narrative artifact authority fixture ${fixtureId} declared rule ${String(declaredRule)} does not match evaluated source rule(s): ${[...actualRules].join(", ") || "none"}`,
+    );
+  }
+
   const actual =
-    parsed.parseDiagnostics.length > 0 || findings.size > 0 ? "reject" : "accept";
+    actualRules.size === 0 ||
+    (actualRules.size === 1 && actualRules.has("type-only-domain-vocabulary"))
+      ? "accept"
+      : "reject";
   if (actual !== fixtureCase.expected) {
     errors.push(
-      `narrative artifact authority fixture ${String(fixtureCase.id)} expected ${String(fixtureCase.expected)} but got ${actual}`,
+      `narrative artifact authority fixture ${fixtureId} expected ${String(fixtureCase.expected)} but got ${actual}`,
     );
   }
 }
@@ -1336,8 +1409,10 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
     }
   }
   for (const fixtureCase of fixture.cases) {
-    if (isNonEmptyString(fixtureCase?.source)) {
+    if (Object.prototype.hasOwnProperty.call(fixtureCase ?? {}, "source")) {
       evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors);
+    } else {
+      evaluateArtifactAuthorityFixtureClaim(contract, fixtureCase, errors);
     }
   }
   if (
