@@ -73,3 +73,38 @@ fn matches_ecmascript_number_spelling_and_digest_goldens() {
         );
     }
 }
+
+#[test]
+fn parses_ecmascript_number_goldens_with_exact_binary64_roundtrip() {
+    let fixture: NumberParityFixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/canonical-json-number-parity.json"
+    ))
+    .expect("canonical JSON number parity fixture parses");
+
+    for case in fixture.cases {
+        let Some(bits) = case.bits.as_deref() else {
+            continue;
+        };
+        let expected_bits = u64::from_str_radix(bits, 16).expect("f64 bits");
+        let parsed: Value =
+            serde_json::from_str(&case.canonical_json).expect("canonical number parses");
+        assert_eq!(
+            parsed.as_f64().expect("canonical number is f64").to_bits(),
+            expected_bits,
+            "{} parser roundtrip",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_string(&parsed).expect("canonical JSON"),
+            case.canonical_json,
+            "{} canonical JSON",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_digest(&parsed).expect("canonical digest"),
+            case.digest,
+            "{} digest",
+            case.id
+        );
+    }
+}
