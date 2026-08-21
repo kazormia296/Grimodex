@@ -88,6 +88,7 @@ const validEnvelope = (): NarrativeRevisionEnvelopeV2<
 
 type MutableEnvelope = {
   effectiveMaterialBasis: {
+    evidenceSet: Array<Record<string, unknown>>;
     dependencySet: Array<Record<string, unknown>>;
   };
   revisionBasis: {
