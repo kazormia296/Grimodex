@@ -4353,6 +4353,17 @@ function scanInterpreterSourceWithAst(file, source) {
         addStaticAuthorityKeyFindings(node.expression);
       }
     }
+    if (
+      (ts.isPropertyAssignment(node) ||
+        ts.isMethodDeclaration(node) ||
+        ts.isGetAccessorDeclaration(node) ||
+        ts.isSetAccessorDeclaration(node) ||
+        ts.isPropertyDeclaration(node)) &&
+      (ts.isStringLiteral(node.name) ||
+        ts.isNoSubstitutionTemplateLiteral(node.name))
+    ) {
+      addStaticAuthorityKeyFindings(node.name);
+    }
     if (ts.isPropertyAccessExpression(node)) {
       if (REQUIRED_DB_MUTATION_METHODS.has(node.name.text)) {
         findings.add("db-mutation");
