@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import yaml from "js-yaml";
 
 import {
   LIGHT_SUITE_DEFINITIONS,
@@ -164,6 +165,84 @@ test("Narrative Extraction changes select every Narrative semantic requirement",
     assert.ok(selection.requirementIds.includes(requirementId));
   }
   assert.equal(selection.fallback, false);
+});
+
+test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(
+      new URL("../../evals/impact-map.yaml", import.meta.url),
+      "utf8",
+    ),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const requirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
+  );
+  assert.ok(requirement, "semantic contract requirement must exist");
+
+  const implementations = [
+    "src/features/narrative-semantic-core/contracts/scopeV2.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
+    "src-tauri/crates/grimodex-core/src/canonical_json.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.ts",
+    "src/features/narrative-extraction/reconciler/types.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts",
+    "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+    "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+    "src/application/narrative-extraction/extractionCoordinator.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+  ];
+  const tests = [
+    "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
+    "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "scripts/quality/impact-map.test.mjs",
+  ];
+
+  for (const relativePath of implementations) {
+    assert.ok(
+      requirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in semantic contract implementedBy`,
+    );
+  }
+  for (const relativePath of tests) {
+    assert.ok(
+      requirement.lightTests.includes(relativePath),
+      `${relativePath} must be listed in semantic contract lightTests`,
+    );
+  }
+
+  for (const relativePath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must select the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
 });
 
 test("Temporal IR, adapter, and Calendar changes select the Temporal requirement", async () => {
