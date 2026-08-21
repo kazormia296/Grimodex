@@ -1397,6 +1397,109 @@ describe("validate-semantic-core-boundary", () => {
           "invoke(null, []);",
         ].join("\n"),
       },
+      {
+        name: "ambiguous direct and bound Reflect.apply",
+        source: [
+          "const safe = () => true;",
+          "const bound = Reflect.apply.bind(null, database[key]);",
+          "const invoke = flag ? bound : Reflect.apply;",
+          "invoke(safe, [], []);",
+        ].join("\n"),
+      },
+      {
+        name: "ambiguous direct and bound Reflect.construct",
+        source: [
+          "const safe = () => true;",
+          "const bound = Reflect.construct.bind(null, database[key]);",
+          "const invoke = flag ? bound : Reflect.construct;",
+          "invoke(safe, []);",
+        ].join("\n"),
+      },
+      {
+        name: "ambiguous direct and bound Reflect.get",
+        source: [
+          "const safe = () => true;",
+          "const bound = Reflect.get.bind(null, database, key);",
+          "const get = flag ? bound : Reflect.get;",
+          "const fn = get({ fn: safe }, 'fn');",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "ambiguous direct and indirect Reflect.call",
+        source: [
+          "const safe = () => true;",
+          "const indirect = Reflect.apply.call;",
+          "const invoke = flag ? indirect : Reflect.apply;",
+          "invoke(Reflect, database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "ambiguous direct and indirect Reflect.apply",
+        source: [
+          "const safe = () => true;",
+          "const indirect = Reflect.apply.apply;",
+          "const invoke = flag ? indirect : Reflect.apply;",
+          "invoke(Reflect, [database[key], null, []]);",
+        ].join("\n"),
+      },
+      {
+        name: "ambiguous capability container alias",
+        source: [
+          "const safe = () => true;",
+          "const direct = Reflect.apply;",
+          "const bound = Reflect.apply.bind(null, database[key]);",
+          "const invoke = flag ? direct : bound;",
+          "invoke(safe, null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis root alias",
+        source: [
+          "const root = globalThis;",
+          "root.Reflect.apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis Reflect destructuring",
+        source: [
+          "const { Reflect: R } = globalThis;",
+          "R.apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis computed Reflect alias chain",
+        source: [
+          "const root = globalThis;",
+          "const R = root['Reflect'];",
+          "const apply = R['apply'];",
+          "apply(database[key], null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis construct and get aliases",
+        source: [
+          "const root = globalThis;",
+          "root.Reflect.construct(database[key], []);",
+          "const fn = root.Reflect.get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis undefined default",
+        source: [
+          "const [fn = database[key]] = [globalThis.undefined];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis undefined alias default",
+        source: [
+          "const root = globalThis;",
+          "const [fn = database[key]] = [root['undefined']];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -1452,10 +1555,14 @@ describe("validate-semantic-core-boundary", () => {
         "Reflect.apply.call(Reflect, safe, null, []);",
         "Reflect.apply.bind(Reflect)(safe, null, []);",
         "Reflect.construct.call(Reflect, safe, []);",
-        "const globalThis = { Reflect: { apply: () => true } };",
+        "const globalThis = { Reflect: { apply: () => true, construct: () => true, get: () => safe }, undefined: safe };",
         "globalThis.Reflect.apply(safe, null, []);",
         "const shadowGet = globalThis.Reflect.get?.bind(globalThis.Reflect);",
         "shadowGet?.({}, 'fn');",
+        "const shadowRoot = globalThis;",
+        "shadowRoot.Reflect.apply(safe, null, []);",
+        "const [shadowUndefined = database[key]] = [shadowRoot.undefined];",
+        "shadowUndefined();",
         "const partialApply = Reflect.apply.bind(null, safe);",
         "partialApply(null, []);",
         "const partialConstruct = Reflect.construct.bind(null, safe);",
