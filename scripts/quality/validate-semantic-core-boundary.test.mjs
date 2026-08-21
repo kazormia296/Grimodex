@@ -1987,6 +1987,40 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(errors.some((error) => /second-authority\.ts/i.test(error)));
   });
 
+  it("normalizes escaped identifiers for writer and Freshness authority scans", () => {
+    const errors = validateInterpreterSourceFixture(
+      "escaped-authority-identifiers.ts",
+      [
+        "const localFreshness\\u0053tore = new Map();",
+        "const typed\\u0057riter = { commit() {} };",
+        "typed\\u0057riter.commit({});",
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /freshness-store.*escaped-authority-identifiers\.ts/i.test(error)),
+      `escaped Freshness identifiers must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /typed-writer.*escaped-authority-identifiers\.ts/i.test(error)),
+      `escaped writer identifiers must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("does not scan escaped authority vocabulary inside strings, comments, or safe shadowing controls", () => {
+    const errors = validateInterpreterSourceFixture(
+      "escaped-authority-controls.ts",
+      [
+        "const label = 'localFreshness\\u0053tore';",
+        "// typed\\u0057riter.commit({});",
+        "function shadowed(value) { const local = value; return local; }",
+        "shadowed('safe');",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(errors, [], `controls must remain allowed: ${JSON.stringify(errors)}`);
+  });
+
   it("rejects an Interpreter boundary with no roots or no deny rules", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
