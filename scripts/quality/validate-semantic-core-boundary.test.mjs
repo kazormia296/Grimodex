@@ -1360,6 +1360,28 @@ describe("validate-semantic-core-boundary", () => {
           'fn("DELETE FROM narrative_proposal_revisions");',
         ].join("\n"),
       },
+      {
+        name: "Reflect.apply partially bound target",
+        source: [
+          "const invoke = Reflect.apply.bind(null, database[key]);",
+          "invoke(null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.construct partially bound target",
+        source: [
+          "const construct = Reflect.construct.bind(null, database[key]);",
+          "construct([]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.get partially bound receiver and key",
+        source: [
+          "const get = Reflect.get.bind(null, database, key);",
+          "const fn = get();",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -1419,6 +1441,20 @@ describe("validate-semantic-core-boundary", () => {
         "globalThis.Reflect.apply(safe, null, []);",
         "const shadowGet = globalThis.Reflect.get?.bind(globalThis.Reflect);",
         "shadowGet?.({}, 'fn');",
+        "const partialApply = Reflect.apply.bind(null, safe);",
+        "partialApply(null, []);",
+        "const partialConstruct = Reflect.construct.bind(null, safe);",
+        "partialConstruct([]);",
+        "const partialGet = Reflect.get.bind(null, { fn: safe }, 'fn');",
+        "const partialSafe = partialGet();",
+        "partialSafe();",
+        "const unboundApply = Reflect.apply.bind(null);",
+        "unboundApply(safe, null, []);",
+        "const unboundConstruct = Reflect.construct.bind(null);",
+        "unboundConstruct(safe, []);",
+        "const unboundGet = Reflect.get.bind(null);",
+        "const unboundSafe = unboundGet({ fn: safe }, 'fn');",
+        "unboundSafe();",
       ].join("\n"),
     );
     assert.deepEqual(benignErrors, []);
