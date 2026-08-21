@@ -1,7 +1,9 @@
 use grimodex_core::narrative_dependency::{
-    aggregate_dependency_build_actions, canonicalize_dependency_selector, compute_dependency_key,
-    evaluate_dependency_effect, load_dependency_role_registry, ActionRequirement, BuildAction,
-    DependencyEffect, DependencyEffectInput, DependencySelector, EvidenceFreshness,
+    aggregate_dependency_build_actions, canonicalize_dependency_selector,
+    canonicalize_dependency_set, compute_dependency_key, compute_dependency_set_digest,
+    evaluate_dependency_effect, load_dependency_role_registry, validate_dependency_selector,
+    ActionRequirement, BuildAction, DependencyEffect, DependencyEffectInput, DependencySelector,
+    DependencySetDigestEntry, EvidenceFreshness,
 };
 use serde::Deserialize;
 
@@ -77,6 +79,70 @@ fn selector_and_dependency_key_match_the_shared_golden() {
         compute_dependency_key("direct-evidence", &selector).expect("key computes"),
         "sha256:dc5ae15ade6f6ce31c7dece2a1ec161caed32628ae27e1c70f88bf035b54fc0c"
     );
+}
+
+#[test]
+fn shared_utf16_dependency_canonicalization_goldens_match() {
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/dependency-role-contract.json"
+    ))
+    .expect("dependency role fixture parses");
+    let selector_case = fixture
+        .cases
+        .iter()
+        .find(|case| case["id"] == "utf16-object-identity-order-golden")
+        .expect("UTF-16 selector golden");
+    let selector: DependencySelector =
+        serde_json::from_value(selector_case["selector"].clone()).expect("selector");
+    assert_eq!(
+        canonicalize_dependency_selector(&selector).expect("selector canonicalizes"),
+        selector_case["canonicalSelector"]
+            .as_str()
+            .expect("canonical selector")
+    );
+    assert_eq!(
+        compute_dependency_key(selector_case["role"].as_str().expect("role"), &selector,)
+            .expect("dependency key computes"),
+        selector_case["dependencyKey"]
+            .as_str()
+            .expect("dependency key")
+    );
+
+    let set_case = fixture
+        .cases
+        .iter()
+        .find(|case| case["id"] == "utf16-dependency-set-tuple-order-golden")
+        .expect("UTF-16 dependency set golden");
+    let entries: Vec<DependencySetDigestEntry> =
+        serde_json::from_value(set_case["entries"].clone()).expect("dependency set entries");
+    assert_eq!(
+        canonicalize_dependency_set(&entries).expect("dependency set canonicalizes"),
+        set_case["canonicalDependencySet"]
+            .as_str()
+            .expect("canonical dependency set")
+    );
+    assert_eq!(
+        compute_dependency_set_digest(&entries).expect("dependency set digest computes"),
+        set_case["dependencySetDigest"]
+            .as_str()
+            .expect("dependency set digest")
+    );
+}
+
+#[test]
+fn rejects_dependency_text_ranges_beyond_javascript_safe_integer() {
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/dependency-role-contract.json"
+    ))
+    .expect("dependency role fixture parses");
+    let case = fixture
+        .cases
+        .iter()
+        .find(|case| case["id"] == "utf16-range-rejects-unsafe-integer")
+        .expect("safe integer boundary golden");
+    let selector: DependencySelector =
+        serde_json::from_value(case["selector"].clone()).expect("text range selector");
+    assert!(validate_dependency_selector(&selector, None).is_err());
 }
 
 #[test]

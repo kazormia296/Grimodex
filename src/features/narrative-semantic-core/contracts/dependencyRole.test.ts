@@ -5,8 +5,11 @@ import {
   DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
   aggregateDependencyBuildActions,
   canonicalizeDependencySelector,
+  canonicalizeDependencySet,
   computeDependencyKey,
+  computeDependencySetDigestSync,
   evaluateDependencyEffect,
+  validateDependencyEffectRegistry,
   validateDependencySelector,
 } from "./dependencyRole";
 
@@ -75,6 +78,48 @@ describe("narrative dependency role contract", () => {
     await expect(
       computeDependencyKey(fixtureCase.role, fixtureCase.selector),
     ).resolves.toBe(fixtureCase.dependencyKey);
+  });
+
+  it("keeps UTF-16 object identity and dependency-set tuple parity", async () => {
+    const selectorCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-object-identity-order-golden",
+    )!;
+    expect(canonicalizeDependencySelector(selectorCase.selector)).toBe(
+      selectorCase.canonicalSelector,
+    );
+    await expect(
+      computeDependencyKey(selectorCase.role, selectorCase.selector),
+    ).resolves.toBe(selectorCase.dependencyKey);
+
+    const setCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-dependency-set-tuple-order-golden",
+    )!;
+    expect(canonicalizeDependencySet(setCase.entries)).toBe(
+      setCase.canonicalDependencySet,
+    );
+    expect(computeDependencySetDigestSync(setCase.entries)).toBe(
+      setCase.dependencySetDigest,
+    );
+  });
+
+  it("rejects a UTF-16 range beyond JavaScript's safe integer boundary", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-range-rejects-unsafe-integer",
+    )!;
+    expect(validateDependencySelector(fixtureCase.selector)).toEqual({
+      valid: false,
+      error: { code: "invalid-range" },
+    });
+  });
+
+  it("fails closed when the registry omits a consumer kind", () => {
+    const incomplete = {
+      ...DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+      consumerKinds: DEFAULT_DEPENDENCY_EFFECT_REGISTRY.consumerKinds.slice(1),
+    };
+    expect(validateDependencyEffectRegistry(incomplete)).toContain(
+      "registry consumer kinds are incomplete or contain unknown or duplicate values",
+    );
   });
 
   it("rejects a text range that begins inside a UTF-16 surrogate pair", () => {
