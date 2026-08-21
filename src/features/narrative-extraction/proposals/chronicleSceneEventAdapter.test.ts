@@ -27,7 +27,8 @@ const nonSecretCase = goldenCorpus.cases.find(
 );
 if (!nonSecretCase) throw new Error("missing non-secret-event golden case");
 
-const proposal = nonSecretCase.input.proposalPayload as unknown as CreateChronicleEventProposalPayloadV1;
+const proposal = nonSecretCase.input
+  .proposalPayload as unknown as CreateChronicleEventProposalPayloadV1;
 
 const observation: RawChronicleEventObservation = {
   localId: "observation:arrival",
@@ -118,7 +119,8 @@ const adapterInput: ChronicleSceneEventAdapterInput = {
   sourceBasis,
   contextManifests,
   dependencyDeclarations,
-  revealBasis: nonSecretCase.input.revealBasis,
+  revealBasis: nonSecretCase.input
+    .revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
 };
 
 describe("Chronicle scene-event@1 pure Adapter", () => {
@@ -156,9 +158,9 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
       originalObservationRefs: [],
       mergedObservationRefs: [],
     };
-    await expect(buildChronicleSceneEventV2(missingObservations)).rejects.toThrow(
-      /provenance|observation/i,
-    );
+    await expect(
+      buildChronicleSceneEventV2(missingObservations),
+    ).rejects.toThrow(/provenance|observation/i);
 
     await expect(
       buildChronicleSceneEventV2({
@@ -192,10 +194,28 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
       const input = entry.input as unknown as Record<string, unknown>;
       const proposalPayload = (input.proposalPayload ??
         input.editedPayload) as CreateChronicleEventProposalPayloadV1;
+      if (
+        entry.kind === "human-derivation" &&
+        entry.expected.disposition === "reject"
+      ) {
+        const classification = classifyChronicleSceneEventChanges(
+          input.parentPayload,
+          input.editedPayload,
+        );
+        expect(classification.changedPaths, entry.id).toEqual(
+          entry.expected.changedPaths,
+        );
+        expect(classification.disposition, entry.id).toBe("reject");
+        if (classification.disposition === "reject") {
+          expect(classification.reason, entry.id).toBe(entry.expected.reason);
+        }
+        continue;
+      }
       const scopeInput: ChronicleSceneEventScopeInput = {
         sceneRef: input.sceneRef as string,
         proposalPayload,
-        revealBasis: input.revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
+        revealBasis:
+          input.revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
       };
       const derived = await deriveChronicleSceneEventScope(scopeInput);
       expect(derived.canonicalJson, entry.id).toBe(
@@ -214,16 +234,15 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
         expect(classification.disposition, entry.id).toBe(
           entry.expected.disposition,
         );
-        if (entry.expected.disposition === "accept") {
+        if (
+          entry.expected.disposition === "accept" &&
+          classification.disposition === "accept"
+        ) {
           expect(classification.derivationKind, entry.id).toBe(
             entry.expected.derivationKind,
           );
           expect(classification.changedPathClasses, entry.id).toEqual(
             entry.expected.changedPathClasses,
-          );
-        } else {
-          expect(classification.reason, entry.id).toBe(
-            entry.expected.reason,
           );
         }
       }
