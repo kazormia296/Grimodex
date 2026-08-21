@@ -1925,7 +1925,10 @@ function scanInterpreterSourceWithAst(file, source) {
       if (ts.isIdentifier(propertyName)) {
         method = propertyName.text;
       } else {
-        method = staticStringResolver.fold(propertyName);
+        const propertyExpression = ts.isComputedPropertyName(propertyName)
+          ? propertyName.expression
+          : propertyName;
+        method = staticStringResolver.fold(propertyExpression);
       }
       if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
         findings.add("db-mutation");
