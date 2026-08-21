@@ -893,6 +893,75 @@ describe("validate-semantic-core-boundary", () => {
     }
   });
 
+  it("closes ambiguous bindings, spread offsets, and nested member assignment aliases", () => {
+    const sensitiveCases = [
+      {
+        name: "ambiguous duplicate var binding",
+        source: [
+          "var fn;",
+          "var fn = database[key];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array spread index offset",
+        source: [
+          "const safe = () => true;",
+          "const xs = [safe, database[key]];",
+          "const ys = [0, ...xs];",
+          "const fn = ys[2];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "nested member assignment",
+        source: [
+          "const outer = { box: {} };",
+          "outer.box.fn = database[key];",
+          "const fn = outer.box.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "object spread extraction",
+        source: [
+          "const aliases = { fn: database[key] };",
+          "const copy = { safe: () => true, ...aliases };",
+          "const fn = copy.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "nested array member assignment",
+        source: [
+          "const outer = { boxes: [{}] };",
+          "outer.boxes[0].fn = database[key];",
+          "const fn = outer.boxes[0].fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `invocation-taint-followup-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject the computed invocation alias: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const benignErrors = validateInterpreterSourceFixture(
+      "invocation-taint-followup-benign.mts",
+      [
+        "const v = record[key];",
+        "v.trim();",
+      ].join("\n"),
+    );
+    assert.deepEqual(benignErrors, []);
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
