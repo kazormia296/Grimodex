@@ -15,6 +15,27 @@ ADR 005のAuthority、Review、Evidence、Projection、Freshnessの境界は変�
 本番Entry Pointはまだ存在しない。本ADR自体はDB migration、runtime cutover、
 作品世界のTruth Authorityを追加しない。
 
+### NIR-0 capability-status amendment (2026-08-21)
+
+NIR-0 keeps Scope adoption capability-specific. The machine-readable Scope
+contract records separate status for:
+
+- `structuralValidation` — structural V2 validation and canonical digest;
+- `relationComparison` — strongest-established Relation and Order Oracle use;
+- `disclosureAdmission` — admission gating at the Disclosure consumer.
+
+Each capability follows the `declared → shadow → wired` lifecycle independently.
+For this contract-freeze slice all three remain `declared`, with empty production
+entry points and explicit blockers. A status change must update the policy,
+validator evidence, and the owning implementation atomically.
+
+Scope Disclosure is an ADR 009-owned adoption track, independent from the
+Narrative IR contract in ADR 011. Its first likely consumer is NIR-1
+pre-ranking disclosure, but NIR-1 does not own the lifecycle. This amendment
+does not add a Scope V2 runtime, a schema/table migration, or a Disclosure
+runtime connection; it only prevents a future Narrative IR activation from
+silently claiming Scope adoption.
+
 ## Context
 
 ADR 005の旧`NarrativeScope`は、Timeline、Worldline、Scene、Viewpoint、

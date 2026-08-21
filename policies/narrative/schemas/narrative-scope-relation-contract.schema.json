@@ -22,26 +22,37 @@
     "assertionScopeProfiles",
     "consumerPolicies",
     "v1Compatibility",
-    "nonEffects"
+    "nonEffects",
+    "adoptionTrack"
   ],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "contract": { "const": "narrative-scope-relation-contract" },
+    "schemaVersion": {
+      "const": 1
+    },
+    "contract": {
+      "const": "narrative-scope-relation-contract"
+    },
     "adr": {
       "const": "docs/adr/009-narrative-scope-relation-contract.md"
     },
-    "scopeSchemaVersion": { "const": 2 },
+    "scopeSchemaVersion": {
+      "const": 2
+    },
     "registryVersion": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*/[1-9][0-9]*$"
     },
-    "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
+    "implementationStatus": {
+      "$ref": "#/$defs/implementationStatus"
+    },
     "axes": {
       "type": "array",
       "minItems": 9,
       "maxItems": 9,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/axis" }
+      "items": {
+        "$ref": "#/$defs/axis"
+      }
     },
     "unresolvedReasons": {
       "const": [
@@ -61,12 +72,18 @@
         "reasonAloneEstablishesIdentity"
       ],
       "properties": {
-        "meaning": { "const": "constrained-but-specific-value-unresolved" },
-        "futureAnyPolicy": { "const": "scope-revision-required" },
+        "meaning": {
+          "const": "constrained-but-specific-value-unresolved"
+        },
+        "futureAnyPolicy": {
+          "const": "scope-revision-required"
+        },
         "equalityPolicy": {
           "const": "same-scope-revision-or-stable-constraint-id"
         },
-        "reasonAloneEstablishesIdentity": { "const": false }
+        "reasonAloneEstablishesIdentity": {
+          "const": false
+        }
       },
       "additionalProperties": false
     },
@@ -80,11 +97,21 @@
         "emptyReferencePolicy"
       ],
       "properties": {
-        "allAxesRequired": { "const": true },
-        "constraintsRepresentNonEmptySets": { "const": true },
-        "emptyResolutionOutcome": { "const": "validation-failure" },
-        "intervalRequiresBoundary": { "const": true },
-        "emptyReferencePolicy": { "const": "forbid" }
+        "allAxesRequired": {
+          "const": true
+        },
+        "constraintsRepresentNonEmptySets": {
+          "const": true
+        },
+        "emptyResolutionOutcome": {
+          "const": "validation-failure"
+        },
+        "intervalRequiresBoundary": {
+          "const": true
+        },
+        "emptyReferencePolicy": {
+          "const": "forbid"
+        }
       },
       "additionalProperties": false
     },
@@ -108,11 +135,21 @@
         "conflictingProofPolicy"
       ],
       "properties": {
-        "classification": { "const": "strongest-established-knowledge" },
-        "containsIsStrict": { "const": false },
-        "containedByIsStrict": { "const": false },
-        "overlapsRequiresEstablishedNonEmptyIntersection": { "const": true },
-        "conflictingProofPolicy": { "const": "fail-closed-contract-error" }
+        "classification": {
+          "const": "strongest-established-knowledge"
+        },
+        "containsIsStrict": {
+          "const": false
+        },
+        "containedByIsStrict": {
+          "const": false
+        },
+        "overlapsRequiresEstablishedNonEmptyIntersection": {
+          "const": true
+        },
+        "conflictingProofPolicy": {
+          "const": "fail-closed-contract-error"
+        }
       },
       "additionalProperties": false
     },
@@ -120,7 +157,9 @@
       "type": "array",
       "minItems": 6,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/basicRelationFixture" }
+      "items": {
+        "$ref": "#/$defs/basicRelationFixture"
+      }
     },
     "compositionPrecedence": {
       "const": [
@@ -135,20 +174,30 @@
     },
     "canonicalization": {
       "type": "object",
-      "required": ["digestAlgorithm", "includes", "excludes"],
+      "required": [
+        "digestAlgorithm",
+        "includes",
+        "excludes"
+      ],
       "properties": {
-        "digestAlgorithm": { "const": "sha256-canonical-json" },
+        "digestAlgorithm": {
+          "const": "sha256-canonical-json"
+        },
         "includes": {
           "type": "array",
           "minItems": 6,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         },
         "excludes": {
           "type": "array",
           "minItems": 4,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         }
       },
       "additionalProperties": false
@@ -164,10 +213,26 @@
         "structuralResultMayPersistWithoutBasis"
       ],
       "properties": {
-        "orderAxes": { "const": ["storyTime", "readingOrder"] },
-        "compareResults": { "const": [-1, 0, 1, "unresolved"] },
-        "revisionTokenRequired": { "const": true },
-        "basisRequiredWheneverOracleOrRegistryUsed": { "const": true },
+        "orderAxes": {
+          "const": [
+            "storyTime",
+            "readingOrder"
+          ]
+        },
+        "compareResults": {
+          "const": [
+            -1,
+            0,
+            1,
+            "unresolved"
+          ]
+        },
+        "revisionTokenRequired": {
+          "const": true
+        },
+        "basisRequiredWheneverOracleOrRegistryUsed": {
+          "const": true
+        },
         "basisRequiredRelations": {
           "const": [
             "equal",
@@ -178,7 +243,9 @@
             "unknown"
           ]
         },
-        "structuralResultMayPersistWithoutBasis": { "const": true }
+        "structuralResultMayPersistWithoutBasis": {
+          "const": true
+        }
       },
       "additionalProperties": false
     },
@@ -186,7 +253,9 @@
       "type": "array",
       "minItems": 2,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/assertionScopeProfile" }
+      "items": {
+        "$ref": "#/$defs/assertionScopeProfile"
+      }
     },
     "consumerPolicies": {
       "type": "array",
@@ -194,16 +263,28 @@
       "uniqueItems": true,
       "items": {
         "type": "object",
-        "required": ["consumer", "automaticRelations", "unknownPolicy"],
+        "required": [
+          "consumer",
+          "automaticRelations",
+          "unknownPolicy"
+        ],
         "properties": {
-          "consumer": { "$ref": "#/$defs/kebabId" },
+          "consumer": {
+            "$ref": "#/$defs/kebabId"
+          },
           "automaticRelations": {
             "type": "array",
             "uniqueItems": true,
-            "items": { "$ref": "#/$defs/relation" }
+            "items": {
+              "$ref": "#/$defs/relation"
+            }
           },
-          "additionalBasisRequired": { "type": "boolean" },
-          "unknownPolicy": { "$ref": "#/$defs/nonEmptyString" }
+          "additionalBasisRequired": {
+            "type": "boolean"
+          },
+          "unknownPolicy": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         },
         "additionalProperties": false
       }
@@ -218,15 +299,21 @@
         "implicitGlobalPolicy"
       ],
       "properties": {
-        "currentType": { "$ref": "#/$defs/nonEmptyString" },
-        "migrationRequiredNow": { "const": false },
+        "currentType": {
+          "$ref": "#/$defs/nonEmptyString"
+        },
+        "migrationRequiredNow": {
+          "const": false
+        },
         "adapterPurpose": {
           "const": "short-lived-code-and-fixture-compatibility"
         },
         "ambiguousTemporalAxisPolicy": {
           "const": "map-both-story-time-and-reading-order-to-unresolved"
         },
-        "implicitGlobalPolicy": { "const": "forbid" }
+        "implicitGlobalPolicy": {
+          "const": "forbid"
+        }
       },
       "additionalProperties": false
     },
@@ -237,6 +324,9 @@
         "automatic-merge-or-split",
         "automatic-domain-mutation"
       ]
+    },
+    "adoptionTrack": {
+      "$ref": "#/$defs/scopeAdoptionTrack"
     }
   },
   "additionalProperties": false,
@@ -266,55 +356,91 @@
         "productionEntryPoints",
         "scanRoots",
         "productionMarkers",
-        "blockedOn"
+        "blockedOn",
+        "capabilities"
       ],
       "properties": {
-        "state": { "enum": ["declared", "shadow", "wired"] },
+        "state": {
+          "enum": [
+            "declared",
+            "shadow",
+            "wired"
+          ]
+        },
         "productionEntryPoints": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         },
         "scanRoots": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         },
         "productionMarkers": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         },
         "blockedOn": {
           "type": "array",
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/kebabId" }
+          "items": {
+            "$ref": "#/$defs/kebabId"
+          }
+        },
+        "capabilities": {
+          "$ref": "#/$defs/scopeCapabilities"
         }
       },
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
-            "properties": { "state": { "const": "declared" } },
-            "required": ["state"]
+            "properties": {
+              "state": {
+                "const": "declared"
+              }
+            },
+            "required": [
+              "state"
+            ]
           },
           "then": {
             "properties": {
-              "productionEntryPoints": { "maxItems": 0 },
-              "blockedOn": { "minItems": 1 }
+              "productionEntryPoints": {
+                "maxItems": 0
+              },
+              "blockedOn": {
+                "minItems": 1
+              }
             }
           },
           "else": {
-            "properties": { "productionEntryPoints": { "minItems": 1 } }
+            "properties": {
+              "productionEntryPoints": {
+                "minItems": 1
+              }
+            }
           }
         }
       ]
     },
     "axis": {
       "type": "object",
-      "required": ["id", "axisKind", "allowedKinds"],
+      "required": [
+        "id",
+        "axisKind",
+        "allowedKinds"
+      ],
       "properties": {
         "id": {
           "enum": [
@@ -329,38 +455,66 @@
             "readingOrder"
           ]
         },
-        "axisKind": { "enum": ["reference", "temporal"] },
+        "axisKind": {
+          "enum": [
+            "reference",
+            "temporal"
+          ]
+        },
         "allowedKinds": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["any", "exact", "interval", "unresolved"]
+            "enum": [
+              "any",
+              "exact",
+              "interval",
+              "unresolved"
+            ]
           }
         },
         "reservedRefs": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
         }
       },
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
-            "properties": { "axisKind": { "const": "reference" } },
-            "required": ["axisKind"]
+            "properties": {
+              "axisKind": {
+                "const": "reference"
+              }
+            },
+            "required": [
+              "axisKind"
+            ]
           },
           "then": {
             "properties": {
-              "allowedKinds": { "const": ["any", "exact", "unresolved"] }
+              "allowedKinds": {
+                "const": [
+                  "any",
+                  "exact",
+                  "unresolved"
+                ]
+              }
             }
           },
           "else": {
             "properties": {
               "allowedKinds": {
-                "const": ["any", "interval", "unresolved"]
+                "const": [
+                  "any",
+                  "interval",
+                  "unresolved"
+                ]
               }
             }
           }
@@ -369,56 +523,114 @@
     },
     "basicRelationFixture": {
       "type": "object",
-      "required": ["id", "leftKind", "rightKind", "expected"],
+      "required": [
+        "id",
+        "leftKind",
+        "rightKind",
+        "expected"
+      ],
       "properties": {
-        "id": { "$ref": "#/$defs/kebabId" },
+        "id": {
+          "$ref": "#/$defs/kebabId"
+        },
         "leftKind": {
-          "enum": ["any", "exact", "interval", "unresolved"]
+          "enum": [
+            "any",
+            "exact",
+            "interval",
+            "unresolved"
+          ]
         },
         "rightKind": {
-          "enum": ["any", "exact", "interval", "unresolved"]
+          "enum": [
+            "any",
+            "exact",
+            "interval",
+            "unresolved"
+          ]
         },
-        "sameReason": { "type": "boolean" },
-        "sameConstraintIdentity": { "type": "boolean" },
-        "expected": { "$ref": "#/$defs/relation" }
+        "sameReason": {
+          "type": "boolean"
+        },
+        "sameConstraintIdentity": {
+          "type": "boolean"
+        },
+        "expected": {
+          "$ref": "#/$defs/relation"
+        }
       },
       "additionalProperties": false
     },
     "axisProfile": {
       "type": "object",
-      "required": ["axisKind", "allowedKinds"],
+      "required": [
+        "axisKind",
+        "allowedKinds"
+      ],
       "properties": {
-        "axisKind": { "enum": ["reference", "temporal"] },
+        "axisKind": {
+          "enum": [
+            "reference",
+            "temporal"
+          ]
+        },
         "allowedKinds": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": {
-            "enum": ["any", "exact", "interval", "unresolved"]
+            "enum": [
+              "any",
+              "exact",
+              "interval",
+              "unresolved"
+            ]
           }
         },
         "resolutionRequiredBy": {
-          "enum": ["none", "before-review", "before-apply"]
+          "enum": [
+            "none",
+            "before-review",
+            "before-apply"
+          ]
         }
       },
       "additionalProperties": false,
       "allOf": [
         {
           "if": {
-            "properties": { "axisKind": { "const": "reference" } },
-            "required": ["axisKind"]
+            "properties": {
+              "axisKind": {
+                "const": "reference"
+              }
+            },
+            "required": [
+              "axisKind"
+            ]
           },
           "then": {
             "properties": {
               "allowedKinds": {
-                "items": { "enum": ["any", "exact", "unresolved"] }
+                "items": {
+                  "enum": [
+                    "any",
+                    "exact",
+                    "unresolved"
+                  ]
+                }
               }
             }
           },
           "else": {
             "properties": {
               "allowedKinds": {
-                "items": { "enum": ["any", "interval", "unresolved"] }
+                "items": {
+                  "enum": [
+                    "any",
+                    "interval",
+                    "unresolved"
+                  ]
+                }
               }
             }
           }
@@ -427,9 +639,14 @@
     },
     "assertionScopeProfile": {
       "type": "object",
-      "required": ["assertionKind", "axes"],
+      "required": [
+        "assertionKind",
+        "axes"
+      ],
       "properties": {
-        "assertionKind": { "$ref": "#/$defs/kebabId" },
+        "assertionKind": {
+          "$ref": "#/$defs/kebabId"
+        },
         "axes": {
           "type": "object",
           "minProperties": 1,
@@ -446,7 +663,134 @@
               "readingOrder"
             ]
           },
-          "additionalProperties": { "$ref": "#/$defs/axisProfile" }
+          "additionalProperties": {
+            "$ref": "#/$defs/axisProfile"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "scopeCapabilityStatus": {
+      "type": "object",
+      "required": [
+        "state",
+        "productionEntryPoints",
+        "blockedOn"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "declared",
+            "shadow",
+            "wired"
+          ]
+        },
+        "productionEntryPoints": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/nonEmptyString"
+          }
+        },
+        "blockedOn": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/kebabId"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "declared"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "productionEntryPoints": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "productionEntryPoints": {
+                "minItems": 1
+              }
+            }
+          }
+        }
+      ]
+    },
+    "scopeCapabilities": {
+      "type": "object",
+      "required": [
+        "structuralValidation",
+        "relationComparison",
+        "disclosureAdmission"
+      ],
+      "properties": {
+        "structuralValidation": {
+          "$ref": "#/$defs/scopeCapabilityStatus"
+        },
+        "relationComparison": {
+          "$ref": "#/$defs/scopeCapabilityStatus"
+        },
+        "disclosureAdmission": {
+          "$ref": "#/$defs/scopeCapabilityStatus"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scopeAdoptionTrack": {
+      "type": "object",
+      "required": [
+        "id",
+        "owner",
+        "independentFrom",
+        "states",
+        "lifecycleAuthority",
+        "firstLikelyConsumer",
+        "nir1OwnsLifecycle",
+        "productionEntryPointPolicy"
+      ],
+      "properties": {
+        "id": {
+          "const": "scope-disclosure-adoption"
+        },
+        "owner": {
+          "const": "adr-009-scope-contract"
+        },
+        "independentFrom": {
+          "const": "narrative-ir-contract"
+        },
+        "states": {
+          "const": [
+            "declared",
+            "shadow",
+            "wired"
+          ]
+        },
+        "lifecycleAuthority": {
+          "const": "adr-009-scope-contract"
+        },
+        "firstLikelyConsumer": {
+          "const": "NIR-1 pre-ranking disclosure"
+        },
+        "nir1OwnsLifecycle": {
+          "const": false
+        },
+        "productionEntryPointPolicy": {
+          "const": "declared-is-empty-entry-points"
         }
       },
       "additionalProperties": false

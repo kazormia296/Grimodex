@@ -1,0 +1,450 @@
+{
+  "schemaVersion": 1,
+  "contract": "narrative-ir-contract",
+  "adr": "docs/adr/011-narrative-ir-revision-semantics-contract.md",
+  "contractVersion": "narrative-ir/2",
+  "identity": {
+    "revisionTable": "narrative_proposal_revisions",
+    "revisionIdColumn": "id",
+    "consumerKind": "proposal-revision",
+    "projectScoped": true,
+    "durability": "while-project-exists",
+    "portableReference": [
+      "projectId",
+      "revisionId",
+      "envelopeDigest",
+      "contractVersion"
+    ],
+    "independentRevisionConsumer": "narrative-ir-revision",
+    "independentRevisionConsumerStatus": "not-yet-modelled",
+    "heuristicIdentity": "forbid"
+  },
+  "authorities": {
+    "immutableRevision": "proposal-revision+narrative-revision-envelope",
+    "review": "decision-ledger",
+    "freshness": "narrative_consumer_freshness",
+    "projectionExecution": "prepared-commit+typed-writer",
+    "applicationContribution": "application-contribution-ledger",
+    "semanticIndex": "rebuildable-acceleration-only"
+  },
+  "vocabularies": {
+    "assertionKinds": [
+      "scene-event@1"
+    ],
+    "producerKinds": [
+      "ai-inference",
+      "reconciler-proposal",
+      "author-declaration",
+      "import-metadata",
+      "legacy-migration"
+    ],
+    "supportClasses": [
+      "author-declared",
+      "direct-source",
+      "reported-source",
+      "single-source-inference",
+      "multi-source-inference",
+      "imported-assertion",
+      "unresolved"
+    ],
+    "changeKinds": [
+      "add",
+      "revise",
+      "retract",
+      "merge",
+      "split"
+    ],
+    "contextExposures": [
+      "deterministic-stage",
+      "author-supplied",
+      "model-visible"
+    ]
+  },
+  "envelope": {
+    "schemaVersion": 2,
+    "requiredFields": [
+      "assertion",
+      "assertionDigests",
+      "changeIntent",
+      "effectiveMaterialBasis",
+      "revisionBasis",
+      "projectionBinding"
+    ],
+    "assertionDigestDomains": {
+      "assertionCoreDigest": [
+        "assertionKind",
+        "payloadSchemaRef",
+        "typedSemanticPayload",
+        "modality",
+        "polarity",
+        "supportClass",
+        "producer",
+        "producerConfidence"
+      ],
+      "scopeDigest": [
+        "canonicalNarrativeScopeV2"
+      ],
+      "assertionDigest": [
+        "assertionCoreDigest",
+        "scopeDigest"
+      ],
+      "disclosureFieldsExcludedFromAssertionCore": [
+        "secret",
+        "revealDocumentRef"
+      ]
+    },
+    "changeIntent": {
+      "addTargetProjectionRef": "forbidden",
+      "retractTargetProjectionRef": "required",
+      "humanDerivedMustPreserve": "exact"
+    },
+    "projectionBinding": {
+      "proposalKindAndSchemaDistinct": true,
+      "recomputePayloadDigestInNative": true,
+      "adapterContractRequired": true
+    },
+    "producerActorSeparation": true,
+    "reviewFreshnessProjectionOutsideRevision": true
+  },
+  "humanDerived": {
+    "requestFields": [
+      "proposalId",
+      "expectedCurrentRevisionId",
+      "parentRevisionId",
+      "expectedParentEnvelopeDigest",
+      "proposalPayload",
+      "adapter",
+      "surfaceId"
+    ],
+    "clientSubmittedFields": [
+      "proposalId",
+      "expectedCurrentRevisionId",
+      "parentRevisionId",
+      "expectedParentEnvelopeDigest",
+      "proposalPayload",
+      "adapter",
+      "surfaceId"
+    ],
+    "nativeOwnedFields": [
+      "parentLookupAndCas",
+      "proposalPayloadDiff",
+      "pathClassification",
+      "strongestDerivationClassification",
+      "childAssertionAndScope",
+      "effectiveMaterialBasis",
+      "digestComputation",
+      "dependencyDeclaration",
+      "currentEpochFreshness",
+      "finalPersistence"
+    ],
+    "persistedBasis": [
+      "parentRevisionId",
+      "expectedParentEnvelopeDigest",
+      "parentAssertionDigest",
+      "rootInterpretationRevisionId",
+      "derivation",
+      "revisionActor",
+      "derivationContextSet",
+      "derivationContextSetDigest"
+    ],
+    "contextExposureAllowed": [
+      "deterministic-stage",
+      "author-supplied"
+    ],
+    "contextExposureForbidden": [
+      "model-visible"
+    ],
+    "classification": {
+      "pathClasses": {
+        "projectionOnly": [
+          "/title",
+          "/note"
+        ],
+        "scopeAffecting": [
+          "/disclosure/secret",
+          "/disclosure/revealDocumentRef"
+        ],
+        "assertionAffecting": []
+      },
+      "precedence": [
+        "assertion-override",
+        "scope-override",
+        "projection-only"
+      ],
+      "cumulativeAllowedPathClasses": {
+        "projectionOnly": [
+          "projection-only"
+        ],
+        "scopeOverride": [
+          "projection-only",
+          "scope-affecting"
+        ],
+        "assertionOverride": []
+      },
+      "unknownPathPolicy": "reject",
+      "clientMetadataAuthority": "forbid",
+      "assertionOverrideStatus": "reserved-rejected",
+      "fixtures": [
+        {
+          "id": "title-only-edit",
+          "changedPaths": [
+            "/title"
+          ],
+          "expectedDerivationKind": "projection-only",
+          "allowedPathClasses": [
+            "projection-only"
+          ],
+          "expectedDisposition": "accept"
+        },
+        {
+          "id": "secret-only-edit",
+          "changedPaths": [
+            "/disclosure/secret"
+          ],
+          "expectedDerivationKind": "scope-override",
+          "allowedPathClasses": [
+            "scope-affecting"
+          ],
+          "expectedDisposition": "accept"
+        },
+        {
+          "id": "reveal-document-only-edit",
+          "changedPaths": [
+            "/disclosure/revealDocumentRef"
+          ],
+          "expectedDerivationKind": "scope-override",
+          "allowedPathClasses": [
+            "scope-affecting"
+          ],
+          "expectedDisposition": "accept"
+        },
+        {
+          "id": "mixed-title-secret-uses-scope-override",
+          "changedPaths": [
+            "/title",
+            "/disclosure/secret"
+          ],
+          "expectedDerivationKind": "scope-override",
+          "allowedPathClasses": [
+            "projection-only",
+            "scope-affecting"
+          ],
+          "expectedDisposition": "accept"
+        },
+        {
+          "id": "mixed-note-reveal-document-uses-scope-override",
+          "changedPaths": [
+            "/note",
+            "/disclosure/revealDocumentRef"
+          ],
+          "expectedDerivationKind": "scope-override",
+          "allowedPathClasses": [
+            "projection-only",
+            "scope-affecting"
+          ],
+          "expectedDisposition": "accept"
+        },
+        {
+          "id": "unsupported-path-refused",
+          "changedPaths": [
+            "/semanticPayload/actuality"
+          ],
+          "expectedDisposition": "reject"
+        }
+      ]
+    },
+    "invariants": {
+      "projectionOnly": [
+        "assertionCoreDigest-preserved",
+        "scopeDigest-preserved",
+        "assertionDigest-preserved",
+        "all-paths-projection-only"
+      ],
+      "scopeOverride": [
+        "assertionCoreDigest-preserved",
+        "scope-deterministically-rederived",
+        "scopeDigest-may-change",
+        "all-paths-projection-or-scope"
+      ],
+      "clientCannotSupply": [
+        "derivationKind",
+        "changedPaths",
+        "scope",
+        "childAssertion",
+        "childDigests"
+      ]
+    }
+  },
+  "materialBasis": {
+    "humanDerivedOwnsDeclarations": true,
+    "declarations": [
+      "sourceBasis",
+      "evidenceSet",
+      "dependencySet",
+      "v1CompatibilityEdges",
+      "v2SealedDeclarationSet",
+      "edgeStates",
+      "consumerFreshness"
+    ],
+    "projectionOnlyInheritance": "source-evidence-dependency-sets-identical",
+    "scopeOverridePolicy": "inherit-applicable-and-rederive-scope-resolution",
+    "noLineageFreshnessAuthority": true,
+    "zeroEdgeCurrentRevision": "forbidden",
+    "currentEpochEvaluation": "atomic-before-current-revision-promotion"
+  },
+  "staleValidation": {
+    "interpretation": {
+      "requireLiveSourceTokenEquality": true,
+      "staleRefusal": "NEX_READ_SET_STALE"
+    },
+    "humanDerived": {
+      "requireLiveSourceTokenEquality": false,
+      "preserveObservedTokens": true,
+      "internalIntegrity": [
+        "quote-quoteDigest",
+        "source-basis-consistency",
+        "evidence-consistency",
+        "dependency-consistency"
+      ],
+      "evaluateAgainstCurrentLiveSource": true,
+      "publishStates": [
+        "fresh",
+        "stale",
+        "source-missing",
+        "anchor-mismatch",
+        "read-set-drift",
+        "unknown"
+      ],
+      "doesNotBypassApplyOCC": true,
+      "doesNotClearBuildActions": true,
+      "doesNotPerformSemanticRetraction": true
+    },
+    "fixtures": [
+      {
+        "id": "interpretation-live-token-mismatch-refuses",
+        "basis": "interpretation",
+        "expected": "reject-live-token"
+      },
+      {
+        "id": "human-derived-stale-parent-publishes-state",
+        "basis": "human-derived",
+        "expected": "accept-and-publish-current-state"
+      }
+    ]
+  },
+  "crossRuntimeAdapter": {
+    "id": "chronicle.scene-event",
+    "version": "1",
+    "assertionKind": "scene-event@1",
+    "initialScopeDerivationRuntime": "typescript",
+    "humanDerivedScopeRuntime": "rust",
+    "canonicalOutput": "byte-identical-canonical-scope-json-and-scope-digest",
+    "goldenFixtureRequired": true,
+    "fixtureFile": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+    "requiredCaseIds": [
+      "non-secret-event",
+      "secret-event-with-resolved-reveal",
+      "secret-event-with-unresolved-reveal",
+      "title-only-edit",
+      "secret-only-edit",
+      "reveal-document-only-edit",
+      "mixed-title-secret-uses-scope-override",
+      "mixed-note-reveal-document-uses-scope-override",
+      "unsupported-path-refused",
+      "canonical-scope-digest-parity"
+    ],
+    "noIndependentRuntimeInterpretation": true
+  },
+  "consumerBinding": {
+    "consumerKind": "proposal-revision",
+    "childHumanDerivedRevisionIsFirstClassConsumer": true,
+    "childOwnsSourceEvidenceDependencyAndFreshness": true,
+    "freshnessLookup": "child-consumer-identity",
+    "hiddenRootLineageLookup": "forbid"
+  },
+  "activation": {
+    "state": "disabled",
+    "productionEntryPoints": [],
+    "productionMarkers": [
+      "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
+      "createHumanDerivedNarrativeRevisionV2",
+      "CHRONICLE_SCENE_EVENT_V2_PRODUCTION"
+    ],
+    "prerequisites": [
+      "C2A",
+      "D1",
+      "D2",
+      "C2B",
+      "focused-persistence-freshness-journeys",
+      "implementation-status-atomic"
+    ],
+    "v2Emission": "blocked-until-c2b",
+    "humanDerivedV2Ui": "blocked-until-c2b",
+    "currentRevisionPromotion": "blocked-until-c2b",
+    "pureFixtureGeneration": "allowed-before-activation",
+    "productionFallback": "existing-v1-path"
+  },
+  "scopeAdoption": {
+    "owner": "adr-009-scope-contract",
+    "independentFrom": "narrative-ir-contract",
+    "lifecycleStates": [
+      "declared",
+      "shadow",
+      "wired"
+    ],
+    "capabilities": {
+      "structuralValidation": "declared",
+      "relationComparison": "declared",
+      "disclosureAdmission": "declared"
+    },
+    "track": [
+      "declared",
+      "runtime-shadow-at-real-admission-consumer",
+      "verified-cutover"
+    ],
+    "firstLikelyConsumer": "NIR-1 pre-ranking disclosure",
+    "nir1OwnsLifecycle": false,
+    "disclosureAdmissionProductionEntryPoint": null
+  },
+  "fixtures": {
+    "directory": "policies/narrative/fixtures/narrative-ir",
+    "corpusFile": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+    "requiredCaseIds": [
+      "non-secret-event",
+      "secret-event-with-resolved-reveal",
+      "secret-event-with-unresolved-reveal",
+      "title-only-edit",
+      "secret-only-edit",
+      "reveal-document-only-edit",
+      "mixed-title-secret-uses-scope-override",
+      "mixed-note-reveal-document-uses-scope-override",
+      "unsupported-path-refused",
+      "canonical-scope-digest-parity"
+    ],
+    "requiredFamilies": [
+      "scope-derivation",
+      "human-derivation",
+      "cross-runtime-parity",
+      "stale-validation",
+      "activation"
+    ],
+    "humanDerivedCaseIds": [
+      "title-only-edit",
+      "secret-only-edit",
+      "reveal-document-only-edit",
+      "mixed-title-secret-uses-scope-override",
+      "mixed-note-reveal-document-uses-scope-override",
+      "unsupported-path-refused"
+    ]
+  },
+  "nonGoals": [
+    "universal-truth-graph",
+    "independent-narrative-ir-revision-consumer",
+    "runtime-or-schema-migration",
+    "chronicle-revise-retract-merge-split",
+    "human-assertion-core-override",
+    "raw-model-response-retention",
+    "scope-disclosure-cutover",
+    "embedding-or-graph-retrieval"
+  ]
+}

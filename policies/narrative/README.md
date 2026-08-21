@@ -121,30 +121,35 @@ and does not create C2 tables. `ai-apply` must carry an explicit authority
 route because it is valid for both Interactive Agent Command and Interpreter
 Projection; no origin-only fallback is permitted.
 
-## NIR-0 Scope and Dependency contracts — DECLARED
+## NIR-0 Shared Narrative IR contracts — DECLARED
 
-ADR 009 and ADR 010 add two machine-readable contracts without changing the
-current Workspace Schema or C2 runtime:
+NIR-0 freezes the shared Narrative IR contract through [ADR
+011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and keeps
+production on the existing V1 path:
 
-- `narrative-scope-relation-contract.json` — the V2 Scope axes, explicit
-  `any` versus constrained-but-`unresolved`, strongest-established Relation
-  semantics, structural Digest boundary, Oracle Basis rule, Assertion Scope
-  Profiles, and Consumer use policies;
-- `narrative-dependency-role-registry.json` — Evidence／Dependency／Context Set
-  separation, ten Dependency Roles, Role × Consumer × Change Class effects,
-  UTF-16 Selector V2, independent required／advisory Build Action aggregation,
-  sealed Declaration Set, Head CAS, and V1／V2 priority rules;
-- matching `schemas/narrative-*-v1` JSON Schema draft 2020-12 contracts.
+- `narrative-ir-contract.json` — Envelope V2, project-scoped
+  `narrative_proposal_revisions.id` identity, Native-verified Human-derived
+  edits, material-basis ownership, stale-validation split, activation rule,
+  and the independent Scope Disclosure adoption reference;
+- `schemas/narrative-ir-contract.schema.json` — machine-readable contract
+  schema;
+- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — TypeScript/Rust
+  Adapter golden corpus for Scope derivation, mixed-edit strongest
+  classification, stale validation, and activation;
+- `validate-narrative-ir-contract.mjs` — semantic checks for identity,
+  Human-derived boundaries, cumulative mixed-edit classification,
+  cross-runtime parity, and disabled activation.
 
-Both contracts are `declared`: their `productionEntryPoints` are empty and
-the validator scans production roots for the reserved V2 markers. A marker
-appearing while the contract remains `declared`, or a future `shadow`／`wired`
-state without a real declared Entry Point, is a gate failure. The current
-`scope.ts`／Disclosure contract remains V1-compatible, the current Dependency
-Edge remains Source-grained, and
-`narrative_consumer_freshness.dependency_set_digest` still means the V1 Source
-identity set. No performance improvement, V2 cutover, or new Freshness
-authority is claimed by this contract-only step.
+ADR 009 remains the owner of Scope capability status and the independent Scope
+Disclosure adoption track. ADR 010 remains the owner of Context Set and
+Dependency Role semantics. All NIR-0 production entry points are empty and V2
+emission/UI/current-Revision promotion remain blocked until C2B plus the
+declared D1/D2 and focused persistence/Freshness evidence.
+
+These are contract-only artifacts: they do not create C2 tables, perform a
+runtime/schema migration, connect Disclosure to Retrieval, or add a second
+Freshness or semantic authority. The existing `scope.ts`, Disclosure
+evaluator, Dependency Edge, and Consumer Freshness paths remain V1-compatible.
 
 ## Gate C2 — IN PROGRESS
 

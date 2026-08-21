@@ -11,7 +11,8 @@
     "keyFormat",
     "freshnessAuthority",
     "dependencySetDigest",
-    "negativeFixture"
+    "negativeFixture",
+    "revisionIdentityBinding"
   ],
   "properties": {
     "schemaVersion": {
@@ -38,14 +39,21 @@
             "pattern": "^[a-z][a-z0-9-]*$"
           },
           "status": {
-            "enum": ["declared", "reserved", "not-yet-modelled"]
+            "enum": [
+              "declared",
+              "reserved",
+              "not-yet-modelled"
+            ]
           },
           "consumerKeyMeaning": {
             "type": "string",
             "minLength": 1
           },
           "durableIdentitySource": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$"
           },
           "notes": {
@@ -62,7 +70,9 @@
                   "const": "not-yet-modelled"
                 }
               },
-              "required": ["status"]
+              "required": [
+                "status"
+              ]
             },
             "then": {
               "properties": {
@@ -88,10 +98,18 @@
     },
     "unknownConsumerKindEnforcement": {
       "type": "object",
-      "required": ["state", "verifyCheck", "gap"],
+      "required": [
+        "state",
+        "verifyCheck",
+        "gap"
+      ],
       "properties": {
         "state": {
-          "enum": ["not-yet-implemented", "verify-only", "implemented"]
+          "enum": [
+            "not-yet-implemented",
+            "verify-only",
+            "implemented"
+          ]
         },
         "verifyCheck": {
           "const": "consumer-and-source-key-format"
@@ -236,6 +254,59 @@
     "negativeFixture": {
       "type": "string",
       "minLength": 1
+    },
+    "revisionIdentityBinding": {
+      "type": "object",
+      "required": [
+        "consumerKind",
+        "revisionTable",
+        "revisionIdColumn",
+        "projectScoped",
+        "durability",
+        "humanDerivedRevisionUsesSameConsumer",
+        "independentConsumer",
+        "independentConsumerStatus",
+        "heuristicIdentity",
+        "portableReference"
+      ],
+      "properties": {
+        "consumerKind": {
+          "const": "proposal-revision"
+        },
+        "revisionTable": {
+          "const": "narrative_proposal_revisions"
+        },
+        "revisionIdColumn": {
+          "const": "id"
+        },
+        "projectScoped": {
+          "const": true
+        },
+        "durability": {
+          "const": "while-project-exists"
+        },
+        "humanDerivedRevisionUsesSameConsumer": {
+          "const": true
+        },
+        "independentConsumer": {
+          "const": "narrative-ir-revision"
+        },
+        "independentConsumerStatus": {
+          "const": "not-yet-modelled"
+        },
+        "heuristicIdentity": {
+          "const": "forbid"
+        },
+        "portableReference": {
+          "const": [
+            "projectId",
+            "revisionId",
+            "envelopeDigest",
+            "contractVersion"
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

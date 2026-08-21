@@ -1635,6 +1635,10 @@ function validatePolicySchemas(repoRoot, errors) {
       "narrative-scope-relation-contract.json",
     ],
     [
+      "narrative-ir-contract.schema.json",
+      "narrative-ir-contract.json",
+    ],
+    [
       "narrative-dependency-role-registry.schema.json",
       "narrative-dependency-role-registry.json",
     ],
