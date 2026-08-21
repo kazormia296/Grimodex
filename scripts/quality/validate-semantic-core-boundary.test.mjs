@@ -1139,6 +1139,53 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(benignErrors, []);
   });
 
+  it("preserves taint through unknown computed nested receivers", () => {
+    const sensitiveCases = [
+      {
+        name: "object unknown computed receiver",
+        source: [
+          "const outer = {};",
+          "outer[boxKey].fn = database[key];",
+          "const fn = outer[boxKey].fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array unknown computed receiver",
+        source: [
+          "const outer = [];",
+          "outer[index].fn = database[key];",
+          "const fn = outer[index].fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `invocation-taint-unknown-receiver-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject taint through the computed receiver: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const benignErrors = validateInterpreterSourceFixture(
+      "invocation-taint-unknown-receiver-benign.mts",
+      [
+        "const safe = () => true;",
+        "const outer = {};",
+        "outer[boxKey] = { fn: safe };",
+        "const fn = outer[otherKey].fn;",
+        "fn();",
+        "const recordValue = record[key];",
+        "recordValue.trim();",
+      ].join("\n"),
+    );
+    assert.deepEqual(benignErrors, []);
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
