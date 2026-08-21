@@ -201,7 +201,7 @@ function minimalFixtureRoot() {
   return root;
 }
 
-function validateInterpreterSourceFixture(relativeFilename, source) {
+function validateInterpreterSourceFixture(relativeFilename, source, configureContract) {
   const root = minimalFixtureRoot();
   const contract = JSON.parse(
     readFileSync(
@@ -212,6 +212,7 @@ function validateInterpreterSourceFixture(relativeFilename, source) {
       "utf8",
     ),
   );
+  configureContract?.(contract);
   const interpreterRoot = "src/features/narrative-extraction/ir";
   for (const relativeRoot of contract.interpreterBoundary.interpreterRoots) {
     mkdirSync(path.join(root, relativeRoot), { recursive: true });
@@ -561,6 +562,110 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(
       errors.some((error) => /db-mutation.*comment-computed-receiver\.mts/i.test(error)),
       `computed mutation calls split by comments/newlines must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects AST side-effect database imports", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-side-effect-import.mts",
+      'import "@/db/client";\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*ast-side-effect-import\.mts/i.test(error)),
+      `side-effect database imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects AST commented nonliteral dynamic imports", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-commented-dynamic-import.mts",
+      [
+        'const source = "@/db/client";',
+        "await import /* comment */ (source);",
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*ast-commented-dynamic-import\.mts/i.test(error)),
+      `commented nonliteral dynamic imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects AST concatenated computed mutation properties", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-concatenated-computed-mutation.mts",
+      'storage["exec" + "ute"]("DELETE FROM narrative_proposal_revisions");\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*ast-concatenated-computed-mutation\.mts/i.test(error)),
+      `concatenated computed database mutations must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects AST template computed mutation properties", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-template-computed-mutation.mts",
+      'storage[`exec${"ute"}`]("DELETE FROM narrative_proposal_revisions");\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*ast-template-computed-mutation\.mts/i.test(error)),
+      `template computed database mutations must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects sensitive property calls on arbitrary receivers", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-property-receivers.mts",
+      [
+        'storage.execute("DELETE FROM narrative_proposal_revisions");',
+        'storage?.execute?.("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*ast-property-receivers\.mts/i.test(error)),
+      `property database mutations on arbitrary receivers must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("keeps AST deny semantics when policy regexes are disabled", () => {
+    const errors = validateInterpreterSourceFixture(
+      "ast-policy-disabled.mts",
+      [
+        'import "@/db/client";',
+        'const source = "@/db/client";',
+        "await import /* comment */ (source);",
+        'storage["exec" + "ute"]("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+      (contract) => {
+        for (const rule of contract.interpreterBoundary.forbiddenDependencies) {
+          rule.patterns = ["(?!)"];
+        }
+      },
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*ast-policy-disabled\.mts/i.test(error)),
+      `AST computed-property semantics must not be policy-disabled: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*ast-policy-disabled\.mts/i.test(error)),
+      `AST dynamic-import semantics must not be policy-disabled: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("fails closed when an Interpreter source has AST parse diagnostics", () => {
+    const errors = validateInterpreterSourceFixture(
+      "malformed-interpreter.mts",
+      "const broken = ;\n",
+    );
+
+    assert.ok(
+      errors.some((error) => /AST parse diagnostics.*malformed-interpreter\.mts/i.test(error)),
+      `malformed production sources must fail closed: ${JSON.stringify(errors)}`,
     );
   });
 
