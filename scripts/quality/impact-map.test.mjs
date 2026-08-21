@@ -184,6 +184,19 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
   );
   assert.ok(requirement, "semantic contract requirement must exist");
+  const artifactRequirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-ARTIFACT-001",
+  );
+  assert.ok(artifactRequirement, "artifact requirement must exist");
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    assert.ok(
+      artifactRequirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in artifact requirement implementedBy`,
+    );
+  }
 
   const implementations = [
     "src/features/narrative-semantic-core/contracts/scopeV2.ts",
@@ -241,6 +254,30 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     assert.ok(
       selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
       `${relativePath} must select the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must retain the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-ARTIFACT-001"),
+      `${relativePath} must select the artifact requirement`,
     );
     assert.ok(
       selection.suiteIds.includes("narrative-semantic-contract"),

@@ -312,6 +312,58 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(errors.some((error) => /generic-mcp-sql/i.test(error)));
   });
 
+  it("scans ESM dynamic imports in production .mts and .cts sources", () => {
+    const root = minimalFixtureRoot();
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const interpreterRoot = "src/features/narrative-extraction/ir";
+    contract.interpreterBoundary.interpreterRoots = [interpreterRoot];
+    mkdirSync(path.join(root, interpreterRoot), { recursive: true });
+    mkdirSync(path.join(root, "policies/narrative/fixtures"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(root, "policies/narrative/fixtures/artifact-authority.json"),
+      "{}\n",
+    );
+    writeFileSync(
+      path.join(root, interpreterRoot, "dynamic-agent.mts"),
+      'const writerModule = await import("@/features/agent-writes/codex");\n',
+    );
+    writeFileSync(
+      path.join(root, interpreterRoot, "dynamic-db.cts"),
+      [
+        'const drizzleModule = await import("drizzle-orm");',
+        'const typedWriterModule = await import("@/application/narrative-extraction/typed-writer");',
+        "typedWriter.commit({});",
+      ].join("\n"),
+    );
+    const errors = [];
+
+    validateInterpreterBoundary(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(
+      errors.some((error) => /agent-writer.*dynamic-agent\.mts/i.test(error)),
+      `dynamic Agent Writer imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /sql-import.*dynamic-db\.cts/i.test(error)),
+      `dynamic Drizzle imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /typed-writer.*dynamic-db\.cts/i.test(error)),
+      `typed-writer imports/calls in .cts must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("detects an unauthorized local Freshness authority in code", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
@@ -489,6 +541,55 @@ describe("validate-semantic-core-boundary", () => {
         );
       }
     }
+  });
+
+  it("rejects an appended authority kind outside the ratified vocabulary", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.authorityKinds.push("future-authority");
+    const errors = [];
+
+    validateArtifactAuthorityContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /authority kinds.*ratified/i.test(error)),
+      `appended authority kinds must fail closed: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects a new authoritative artifact row outside the ratified matrix", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.artifacts.push({
+      id: "future-authority-artifact",
+      lifecycle: "durable",
+      authority: "review",
+      authoritative: true,
+      storage: "future-authority-storage",
+      retention: {default: "retained", scope: "project-scoped"},
+    });
+    const errors = [];
+
+    validateArtifactAuthorityContract(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /artifact ids.*ratified/i.test(error)),
+      `appended artifact rows must fail closed: ${JSON.stringify(errors)}`,
+    );
   });
 
   it("rejects strict Scope containment and unresolved-reason identity", () => {
