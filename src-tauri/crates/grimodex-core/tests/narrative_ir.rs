@@ -175,7 +175,11 @@ fn executes_all_shared_scope_and_human_classification_goldens() {
                 object(input, "editedPayload"),
             )
             .unwrap_or_else(|error| panic!("{id} classification: {error}"));
-            assert_eq!(classification.disposition.as_str(), object(expected, "disposition").as_str(), "{id}");
+            assert_eq!(
+                Some(classification.disposition.as_str()),
+                object(expected, "disposition").as_str(),
+                "{id}"
+            );
             let expected_paths = object(expected, "changedPaths")
                 .as_array()
                 .expect("changed paths")
@@ -184,7 +188,11 @@ fn executes_all_shared_scope_and_human_classification_goldens() {
                 .collect::<Vec<_>>();
             assert_eq!(classification.changed_paths, expected_paths, "{id}");
             if object(expected, "disposition").as_str() == Some("reject") {
-                assert_eq!(classification.reason.as_deref(), object(expected, "reason").as_str(), "{id}");
+                assert_eq!(
+                    classification.reason.as_deref(),
+                    object(expected, "reason").as_str(),
+                    "{id}"
+                );
                 continue;
             }
             assert_eq!(
@@ -198,19 +206,44 @@ fn executes_all_shared_scope_and_human_classification_goldens() {
                 .iter()
                 .map(|class| class.as_str().expect("changed path class").to_owned())
                 .collect::<Vec<_>>();
-            assert_eq!(classification.changed_path_classes, expected_classes, "{id}");
+            assert_eq!(
+                classification.changed_path_classes, expected_classes,
+                "{id}"
+            );
         }
 
-        if kind == "cross-runtime-parity" || kind == "scope-derivation" || kind == "human-derivation" {
-            let proposal = object(input, if kind == "human-derivation" { "editedPayload" } else { "proposalPayload" });
+        if kind == "cross-runtime-parity"
+            || kind == "scope-derivation"
+            || kind == "human-derivation"
+        {
+            let proposal = object(
+                input,
+                if kind == "human-derivation" {
+                    "editedPayload"
+                } else {
+                    "proposalPayload"
+                },
+            );
             let derived = derive_chronicle_scene_event_scope(
                 object(input, "sceneRef").as_str().expect("scene ref"),
                 proposal,
                 object(input, "revealBasis"),
             )
             .unwrap_or_else(|error| panic!("{id} scope: {error}"));
-            assert_eq!(derived.canonical_json, object(expected, "canonicalScopeJson"), "{id}");
-            assert_eq!(derived.digest, object(expected, "scopeDigest"), "{id}");
+            assert_eq!(
+                derived.canonical_json,
+                object(expected, "canonicalScopeJson")
+                    .as_str()
+                    .expect("canonical scope JSON"),
+                "{id}"
+            );
+            assert_eq!(
+                derived.digest,
+                object(expected, "scopeDigest")
+                    .as_str()
+                    .expect("scope digest"),
+                "{id}"
+            );
         }
     }
 }
