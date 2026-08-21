@@ -1827,6 +1827,7 @@ function reflectCapabilityValue(
   via = undefined,
   mode = undefined,
   boundArguments = undefined,
+  ambiguous = false,
 ) {
   return {
     tainted: false,
@@ -1838,6 +1839,7 @@ function reflectCapabilityValue(
       via,
       mode,
       boundArguments,
+      ambiguous,
     },
     container: undefined,
   };
@@ -1873,12 +1875,16 @@ function reflectGlobalValue() {
 function mergeInvocationCapabilities(left, right) {
   if (!left) return right;
   if (!right) return left;
-  if (
+  const metadataMatches =
     left.kind === right.kind &&
     left.method === right.method &&
     left.via === right.via &&
     left.mode === right.mode &&
-    invocationArgumentListsEqual(left.boundArguments, right.boundArguments)
+    invocationArgumentListsEqual(left.boundArguments, right.boundArguments);
+  const ambiguous = left.ambiguous === true || right.ambiguous === true;
+  if (
+    metadataMatches &&
+    !ambiguous
   ) {
     return left;
   }
@@ -1895,6 +1901,7 @@ function mergeInvocationCapabilities(left, right) {
       )
         ? left.boundArguments
         : undefined,
+      ambiguous: ambiguous || !metadataMatches,
     };
   }
   return undefined;
@@ -2037,6 +2044,7 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
     left.capability?.method !== right.capability?.method ||
     left.capability?.via !== right.capability?.via ||
     left.capability?.mode !== right.capability?.mode ||
+    left.capability?.ambiguous !== right.capability?.ambiguous ||
     !invocationArgumentListsEqual(
       left.capability?.boundArguments,
       right.capability?.boundArguments,
@@ -2095,6 +2103,16 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   const bindingValues = new Map();
   const literalContainers = new WeakMap();
   const globalReflectValue = reflectGlobalValue();
+  const globalThisContainer = createInvocationContainer("object");
+  const globalThisValue = {
+    tainted: false,
+    source: undefined,
+    defined: true,
+    capability: undefined,
+    container: globalThisContainer,
+  };
+  globalThisContainer.entries.set("Reflect", globalReflectValue);
+  globalThisContainer.entries.set("undefined", cleanInvocationValue(false));
 
   const valueForBinding = (binding) =>
     bindingValues.get(binding) ?? cleanInvocationValue();
@@ -2465,6 +2483,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       const result = lookupBinding(unwrapped);
       if (!result) {
         if (unwrapped.text === "Reflect") return globalReflectValue;
+        if (unwrapped.text === "globalThis") return globalThisValue;
         if (unwrapped.text === "undefined") return cleanInvocationValue(false);
         return cleanInvocationValue();
       }
@@ -2500,6 +2519,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.capability.method,
           key,
           key === "bind" ? "bind-factory" : "indirect",
+          undefined,
+          receiver.capability.ambiguous,
         );
       }
       if (key === undefined) {
@@ -2555,6 +2576,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.capability.method,
           unwrapped.name.text,
           unwrapped.name.text === "bind" ? "bind-factory" : "indirect",
+          undefined,
+          receiver.capability.ambiguous,
         );
       }
       if (receiver.tainted) {
@@ -2716,6 +2739,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       );
       if (
         calleeValue.capability?.kind === "reflect" &&
+        calleeValue.capability.ambiguous
+      ) {
+        return taintedInvocationValue("reflect");
+      }
+      if (
+        calleeValue.capability?.kind === "reflect" &&
         calleeValue.capability.mode === "bind-factory"
       ) {
         return reflectCapabilityValue(
@@ -2723,6 +2752,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           "bind",
           "bound",
           unwrapped.arguments.slice(1),
+          calleeValue.capability.ambiguous,
         );
       }
       if (
@@ -3033,15 +3063,23 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return expressionValue(capability.boundArguments[0]).tainted;
   };
 
+  const isAmbiguousReflectCapability = (capability) =>
+    capability?.kind === "reflect" && capability.ambiguous === true;
+
   const isInvocationTainted = (expression) => {
     const value = expressionValue(expression);
-    return value.tainted || isBoundReflectTargetTainted(value.capability);
+    return (
+      value.tainted ||
+      isBoundReflectTargetTainted(value.capability) ||
+      isAmbiguousReflectCapability(value.capability)
+    );
   };
 
   const isReflectInvocationTainted = (node) => {
     if (!ts.isCallExpression(node) || node.arguments.length === 0) return false;
     const callee = expressionValue(node.expression);
     if (callee.capability?.kind !== "reflect") return false;
+    if (callee.capability.ambiguous === true) return true;
     if (callee.capability.method === undefined) return true;
     if (
       callee.capability.method !== "apply" &&
