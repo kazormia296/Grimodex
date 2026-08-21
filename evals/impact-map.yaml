@@ -208,6 +208,7 @@ rules:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
     suites:
       - narrative-semantic-contract
   - id: narrative-extraction

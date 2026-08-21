@@ -156,8 +156,8 @@
       {
         "id": "sql-import",
         "patterns": [
-          "\\bfrom\\s+[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]"
         ]
       },
       {
@@ -165,28 +165,28 @@
         "patterns": [
           "\\b(?:db|database|conn|connection|tx|transaction)\\s*\\.\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*\\(",
           "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]"
         ]
       },
       {
         "id": "prepared-commit",
         "patterns": [
           "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]"
         ]
       },
       {
         "id": "typed-writer",
         "patterns": [
           "\\b(?:TypedWriter|typedWriter|typed_writer|runTypedWriter|writeWithTypedWriter)\\b",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]"
         ]
       },
       {
         "id": "agent-writer",
         "patterns": [
           "\\b(?:AgentWriter|agentWriter|agent_writer|agent_writes|writeWithAgentWriter)\\b",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]"
         ]
       },
       {
@@ -195,7 +195,7 @@
           "\\b(?:mcpSql|mcp_sql|genericMcpSql|generic_mcp_sql)\\b",
           "\\b(?:mcp|Mcp)[A-Za-z0-9_]*(?:sql|query|execute)\\s*\\(",
           "\\b(?:mcp|Mcp)[A-Za-z0-9_]*::(?:sql|query|execute)\\b",
-          "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]"
+          "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]"
         ]
       }
     ],

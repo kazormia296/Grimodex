@@ -256,6 +256,17 @@ const REQUIRED_ARTIFACT_IDS = Object.freeze([
   "renderer-state",
 ]);
 
+const REQUIRED_ARTIFACT_AUTHORITY_KINDS = Object.freeze([
+  "source-identity",
+  "immutable-interpretation",
+  "review",
+  "evidence-freshness",
+  "projection-execution",
+  "application-contribution",
+  "rebuildable-acceleration",
+  "none",
+]);
+
 // G1 is a ratified authority matrix, not a free-form vocabulary. Keep the
 // complete row classification in validator-owned code so a policy edit cannot
 // silently turn a durable interpretation into a non-authoritative cache (or
@@ -408,31 +419,31 @@ const REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS = Object.freeze([
 
 const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
   "sql-import": Object.freeze([
-    "\\bfrom\\s+[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]",
   ]),
   "db-mutation": Object.freeze([
     "\\b(?:db|database|conn|connection|tx|transaction)\\s*\\.\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*\\(",
     "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
   ]),
   "prepared-commit": Object.freeze([
     "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]",
   ]),
   "typed-writer": Object.freeze([
     "\\b(?:TypedWriter|typedWriter|typed_writer|runTypedWriter|writeWithTypedWriter)\\b",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]",
   ]),
   "agent-writer": Object.freeze([
     "\\b(?:AgentWriter|agentWriter|agent_writer|agent_writes|writeWithAgentWriter)\\b",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]",
   ]),
   "generic-mcp-sql": Object.freeze([
     "\\b(?:mcpSql|mcp_sql|genericMcpSql|generic_mcp_sql)\\b",
     "\\b(?:mcp|Mcp)[A-Za-z0-9_]*(?:sql|query|execute)\\s*\\(",
     "\\b(?:mcp|Mcp)[A-Za-z0-9_]*::(?:sql|query|execute)\\b",
-    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]",
+    "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]",
   ]),
 });
 
@@ -552,7 +563,7 @@ function listSourceFiles(repoRoot, relativeRoot) {
       if (entry.name === "node_modules" || entry.name === ".git") continue;
       const absolute = path.join(current, entry.name);
       if (entry.isDirectory()) visit(absolute);
-      else if (/\.(?:ts|tsx|mjs|js|rs)$/.test(entry.name)) files.push(absolute);
+      else if (/\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|rs)$/.test(entry.name)) files.push(absolute);
     }
   };
   visit(absoluteRoot);
@@ -563,7 +574,7 @@ function listProductionSourceFiles(repoRoot, relativeRoot) {
   return listSourceFiles(repoRoot, relativeRoot).filter((file) => {
     const normalized = file.replaceAll("\\", "/");
     return (
-      !/\.(?:test|spec)\.(?:ts|tsx|mjs|js)$/.test(normalized) &&
+      !/\.(?:test|spec)\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/.test(normalized) &&
       !normalized.includes("/__tests__/") &&
       !normalized.includes("/tests/")
     );
@@ -1290,6 +1301,11 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
       "narrative artifact authority lifecycle classes must be durable, ephemeral, and rebuildable",
     );
   }
+  if (!sameStringSet(contract.authorityKinds, REQUIRED_ARTIFACT_AUTHORITY_KINDS)) {
+    errors.push(
+      `narrative artifact authority kinds must match ratified set: ${REQUIRED_ARTIFACT_AUTHORITY_KINDS.join(", ")}`,
+    );
+  }
   const authorityKinds = new Set(
     Array.isArray(contract.authorityKinds) ? contract.authorityKinds : [],
   );
@@ -1299,6 +1315,16 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
   if (artifacts.length === 0) {
     errors.push("narrative artifact authority contract must list artifacts");
     return;
+  }
+  if (
+    !sameStringSet(
+      artifacts.map((artifact) => artifact?.id),
+      REQUIRED_ARTIFACT_IDS,
+    )
+  ) {
+    errors.push(
+      `narrative artifact authority artifact IDs must match ratified set: ${REQUIRED_ARTIFACT_IDS.join(", ")}`,
+    );
   }
   const artifactById = new Map();
   for (const artifact of artifacts) {

@@ -291,6 +291,7 @@ requirements:
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
       - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/fixtures/artifact-authority.json
       - scripts/quality/validate-semantic-core-boundary.mjs
       - .agents/skills/adversarial-review/SKILL.md
