@@ -2118,6 +2118,30 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("normalizes quoted static authority keys in executable positions", () => {
+    const errors = validateInterpreterSourceFixture(
+      "quoted-static-authority-keys.ts",
+      [
+        'export const state = { "localFreshness\\u0053tore": new Map() };',
+        'export const services = { "typed\\u0057riter": { commit() {} } };',
+        'export const methods = { "typed\\u0057riter"() {} };',
+        'class Helper { "localFreshness\\u0053tore" = new Map(); "typed\\u0057riter"() {} }',
+        'const safe = { "safeKey": true };',
+        'const label = "typed\\u0057riter";',
+        '// const ignored = { "localFreshness\\u0053tore": new Map() };',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /freshness-store.*quoted-static-authority-keys\.ts/i.test(error)),
+      `quoted Freshness keys must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /typed-writer.*quoted-static-authority-keys\.ts/i.test(error)),
+      `quoted writer keys must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("tracks tainted arguments into invoked local function parameters", () => {
     const sensitiveCases = [
       {
@@ -2147,6 +2171,43 @@ describe("validate-semantic-core-boundary", () => {
           "function leaf(fn) { fn(); }",
           "function invoke(fn) { leaf(fn); }",
           "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Function.prototype call",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "invoke.call(null, database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Function.prototype apply",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "invoke.apply(null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Function.prototype bind alias",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const alias = invoke.bind(null);",
+          "alias(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class static method",
+        source: [
+          "class Helper { static invoke(fn) { fn(); } }",
+          "Helper.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class instance method",
+        source: [
+          "class Helper { invoke(fn) { fn(); } }",
+          "const helper = new Helper();",
+          "helper.invoke(database[key]);",
         ].join("\n"),
       },
     ];
@@ -2274,6 +2335,10 @@ describe("validate-semantic-core-boundary", () => {
         "recursive(database[key]);",
         "function passthrough(fn) { return fn; }",
         "passthrough(database[key]);",
+        "invoke.call(null, () => true);",
+        "invoke.apply(null, [() => true]);",
+        "const safeAlias = invoke.bind(null);",
+        "safeAlias(() => true);",
       ].join("\n"),
     );
 
