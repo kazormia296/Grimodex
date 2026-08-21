@@ -79,6 +79,76 @@ function endpointOrigin(value: string | null | undefined): string | null {
   }
 }
 
+async function sha256ResponseDigest(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  const hex = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return `sha256:${hex}`;
+}
+
+function isJsonObject(value: unknown): value is AiAuditJsonObject {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function withChronicleResponseDigest(
+  metadata: AiAuditJsonObject | undefined,
+  responseDigest: string,
+): AiAuditJsonObject | undefined {
+  if (metadata === undefined) return undefined;
+  const chronicleStage = metadata.chronicleStage;
+  if (!isJsonObject(chronicleStage)) return metadata;
+  return {
+    ...metadata,
+    chronicleStage: {
+      ...chronicleStage,
+      responseDigest,
+    },
+  };
+}
+
+function mergeAuditMetadata(
+  base: AiAuditJsonObject | undefined,
+  additional: AiAuditJsonObject | undefined,
+): AiAuditJsonObject | undefined {
+  if (base === undefined) return additional;
+  if (additional === undefined) return base;
+  const baseChronicle = base.chronicleStage;
+  const additionalChronicle = additional.chronicleStage;
+  return {
+    ...base,
+    ...additional,
+    ...(isJsonObject(baseChronicle) && isJsonObject(additionalChronicle)
+      ? {
+          chronicleStage: {
+            ...baseChronicle,
+            ...additionalChronicle,
+          },
+        }
+      : {}),
+  };
+}
+
+function withChronicleTerminalStatus(
+  metadata: AiAuditJsonObject | undefined,
+  terminalStatus: "failed" | "succeeded",
+): AiAuditJsonObject | undefined {
+  if (metadata === undefined) return undefined;
+  const chronicleStage = metadata.chronicleStage;
+  if (!isJsonObject(chronicleStage)) return metadata;
+  return {
+    ...metadata,
+    chronicleStage: {
+      ...chronicleStage,
+      terminalStatus,
+      ...(terminalStatus === "failed" ? { parseStatus: "not-attempted" } : {}),
+    },
+  };
+}
+
 /** Snapshot the route using the same override-over-settings precedence as IPC. */
 export function resolveChatAuditRoute(
   args: Readonly<Record<string, unknown>>,
@@ -295,8 +365,27 @@ export async function invokeSingleShotChat(
   try {
     response = await invoke<ChatResponsePayload>("send_chat_message", args);
   } catch (error) {
-    await failAiAuditExecution(audit, { error: auditErrorSnapshot(error) });
+    await failAiAuditExecution(audit, {
+      error: auditErrorSnapshot(error),
+      metadata: withChronicleTerminalStatus(auditContext.metadata, "failed"),
+    });
     throw error;
+  }
+  const responseText = response.blocks
+    .filter((block) => block.type === "text")
+    .map((block) => (block as { type: "text"; content: string }).content)
+    .join("\n");
+  const responseDigest = await sha256ResponseDigest(responseText);
+  let terminalMetadata: AiAuditJsonObject | undefined;
+  try {
+    terminalMetadata = await auditContext.onTerminalMetadata?.(responseText);
+  } catch (error) {
+    // A provenance helper must not strand the already-dispatched execution
+    // without its existing terminal audit events. The response digest below
+    // remains durable even when an optional Chronicle status hook fails.
+    terminalMetadata = {
+      chronicleStageMetadataError: { ...auditErrorSnapshot(error) },
+    };
   }
   await completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,
@@ -305,6 +394,10 @@ export async function invokeSingleShotChat(
       outputTokens: response.outputTokens ?? null,
       stopReason: response.stopReason,
     },
+    metadata: mergeAuditMetadata(
+      withChronicleResponseDigest(auditContext.metadata, responseDigest),
+      terminalMetadata,
+    ),
   });
   return response;
 }

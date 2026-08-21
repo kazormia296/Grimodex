@@ -69,6 +69,11 @@ requirements:
       - src-tauri/crates/grimodex-semantic/src/reranker.rs
       - src-tauri/crates/grimodex-semantic/src/runtime.rs
       - src/features/chat/singleShotTransport.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
       - src/features/editor/inlineAi/inlineAiStreaming.ts
@@ -88,6 +93,8 @@ requirements:
       - src/features/ai-audit/legacyEvidence.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/chat/singleShotTransport.audit.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/chat/chatApi.audit.test.ts
       - src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts
       - src/features/ab-test/abHarness.test.ts
@@ -392,6 +399,7 @@ requirements:
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
@@ -412,6 +420,8 @@ requirements:
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
@@ -423,6 +433,8 @@ requirements:
       - src/features/narrative-semantic-core/contracts/disclosure.test.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:

@@ -77,3 +77,17 @@ export {
   toNarrativeRevisionEnvelopeV2,
   validateNarrativeRevisionEnvelopeV2,
 } from "./v2Adapter";
+
+export {
+  buildChroniclePromptArtifact,
+  buildChroniclePromptDigests,
+  CHRONICLE_CONTEXT_SET_VERSION,
+  CHRONICLE_PROMPT_CONTRACT_VERSION,
+} from "./chroniclePromptBuilder";
+export type {
+  ChroniclePromptArtifact,
+  ChroniclePromptBuilderInput,
+  ChroniclePromptComponentContract,
+  ChroniclePromptDigests,
+  ChroniclePromptModelInput,
+} from "./chroniclePromptBuilder";

@@ -4,12 +4,22 @@ import { recordAiUsage } from "@/features/ai-usage/recordAiUsage";
 import { blockNarrativeAiTask } from "./narrativeAiTaskGuard";
 import { requireAuditProjectId } from "@/features/ai-audit/projectScope";
 import { extractJsonObject } from "@/prompts/shared/jsonContract";
+import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   assertStageExecutionContext,
   NARRATIVE_STAGE_IDS,
   type NarrativeStageExecutionContext,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
+import {
+  buildChroniclePromptArtifact,
+  buildChroniclePromptDigests,
+  type ChroniclePromptArtifact,
+} from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
+  bindChronicleStageAuditContext,
+  buildChronicleStageAuditTerminal,
+} from "./chronicleStageAudit";
 
 export const NARRATIVE_STRUCTURED_REPAIR_PATH =
   "narrative_structured_repair" as const;
@@ -39,6 +49,110 @@ export type StructuredRepairSend = (
 export type RunStructuredRepairTaskInputWithTransport =
   RunStructuredRepairTaskInput;
 
+const STRUCTURED_REPAIR_COMPONENT_CONTRACT = {
+  contractId: "chronicle.structured-repair.prompt",
+  contractVersion: "1",
+  instruction: `次のモデル出力を、指定の JSON 形へ修復してください。説明文は付けず JSON だけを返します。
+Project ID / Scene ID / Event ID などの DB 識別子は新たに作らず、入力に含まれる Source View ref（S0001 形式）だけを維持してください。`,
+  outputShape: '{"repairedJson":"JSON object matching the declared shape"}',
+} as const;
+
+function buildStructuredRepairPromptArtifact(
+  input: RunStructuredRepairTaskInput,
+): ChroniclePromptArtifact {
+  return buildChroniclePromptArtifact({
+    stageId: NARRATIVE_STAGE_IDS.structuredRepair,
+    componentContract: STRUCTURED_REPAIR_COMPONENT_CONTRACT,
+    contextSet: [
+      {
+        contextId: "structured-repair:expected-shape",
+        inputRef: "structured-repair:expected-shape",
+        stageId: NARRATIVE_STAGE_IDS.structuredRepair,
+        exposure: "model-visible",
+        selector: { kind: "whole-source" },
+      },
+      {
+        contextId: "structured-repair:broken-response",
+        inputRef: "structured-repair:broken-response",
+        stageId: NARRATIVE_STAGE_IDS.structuredRepair,
+        exposure: "model-visible",
+        selector: { kind: "whole-source" },
+      },
+    ],
+    modelInputs: [
+      {
+        contextId: "structured-repair:expected-shape",
+        value: input.expectedShape,
+      },
+      {
+        contextId: "structured-repair:broken-response",
+        value: input.brokenText,
+      },
+    ],
+  });
+}
+
+function buildLegacyStructuredRepairPrompt(
+  input: RunStructuredRepairTaskInput,
+): string {
+  return `次のモデル出力を、指定の JSON 形へ修復してください。説明文は付けず JSON だけを返します。
+Project ID / Scene ID / Event ID などの DB 識別子は新たに作らず、入力に含まれる Source View ref（S0001 形式）だけを維持してください。
+
+# 期待する形
+${input.expectedShape}
+
+# 壊れた出力
+${input.brokenText}`;
+}
+
+function structuredRepairParseStatus(
+  responseText: string,
+): "parsed" | "invalid" {
+  const jsonText = extractJsonObject(responseText);
+  if (!jsonText) return "invalid";
+  try {
+    JSON.parse(jsonText);
+    return "parsed";
+  } catch {
+    return "invalid";
+  }
+}
+
+async function recordStructuredRepairStageAudit(
+  input: RunStructuredRepairTaskInput,
+  promptArtifact: ChroniclePromptArtifact,
+  responseText: string,
+  usage: {
+    readonly model: string | null | undefined;
+    readonly provider: string | null | undefined;
+    readonly tokensIn?: number;
+    readonly tokensOut?: number;
+  },
+): Promise<void> {
+  if (!input.stageExecution) return;
+  const digests = await buildChroniclePromptDigests(promptArtifact);
+  const parseStatus = structuredRepairParseStatus(responseText);
+  const terminal = await buildChronicleStageAuditTerminal({
+    stageExecution: input.stageExecution,
+    ...digests,
+    responseText,
+    parseStatus,
+    terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+  });
+  void recordAiUsage({
+    surface: "narrative_structured_repair",
+    model: usage.model,
+    provider: usage.provider,
+    tokensIn: usage.tokensIn,
+    tokensOut: usage.tokensOut,
+    projectId: input.stageExecution.projectId,
+    metadata: {
+      pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
+      chronicleStageAudit: terminal,
+    },
+  });
+}
+
 /**
  * Stage AI: narrative_structured_repair.
  * Called at most once after a JSON extract/parse failure on another stage.
@@ -66,14 +180,15 @@ export async function runStructuredRepairTask(
     }
   }
 
-  const prompt = `次のモデル出力を、指定の JSON 形へ修復してください。説明文は付けず JSON だけを返します。
-Project ID / Scene ID / Event ID などの DB 識別子は新たに作らず、入力に含まれる Source View ref（S0001 形式）だけを維持してください。
-
-# 期待する形
-${input.expectedShape}
-
-# 壊れた出力
-${input.brokenText}`;
+  const promptArtifact = input.stageExecution
+    ? buildStructuredRepairPromptArtifact(input)
+    : undefined;
+  const prompt = promptArtifact
+    ? promptArtifact.messages[0].content
+    : buildLegacyStructuredRepairPrompt(input);
+  const promptDigests = promptArtifact
+    ? await buildChroniclePromptDigests(promptArtifact)
+    : undefined;
 
   const projectId = requireAuditProjectId(
     input.projectId ??
@@ -81,10 +196,36 @@ ${input.brokenText}`;
       useTreeStore.getState().projectId,
   );
   const ov = resolveRoleSendOverride("narrative_structured_repair");
+  const baseAuditContext = {
+    projectId,
+    pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
+  } as const;
+  const auditContext =
+    input.stageExecution && promptDigests
+      ? {
+          ...bindChronicleStageAuditContext(
+            baseAuditContext,
+            input.stageExecution,
+            promptDigests,
+          ),
+          onTerminalMetadata: async (responseText: string) => {
+            const parseStatus = structuredRepairParseStatus(responseText);
+            const terminal = await buildChronicleStageAuditTerminal({
+              stageExecution: input.stageExecution!,
+              ...promptDigests,
+              responseText,
+              parseStatus,
+              terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+            });
+            return {
+              chronicleStage: terminal as unknown as AiAuditJsonObject,
+            };
+          },
+        }
+      : baseAuditContext;
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
-        projectId,
-        pathId: "narrative_structured_repair",
+        ...auditContext,
         ...(input.stageExecution
           ? { stageExecution: input.stageExecution }
           : {}),
@@ -92,7 +233,7 @@ ${input.brokenText}`;
     : await sendChatMessageWithThinking(
         [{ role: "user", content: prompt }],
         {
-          projectId,
+          ...auditContext,
           pathId: "narrative_structured_repair",
         },
         undefined,
@@ -103,15 +244,30 @@ ${input.brokenText}`;
         ov.provider,
         ov.endpointId,
       );
-  void recordAiUsage({
-    surface: "narrative_structured_repair",
-    model: ov.model,
-    provider: ov.provider,
-    tokensIn: response.inputTokens,
-    tokensOut: response.outputTokens,
-    projectId,
-    metadata: { pathId: NARRATIVE_STRUCTURED_REPAIR_PATH },
-  });
+  const repaired = extractJsonObject(response.text);
+  if (input.stageExecution && promptArtifact) {
+    await recordStructuredRepairStageAudit(
+      input,
+      promptArtifact,
+      response.text,
+      {
+        model: ov.model,
+        provider: ov.provider,
+        tokensIn: response.inputTokens,
+        tokensOut: response.outputTokens,
+      },
+    );
+  } else {
+    void recordAiUsage({
+      surface: "narrative_structured_repair",
+      model: ov.model,
+      provider: ov.provider,
+      tokensIn: response.inputTokens,
+      tokensOut: response.outputTokens,
+      projectId,
+      metadata: { pathId: NARRATIVE_STRUCTURED_REPAIR_PATH },
+    });
+  }
 
-  return extractJsonObject(response.text);
+  return repaired;
 }

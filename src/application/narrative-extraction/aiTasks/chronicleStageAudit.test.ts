@@ -85,7 +85,7 @@ describe("Chronicle Stage AI Audit binding", () => {
     const terminal = await buildChronicleStageAuditTerminal({
       stageExecution: parent,
       ...digests,
-      responseText: "{\"observations\":[]}",
+      responseText: '{"observations":[]}',
       parseStatus: "parsed",
       terminalStatus: "succeeded",
       repairChildStageExecutionId: null,

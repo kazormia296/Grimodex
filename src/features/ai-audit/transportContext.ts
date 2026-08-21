@@ -29,6 +29,14 @@ export interface AiAuditTransportContext {
   /** Persisted assistant message identity for the main chat-agent turn. */
   readonly chatMessageId?: string;
   readonly metadata?: AiAuditJsonObject;
+  /**
+   * Non-persistent application seam used to add terminal provenance after a
+   * response is parsed. The response text is passed in memory only; transport
+   * code never serializes this callback into native audit context.
+   */
+  readonly onTerminalMetadata?: (
+    responseText: string,
+  ) => AiAuditJsonObject | Promise<AiAuditJsonObject>;
 }
 
 export interface AiAuditResolvedRouteSnapshot {
