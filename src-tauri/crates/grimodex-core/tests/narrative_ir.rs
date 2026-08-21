@@ -154,6 +154,12 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
     let mut candidate = valid_envelope();
     candidate["projectionBinding"]["adapterContractVersion"] = json!("2");
     assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
+
+    for payload in [json!("scalar"), json!(["array"]), Value::Null] {
+        let mut candidate = valid_envelope();
+        candidate["assertion"]["payload"] = payload;
+        assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
+    }
 }
 
 #[test]
@@ -261,6 +267,21 @@ fn refuses_unsupported_human_path_without_deriving_a_scope() {
     assert_eq!(result.disposition, ChronicleChangeDisposition::Reject);
     assert_eq!(result.reason.as_deref(), Some("unsupported-path"));
     assert_eq!(result.changed_paths, vec!["/actuality".to_owned()]);
+}
+
+#[test]
+fn refuses_empty_chronicle_proposal_note() {
+    let corpus = fixture();
+    let case = case_by_id(&corpus, "non-secret-event");
+    let input = object(case, "input");
+    let mut proposal = object(input, "proposalPayload").clone();
+    proposal["note"] = json!("");
+    assert!(derive_chronicle_scene_event_scope(
+        object(input, "sceneRef").as_str().expect("scene ref"),
+        &proposal,
+        object(input, "revealBasis"),
+    )
+    .is_err());
 }
 
 #[test]
