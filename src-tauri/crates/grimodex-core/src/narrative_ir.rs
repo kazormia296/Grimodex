@@ -948,16 +948,17 @@ pub fn validate_chronicle_scene_event_v2(value: &Value) -> Result<(), NarrativeI
         ));
     }
     let payload = require(assertion, "payload", "assertion")?;
-    if let Some(payload) = payload.as_object() {
-        if ["secret", "disclosure", "revealDocumentRef"]
-            .iter()
-            .any(|key| payload.contains_key(*key))
-        {
-            return Err(validation_error(
-                "invalid-payload-schema-ref",
-                "assertion.payload",
-            ));
-        }
+    let payload = payload
+        .as_object()
+        .ok_or_else(|| validation_error("invalid-payload-schema-ref", "assertion.payload"))?;
+    if ["secret", "disclosure", "revealDocumentRef"]
+        .iter()
+        .any(|key| payload.contains_key(*key))
+    {
+        return Err(validation_error(
+            "invalid-payload-schema-ref",
+            "assertion.payload",
+        ));
     }
     let change = object(
         require(envelope, "changeIntent", "envelope")?,
@@ -1040,7 +1041,7 @@ fn validate_proposal_payload(value: &Value) -> Result<(), NarrativeIrValidationE
         }
     }
     if let Some(note) = value.get("note") {
-        if !note.is_null() && !note.is_string() {
+        if !note.is_null() && !non_empty_string(note) {
             return Err(validation_error(
                 "invalid-proposal-payload",
                 "proposalPayload.note",
