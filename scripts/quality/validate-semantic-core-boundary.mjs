@@ -1930,7 +1930,10 @@ function scanInterpreterSourceWithAst(file, source) {
           : propertyName;
         method = staticStringResolver.fold(propertyExpression);
       }
-      if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
+      if (
+        (ts.isComputedPropertyName(propertyName) && method === undefined) ||
+        (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method))
+      ) {
         findings.add("db-mutation");
       }
     }
