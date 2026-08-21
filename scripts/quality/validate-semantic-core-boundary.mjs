@@ -1942,7 +1942,10 @@ function mergeInvocationValues(left, right) {
         right.capability,
       ),
       container: left.container,
-      containerAlternatives: alternatives.size > 1 ? alternatives : undefined,
+      containerAlternatives:
+        alternatives.size > 0 && !alternatives.has(left.container)
+          ? alternatives
+          : undefined,
     };
   }
   const leftContainer = left.container;
@@ -1988,7 +1991,10 @@ function mergeInvocationValues(left, right) {
       right.capability,
     ),
     container,
-    containerAlternatives: alternatives.size > 1 ? alternatives : undefined,
+    containerAlternatives:
+      alternatives.size > 0 && !alternatives.has(container)
+        ? alternatives
+        : undefined,
   };
 }
 
@@ -2238,7 +2244,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       capability: value?.capability,
       container,
       containerAlternatives:
-        value?.containerAlternatives?.size > 1
+        value?.containerAlternatives?.size > 0
           ? value.containerAlternatives
           : undefined,
     };
