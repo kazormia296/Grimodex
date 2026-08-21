@@ -12,6 +12,12 @@ import {
   type NarrativeScopeV2,
 } from "./scopeV2";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
+import {
+  canonicalizeDependencySelector,
+  isDependencyRole,
+  validateDependencySelector,
+} from "./dependencyRole";
+import type { DependencyRole, DependencySelector } from "./dependencyRole";
 
 export type { NarrativeScopeV2 } from "./scopeV2";
 
@@ -136,15 +142,15 @@ export interface NarrativeContextSetEntry {
   readonly inputRef: string;
   readonly stageId: string;
   readonly exposure: ContextExposure;
-  readonly selector: Readonly<Record<string, unknown>>;
+  readonly selector: DependencySelector;
 }
 
 export interface NarrativeDependencySetEntry {
   readonly dependencyId: string;
   readonly inputRef: string;
   readonly contextIds: readonly string[];
-  readonly role: string;
-  readonly selector: Readonly<Record<string, unknown>>;
+  readonly role: DependencyRole;
+  readonly selector: DependencySelector;
 }
 
 // Contract names used by ADR 010/011 remain available without creating a
@@ -350,7 +356,8 @@ function validateContextEntry(
     !isNonEmptyString(value.inputRef) ||
     !isNonEmptyString(value.stageId) ||
     !CONTEXT_EXPOSURE_SET.has(value.exposure as string) ||
-    !isRecord(value.selector)
+    !isRecord(value.selector) ||
+    !validateDependencySelector(value.selector).valid
   ) {
     return invalid("invalid-revision-basis", path);
   }
@@ -459,9 +466,88 @@ function validateDependencySet(
       !Array.isArray(entry.contextIds) ||
       entry.contextIds.some((id) => !isNonEmptyString(id)) ||
       !isNonEmptyString(entry.role) ||
-      !isRecord(entry.selector)
+      !isDependencyRole(entry.role) ||
+      !validateDependencySelector(entry.selector).valid
     ) {
       return invalid("invalid-material-basis", `${path}[${index}]`);
+    }
+  }
+  return undefined;
+}
+
+function dependencyInputRefForEvidence(
+  evidence: Record<string, unknown>,
+): string | undefined {
+  return isNonEmptyString(evidence.sourceKey)
+    ? evidence.sourceKey
+    : isNonEmptyString(evidence.evidenceRef)
+      ? evidence.evidenceRef
+      : undefined;
+}
+
+function canonicalDependencySelector(value: unknown): string | undefined {
+  const result = validateDependencySelector(value);
+  if (!result.valid) return undefined;
+  try {
+    return canonicalizeDependencySelector(result.selector);
+  } catch {
+    return undefined;
+  }
+}
+
+function validateMaterialConsistency(
+  material: Record<string, unknown>,
+  contextSet: unknown,
+  contextPath: string,
+): Invalid | undefined {
+  if (!Array.isArray(material.evidenceSet)) {
+    return invalid(
+      "invalid-material-basis",
+      "effectiveMaterialBasis.evidenceSet",
+    );
+  }
+  if (!Array.isArray(material.dependencySet)) {
+    return invalid(
+      "invalid-material-basis",
+      "effectiveMaterialBasis.dependencySet",
+    );
+  }
+  const evidenceSet = material.evidenceSet.filter(isRecord);
+  const dependencies = material.dependencySet.filter(isRecord);
+
+  for (const [index, evidence] of evidenceSet.entries()) {
+    const expectedInputRef = dependencyInputRefForEvidence(evidence);
+    if (
+      expectedInputRef === undefined ||
+      !dependencies.some(
+        (dependency) =>
+          dependency.role === "direct-evidence" &&
+          dependency.inputRef === expectedInputRef,
+      )
+    ) {
+      return invalid(
+        "invalid-material-basis",
+        `effectiveMaterialBasis.evidenceSet[${index}]`,
+      );
+    }
+  }
+
+  if (!Array.isArray(contextSet)) {
+    return invalid("invalid-revision-basis", contextPath);
+  }
+  for (const [index, context] of contextSet.entries()) {
+    if (!isRecord(context) || context.exposure !== "model-visible") continue;
+    const contextSelector = canonicalDependencySelector(context.selector);
+    const covered = dependencies.filter(
+      (dependency) =>
+        dependency.inputRef === context.inputRef &&
+        Array.isArray(dependency.contextIds) &&
+        dependency.contextIds.includes(context.contextId) &&
+        contextSelector !== undefined &&
+        canonicalDependencySelector(dependency.selector) === contextSelector,
+    );
+    if (covered.length === 0) {
+      return invalid("invalid-material-basis", `${contextPath}[${index}]`);
     }
   }
   return undefined;
@@ -883,6 +969,26 @@ export function validateNarrativeRevisionEnvelopeV2(
   if (materialResult) return materialResult;
   const basisResult = validateRevisionBasis(value.revisionBasis);
   if (basisResult) return basisResult;
+  if (
+    !isRecord(value.effectiveMaterialBasis) ||
+    !isRecord(value.revisionBasis)
+  ) {
+    return invalid("invalid-material-basis", "effectiveMaterialBasis");
+  }
+  const contextPath =
+    value.revisionBasis.kind === "interpretation"
+      ? "revisionBasis.contextSet"
+      : "revisionBasis.derivationContextSet";
+  const contextSet =
+    value.revisionBasis.kind === "interpretation"
+      ? value.revisionBasis.contextSet
+      : value.revisionBasis.derivationContextSet;
+  const consistencyResult = validateMaterialConsistency(
+    value.effectiveMaterialBasis,
+    contextSet,
+    contextPath,
+  );
+  if (consistencyResult) return consistencyResult;
   return validateProjectionBinding(value.projectionBinding) ?? { valid: true };
 }
 

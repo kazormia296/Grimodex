@@ -482,6 +482,27 @@ pub fn validate_dependency_selector(
     }
 }
 
+/// Parse and validate an untrusted selector object through the same typed D0
+/// contract used by canonicalization.  Comparing the parsed representation
+/// back to the input also refuses serde's default unknown-field elision.
+pub fn validate_dependency_selector_value(
+    value: &Value,
+    source: Option<&str>,
+) -> Result<DependencySelector, DependencyContractError> {
+    let selector: DependencySelector = serde_json::from_value(value.clone()).map_err(|error| {
+        DependencyContractError::InvalidSelector(format!("selector shape: {error}"))
+    })?;
+    let parsed_value = serde_json::to_value(&selector)
+        .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?;
+    if parsed_value != *value {
+        return Err(DependencyContractError::InvalidSelector(
+            "selector contains unknown or non-canonical fields".to_string(),
+        ));
+    }
+    validate_dependency_selector(&selector, source)?;
+    Ok(selector)
+}
+
 fn is_trimmed_non_empty(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }

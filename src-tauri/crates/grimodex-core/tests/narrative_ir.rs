@@ -171,8 +171,7 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
 #[test]
 fn enforces_dependency_role_selector_and_adr010_coverage() {
     let mut candidate = valid_envelope();
-    candidate["effectiveMaterialBasis"]["dependencySet"][0]["role"] =
-        json!("future-role");
+    candidate["effectiveMaterialBasis"]["dependencySet"][0]["role"] = json!("future-role");
     assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
 
     let mut candidate = valid_envelope();
@@ -185,8 +184,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
     assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
 
     let mut candidate = valid_envelope();
-    candidate["effectiveMaterialBasis"]["dependencySet"][0]["inputRef"] =
-        json!("anchor:other");
+    candidate["effectiveMaterialBasis"]["dependencySet"][0]["inputRef"] = json!("anchor:other");
     assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
 
     let model_visible_context = json!({

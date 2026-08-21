@@ -9,6 +9,9 @@ use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use crate::canonical_json::{canonical_json_digest, canonical_json_string};
+use crate::narrative_dependency::{
+    canonicalize_dependency_selector, validate_dependency_selector_value, DependencyRole,
+};
 
 pub const NARRATIVE_SCOPE_V2_SCHEMA_VERSION: u64 = 2;
 pub const NARRATIVE_SCOPE_V2_REGISTRY_VERSION: &str = "narrative-scope/2";
@@ -385,11 +388,11 @@ fn validate_context_entry(value: &Value, path: &str) -> Result<(), NarrativeIrVa
             ));
         }
     }
-    if !known_context_exposure(require(value, "exposure", path)?)
-        || !require(value, "selector", path)?.is_object()
-    {
+    if !known_context_exposure(require(value, "exposure", path)?) {
         return Err(validation_error("invalid-revision-basis", path));
     }
+    validate_dependency_selector_value(require(value, "selector", path)?, None)
+        .map_err(|_| validation_error("invalid-revision-basis", format!("{path}.selector")))?;
     Ok(())
 }
 
@@ -510,11 +513,19 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
         let context_ids = require(entry, "contextIds", &entry_path)?
             .as_array()
             .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?;
-        if context_ids.iter().any(|id| !non_empty_string(id))
-            || !require(entry, "selector", &entry_path)?.is_object()
-        {
+        if context_ids.iter().any(|id| !non_empty_string(id)) {
             return Err(validation_error("invalid-material-basis", &entry_path));
         }
+        DependencyRole::try_from(
+            require(entry, "role", &entry_path)?
+                .as_str()
+                .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?,
+        )
+        .map_err(|_| validation_error("invalid-material-basis", format!("{entry_path}.role")))?;
+        validate_dependency_selector_value(require(entry, "selector", &entry_path)?, None)
+            .map_err(|_| {
+                validation_error("invalid-material-basis", format!("{entry_path}.selector"))
+            })?;
     }
     Ok(())
 }
@@ -549,6 +560,115 @@ fn validate_material_basis(value: &Value) -> Result<(), NarrativeIrValidationErr
         || !is_digest(require(value, "materialBasisDigest", path)?)
     {
         return Err(validation_error("invalid-digest", path));
+    }
+    Ok(())
+}
+
+fn evidence_input_ref(entry: &Map<String, Value>) -> Option<&str> {
+    entry
+        .get("sourceKey")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            entry
+                .get("evidenceRef")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        })
+}
+
+fn canonical_selector(value: &Value) -> Option<String> {
+    let selector = validate_dependency_selector_value(value, None).ok()?;
+    canonicalize_dependency_selector(&selector).ok()
+}
+
+fn validate_material_consistency(
+    material: &Map<String, Value>,
+    context_set: &Value,
+    context_path: &str,
+) -> Result<(), NarrativeIrValidationError> {
+    let evidence_values = require(material, "evidenceSet", "effectiveMaterialBasis")?
+        .as_array()
+        .ok_or_else(|| {
+            validation_error(
+                "invalid-material-basis",
+                "effectiveMaterialBasis.evidenceSet",
+            )
+        })?;
+    let dependency_values = require(material, "dependencySet", "effectiveMaterialBasis")?
+        .as_array()
+        .ok_or_else(|| {
+            validation_error(
+                "invalid-material-basis",
+                "effectiveMaterialBasis.dependencySet",
+            )
+        })?;
+
+    for (index, evidence) in evidence_values.iter().enumerate() {
+        let evidence = object(
+            evidence,
+            &format!("effectiveMaterialBasis.evidenceSet[{index}]"),
+        )?;
+        let expected_input_ref = evidence_input_ref(evidence).ok_or_else(|| {
+            validation_error(
+                "invalid-material-basis",
+                format!("effectiveMaterialBasis.evidenceSet[{index}]"),
+            )
+        })?;
+        let covered = dependency_values.iter().any(|dependency| {
+            let Some(dependency) = dependency.as_object() else {
+                return false;
+            };
+            dependency.get("role").and_then(Value::as_str) == Some("direct-evidence")
+                && dependency.get("inputRef").and_then(Value::as_str) == Some(expected_input_ref)
+        });
+        if !covered {
+            return Err(validation_error(
+                "invalid-material-basis",
+                format!("effectiveMaterialBasis.evidenceSet[{index}]"),
+            ));
+        }
+    }
+
+    let context_values = context_set
+        .as_array()
+        .ok_or_else(|| validation_error("invalid-revision-basis", context_path))?;
+    for (index, context) in context_values.iter().enumerate() {
+        let Some(context) = context.as_object() else {
+            continue;
+        };
+        if context.get("exposure").and_then(Value::as_str) != Some("model-visible") {
+            continue;
+        }
+        let context_id = context.get("contextId").and_then(Value::as_str);
+        let input_ref = context.get("inputRef").and_then(Value::as_str);
+        let selector_digest = context.get("selector").and_then(canonical_selector);
+        let covered = dependency_values.iter().any(|dependency| {
+            let Some(dependency) = dependency.as_object() else {
+                return false;
+            };
+            let context_ids = dependency
+                .get("contextIds")
+                .and_then(Value::as_array)
+                .map(|ids| {
+                    context_id.is_some_and(|id| {
+                        ids.iter().any(|candidate| candidate.as_str() == Some(id))
+                    })
+                })
+                .unwrap_or(false);
+            context_ids
+                && input_ref.is_some_and(|input| {
+                    dependency.get("inputRef").and_then(Value::as_str) == Some(input)
+                })
+                && selector_digest.is_some()
+                && dependency.get("selector").and_then(canonical_selector) == selector_digest
+        });
+        if !covered {
+            return Err(validation_error(
+                "invalid-material-basis",
+                format!("{context_path}[{index}]"),
+            ));
+        }
     }
     Ok(())
 }
@@ -921,8 +1041,29 @@ pub fn validate_narrative_revision_envelope_v2(
         ));
     }
 
-    validate_material_basis(require(value, "effectiveMaterialBasis", "envelope")?)?;
-    validate_revision_basis(require(value, "revisionBasis", "envelope")?)?;
+    let material_value = require(value, "effectiveMaterialBasis", "envelope")?;
+    validate_material_basis(material_value)?;
+    let basis_value = require(value, "revisionBasis", "envelope")?;
+    validate_revision_basis(basis_value)?;
+    let material = object(material_value, "effectiveMaterialBasis")?;
+    let basis = object(basis_value, "revisionBasis")?;
+    let (context_set, context_path) = match basis.get("kind").and_then(Value::as_str) {
+        Some("interpretation") => (
+            require(basis, "contextSet", "revisionBasis")?,
+            "revisionBasis.contextSet",
+        ),
+        Some("human-derived") => (
+            require(basis, "derivationContextSet", "revisionBasis")?,
+            "revisionBasis.derivationContextSet",
+        ),
+        _ => {
+            return Err(validation_error(
+                "invalid-revision-basis",
+                "revisionBasis.kind",
+            ));
+        }
+    };
+    validate_material_consistency(material, context_set, context_path)?;
     validate_projection_binding(require(value, "projectionBinding", "envelope")?)
 }
 

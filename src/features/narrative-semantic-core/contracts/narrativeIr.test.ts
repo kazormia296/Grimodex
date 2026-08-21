@@ -269,10 +269,12 @@ describe("Narrative IR V2 registry and structural schema", () => {
         fieldPath: "title",
       },
     });
-    expect(validateNarrativeRevisionEnvelopeV2(selectorMismatch)).toMatchObject({
-      valid: false,
-      reason: "invalid-material-basis",
-    });
+    expect(validateNarrativeRevisionEnvelopeV2(selectorMismatch)).toMatchObject(
+      {
+        valid: false,
+        reason: "invalid-material-basis",
+      },
+    );
 
     const directEvidenceContext = structuredClone(withoutCoverage);
     directEvidenceContext.effectiveMaterialBasis.evidenceSet.push({
@@ -286,9 +288,9 @@ describe("Narrative IR V2 registry and structural schema", () => {
       role: "direct-evidence",
       selector: { kind: "whole-source" },
     });
-    expect(
-      validateNarrativeRevisionEnvelopeV2(directEvidenceContext),
-    ).toEqual({ valid: true });
+    expect(validateNarrativeRevisionEnvelopeV2(directEvidenceContext)).toEqual({
+      valid: true,
+    });
 
     const conservativeFallback = structuredClone(withoutCoverage);
     conservativeFallback.effectiveMaterialBasis.dependencySet.push({
