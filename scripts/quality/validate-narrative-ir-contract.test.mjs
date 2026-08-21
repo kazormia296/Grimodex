@@ -29,6 +29,36 @@ function validate(contract = readJson("policies/narrative/narrative-ir-contract.
   return errors;
 }
 
+function findClosedObjectSchemaOmissions(schema, schemaPath = "#") {
+  if (schema === null || typeof schema !== "object") {
+    return [];
+  }
+
+  const omissions = [];
+  if (
+    schema.type === "object" &&
+    schema.additionalProperties === false &&
+    Array.isArray(schema.required)
+  ) {
+    const declared = schema.properties ?? {};
+    for (const key of schema.required) {
+      if (!Object.hasOwn(declared, key)) {
+        omissions.push(`${schemaPath}/${key}`);
+      }
+    }
+  }
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (value !== null && typeof value === "object") {
+      omissions.push(
+        ...findClosedObjectSchemaOmissions(value, `${schemaPath}/${key}`),
+      );
+    }
+  }
+
+  return omissions;
+}
+
 describe("NIR-0 Narrative IR contract", () => {
   it("accepts the contract freeze policy and all required fixture families", () => {
     assert.deepEqual(validate(), []);
@@ -342,6 +372,87 @@ describe("NIR-0 Narrative IR contract", () => {
       ),
       `expected ambiguous path-class field error: ${JSON.stringify(errors)}`,
     );
+  });
+
+  it("freezes V2 monotonicity at the typed-writer boundary without activating runtime", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+
+    assert.deepEqual(contract.monotonicity, {
+      currentRevisionRule: "once-v2-always-v2",
+      forbiddenTransitions: [
+        "v2-to-v1",
+        "v2-to-no-envelope",
+        "v2-to-legacy-unbound",
+        "v2-to-legacy-inherit-reconciliation-envelope",
+      ],
+      semanticAuthority: "typed-writer",
+      typedWriterValidation: [
+        "parent-current-revision-cas",
+        "v2-lineage-monotonicity",
+        "adapter-version",
+        "digest-recomputation",
+        "derivation-invariants",
+        "material-basis",
+        "change-intent",
+        "proposal-binding",
+      ],
+      structuralDefense: {
+        kind: "sqlite-before-insert-trigger",
+        role: "structural-defense-only",
+        state: "deferred-until-after-c2-zb",
+        productionEntryPoints: [],
+        errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+      },
+      contractFreezeOnly: true,
+    });
+
+    const missingDowngrade = structuredClone(contract);
+    missingDowngrade.monotonicity.forbiddenTransitions =
+      missingDowngrade.monotonicity.forbiddenTransitions.filter(
+        (transition) => transition !== "v2-to-no-envelope",
+      );
+    const errors = validate(missingDowngrade);
+    assert.ok(
+      errors.some((error) => /V2 monotonicity.*forbid every downgrade/i.test(error)),
+      `expected fail-closed V2 monotonicity error: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("keeps Chronicle pilot product wiring add-only and states the Project deletion boundary", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+
+    assert.deepEqual(contract.chroniclePilot, {
+      assertionKind: "scene-event@1",
+      productWiredChangeKinds: ["add"],
+      declaredOrReservedChangeKinds: ["revise", "retract", "merge", "split"],
+      existingProjectionRevisionStatus:
+        "requires-separately-ratified-proposal-kind-and-apply-path",
+    });
+
+    const overWired = structuredClone(contract);
+    overWired.chroniclePilot.productWiredChangeKinds = ["add", "revise"];
+    const errors = validate(overWired);
+    assert.ok(
+      errors.some((error) => /Chronicle pilot.*product-wired.*only add/i.test(error)),
+      `expected fail-closed Chronicle pilot wiring error: ${JSON.stringify(errors)}`,
+    );
+
+    const adr = readFileSync(
+      path.join(
+        REPO_ROOT,
+        "docs/adr/011-narrative-ir-revision-semantics-contract.md",
+      ),
+      "utf8",
+    );
+    assert.match(adr, /not guaranteed after physical Project deletion/i);
+    assert.match(adr, /not a globally permanent external identifier/i);
+  });
+
+  it("declares every required key in each fail-closed object schema", () => {
+    const schema = readJson(
+      "policies/narrative/schemas/narrative-ir-contract.schema.json",
+    );
+    assert.deepEqual(findClosedObjectSchemaOmissions(schema), []);
   });
 
 });
