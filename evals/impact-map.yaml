@@ -185,6 +185,8 @@ rules:
       - src/features/narrative-semantic-core/**
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
       - src/features/narrative-extraction/reconciler/stageExecution.ts

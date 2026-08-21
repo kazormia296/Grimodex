@@ -422,6 +422,7 @@ requirements:
       - src/features/narrative-semantic-core/contracts/scopeRelation.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - src/features/narrative-extraction/reconciler/stageExecution.ts
@@ -448,6 +449,7 @@ requirements:
       - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
       - src/features/narrative-extraction/reconciler/stageExecution.test.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
