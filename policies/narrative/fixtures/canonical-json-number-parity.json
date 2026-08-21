@@ -51,36 +51,42 @@
     {
       "id": "adversarial-negative-subnormal-exponent",
       "value": -9.189984828131569e-42,
+      "bits": "b7699e313bf2919a",
       "canonicalJson": "-9.189984828131569e-42",
       "digest": "sha256:92436a43918556a33ac86c16a8440e424feedcb1a4f16767f39de15a8ae921e2"
     },
     {
       "id": "adversarial-positive-large-exponent",
       "value": 1.778011883700226e84,
+      "bits": "516d49a94a4252d2",
       "canonicalJson": "1.778011883700226e+84",
       "digest": "sha256:5f0cc077c8c764026dae9937d88ac43aee06fdbae20bf35bc9353517a6184ba6"
     },
     {
       "id": "adversarial-small-exponent-rounding",
       "value": 2.1269813246923967e-89,
+      "bits": "2d85a9e76ad0aae2",
       "canonicalJson": "2.1269813246923967e-89",
       "digest": "sha256:4dc5f44764c529bd60da65f0be51dbea0a4c0cc32b21cd83c9df914b7f19e829"
     },
     {
       "id": "adversarial-large-exponent-rounding",
       "value": 4.401037203916448e184,
+      "bits": "6644b712d065a909",
       "canonicalJson": "4.401037203916448e+184",
       "digest": "sha256:fe10586c5891825a95951c724896b2d1aa1185476ec229c18c7ca751d8b03988"
     },
     {
       "id": "adversarial-fixed-rounding",
       "value": 97610.51043647097,
+      "bits": "40f7d4a82abf6ed8",
       "canonicalJson": "97610.51043647097",
       "digest": "sha256:ebf812403a0eebb3285e4d4c2e48e0a12ca43aa49f851e001fa7298d5ff2b618"
     },
     {
       "id": "adversarial-near-max-exponent",
       "value": -2.7847978682803407e305,
+      "bits": "ff59616057b64378",
       "canonicalJson": "-2.7847978682803407e+305",
       "digest": "sha256:189c34fa6a784f6c60dac9b31429fee9cb19edc50ef3e19ad9d583db7738eda6"
     }

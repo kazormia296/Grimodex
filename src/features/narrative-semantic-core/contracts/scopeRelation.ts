@@ -147,6 +147,8 @@ interface BoundComparison {
 
 interface OrderOracleValidationState {
   readonly comparisons: Map<string, Map<string, -1 | 0 | 1 | "unresolved">>;
+  readonly equalityParent: Map<string, string>;
+  readonly strictProofs: Array<readonly [string, string]>;
   readonly strictOrder: Map<string, Set<string>>;
 }
 
@@ -230,6 +232,8 @@ function validateOrderOracle(
 function createOrderOracleValidationState(): OrderOracleValidationState {
   return {
     comparisons: new Map(),
+    equalityParent: new Map(),
+    strictProofs: [],
     strictOrder: new Map(),
   };
 }
@@ -253,6 +257,21 @@ function cacheOrderComparison(
   state.comparisons.set(leftRef, row);
 }
 
+function findEqualityRoot(
+  state: OrderOracleValidationState,
+  reference: string,
+): string {
+  const parent = state.equalityParent.get(reference);
+  if (!parent) {
+    state.equalityParent.set(reference, reference);
+    return reference;
+  }
+  if (parent === reference) return reference;
+  const root = findEqualityRoot(state, parent);
+  state.equalityParent.set(reference, root);
+  return root;
+}
+
 function hasStrictOrderPath(
   state: OrderOracleValidationState,
   from: string,
@@ -268,36 +287,51 @@ function hasStrictOrderPath(
   return false;
 }
 
+function rebuildStrictOrder(state: OrderOracleValidationState): void {
+  state.strictOrder.clear();
+  for (const [lowerReference, upperReference] of state.strictProofs) {
+    const lower = findEqualityRoot(state, lowerReference);
+    const upper = findEqualityRoot(state, upperReference);
+    if (lower === upper || hasStrictOrderPath(state, upper, lower)) {
+      throw contractError(
+        "contradictory-proof",
+        "ScopeOrderOracle returned a strict proof inside an equality cycle",
+      );
+    }
+    const successors = state.strictOrder.get(lower) ?? new Set<string>();
+    successors.add(upper);
+    state.strictOrder.set(lower, successors);
+  }
+}
+
+function unionEqualityProof(
+  state: OrderOracleValidationState,
+  leftReference: string,
+  rightReference: string,
+): void {
+  const left = findEqualityRoot(state, leftReference);
+  const right = findEqualityRoot(state, rightReference);
+  if (left === right) return;
+  const [root, child] = left < right ? [left, right] : [right, left];
+  state.equalityParent.set(child, root);
+  rebuildStrictOrder(state);
+}
+
 function recordStrictOrderProof(
   state: OrderOracleValidationState,
   leftRef: string,
   rightRef: string,
   value: -1 | 0 | 1 | "unresolved",
 ): void {
-  if (value === "unresolved" || value === 0) {
-    if (
-      value === 0 &&
-      (hasStrictOrderPath(state, leftRef, rightRef) ||
-        hasStrictOrderPath(state, rightRef, leftRef))
-    ) {
-      throw contractError(
-        "contradictory-proof",
-        "ScopeOrderOracle returned equality after proving a strict order",
-      );
-    }
+  if (value === "unresolved") return;
+  if (value === 0) {
+    unionEqualityProof(state, leftRef, rightRef);
     return;
   }
   const lower = value === -1 ? leftRef : rightRef;
   const upper = value === -1 ? rightRef : leftRef;
-  if (hasStrictOrderPath(state, upper, lower)) {
-    throw contractError(
-      "contradictory-proof",
-      "ScopeOrderOracle returned a cyclic order proof",
-    );
-  }
-  const successors = state.strictOrder.get(lower) ?? new Set<string>();
-  successors.add(upper);
-  state.strictOrder.set(lower, successors);
+  state.strictProofs.push([lower, upper]);
+  rebuildStrictOrder(state);
 }
 
 function orderOracleFor(

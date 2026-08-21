@@ -437,10 +437,16 @@ describe("Narrative Scope Relation S2 contract", () => {
         ) {
           return 0;
         }
+        if (
+          (leftRef === "story:c" && rightRef === "story:d") ||
+          (leftRef === "story:d" && rightRef === "story:c")
+        ) {
+          return 0;
+        }
         if (leftRef === "story:a" && rightRef === "story:c") return -1;
         if (leftRef === "story:c" && rightRef === "story:a") return 1;
-        if (leftRef === "story:b" && rightRef === "story:c") return 1;
-        if (leftRef === "story:c" && rightRef === "story:b") return -1;
+        if (leftRef === "story:d" && rightRef === "story:b") return -1;
+        if (leftRef === "story:b" && rightRef === "story:d") return 1;
         return "unresolved";
       },
     };
@@ -455,7 +461,7 @@ describe("Narrative Scope Relation S2 contract", () => {
       storyTime: {
         kind: "interval",
         from: { ref: "story:c", inclusive: true },
-        until: { ref: "story:c", inclusive: true },
+        until: { ref: "story:d", inclusive: true },
       },
     });
 

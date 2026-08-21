@@ -26,11 +26,9 @@ fn write_string(value: &str, output: &mut String) -> Result<(), CanonicalJsonErr
 
 /// Format a finite Rust `f64` using ECMAScript's JSON number spelling.
 ///
-/// Rust's shortest-float formatter and ECMAScript choose the same significant
-/// digits, but they use different fixed/scientific cutovers. Rust also keeps a
-/// decimal `.0` for some `serde_json::Number` values. Starting from the
-/// shortest fixed representation lets this dependency-free formatter apply
-/// ECMAScript's `10^-6 <= abs(x) < 10^21` fixed-range rule exactly.
+/// The pinned `zmij` Schubfach formatter supplies shortest correctly-rounded
+/// digits for the binary64 value. This function then applies ECMAScript's
+/// `10^-6 <= abs(x) < 10^21` fixed/scientific cutover and exponent spelling.
 fn format_ecmascript_number(number: f64) -> Result<String, CanonicalJsonError> {
     if !number.is_finite() {
         return Err(CanonicalJsonError::NonFiniteNumber);
@@ -40,7 +38,14 @@ fn format_ecmascript_number(number: f64) -> Result<String, CanonicalJsonError> {
     }
 
     let negative = number.is_sign_negative();
-    let representation = number.abs().to_string();
+    // serde_json's pinned Number formatter uses the Schubfach implementation
+    // already present in this checkout and provides shortest correctly-rounded
+    // decimal digits for every finite f64. Rust's Display formatter is not
+    // ECMAScript-compatible for all binary64 values, so it must not be used as
+    // the digit source.
+    let representation = Number::from_f64(number.abs())
+        .ok_or(CanonicalJsonError::NonFiniteNumber)?
+        .to_string();
     let (mantissa, exponent_part) = representation
         .as_bytes()
         .iter()

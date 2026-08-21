@@ -11,6 +11,7 @@ struct NumberParityFixture {
 struct NumberParityCase {
     id: String,
     value: Value,
+    bits: Option<String>,
     #[serde(rename = "canonicalJson")]
     canonical_json: String,
     digest: String,
@@ -48,14 +49,24 @@ fn matches_ecmascript_number_spelling_and_digest_goldens() {
     .expect("canonical JSON number parity fixture parses");
 
     for case in fixture.cases {
+        let value = case
+            .bits
+            .as_deref()
+            .map(|bits| {
+                let bits = u64::from_str_radix(bits, 16).expect("f64 bits");
+                Value::Number(
+                    serde_json::Number::from_f64(f64::from_bits(bits)).expect("finite f64"),
+                )
+            })
+            .unwrap_or(case.value);
         assert_eq!(
-            canonical_json_string(&case.value).expect("canonical JSON"),
+            canonical_json_string(&value).expect("canonical JSON"),
             case.canonical_json,
             "{}",
             case.id
         );
         assert_eq!(
-            canonical_json_digest(&case.value).expect("canonical digest"),
+            canonical_json_digest(&value).expect("canonical digest"),
             case.digest,
             "{}",
             case.id
