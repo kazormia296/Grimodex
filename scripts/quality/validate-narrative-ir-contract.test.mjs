@@ -115,4 +115,157 @@ describe("NIR-0 Narrative IR contract", () => {
       `expected an independent adoption-track error: ${JSON.stringify(errors)}`,
     );
   });
+
+  it("binds ADR 005 AssertionModality and AssertionPolarity machine IDs and rejects drift", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+    const expectedModalities = [
+      "modality-explicit-text",
+      "modality-narrator-claim",
+      "modality-hearsay",
+      "modality-character-belief",
+      "modality-inference",
+      "modality-hypothesis",
+      "modality-author-declaration",
+      "modality-imported-assertion",
+    ];
+    const expectedPolarities = ["affirmative", "negative", "uncertain"];
+
+    assert.deepEqual(contract.vocabularies.assertionModalities, expectedModalities);
+    assert.deepEqual(contract.vocabularies.assertionPolarities, expectedPolarities);
+
+    const importedVocabularyIds = new Set([
+      ...contract.vocabularies.producerKinds,
+      ...contract.vocabularies.supportClasses,
+    ]);
+    assert.deepEqual(
+      expectedModalities.filter((id) => importedVocabularyIds.has(id)),
+      [],
+      "Modality machine IDs must not collide with imported Producer or Support Class IDs",
+    );
+
+    const missingModality = structuredClone(contract);
+    missingModality.vocabularies.assertionModalities =
+      missingModality.vocabularies.assertionModalities.slice(0, -1);
+    assert.ok(
+      validate(missingModality).some((error) =>
+        /AssertionModality.*exact ADR 005 vocabulary/i.test(error),
+      ),
+      "expected fail-closed AssertionModality validation",
+    );
+
+    const missingPolarity = structuredClone(contract);
+    missingPolarity.vocabularies.assertionPolarities = ["affirmative", "negative"];
+    assert.ok(
+      validate(missingPolarity).some((error) =>
+        /AssertionPolarity.*affirmative.*negative.*uncertain/i.test(error),
+      ),
+      "expected fail-closed AssertionPolarity validation",
+    );
+  });
+
+  it("requires executable single-authority golden inputs and validates their outputs", async () => {
+    const validatorModule = await import("./validate-narrative-ir-contract.mjs");
+    assert.equal(
+      typeof validatorModule.validateNarrativeIrGoldenFixture,
+      "function",
+      "golden fixtures need a reusable semantic validator",
+    );
+
+    const fixture = readJson(
+      "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+    );
+    const scopeContract = readJson(
+      "policies/narrative/narrative-scope-relation-contract.json",
+    );
+    const errors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      fixture,
+      scopeContract,
+      errors,
+    );
+    assert.deepEqual(errors, []);
+
+    for (const entry of fixture.cases) {
+      assert.equal(entry.input.adapter.id, fixture.adapter.id);
+      assert.equal(entry.input.adapter.version, fixture.adapter.version);
+      assert.equal(
+        Object.hasOwn(entry.expected ?? {}, "typescript") ||
+          Object.hasOwn(entry.expected ?? {}, "rust"),
+        false,
+        `${entry.id} must have one authoritative expected result`,
+      );
+      if (entry.kind !== "human-derivation") {
+        assert.equal(
+          Object.hasOwn(entry.expected ?? {}, "derivationKind"),
+          false,
+          `${entry.id} must not claim a Human-derived derivationKind`,
+        );
+      }
+    }
+
+    const badDigest = structuredClone(fixture);
+    badDigest.cases.find((entry) => entry.expected?.scopeDigest).expected.scopeDigest =
+      "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+    const digestErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      badDigest,
+      scopeContract,
+      digestErrors,
+    );
+    assert.ok(
+      digestErrors.some((error) => /scopeDigest.*SHA-256/i.test(error)),
+      `expected digest verification error: ${JSON.stringify(digestErrors)}`,
+    );
+
+    const badOrder = structuredClone(fixture);
+    const orderedCase = badOrder.cases.find(
+      (entry) => entry.expected?.canonicalScopeJson,
+    );
+    const parsedScope = JSON.parse(orderedCase.expected.canonicalScopeJson);
+    orderedCase.expected.canonicalScopeJson = JSON.stringify({
+      schemaVersion: parsedScope.schemaVersion,
+      ...parsedScope,
+    });
+    const orderErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      badOrder,
+      scopeContract,
+      orderErrors,
+    );
+    assert.ok(
+      orderErrors.some((error) => /canonical Scope JSON.*key order/i.test(error)),
+      `expected canonical key-order error: ${JSON.stringify(orderErrors)}`,
+    );
+
+    const badHumanDiff = structuredClone(fixture);
+    badHumanDiff.cases.find(
+      (entry) => entry.id === "mixed-title-secret-uses-scope-override",
+    ).expected.changedPaths = ["/title"];
+    const diffErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      badHumanDiff,
+      scopeContract,
+      diffErrors,
+    );
+    assert.ok(
+      diffErrors.some((error) => /mixed-title-secret.*changedPaths/i.test(error)),
+      `expected Human-derived diff error: ${JSON.stringify(diffErrors)}`,
+    );
+  });
+
+  it("resolves the CLI repository root from Windows file URLs", async () => {
+    const validatorModule = await import("./validate-narrative-ir-contract.mjs");
+    assert.equal(
+      typeof validatorModule.resolveRepoRootFromModuleUrl,
+      "function",
+    );
+    assert.equal(
+      validatorModule.resolveRepoRootFromModuleUrl(
+        "file:///C:/work/Grimodex/scripts/quality/validate-narrative-ir-contract.mjs",
+        "win32",
+      ),
+      "C:\\work\\Grimodex",
+    );
+  });
+
 });
