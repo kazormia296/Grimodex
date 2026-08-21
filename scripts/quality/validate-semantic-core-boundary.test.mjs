@@ -684,6 +684,215 @@ describe("validate-semantic-core-boundary", () => {
     }
   });
 
+  it("rejects unresolved computed values that flow through invocation aliases", () => {
+    const sensitiveCases = [
+      {
+        name: "exact conditional key alias",
+        source: [
+          'const key = flag ? "execute" : "query";',
+          "const mutate = database[key];",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "reassigned key alias",
+        source: [
+          'let key = "lookup";',
+          'key = getMethod();',
+          "const mutate = database[key];",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "opaque dynamic key alias",
+        source: [
+          "const mutate = database[getMethod()];",
+          'mutate?.("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "parenthesized and asserted alias",
+        source: [
+          'const mutate = ((database[getMethod()] as unknown)!) as (() => void);',
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "satisfies and await wrappers",
+        source: [
+          'const mutate = (await database[getMethod()]) satisfies (() => void);',
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "comma conditional and logical wrappers",
+        source: [
+          'const comma = (0, database[getMethod()]);',
+          'const conditional = flag ? database[getMethod()] : noop;',
+          'const logical = flag && database[getMethod()];',
+          "comma();",
+          "conditional?.();",
+          "logical();",
+        ].join("\n"),
+      },
+      {
+        name: "assignment alias",
+        source: [
+          "let mutate;",
+          "mutate = database[getMethod()];",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "indirect call apply and bind aliases",
+        source: [
+          "const mutate = database[getMethod()];",
+          'mutate.call(database, "DELETE FROM narrative_proposal_revisions");',
+          'mutate.apply(database, ["DELETE FROM narrative_proposal_revisions"]);',
+          'mutate.bind(database)("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "computed indirect method aliases and bound result",
+        source: [
+          "const mutate = database[getMethod()];",
+          'const call = mutate["call"];',
+          'const apply = mutate["apply"];',
+          'const bind = mutate["bind"];',
+          "const bound = bind(database);",
+          'call(database, "DELETE FROM narrative_proposal_revisions");',
+          'apply(database, ["DELETE FROM narrative_proposal_revisions"]);',
+          'bound("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array extraction",
+        source: [
+          "const aliases = [database[getMethod()]];",
+          "const mutate = aliases[0];",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array destructuring and nested defaults",
+        source: [
+          "const aliases = [[database[getMethod()]]];",
+          "const [[mutate = noop]] = aliases;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "object member extraction",
+        source: [
+          "const aliases = { mutate: database[getMethod()] };",
+          "const mutate = aliases.mutate;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "destructure default and nested extraction",
+        source: [
+          "const aliases = { nested: { mutate: database[getMethod()] } };",
+          "const { nested: { mutate = noop } = {} } = aliases;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "destructure rest extraction",
+        source: [
+          "const aliases = { mutate: database[getMethod()], keep: noop };",
+          "const { missing, ...rest } = aliases;",
+          "const mutate = rest.mutate;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "new tagged and Reflect invocation sinks",
+        source: [
+          "const mutate = database[getMethod()];",
+          "new mutate();",
+          "mutate`DELETE FROM narrative_proposal_revisions`;",
+          "Reflect.apply(mutate, database, []);",
+          "Reflect.construct(mutate, []);",
+        ].join("\n"),
+      },
+      {
+        name: "closure invocation of a tainted local",
+        source: [
+          "function run() {",
+          "  const mutate = database[getMethod()];",
+          '  return () => mutate("DELETE FROM narrative_proposal_revisions");',
+          "}",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `invocation-taint-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject invocation-oriented computed aliases: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
+  it("preserves benign callable aliases, lexical shadowing, and read-only computed accesses", () => {
+    const controls = [
+      {
+        name: "static benign lookup alias",
+        source: [
+          'const registry = { lookup: () => true };',
+          'const lookup = registry["lookup"];',
+          "lookup();",
+        ].join("\n"),
+      },
+      {
+        name: "lexically shadowed callable alias",
+        source: [
+          "const mutate = database[getMethod()];",
+          "{",
+          "  const mutate = () => true;",
+          "  mutate();",
+          "}",
+        ].join("\n"),
+      },
+      {
+        name: "observation rows read only",
+        source: [
+          "const observation = observationRows[index];",
+          "const recordValue = record[key];",
+          "const entryValue = entry[field];",
+          "const axisValue = value[axis];",
+          "const beforeValue = before[key];",
+          "const oracleValue = orderOracles?.[axis];",
+          "console.log(observation, recordValue, entryValue, axisValue, beforeValue, oracleValue);",
+        ].join("\n"),
+      },
+      {
+        name: "dynamic production receivers with benign member calls",
+        source: [
+          "REQUIRED_CONTROLS[route].filter(Boolean);",
+          "AXIS_VALUES[axis].includes(value);",
+          "record[key].trim();",
+          "Reflect.get(record, key);",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of controls.entries()) {
+      const filename = `invocation-taint-control-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.deepEqual(
+        errors,
+        [],
+        `${testCase.name} must remain allowed: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
