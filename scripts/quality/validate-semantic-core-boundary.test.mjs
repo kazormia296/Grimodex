@@ -396,7 +396,7 @@ describe("validate-semantic-core-boundary", () => {
 
     assert.ok(
       errors.some((error) =>
-        /required Interpreter boundary root.*narrative-extraction\/reconciler/i.test(
+        /ratified required roots.*narrative-extraction\/reconciler/i.test(
           error,
         ),
       ),
@@ -405,6 +405,36 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(
       errors.some((error) => /ratified.*forbidden dependency patterns.*sql-import/i.test(error)),
       `expected the ratified SQL import deny semantics to remain mandatory: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("does not let the Interpreter allowlist hide files or broaden type-only imports", () => {
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    contract.interpreterBoundary.allowlist.files = [
+      "src/features/narrative-extraction/reconciler/stageExecution.ts",
+    ];
+    contract.interpreterBoundary.allowlist.imports.find(
+      (entry) => entry.id === "type-only-domain-vocabulary",
+    ).pattern = ".*";
+    const errors = [];
+
+    validateInterpreterBoundary(REPO_ROOT, contract, errors);
+
+    assert.ok(
+      errors.some((error) => /ratified Interpreter allowlist files/i.test(error)),
+      `expected the allowlist file set to remain ratified: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /ratified Interpreter allowlist import.*type-only-domain-vocabulary/i.test(error)),
+      `expected the allowlist import pattern to remain ratified: ${JSON.stringify(errors)}`,
     );
   });
 
@@ -419,7 +449,12 @@ describe("validate-semantic-core-boundary", () => {
       ),
     );
     for (const artifact of original.artifacts) {
-      for (const field of ["lifecycle", "authority", "authoritative"]) {
+      for (const field of [
+        "lifecycle",
+        "authority",
+        "authoritative",
+        "retention.scope",
+      ]) {
         const contract = structuredClone(original);
         const candidate = contract.artifacts.find(
           (entry) => entry.id === artifact.id,
@@ -428,6 +463,8 @@ describe("validate-semantic-core-boundary", () => {
           candidate[field] = artifact.lifecycle === "durable" ? "ephemeral" : "durable";
         } else if (field === "authority") {
           candidate[field] = artifact.authority === "none" ? "source-identity" : "none";
+        } else if (field === "retention.scope") {
+          candidate.retention.scope = `${artifact.retention.scope}-mutated`;
         } else {
           candidate[field] = !artifact.authoritative;
         }
