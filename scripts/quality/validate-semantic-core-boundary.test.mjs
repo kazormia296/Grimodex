@@ -228,6 +228,30 @@ function validateInterpreterSourceFixture(relativeFilename, source, configureCon
   return errors;
 }
 
+function validateArtifactFixtureContract(fixture) {
+  const root = mkdtempSync(path.join(tmpdir(), "artifact-authority-fixture-"));
+  const contract = JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "policies/narrative/narrative-artifact-authority.json",
+      ),
+      "utf8",
+    ),
+  );
+  contract.implementationStatus = {
+    state: "declared",
+    productionEntryPoints: [],
+    scanRoots: [],
+    productionMarkers: [],
+  };
+  writeJson(root, "policies/narrative/fixtures/artifact-authority.json", fixture);
+  const errors = [];
+  validateArtifactAuthorityContract(root, contract, errors);
+  rmSync(root, { recursive: true, force: true });
+  return errors;
+}
+
 describe("validate-semantic-core-boundary", () => {
   it("accepts the repository's ratified semantic contract", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
@@ -296,6 +320,59 @@ describe("validate-semantic-core-boundary", () => {
     );
     assert.ok(
       errors.some((error) => /raw-model-response.*not-retained/i.test(error)),
+    );
+  });
+
+  it("evaluates every artifact source golden and rejects malformed or swapped dispositions", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/fixtures/artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    assert.deepEqual(validateArtifactFixtureContract(fixture), []);
+
+    const malformedAccepted = structuredClone(fixture);
+    malformedAccepted.cases.find(
+      (fixtureCase) => fixtureCase.id === "interpreter-malformed-source-rejected",
+    ).expected = "accept";
+    const malformedErrors = validateArtifactFixtureContract(malformedAccepted);
+    assert.ok(
+      malformedErrors.some((error) =>
+        /interpreter-malformed-source-rejected.*expected accept.*got reject/i.test(
+          error,
+        ),
+      ),
+      `malformed source must not be accepted: ${JSON.stringify(malformedErrors)}`,
+    );
+
+    const swapped = structuredClone(fixture);
+    swapped.cases.find(
+      (fixtureCase) => fixtureCase.id === "interpreter-typed-writer-rejected",
+    ).expected = "accept";
+    swapped.cases.find(
+      (fixtureCase) =>
+        fixtureCase.id === "interpreter-type-only-vocabulary-allowed",
+    ).expected = "reject";
+    const swappedErrors = validateArtifactFixtureContract(swapped);
+    assert.ok(
+      swappedErrors.some((error) =>
+        /interpreter-typed-writer-rejected.*expected accept.*got reject/i.test(
+          error,
+        ),
+      ),
+      `unsafe source disposition swaps must fail closed: ${JSON.stringify(swappedErrors)}`,
+    );
+    assert.ok(
+      swappedErrors.some((error) =>
+        /interpreter-type-only-vocabulary-allowed.*expected reject.*got accept/i.test(
+          error,
+        ),
+      ),
+      `safe source disposition swaps must fail closed: ${JSON.stringify(swappedErrors)}`,
     );
   });
 

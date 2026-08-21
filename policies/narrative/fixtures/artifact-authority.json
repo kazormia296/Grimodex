@@ -27,7 +27,7 @@
       "id": "interpreter-sql-import-rejected",
       "kind": "interpreter-boundary",
       "rule": "sql-import",
-      "source": "import { sql } from \\\"drizzle-orm\\\";",
+      "source": "import { sql } from \"drizzle-orm\";",
       "expected": "reject"
     },
     {
@@ -48,8 +48,15 @@
       "id": "interpreter-type-only-vocabulary-allowed",
       "kind": "interpreter-boundary",
       "rule": "type-only-domain-vocabulary",
-      "source": "import type { PlotPhaseType } from \\\"@/db/schema\\\";",
+      "source": "import type { PlotPhaseType } from \"@/db/schema\";",
       "expected": "accept"
+    },
+    {
+      "id": "interpreter-malformed-source-rejected",
+      "kind": "interpreter-boundary",
+      "rule": "parse-diagnostics",
+      "source": "const broken = ;",
+      "expected": "reject"
     }
   ]
 }

@@ -471,6 +471,7 @@ const REQUIRED_ARTIFACT_FIXTURES = Object.freeze([
   "interpreter-typed-writer-rejected",
   "interpreter-freshness-store-rejected",
   "interpreter-type-only-vocabulary-allowed",
+  "interpreter-malformed-source-rejected",
 ]);
 
 const EXPECTED_ALLOWED_CALLERS = Object.freeze({
