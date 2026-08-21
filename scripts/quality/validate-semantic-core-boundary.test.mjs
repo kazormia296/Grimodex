@@ -201,6 +201,32 @@ function minimalFixtureRoot() {
   return root;
 }
 
+function validateInterpreterSourceFixture(relativeFilename, source) {
+  const root = minimalFixtureRoot();
+  const contract = JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "policies/narrative/narrative-artifact-authority.json",
+      ),
+      "utf8",
+    ),
+  );
+  const interpreterRoot = "src/features/narrative-extraction/ir";
+  for (const relativeRoot of contract.interpreterBoundary.interpreterRoots) {
+    mkdirSync(path.join(root, relativeRoot), { recursive: true });
+  }
+  writeJson(root, contract.interpreterBoundary.fixtures[0], {});
+  const target = path.join(root, interpreterRoot, relativeFilename);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, source);
+  const errors = [];
+
+  validateInterpreterBoundary(root, contract, errors);
+  rmSync(root, { recursive: true, force: true });
+  return errors;
+}
+
 describe("validate-semantic-core-boundary", () => {
   it("accepts the repository's ratified semantic contract", () => {
     const result = validateSemanticCoreBoundary({ repoRoot: REPO_ROOT });
@@ -403,6 +429,76 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("rejects the exact aliased nonliteral import and computed mutation bypass", () => {
+    const errors = validateInterpreterSourceFixture(
+      "alias-db.mts",
+      [
+        'const source = "@/db/client";',
+        "const { database: storage } = await import(source);",
+        'storage["execute"]("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*alias-db\.mts/i.test(error)),
+      `nonliteral dynamic imports must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /db-mutation.*alias-db\.mts/i.test(error)),
+      `computed database mutations must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects a nonliteral dynamic import independently of mutations", () => {
+    const errors = validateInterpreterSourceFixture(
+      "nonliteral-import.mts",
+      [
+        'const source = "@/db/client";',
+        "await import(source);",
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /non-literal-dynamic-import.*nonliteral-import\.mts/i.test(error)),
+      `nonliteral dynamic imports must be rejected independently: ${JSON.stringify(errors)}`,
+    );
+    assert.equal(
+      errors.some((error) => /db-mutation.*nonliteral-import\.mts/i.test(error)),
+      false,
+      `a nonliteral import alone must not fabricate a DB mutation finding: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects a computed mutation independently of imports", () => {
+    const errors = validateInterpreterSourceFixture(
+      "computed-mutation.mts",
+      'const storage = getStorage();\nstorage["execute"]("DELETE FROM narrative_proposal_revisions");\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*computed-mutation\.mts/i.test(error)),
+      `computed database mutations must be rejected independently: ${JSON.stringify(errors)}`,
+    );
+    assert.equal(
+      errors.some((error) => /non-literal-dynamic-import.*computed-mutation\.mts/i.test(error)),
+      false,
+      `a computed mutation alone must not fabricate a dynamic import finding: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("allows literal dynamic imports and benign computed calls", () => {
+    const errors = validateInterpreterSourceFixture(
+      "benign-computed.mts",
+      [
+        'await import("./literal-module");',
+        'const registry = { lookup: () => true };',
+        'registry["lookup"]();',
+      ].join("\n"),
+    );
+
+    assert.deepEqual(errors, []);
+  });
+
   it("detects an unauthorized local Freshness authority in code", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
@@ -481,6 +577,9 @@ describe("validate-semantic-core-boundary", () => {
     contract.interpreterBoundary.forbiddenDependencies.find(
       (rule) => rule.id === "sql-import",
     ).patterns = ["(?!)"];
+    contract.interpreterBoundary.forbiddenDependencies.find(
+      (rule) => rule.id === "non-literal-dynamic-import",
+    ).patterns = ["(?!)"];
     const errors = [];
 
     validateInterpreterBoundary(REPO_ROOT, contract, errors);
@@ -496,6 +595,10 @@ describe("validate-semantic-core-boundary", () => {
     assert.ok(
       errors.some((error) => /ratified.*forbidden dependency patterns.*sql-import/i.test(error)),
       `expected the ratified SQL import deny semantics to remain mandatory: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /ratified.*forbidden dependency patterns.*non-literal-dynamic-import/i.test(error)),
+      `expected nonliteral dynamic import deny semantics to remain mandatory: ${JSON.stringify(errors)}`,
     );
   });
 

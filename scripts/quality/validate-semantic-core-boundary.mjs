@@ -383,6 +383,7 @@ const REQUIRED_ARTIFACT_AUTHORITY_ROWS = Object.freeze([
 ]);
 
 const REQUIRED_INTERPRETER_DEPENDENCY_RULES = Object.freeze([
+  "non-literal-dynamic-import",
   "sql-import",
   "db-mutation",
   "prepared-commit",
@@ -418,6 +419,9 @@ const REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS = Object.freeze([
 ]);
 
 const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
+  "non-literal-dynamic-import": Object.freeze([
+    "\\b(?:import|require)\\s*\\(\\s*(?![\\\"'`])[^)]*\\)",
+  ]),
   "sql-import": Object.freeze([
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]",
@@ -426,6 +430,7 @@ const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
     "\\b(?:db|database|conn|connection|tx|transaction)\\s*(?:\\.|\\?\\.)\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*(?:\\?\\.)?\\s*\\(",
     "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
+    "\\b[A-Za-z_$][A-Za-z0-9_$]*\\s*(?:\\?\\.)?\\s*\\[\\s*[\\\"'`](?:execute|exec|run|prepare|query|insert|update|delete)[\\\"'`]\\s*\\]\\s*(?:\\?\\.)?\\s*\\(",
   ]),
   "prepared-commit": Object.freeze([
     "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",
