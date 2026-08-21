@@ -3,6 +3,11 @@
   "contract": "narrative-dependency-role-registry",
   "adr": "docs/adr/010-narrative-dependency-role-granularity-contract.md",
   "roleContractVersion": "narrative-dependency-role/1",
+  "requirementIds": [
+    "GDX-NARR-SEMANTIC-CONTRACT-001",
+    "GDX-TRACE-001"
+  ],
+  "fixtureFile": "policies/narrative/fixtures/dependency-role-contract.json",
   "implementationStatus": {
     "state": "declared",
     "productionEntryPoints": [],

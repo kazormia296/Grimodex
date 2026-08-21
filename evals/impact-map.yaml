@@ -182,6 +182,8 @@ rules:
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
       - policies/narrative/**
       - src/features/narrative-semantic-core/**
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     requirements:

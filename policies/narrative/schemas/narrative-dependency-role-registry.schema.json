@@ -7,6 +7,8 @@
     "contract",
     "adr",
     "roleContractVersion",
+    "requirementIds",
+    "fixtureFile",
     "implementationStatus",
     "sets",
     "promptConstruction",
@@ -37,6 +39,15 @@
     "roleContractVersion": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9-]*/[1-9][0-9]*$"
+    },
+    "requirementIds": {
+      "const": [
+        "GDX-NARR-SEMANTIC-CONTRACT-001",
+        "GDX-TRACE-001"
+      ]
+    },
+    "fixtureFile": {
+      "const": "policies/narrative/fixtures/dependency-role-contract.json"
     },
     "implementationStatus": { "$ref": "#/$defs/implementationStatus" },
     "sets": {

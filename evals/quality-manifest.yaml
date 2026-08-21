@@ -400,6 +400,7 @@ requirements:
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
@@ -408,6 +409,8 @@ requirements:
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
@@ -418,6 +421,8 @@ requirements:
       - src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts
       - src/features/narrative-semantic-core/contracts/scope.test.ts
       - src/features/narrative-semantic-core/contracts/disclosure.test.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
@@ -562,6 +567,10 @@ requirements:
     implementedBy:
       - policies/narrative/narrative-artifact-authority.json
       - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md

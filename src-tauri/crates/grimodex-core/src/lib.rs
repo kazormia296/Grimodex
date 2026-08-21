@@ -36,6 +36,7 @@ pub mod change_events;
 pub mod chronicle_time;
 pub mod codex_matching;
 pub mod license;
+pub mod narrative_dependency;
 pub mod pm_text;
 pub mod policy;
 pub mod snapshots;

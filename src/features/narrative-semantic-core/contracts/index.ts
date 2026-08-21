@@ -1,5 +1,6 @@
 export * from "./assertionState";
 export * from "./disclosure";
+export * from "./dependencyRole";
 export * from "./evidencePolicy";
 export * from "./mutationAuthority";
 export * from "./narrativeIr";

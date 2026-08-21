@@ -1,8 +1,7 @@
 use grimodex_core::narrative_dependency::{
-    aggregate_dependency_build_actions, canonicalize_dependency_selector,
-    compute_dependency_key, evaluate_dependency_effect, load_dependency_role_registry,
-    DependencyEffect, DependencyEffectInput, DependencySelector, BuildAction,
-    EvidenceFreshness, ActionRequirement,
+    aggregate_dependency_build_actions, canonicalize_dependency_selector, compute_dependency_key,
+    evaluate_dependency_effect, load_dependency_role_registry, ActionRequirement, BuildAction,
+    DependencyEffect, DependencyEffectInput, DependencySelector, EvidenceFreshness,
 };
 use serde::Deserialize;
 
@@ -19,9 +18,11 @@ fn shared_effect_fixtures_match_the_pure_rust_evaluator() {
     .expect("dependency role fixture parses");
     let registry = load_dependency_role_registry().expect("dependency role policy parses");
 
-    for case in fixture.cases.iter().filter(|case| {
-        case["kind"] == "effect-evaluation" && case["expected"] != "reject"
-    }) {
+    for case in fixture
+        .cases
+        .iter()
+        .filter(|case| case["kind"] == "effect-evaluation" && case["expected"] != "reject")
+    {
         let input = &case["input"];
         let result = evaluate_dependency_effect(
             &registry,
@@ -32,7 +33,10 @@ fn shared_effect_fixtures_match_the_pure_rust_evaluator() {
             },
         )
         .expect("registered effect");
-        assert_eq!(serde_json::to_value(result).expect("effect serializes"), case["expected"]);
+        assert_eq!(
+            serde_json::to_value(result).expect("effect serializes"),
+            case["expected"]
+        );
     }
 }
 
@@ -59,9 +63,7 @@ fn unknown_role_and_combination_fail_closed() {
         },
     )
     .expect_err("undefined combination must be rejected");
-    assert!(unknown_combination
-        .to_string()
-        .contains("no effect rule"));
+    assert!(unknown_combination.to_string().contains("no effect rule"));
 }
 
 #[test]
@@ -95,6 +97,12 @@ fn required_and_advisory_actions_are_aggregated_independently() {
     ];
     let summary = aggregate_dependency_build_actions(&effects);
     assert_eq!(summary.required_actions, vec![BuildAction::ResolveOnly]);
-    assert_eq!(summary.advisory_actions, vec![BuildAction::RefreshAvailable]);
-    assert_eq!(summary.compatibility_primary_action, BuildAction::ResolveOnly);
+    assert_eq!(
+        summary.advisory_actions,
+        vec![BuildAction::RefreshAvailable]
+    );
+    assert_eq!(
+        summary.compatibility_primary_action,
+        BuildAction::ResolveOnly
+    );
 }

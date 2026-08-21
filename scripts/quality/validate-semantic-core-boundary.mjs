@@ -228,6 +228,19 @@ const REQUIRED_DEPENDENCY_CONTRACT_FIXTURES = Object.freeze([
   "utf16-range-rejects-surrogate-interior",
 ]);
 
+const REQUIRED_DEPENDENCY_ROLE_FIXTURE_CASES = Object.freeze([
+  "direct-evidence-content-changed",
+  "catalog-content-change-is-stale-not-unknown",
+  "quality-context-remains-fresh-with-advisory-action",
+  "ranking-input-recompiles-semantic-index",
+  "unknown-role-fails-closed",
+  "unknown-effect-combination-fails-closed",
+  "unknown-selector-fails-closed",
+  "utf16-range-rejects-surrogate-interior",
+  "whole-source-dependency-key-golden",
+  "mixed-actions-stay-independent",
+]);
+
 const REQUIRED_ARTIFACT_IDS = Object.freeze([
   "source-snapshot",
   "stage-execution",
@@ -2083,6 +2096,27 @@ export function validateDependencyRoleContract(
     errors.push("one V2 Edge must never hide the active V1 dependency set");
   }
 
+  if (
+    !sameStringSet(contract.requirementIds, [
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-TRACE-001",
+    ])
+  ) {
+    errors.push(
+      "narrative dependency role contract must retain semantic-contract and traceability requirement IDs",
+    );
+  }
+  if (
+    contract.fixtureFile !==
+    "policies/narrative/fixtures/dependency-role-contract.json"
+  ) {
+    errors.push(
+      "narrative dependency role contract must point to its representative fixture file",
+    );
+  } else {
+    validateDependencyRoleContractFixture(repoRoot, contract.fixtureFile, errors);
+  }
+
   const fixtures = new Set(
     (contract.contractFixtures ?? []).map((fixture) => fixture?.id),
   );
@@ -2099,6 +2133,150 @@ export function validateDependencyRoleContract(
     contract.implementationStatus,
     errors,
   );
+}
+
+function validateDependencyRoleContractFixture(repoRoot, fixturePath, errors) {
+  const fixture = readJson(
+    repoRoot,
+    fixturePath,
+    errors,
+    "narrative dependency role contract fixture",
+  );
+  if (
+    !fixture ||
+    fixture.schemaVersion !== 1 ||
+    fixture.fixtureKind !== "narrative-dependency-role-contract" ||
+    !Array.isArray(fixture.cases)
+  ) {
+    errors.push(
+      "narrative dependency role contract fixture must declare schemaVersion 1, fixtureKind, and cases",
+    );
+    return;
+  }
+  if (
+    !sameStringSet(fixture.requirementIds, [
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+      "GDX-TRACE-001",
+    ])
+  ) {
+    errors.push(
+      "narrative dependency role contract fixture must retain semantic-contract and traceability requirement IDs",
+    );
+  }
+  const cases = new Map();
+  for (const fixtureCase of fixture.cases) {
+    if (!isObject(fixtureCase) || !isNonEmptyString(fixtureCase.id)) {
+      errors.push(
+        "narrative dependency role contract fixture cases must have unique non-empty ids",
+      );
+      continue;
+    }
+    if (cases.has(fixtureCase.id)) {
+      errors.push(
+        `duplicate narrative dependency role contract fixture case: ${fixtureCase.id}`,
+      );
+    }
+    cases.set(fixtureCase.id, fixtureCase);
+  }
+  for (const fixtureId of REQUIRED_DEPENDENCY_ROLE_FIXTURE_CASES) {
+    if (!cases.has(fixtureId)) {
+      errors.push(
+        `narrative dependency role contract fixture is missing case: ${fixtureId}`,
+      );
+    }
+  }
+  const expectedEffects = new Map([
+    [
+      "direct-evidence-content-changed",
+      {
+        freshness: "stale",
+        reasonCode: "source-revision-changed",
+        buildAction: "rebuild-required",
+        actionRequirement: "required",
+      },
+    ],
+    [
+      "catalog-content-change-is-stale-not-unknown",
+      {
+        freshness: "stale",
+        reasonCode: "source-revision-changed",
+        buildAction: "resolve-only",
+        actionRequirement: "required",
+      },
+    ],
+    [
+      "quality-context-remains-fresh-with-advisory-action",
+      {
+        freshness: "fresh",
+        reasonCode: null,
+        buildAction: "refresh-available",
+        actionRequirement: "advisory",
+      },
+    ],
+    [
+      "ranking-input-recompiles-semantic-index",
+      {
+        freshness: "stale",
+        reasonCode: "source-revision-changed",
+        buildAction: "recompile-only",
+        actionRequirement: "required",
+      },
+    ],
+  ]);
+  for (const [fixtureId, expected] of expectedEffects) {
+    const fixtureCase = cases.get(fixtureId);
+    if (JSON.stringify(fixtureCase?.expected) !== JSON.stringify(expected)) {
+      errors.push(
+        `narrative dependency fixture ${fixtureId} must retain its ratified effect output`,
+      );
+    }
+  }
+  const rejectExpectations = new Map([
+    ["unknown-role-fails-closed", "unknown-role"],
+    ["unknown-effect-combination-fails-closed", "missing-effect-rule"],
+    ["unknown-selector-fails-closed", "unknown-selector"],
+    ["utf16-range-rejects-surrogate-interior", "surrogate-boundary"],
+  ]);
+  for (const [fixtureId, errorCode] of rejectExpectations) {
+    const fixtureCase = cases.get(fixtureId);
+    if (fixtureCase?.expected !== "reject" || fixtureCase?.error !== errorCode) {
+      errors.push(
+        `narrative dependency fixture ${fixtureId} must fail closed with ${errorCode}`,
+      );
+    }
+  }
+  const keyFixture = cases.get("whole-source-dependency-key-golden");
+  if (
+    keyFixture?.expected !== "accept" ||
+    keyFixture?.canonicalSelector !== '{"kind":"whole-source"}' ||
+    keyFixture?.dependencyKey !==
+      "sha256:dc5ae15ade6f6ce31c7dece2a1ec161caed32628ae27e1c70f88bf035b54fc0c"
+  ) {
+    errors.push(
+      "narrative dependency fixture must retain the whole-source dependency key golden",
+    );
+  }
+  const mixedFixture = cases.get("mixed-actions-stay-independent");
+  if (
+    JSON.stringify(mixedFixture?.expected) !==
+    JSON.stringify({
+      requiredActions: ["resolve-only"],
+      advisoryActions: ["refresh-available"],
+      compatibilityPrimaryAction: "resolve-only",
+    })
+  ) {
+    errors.push(
+      "narrative dependency fixture must keep required and advisory actions independent",
+    );
+  }
+  if (
+    !fixture.cases.some((fixtureCase) => fixtureCase?.expected === "accept") ||
+    !fixture.cases.some((fixtureCase) => fixtureCase?.expected === "reject")
+  ) {
+    errors.push(
+      "narrative dependency role contract fixture must contain both accept and reject cases",
+    );
+  }
 }
 
 function readSourceIfPresent(repoRoot, relativePath) {
