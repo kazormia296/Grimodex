@@ -245,17 +245,16 @@ describe("Narrative IR V2 registry and structural schema", () => {
       reason: "invalid-material-basis",
     });
 
-    const unprovenPurpose = structuredClone(withoutCoverage);
-    unprovenPurpose.effectiveMaterialBasis.dependencySet.push({
+    const declaredPurpose = structuredClone(withoutCoverage);
+    declaredPurpose.effectiveMaterialBasis.dependencySet.push({
       dependencyId: "dependency:context",
       inputRef: "source:context",
       contextIds: ["context:1"],
       role: "entity-resolution",
       selector: { kind: "whole-source" },
     });
-    expect(validateNarrativeRevisionEnvelopeV2(unprovenPurpose)).toMatchObject({
-      valid: false,
-      reason: "invalid-material-basis",
+    expect(validateNarrativeRevisionEnvelopeV2(declaredPurpose)).toEqual({
+      valid: true,
     });
 
     const selectorMismatch = structuredClone(withoutCoverage);

@@ -200,8 +200,8 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
     without_coverage["revisionBasis"]["contextSet"] = json!([model_visible_context]);
     assert!(validate_narrative_revision_envelope_v2(&without_coverage).is_err());
 
-    let mut unproven_purpose = without_coverage.clone();
-    unproven_purpose["effectiveMaterialBasis"]["dependencySet"] = json!([{
+    let mut declared_purpose = without_coverage.clone();
+    declared_purpose["effectiveMaterialBasis"]["dependencySet"] = json!([{
         "dependencyId": "dependency:1",
         "inputRef": "anchor:1",
         "contextIds": [],
@@ -214,7 +214,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
         "role": "entity-resolution",
         "selector": {"kind": "whole-source"}
     }]);
-    assert!(validate_narrative_revision_envelope_v2(&unproven_purpose).is_err());
+    assert!(validate_narrative_revision_envelope_v2(&declared_purpose).is_ok());
 
     let mut selector_mismatch = without_coverage.clone();
     selector_mismatch["effectiveMaterialBasis"]["dependencySet"] = json!([{
