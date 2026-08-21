@@ -1200,6 +1200,17 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "conditional object alias reaches right branch",
+        source: [
+          "const left = { box: {} };",
+          "const right = { box: {} };",
+          "const box = flag ? left.box : right.box;",
+          "box.fn = database[key];",
+          "const fn = right.box.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
         name: "conditional array container alias",
         source: [
           "const left = [{}];",
@@ -1273,6 +1284,14 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "conditional undefined default",
+        source: [
+          "const safe = () => true;",
+          "const [fn = database[key]] = [flag ? undefined : safe];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
         name: "Reflect.apply call indirection",
         source: [
           "const fn = database[key];",
@@ -1309,6 +1328,29 @@ describe("validate-semantic-core-boundary", () => {
           "apply(fn, null, []);",
         ].join("\n"),
       },
+      {
+        name: "Reflect.get call result",
+        source: [
+          "const fn = Reflect.get.call(Reflect, database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.get bound result",
+        source: [
+          "const get = Reflect.get.bind(Reflect);",
+          "const fn = get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis Reflect.get bound result",
+        source: [
+          "const get = globalThis.Reflect.get.bind(globalThis.Reflect);",
+          "const fn = get(database, key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -1330,23 +1372,41 @@ describe("validate-semantic-core-boundary", () => {
         "const box = flag ? left.box : right.box;",
         "box.fn = safe;",
         "left.box.fn();",
+        "const spreadCopy = { ...(flag ? left : right) };",
+        "spreadCopy.fn = database[key];",
+        "left.box.fn();",
+        "right.box.fn();",
         "const safeXs = [];",
         "safeXs[2] = safe;",
         "const safeYs = [...safeXs, safe];",
         "const safeFn = safeYs[3];",
         "safeFn();",
+        "const nonnumericXs = [];",
+        "nonnumericXs.foo = database[key];",
+        "const nonnumericYs = [...nonnumericXs, safe];",
+        "const nonnumericFn = nonnumericYs[0];",
+        "nonnumericFn();",
         "const [definedArray = database[key]] = [safe];",
         "definedArray();",
+        "const [nullArray = database[key]] = [null];",
+        "nullArray();",
         "const { definedObject = database[key] } = { definedObject: safe };",
         "definedObject();",
+        "const { nullObject = database[key] } = { nullObject: null };",
+        "nullObject();",
         "Reflect.apply(safe, null, []);",
         "globalThis.Reflect.apply(safe, null, []);",
+        "const globalGet = globalThis.Reflect.get.bind(globalThis.Reflect);",
+        "const globalSafe = globalGet({ fn: safe }, 'fn');",
+        "globalSafe();",
         "const Reflect = { apply: () => true, construct: () => true };",
         "Reflect.apply.call(Reflect, safe, null, []);",
         "Reflect.apply.bind(Reflect)(safe, null, []);",
         "Reflect.construct.call(Reflect, safe, []);",
         "const globalThis = { Reflect: { apply: () => true } };",
         "globalThis.Reflect.apply(safe, null, []);",
+        "const shadowGet = globalThis.Reflect.get?.bind(globalThis.Reflect);",
+        "shadowGet?.({}, 'fn');",
       ].join("\n"),
     );
     assert.deepEqual(benignErrors, []);
