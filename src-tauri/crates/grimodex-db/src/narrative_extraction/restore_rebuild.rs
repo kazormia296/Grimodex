@@ -33,6 +33,14 @@ use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
+type RebuildRunIdentityRow = (
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
 fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!value.trim().is_empty(), "{name} is required");
     Ok(())
@@ -302,13 +310,7 @@ fn ensure_rebuild_run_identity_in_tx(
     run_id: &str,
     semantic_epoch_id: &str,
 ) -> anyhow::Result<()> {
-    let row: Option<(
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-    )> = conn
+    let row: Option<RebuildRunIdentityRow> = conn
         .query_row(
             "SELECT project_id, run_kind, semantic_epoch_id, work_key, status
                FROM narrative_extraction_runs

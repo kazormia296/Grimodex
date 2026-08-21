@@ -7950,7 +7950,7 @@ mod tests {
         db.migrate().expect("create current schema");
         seed_finding_identity_migration_fixture(&db, false);
 
-        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
             .expect("run SCHEMA 31 identity migration");
 
         let expected_material = crate::narrative_extraction::material_basis_digest(
@@ -8004,7 +8004,7 @@ mod tests {
         db.migrate().expect("create current schema");
         seed_finding_identity_migration_fixture(&db, true);
 
-        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
             .expect("run SCHEMA 31 identity migration");
 
         db.with_conn(|conn| {
@@ -8088,7 +8088,7 @@ mod tests {
         })
         .expect("seed non-current observation chain");
 
-        db.with_conn(|conn| Database::migrate_narrative_finding_identity_v31(conn))
+        db.with_conn(Database::migrate_narrative_finding_identity_v31)
             .expect("run SCHEMA 31 identity migration");
 
         db.with_conn(|conn| {
