@@ -375,6 +375,108 @@ describe("Narrative Scope Relation S2 contract", () => {
     );
   });
 
+  it("fails closed when equality classes form a strict cycle", () => {
+    const oracle: ScopeOrderOracle = {
+      axis: "story-time",
+      revisionToken: "story-time/1",
+      compare(leftRef, rightRef) {
+        if (leftRef === rightRef) return 0;
+        if (leftRef === "story:a" && rightRef === "story:b") return 0;
+        if (leftRef === "story:b" && rightRef === "story:a") return 0;
+        if (leftRef === "story:c" && rightRef === "story:e") return -1;
+        if (leftRef === "story:e" && rightRef === "story:c") return 1;
+        if (leftRef === "story:a" && rightRef === "story:c") return -1;
+        if (leftRef === "story:c" && rightRef === "story:a") return 1;
+        if (leftRef === "story:b" && rightRef === "story:e") return 1;
+        if (leftRef === "story:e" && rightRef === "story:b") return -1;
+        return "unresolved";
+      },
+    };
+    const left = scopeWith({
+      storyTime: {
+        kind: "interval",
+        from: { ref: "story:a", inclusive: true },
+        until: { ref: "story:b", inclusive: true },
+      },
+    });
+    const right = scopeWith({
+      storyTime: {
+        kind: "interval",
+        from: { ref: "story:c", inclusive: true },
+        until: { ref: "story:e", inclusive: true },
+      },
+    });
+
+    for (const [first, second] of [
+      [left, right],
+      [right, left],
+    ] as const) {
+      expect(() =>
+        compareScopeRelation(first, second, {
+          orderOracles: { "story-time": oracle },
+          basis,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          name: "ScopeRelationContractError",
+          code: "contradictory-proof",
+        }),
+      );
+    }
+  });
+
+  it("fails closed for the equality-class interval acceptance repro", () => {
+    const oracle: ScopeOrderOracle = {
+      axis: "story-time",
+      revisionToken: "story-time/1",
+      compare(leftRef, rightRef) {
+        if (leftRef === rightRef) return 0;
+        if (
+          (leftRef === "story:a" && rightRef === "story:b") ||
+          (leftRef === "story:b" && rightRef === "story:a")
+        ) {
+          return 0;
+        }
+        if (leftRef === "story:a" && rightRef === "story:c") return -1;
+        if (leftRef === "story:c" && rightRef === "story:a") return 1;
+        if (leftRef === "story:b" && rightRef === "story:c") return 1;
+        if (leftRef === "story:c" && rightRef === "story:b") return -1;
+        return "unresolved";
+      },
+    };
+    const left = scopeWith({
+      storyTime: {
+        kind: "interval",
+        from: { ref: "story:a", inclusive: true },
+        until: { ref: "story:b", inclusive: true },
+      },
+    });
+    const right = scopeWith({
+      storyTime: {
+        kind: "interval",
+        from: { ref: "story:c", inclusive: true },
+        until: { ref: "story:c", inclusive: true },
+      },
+    });
+
+    for (const [first, second] of [
+      [left, right],
+      [right, left],
+    ] as const) {
+      expect(() =>
+        compareScopeRelation(first, second, {
+          orderOracles: { "story-time": oracle },
+          basis,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          name: "ScopeRelationContractError",
+          code: "contradictory-proof",
+        }),
+      );
+    }
+  });
+
   it("gives disjoint precedence over unknown and never invents overlap", () => {
     const registry: ScopeRelationRegistry = {
       scopeRegistryVersion: "narrative-scope/2",
