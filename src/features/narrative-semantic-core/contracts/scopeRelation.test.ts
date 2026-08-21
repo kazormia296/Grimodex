@@ -6,11 +6,13 @@ import {
   composeScopeRelations,
   validateScopeOrder,
   type NarrativeScopeV2,
+  type ReferenceScopeConstraint,
   type ScopeAxis,
   type ScopeComparisonBasis,
   type ScopeOrderOracle,
   type ScopeRelation,
   type ScopeRelationRegistry,
+  type TemporalScopeConstraint,
 } from "./scopeRelation";
 
 const anyAxes: NarrativeScopeV2 = {
@@ -566,5 +568,69 @@ describe("Narrative Scope Relation S2 contract", () => {
     expect(
       composeScopeRelations({ ...relationAxes("equal"), scene: "overlaps" }),
     ).toBe("unknown");
+  });
+
+  it("rejects constraints from the wrong axis family", () => {
+    const referenceAxes: readonly ScopeAxis[] = [
+      "timeline",
+      "worldline",
+      "scene",
+      "viewpoint",
+      "knowledgeHolder",
+      "audience",
+      "narrativeLayer",
+    ];
+    const temporalAxes: readonly ScopeAxis[] = [
+      "storyTime",
+      "readingOrder",
+    ];
+    const interval = {
+      kind: "interval",
+      from: { ref: "story:1", inclusive: true },
+      until: { ref: "story:2", inclusive: true },
+    } as TemporalScopeConstraint;
+    const exact = { kind: "exact", ref: "scene:1" } as ReferenceScopeConstraint;
+    const compareUnchecked = compareScopeAxis as (
+      axis: ScopeAxis,
+      left: unknown,
+      right: unknown,
+    ) => unknown;
+
+    for (const axis of referenceAxes) {
+      expect(
+        () => compareUnchecked(axis, interval, interval),
+        `${axis} must reject temporal constraints`,
+      ).toThrowError(
+        expect.objectContaining({
+          name: "ScopeRelationContractError",
+          code: "invalid-scope",
+        }),
+      );
+    }
+    for (const axis of temporalAxes) {
+      expect(
+        () => compareUnchecked(axis, exact, exact),
+        `${axis} must reject reference constraints`,
+      ).toThrowError(
+        expect.objectContaining({
+          name: "ScopeRelationContractError",
+          code: "invalid-scope",
+        }),
+      );
+    }
+  });
+
+  it("keys composition evidence by SCOPE_AXES rather than object insertion order", () => {
+    const axes = {
+      scene: "overlaps",
+      ...Object.fromEntries(
+        SCOPE_AXES.filter((axis) => axis !== "scene").map((axis) => [
+          axis,
+          "equal",
+        ]),
+      ),
+    } as Record<ScopeAxis, ScopeRelation>;
+
+    expect(composeScopeRelations(axes, { timeline: true })).toBe("unknown");
   });
 });
