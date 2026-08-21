@@ -589,6 +589,101 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(benignErrors, []);
   });
 
+  it("rejects unresolved computed BindingElement properties fail-closed", () => {
+    const unresolvedCases = [
+      {
+        name: "reassigned let identifier",
+        source: [
+          'let method = "lookup";',
+          'method = "execute";',
+          "const { [method]: mutate } = database;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "opaque call identifier",
+        source: [
+          "let method = getMethod();",
+          "const { [method]: mutate } = database;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "conditional identifier",
+        source: [
+          'const method = flag ? "execute" : "lookup";',
+          "const { [method]: mutate } = database;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "direct call expression key",
+        source: [
+          "const { [getMethod()]: mutate } = database;",
+          'mutate("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "parameter key",
+        source: [
+          "function read(method) {",
+          "  const { [method]: mutate } = database;",
+          '  mutate("DELETE FROM narrative_proposal_revisions");',
+          "}",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of unresolvedCases.entries()) {
+      const filename = `unresolved-computed-binding-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} computed bindings must fail closed: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const benignControls = [
+      {
+        name: "known static benign computed key",
+        source: [
+          'const registry = { lookup: () => true };',
+          'const method = "lookup";',
+          "const { [method]: lookup } = registry;",
+          "lookup();",
+        ].join("\n"),
+      },
+      {
+        name: "literal benign computed key",
+        source: [
+          'const registry = { lookup: () => true };',
+          'const { ["lookup"]: lookup } = registry;',
+          "lookup();",
+        ].join("\n"),
+      },
+      {
+        name: "noncomputed benign destructuring",
+        source: [
+          'const registry = { lookup: () => true };',
+          "const { lookup } = registry;",
+          "lookup();",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of benignControls.entries()) {
+      const filename = `benign-binding-control-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.deepEqual(
+        errors,
+        [],
+        `${testCase.name} must remain allowed: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
