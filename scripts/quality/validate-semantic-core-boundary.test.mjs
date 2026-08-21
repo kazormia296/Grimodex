@@ -2478,6 +2478,111 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("tracks class fields, getter-returned callables, and Reflect call composition", () => {
+    const sensitiveCases = [
+      {
+        name: "instance arrow field",
+        source: [
+          "class Helper { invoke = (fn) => fn(); }",
+          "new Helper().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "static arrow field",
+        source: [
+          "class Helper { static invoke = (fn) => fn(); }",
+          "Helper.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "instance function field",
+        source: [
+          "class Helper { invoke = function (fn) { fn(); }; }",
+          "new Helper().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "static function field",
+        source: [
+          "class Helper { static invoke = function (fn) { fn(); }; }",
+          "Helper.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "object getter returning callable",
+        source: [
+          "const api = { get invoke() { return (fn) => fn(); } };",
+          "api.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class getter returning callable",
+        source: [
+          "class Helper { get invoke() { return (fn) => fn(); } }",
+          "new Helper().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class static getter returning callable",
+        source: [
+          "class Helper { static get invoke() { return (fn) => fn(); } }",
+          "Helper.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply local function",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "Reflect.apply(invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply alias",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const apply = Reflect.apply;",
+          "apply(invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.construct local class",
+        source: [
+          "class Helper { constructor(fn) { fn(); } }",
+          "Reflect.construct(Helper, [database[key]]);",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `local-call-composition-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject a tainted callable flow: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const safeErrors = validateInterpreterSourceFixture(
+      "local-call-composition-controls.mts",
+      [
+        "function invoke(fn) { fn(); }",
+        "invoke.call(null, () => true);",
+        "invoke.apply(null, [() => true]);",
+        "const safeApply = Reflect.apply;",
+        "safeApply(invoke, null, [() => true]);",
+        "class SafeHelper { constructor(fn) { fn(); } }",
+        "Reflect.construct(SafeHelper, [() => true]);",
+        "const safeApi = { get invoke() { return (fn) => fn(); } };",
+        "safeApi.invoke(() => true);",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      safeErrors,
+      [],
+      `safe callable composition must remain allowed: ${JSON.stringify(safeErrors)}`,
+    );
+  });
+
   it("rejects an Interpreter boundary with no roots or no deny rules", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
