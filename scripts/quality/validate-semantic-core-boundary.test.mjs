@@ -2094,6 +2094,30 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(errors, [], `controls must remain allowed: ${JSON.stringify(errors)}`);
   });
 
+  it("normalizes escaped static computed authority keys in executable positions", () => {
+    const errors = validateInterpreterSourceFixture(
+      "escaped-computed-authority-keys.ts",
+      [
+        'const registry = { ["typed\\u0057riter"]: true };',
+        'registry["typed\\u0057riter"] = true;',
+        'const state = { ["localFreshness\\u0053tore"]: new Map() };',
+        'const safe = { ["safeKey"]: true };',
+        'safe["safeKey"];',
+        'const label = "typed\\u0057riter";',
+        '// registry["localFreshness\\u0053tore"]',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /typed-writer.*escaped-computed-authority-keys\.ts/i.test(error)),
+      `escaped computed writer keys must be rejected: ${JSON.stringify(errors)}`,
+    );
+    assert.ok(
+      errors.some((error) => /freshness-store.*escaped-computed-authority-keys\.ts/i.test(error)),
+      `escaped computed Freshness keys must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("tracks tainted arguments into invoked local function parameters", () => {
     const sensitiveCases = [
       {
@@ -2162,6 +2186,101 @@ describe("validate-semantic-core-boundary", () => {
       errors,
       [],
       `safe and bounded local calls must remain allowed: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("tracks local callable aliases, object methods, destructured capabilities, and returns", () => {
+    const sensitiveCases = [
+      {
+        name: "local function alias",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const alias = invoke;",
+          "alias(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "object method",
+        source: [
+          "const api = { invoke(fn) { fn(); } };",
+          "api.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "destructured object method",
+        source: [
+          "const api = { invoke: (fn) => fn() };",
+          "const { invoke } = api;",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "object destructured parameter",
+        source: [
+          "function invoke({ fn }) { fn(); }",
+          "invoke({ fn: database[key] });",
+        ].join("\n"),
+      },
+      {
+        name: "array destructured parameter",
+        source: [
+          "function invoke([fn]) { fn(); }",
+          "invoke([database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "destructured parameter default",
+        source: [
+          "function invoke({ fn = database[key] } = {}) { fn(); }",
+          "invoke({});",
+        ].join("\n"),
+      },
+      {
+        name: "returned capability",
+        source: [
+          "function identity(fn) { return fn; }",
+          "identity(database[key])();",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `local-call-capability-extension-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject a tainted capability flow: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
+  it("keeps local callable extensions safe under callbacks, shadowing, and cycles", () => {
+    const errors = validateInterpreterSourceFixture(
+      "local-call-capability-extension-controls.mts",
+      [
+        "const safe = () => true;",
+        "function invoke(fn) { fn(); }",
+        "const alias = invoke;",
+        "alias(safe);",
+        "const api = { invoke(fn) { fn(); } };",
+        "api.invoke(safe);",
+        "function observe({ fn }) { return fn; }",
+        "observe({ fn: safe });",
+        "function shadow(fn) {",
+        "  { const fn = () => true; fn(); }",
+        "}",
+        "shadow(database[key]);",
+        "function recursive(fn) { return recursive(fn); }",
+        "recursive(database[key]);",
+        "function passthrough(fn) { return fn; }",
+        "passthrough(database[key]);",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      errors,
+      [],
+      `safe local callable extensions must remain allowed: ${JSON.stringify(errors)}`,
     );
   });
 
