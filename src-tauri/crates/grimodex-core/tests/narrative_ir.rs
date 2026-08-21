@@ -242,6 +242,12 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
         {"evidenceRef": "anchor:context", "sourceKey": "source:context"}
     ]);
     direct_evidence_context["effectiveMaterialBasis"]["dependencySet"] = json!([{
+        "dependencyId": "dependency:1",
+        "inputRef": "anchor:1",
+        "contextIds": [],
+        "role": "direct-evidence",
+        "selector": {"kind": "whole-source"}
+    }, {
         "dependencyId": "dependency:context",
         "inputRef": "source:context",
         "contextIds": ["context:1"],
