@@ -202,6 +202,44 @@
       },
       "expected": "reject",
       "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-feff-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "\uFEFFgdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-rejects-next-line-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "\u0085gdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "invalid-range"
+    },
+    {
+      "id": "utf16-range-accepts-ascii-normalizer",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 0,
+        "to": 1,
+        "normalizerVersion": "gdx-canonical-text/1"
+      },
+      "expected": "accept"
     }
   ]
 }

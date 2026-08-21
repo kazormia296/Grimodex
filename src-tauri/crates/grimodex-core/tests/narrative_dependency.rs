@@ -162,6 +162,28 @@ fn rejects_dependency_text_ranges_with_whitespace_normalizer_version() {
 }
 
 #[test]
+fn normalizer_version_uses_shared_ascii_token_grammar() {
+    let fixture: Fixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/dependency-role-contract.json"
+    ))
+    .expect("dependency role fixture parses");
+    for (id, expected_valid) in [
+        ("utf16-range-rejects-feff-normalizer", false),
+        ("utf16-range-rejects-next-line-normalizer", false),
+        ("utf16-range-accepts-ascii-normalizer", true),
+    ] {
+        let case = fixture
+            .cases
+            .iter()
+            .find(|case| case["id"] == id)
+            .expect("normalizer token golden");
+        let selector: DependencySelector =
+            serde_json::from_value(case["selector"].clone()).expect("text range selector");
+        assert_eq!(validate_dependency_selector(&selector, None).is_ok(), expected_valid, "{id}");
+    }
+}
+
+#[test]
 fn required_and_advisory_actions_are_aggregated_independently() {
     let effects = vec![
         DependencyEffect {

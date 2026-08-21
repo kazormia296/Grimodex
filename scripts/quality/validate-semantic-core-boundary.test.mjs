@@ -376,6 +376,79 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("pins artifact claims and each source golden to its declared semantics", () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/fixtures/artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+
+    const durableClaim = structuredClone(fixture);
+    durableClaim.cases.find(
+      (fixtureCase) => fixtureCase.id === "raw-model-response-durable-rejected",
+    ).claim.lifecycle = "ephemeral";
+    const durableErrors = validateArtifactFixtureContract(durableClaim);
+    assert.ok(
+      durableErrors.some(
+        (error) =>
+          /raw-model-response-durable-rejected.*expected reject.*got accept/i.test(
+            error,
+          ),
+      ),
+      `durable claim mutation must be detected: ${JSON.stringify(durableErrors)}`,
+    );
+
+    const indexClaim = structuredClone(fixture);
+    indexClaim.cases.find(
+      (fixtureCase) => fixtureCase.id === "semantic-index-authority-rejected",
+    ).claim.authoritative = false;
+    const indexErrors = validateArtifactFixtureContract(indexClaim);
+    assert.ok(
+      indexErrors.some(
+        (error) =>
+          /semantic-index-authority-rejected.*expected reject.*got accept/i.test(
+            error,
+          ),
+      ),
+      `semantic-index authority mutation must be detected: ${JSON.stringify(indexErrors)}`,
+    );
+
+    const swappedSource = structuredClone(fixture);
+    swappedSource.cases.find(
+      (fixtureCase) => fixtureCase.id === "interpreter-sql-import-rejected",
+    ).source = "typedWriter.commit({});";
+    const sourceErrors = validateArtifactFixtureContract(swappedSource);
+    assert.ok(
+      sourceErrors.some(
+        (error) =>
+          /interpreter-sql-import-rejected.*declared rule.*sql-import/i.test(
+            error,
+          ),
+      ),
+      `source rule swaps must be detected: ${JSON.stringify(sourceErrors)}`,
+    );
+
+    const arbitrarySafeSource = structuredClone(fixture);
+    arbitrarySafeSource.cases.find(
+      (fixtureCase) =>
+        fixtureCase.id === "interpreter-type-only-vocabulary-allowed",
+    ).source = "const safe = true;";
+    const safeSourceErrors = validateArtifactFixtureContract(arbitrarySafeSource);
+    assert.ok(
+      safeSourceErrors.some(
+        (error) =>
+          /interpreter-type-only-vocabulary-allowed.*declared rule.*type-only-domain-vocabulary/i.test(
+            error,
+          ),
+      ),
+      `positive source semantics must be pinned: ${JSON.stringify(safeSourceErrors)}`,
+    );
+  });
+
   it("fails closed for forbidden Interpreter dependencies", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(

@@ -131,6 +131,29 @@ describe("narrative dependency role contract", () => {
     });
   });
 
+  it("uses one ASCII token grammar for Unicode normalizer whitespace", () => {
+    for (const id of [
+      "utf16-range-rejects-feff-normalizer",
+      "utf16-range-rejects-next-line-normalizer",
+    ]) {
+      const fixtureCase = dependencyFixture.cases.find(
+        (candidate) => candidate.id === id,
+      )!;
+      expect(validateDependencySelector(fixtureCase.selector), id).toEqual({
+        valid: false,
+        error: { code: "invalid-range" },
+      });
+    }
+
+    const validCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-range-accepts-ascii-normalizer",
+    )!;
+    expect(validateDependencySelector(validCase.selector), validCase.id).toEqual({
+      valid: true,
+      selector: validCase.selector,
+    });
+  });
+
   it("fails closed when the registry omits a consumer kind", () => {
     const incomplete = {
       ...DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
