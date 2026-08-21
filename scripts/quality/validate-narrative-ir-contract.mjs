@@ -54,7 +54,7 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
 
   const identity = contract.identity;
   pushIf(errors, identity?.revisionTable === "narrative_proposal_revisions" && identity?.revisionIdColumn === "id", "Narrative IR revision identity must be narrative_proposal_revisions.id");
-  pushIf(errors, identity?.consumerKind === "proposal-revision", "Narrative IR revision identity must use the proposal-revision Consumer");
+  pushIf(errors, identity?.consumerKind === "proposal-revision", "proposal-revision Consumer must remain the Narrative IR revision identity");
   pushIf(errors, identity?.projectScoped === true && identity?.durability === "while-project-exists", "Narrative IR revision durability must be project-scoped while the Project exists");
   pushIf(errors, JSON.stringify(identity?.portableReference) === JSON.stringify(["projectId","revisionId","envelopeDigest","contractVersion"]), "portable Narrative IR references must include projectId, revisionId, envelopeDigest, and contractVersion");
   pushIf(errors, identity?.independentRevisionConsumer === "narrative-ir-revision" && identity?.independentRevisionConsumerStatus === "not-yet-modelled" && identity?.heuristicIdentity === "forbid", "narrative-ir-revision must remain not-yet-modelled and heuristic identity must be forbidden");
