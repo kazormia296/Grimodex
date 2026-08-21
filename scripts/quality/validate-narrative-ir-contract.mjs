@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -54,6 +54,52 @@ const REQUIRED_ASSERTION_POLARITIES = Object.freeze([
   "uncertain",
 ]);
 
+const REQUIRED_V2_DOWNGRADE_TRANSITIONS = Object.freeze([
+  "v2-to-v1",
+  "v2-to-no-envelope",
+  "v2-to-legacy-unbound",
+  "v2-to-legacy-inherit-reconciliation-envelope",
+]);
+
+const REQUIRED_TYPED_WRITER_VALIDATION = Object.freeze([
+  "parent-current-revision-cas",
+  "v2-lineage-monotonicity",
+  "adapter-version",
+  "digest-recomputation",
+  "derivation-invariants",
+  "material-basis",
+  "change-intent",
+  "proposal-binding",
+]);
+
+const REQUIRED_ACTIVATION_SCAN_ROOTS = Object.freeze([
+  "src",
+  "electron",
+  "src-tauri",
+]);
+
+const REQUIRED_ACTIVATION_MARKERS = Object.freeze([
+  "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
+  "createHumanDerivedNarrativeRevisionV2",
+  "CHRONICLE_SCENE_EVENT_V2_PRODUCTION",
+]);
+
+const PRODUCTION_SOURCE_FILE_PATTERN = /\.(?:cjs|mjs|js|jsx|ts|tsx|rs)$/u;
+const TEST_SOURCE_FILE_PATTERN = /(?:\.(?:test|spec)\.[^.]+|_test\.rs)$/u;
+const IGNORED_PRODUCTION_DIRECTORIES = new Set([
+  ".git",
+  ".next",
+  "__tests__",
+  "build",
+  "coverage",
+  "dist",
+  "fixtures",
+  "node_modules",
+  "target",
+  "test",
+  "tests",
+]);
+
 const HUMAN_PATH_CLASSES = Object.freeze({
   projectionOnly: ["/title", "/note"],
   scopeAffecting: [
@@ -96,6 +142,64 @@ function sameStringSet(actual, expected) {
     new Set(actual).size === actual.length &&
     expected.every((value) => actual.includes(value))
   );
+}
+
+export function scanNarrativeIrProductionMarkers(
+  repoRoot,
+  scanRoots,
+  markers,
+) {
+  if (!Array.isArray(scanRoots) || !Array.isArray(markers)) return [];
+
+  const absoluteRepoRoot = path.resolve(repoRoot);
+  const findings = [];
+
+  function walk(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort(
+      (left, right) => left.name.localeCompare(right.name),
+    )) {
+      if (entry.isSymbolicLink()) continue;
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (!IGNORED_PRODUCTION_DIRECTORIES.has(entry.name)) {
+          walk(absolutePath);
+        }
+        continue;
+      }
+      if (
+        !entry.isFile() ||
+        !PRODUCTION_SOURCE_FILE_PATTERN.test(entry.name) ||
+        TEST_SOURCE_FILE_PATTERN.test(entry.name)
+      ) {
+        continue;
+      }
+
+      const source = readFileSync(absolutePath, "utf8");
+      const relativePath = path
+        .relative(absoluteRepoRoot, absolutePath)
+        .split(path.sep)
+        .join("/");
+      for (const marker of markers) {
+        if (typeof marker === "string" && source.includes(marker)) {
+          findings.push({ marker, path: relativePath });
+        }
+      }
+    }
+  }
+
+  for (const scanRoot of scanRoots) {
+    if (typeof scanRoot !== "string" || scanRoot.length === 0) continue;
+    const absoluteScanRoot = path.resolve(absoluteRepoRoot, scanRoot);
+    if (
+      absoluteScanRoot !== absoluteRepoRoot &&
+      !absoluteScanRoot.startsWith(`${absoluteRepoRoot}${path.sep}`)
+    ) {
+      continue;
+    }
+    if (existsSync(absoluteScanRoot)) walk(absoluteScanRoot);
+  }
+
+  return findings;
 }
 
 function canonicalJson(value) {
@@ -533,6 +637,7 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   pushIf(errors, identity?.consumerKind === "proposal-revision", "proposal-revision Consumer must remain the Narrative IR revision identity");
   pushIf(errors, identity?.projectScoped === true && identity?.durability === "while-project-exists", "Narrative IR revision durability must be project-scoped while the Project exists");
   pushIf(errors, JSON.stringify(identity?.portableReference) === JSON.stringify(["projectId","revisionId","envelopeDigest","contractVersion"]), "portable Narrative IR references must include projectId, revisionId, envelopeDigest, and contractVersion");
+  pushIf(errors, identity?.portableExport?.requiredClosure === "referenced-closure" && identity?.portableExport?.originalProjectAvailability === "must-not-be-assumed", "portable Narrative IR export must include the referenced closure and must not assume the original Project remains available");
   pushIf(errors, identity?.independentRevisionConsumer === "narrative-ir-revision" && identity?.independentRevisionConsumerStatus === "not-yet-modelled" && identity?.heuristicIdentity === "forbid", "narrative-ir-revision must remain not-yet-modelled and heuristic identity must be forbidden");
 
   const vocab = contract.vocabularies;
@@ -547,12 +652,22 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
     ...(vocab?.supportClasses ?? []),
   ]);
   pushIf(errors, REQUIRED_ASSERTION_MODALITIES.every((id) => !importedVocabularyIds.has(id)), "AssertionModality machine IDs must not collide with imported Producer Kind or Support Class IDs");
+  pushIf(errors, contract.v1ProducerMapping?.producerKind === "reconciler-proposal" && contract.v1ProducerMapping?.producerIdSource === "reconcilerId" && contract.v1ProducerMapping?.producerVersionSource === "reconcilerVersion", "V1 reconciler mapping must bind producer.kind to reconciler-proposal, producer.id to reconcilerId, and producer.version to reconcilerVersion");
 
   pushIf(errors, contract.envelope?.schemaVersion === 2, "Narrative Revision Envelope must be V2");
   pushIf(errors, hasPaths(contract.envelope?.requiredFields, ["assertion","assertionDigests","changeIntent","effectiveMaterialBasis","revisionBasis","projectionBinding"]), "Narrative Revision Envelope V2 required fields are incomplete");
   pushIf(errors, contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("secret") && contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("revealDocumentRef"), "Disclosure fields must remain outside Assertion Core");
   pushIf(errors, contract.envelope?.changeIntent?.humanDerivedMustPreserve === "exact", "Human-derived Revision must preserve root-level Change Intent exactly");
   pushIf(errors, contract.envelope?.projectionBinding?.recomputePayloadDigestInNative === true && contract.envelope?.projectionBinding?.proposalKindAndSchemaDistinct === true, "Native must own payload digest and Proposal kind/schema binding");
+
+  const monotonicity = contract.monotonicity;
+  pushIf(errors, monotonicity?.currentRevisionRule === "once-v2-always-v2" && JSON.stringify(monotonicity?.forbiddenTransitions) === JSON.stringify(REQUIRED_V2_DOWNGRADE_TRANSITIONS), "Narrative IR V2 monotonicity must forbid every downgrade from V2 to V1, no envelope, legacy-unbound, or legacy inheritReconciliationEnvelope");
+  pushIf(errors, monotonicity?.semanticAuthority === "typed-writer" && JSON.stringify(monotonicity?.typedWriterValidation) === JSON.stringify(REQUIRED_TYPED_WRITER_VALIDATION), "Narrative IR V2 monotonicity semantic authority must remain the complete typed writer");
+  pushIf(errors, monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" && monotonicity?.structuralDefense?.role === "structural-defense-only" && monotonicity?.structuralDefense?.state === "deferred-until-after-c2-zb" && Array.isArray(monotonicity?.structuralDefense?.productionEntryPoints) && monotonicity.structuralDefense.productionEntryPoints.length === 0 && monotonicity?.structuralDefense?.errorCode === "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" && monotonicity?.contractFreezeOnly === true, "V2 downgrade trigger must remain contract-only structural defense deferred until after C2-ZB with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN");
+
+  const chroniclePilot = contract.chroniclePilot;
+  pushIf(errors, chroniclePilot?.assertionKind === "scene-event@1" && JSON.stringify(chroniclePilot?.productWiredChangeKinds) === JSON.stringify(["add"]) && JSON.stringify(chroniclePilot?.declaredOrReservedChangeKinds) === JSON.stringify(["revise","retract","merge","split"]), "Chronicle pilot product-wired changeKinds must contain only add; revise, retract, merge, and split remain declared or reserved");
+  pushIf(errors, chroniclePilot?.existingProjectionRevisionStatus === "requires-separately-ratified-proposal-kind-and-apply-path", "Chronicle existing-Projection revision requires a separately ratified Proposal kind and Apply path");
 
   const human = contract.humanDerived;
   pushIf(errors, hasPaths(human?.contextExposureAllowed, ["deterministic-stage","author-supplied"]) && human?.contextExposureForbidden?.includes("model-visible"), "Human-derived Context Set must exclude model-visible exposure");
@@ -607,8 +722,31 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
 
   const activation = contract.activation;
   pushIf(errors, activation?.state === "disabled" && Array.isArray(activation?.productionEntryPoints) && activation.productionEntryPoints.length === 0, "NIR-0 activation must have no production entry point");
+  pushIf(errors, JSON.stringify(activation?.scanRoots) === JSON.stringify(REQUIRED_ACTIVATION_SCAN_ROOTS), "NIR-0 activation scanRoots must match the exact production-root vocabulary");
+  pushIf(errors, JSON.stringify(activation?.productionMarkers) === JSON.stringify(REQUIRED_ACTIVATION_MARKERS), "NIR-0 activation productionMarkers must match the exact reserved vocabulary");
   pushIf(errors, activation?.v2Emission === "blocked-until-c2b" && activation?.humanDerivedV2Ui === "blocked-until-c2b" && activation?.currentRevisionPromotion === "blocked-until-c2b", "Chronicle V2 production and Human-derived UI must remain disabled until C2B");
   pushIf(errors, hasPaths(activation?.prerequisites, ["C2A","D1","D2","C2B","focused-persistence-freshness-journeys","implementation-status-atomic"]), "NIR-0 activation prerequisites are incomplete");
+  if (
+    activation?.state === "disabled" &&
+    Array.isArray(activation?.productionEntryPoints) &&
+    activation.productionEntryPoints.length === 0
+  ) {
+    try {
+      for (const finding of scanNarrativeIrProductionMarkers(
+        repoRoot,
+        activation?.scanRoots,
+        activation?.productionMarkers,
+      )) {
+        errors.push(
+          `NIR-0 activation marker ${finding.marker} appears in production at ${finding.path} while activation is disabled`,
+        );
+      }
+    } catch (error) {
+      errors.push(
+        `NIR-0 activation production scan failed closed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
 
   pushIf(errors, scopeContract?.adoptionTrack?.owner === "adr-009-scope-contract" && scopeContract?.adoptionTrack?.independentFrom === "narrative-ir-contract" && scopeContract?.adoptionTrack?.lifecycleAuthority === "adr-009-scope-contract", "Scope Disclosure adoption must remain an independent ADR 009-owned track");
   pushIf(errors, scopeContract?.implementationStatus?.capabilities && ["structuralValidation","relationComparison","disclosureAdmission"].every((key) => scopeContract.implementationStatus.capabilities[key]?.state === "declared"), "ADR 009 capability status must distinguish structural validation, relation comparison, and disclosure admission");

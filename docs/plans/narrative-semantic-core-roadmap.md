@@ -338,8 +338,9 @@ production Entry Points empty.
   mixed-edit classification, child material-basis ownership, and the split
   between interpretation live-token validation and Human-derived stale-state
   publication.
-- Cross-runtime TypeScript/Rust Adapter golden parity for canonical Scope JSON
-  and Scope Digest.
+- Shared versioned Adapter golden requirement for canonical Scope JSON and
+  Scope Digest; future TypeScript and Rust implementations must pass the same
+  corpus.
 - Activation remains disabled until C2B, D1, D2, focused
   persistence/Freshness journeys, and atomic implementation-status evidence.
 - ADR 009 capability status and independent Scope Disclosure adoption remain

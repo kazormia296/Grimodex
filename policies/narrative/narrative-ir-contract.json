@@ -15,6 +15,10 @@
       "envelopeDigest",
       "contractVersion"
     ],
+    "portableExport": {
+      "requiredClosure": "referenced-closure",
+      "originalProjectAvailability": "must-not-be-assumed"
+    },
     "independentRevisionConsumer": "narrative-ir-revision",
     "independentRevisionConsumerStatus": "not-yet-modelled",
     "heuristicIdentity": "forbid"
@@ -75,6 +79,11 @@
       "model-visible"
     ]
   },
+  "v1ProducerMapping": {
+    "producerKind": "reconciler-proposal",
+    "producerIdSource": "reconcilerId",
+    "producerVersionSource": "reconcilerVersion"
+  },
   "envelope": {
     "schemaVersion": 2,
     "requiredFields": [
@@ -120,6 +129,47 @@
     },
     "producerActorSeparation": true,
     "reviewFreshnessProjectionOutsideRevision": true
+  },
+  "monotonicity": {
+    "currentRevisionRule": "once-v2-always-v2",
+    "forbiddenTransitions": [
+      "v2-to-v1",
+      "v2-to-no-envelope",
+      "v2-to-legacy-unbound",
+      "v2-to-legacy-inherit-reconciliation-envelope"
+    ],
+    "semanticAuthority": "typed-writer",
+    "typedWriterValidation": [
+      "parent-current-revision-cas",
+      "v2-lineage-monotonicity",
+      "adapter-version",
+      "digest-recomputation",
+      "derivation-invariants",
+      "material-basis",
+      "change-intent",
+      "proposal-binding"
+    ],
+    "structuralDefense": {
+      "kind": "sqlite-before-insert-trigger",
+      "role": "structural-defense-only",
+      "state": "deferred-until-after-c2-zb",
+      "productionEntryPoints": [],
+      "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+    },
+    "contractFreezeOnly": true
+  },
+  "chroniclePilot": {
+    "assertionKind": "scene-event@1",
+    "productWiredChangeKinds": [
+      "add"
+    ],
+    "declaredOrReservedChangeKinds": [
+      "revise",
+      "retract",
+      "merge",
+      "split"
+    ],
+    "existingProjectionRevisionStatus": "requires-separately-ratified-proposal-kind-and-apply-path"
   },
   "humanDerived": {
     "requestFields": [
@@ -380,6 +430,11 @@
   "activation": {
     "state": "disabled",
     "productionEntryPoints": [],
+    "scanRoots": [
+      "src",
+      "electron",
+      "src-tauri"
+    ],
     "productionMarkers": [
       "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
       "createHumanDerivedNarrativeRevisionV2",

@@ -121,25 +121,53 @@ and does not create C2 tables. `ai-apply` must carry an explicit authority
 route because it is valid for both Interactive Agent Command and Interpreter
 Projection; no origin-only fallback is permitted.
 
+## NIR-0 Scope and Dependency contracts — DECLARED
+
+ADR 009 and ADR 010 add two machine-readable contracts without changing the
+current Workspace Schema or C2 runtime:
+
+- `narrative-scope-relation-contract.json` — the V2 Scope axes, explicit
+  `any` versus constrained-but-`unresolved`, strongest-established Relation
+  semantics, structural Digest boundary, Oracle Basis rule, Assertion Scope
+  Profiles, and Consumer use policies;
+- `narrative-dependency-role-registry.json` — Evidence／Dependency／Context Set
+  separation, ten Dependency Roles, Role × Consumer × Change Class effects,
+  UTF-16 Selector V2, independent required／advisory Build Action aggregation,
+  sealed Declaration Set, Head CAS, and V1／V2 priority rules;
+- matching `schemas/narrative-*-v1` JSON Schema draft 2020-12 contracts.
+
+Both contracts are `declared`: their `productionEntryPoints` are empty and
+the validator scans production roots for the reserved V2 markers. A marker
+appearing while the contract remains `declared`, or a future `shadow`／`wired`
+state without a real declared Entry Point, is a gate failure. The current
+`scope.ts`／Disclosure contract remains V1-compatible, the current Dependency
+Edge remains Source-grained, and
+`narrative_consumer_freshness.dependency_set_digest` still means the V1 Source
+identity set. No performance improvement, V2 cutover, or new Freshness
+authority is claimed by this contract-only step.
+
 ## NIR-0 Shared Narrative IR contracts — DECLARED
 
 NIR-0 freezes the shared Narrative IR contract through [ADR
 011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and keeps
 production on the existing V1 path:
 
-- `narrative-ir-contract.json` — Envelope V2, project-scoped
+- `narrative-ir-contract.json` — Envelope V2 and V2 monotonicity, project-scoped
   `narrative_proposal_revisions.id` identity, Native-verified Human-derived
-  edits, material-basis ownership, stale-validation split, activation rule,
-  and the independent Scope Disclosure adoption reference;
+  edits, material-basis ownership, stale-validation split, Chronicle add-only
+  pilot wiring, activation rule, and the independent Scope Disclosure adoption
+  reference;
 - `schemas/narrative-ir-contract.schema.json` — machine-readable contract
   schema;
-- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — executable
-  TypeScript/Rust Adapter golden corpus for Scope derivation, Human-derived
-  old/new payload classification, unsupported-path refusal, and cross-runtime
-  parity; stale validation and activation remain semantic contract tests;
+- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — shared versioned
+  Adapter golden corpus that future TypeScript and Rust implementations must
+  pass for Scope derivation, Human-derived old/new payload classification,
+  unsupported-path refusal, and canonical Scope/digest agreement; stale
+  validation and activation remain semantic contract tests;
 - `validate-narrative-ir-contract.mjs` — semantic checks for identity,
-  Human-derived boundaries, cumulative mixed-edit classification,
-  cross-runtime parity, and disabled activation.
+  monotonicity, Human-derived boundaries, cumulative mixed-edit
+  classification, golden-corpus integrity, Chronicle add-only wiring, and
+  disabled-activation production markers.
 
 ADR 009 remains the owner of Scope capability status and the independent Scope
 Disclosure adoption track. ADR 010 remains the owner of Context Set and

@@ -10,7 +10,10 @@
     "identity",
     "authorities",
     "vocabularies",
+    "v1ProducerMapping",
     "envelope",
+    "monotonicity",
+    "chroniclePilot",
     "humanDerived",
     "materialBasis",
     "staleValidation",
@@ -43,6 +46,7 @@
         "projectScoped",
         "durability",
         "portableReference",
+        "portableExport",
         "independentRevisionConsumer",
         "independentRevisionConsumerStatus",
         "heuristicIdentity"
@@ -71,6 +75,22 @@
             "contractVersion"
           ]
         },
+        "portableExport": {
+          "type": "object",
+          "required": [
+            "requiredClosure",
+            "originalProjectAvailability"
+          ],
+          "properties": {
+            "requiredClosure": {
+              "const": "referenced-closure"
+            },
+            "originalProjectAvailability": {
+              "const": "must-not-be-assumed"
+            }
+          },
+          "additionalProperties": false
+        },
         "independentRevisionConsumer": {
           "const": "narrative-ir-revision"
         },
@@ -93,7 +113,27 @@
         "applicationContribution",
         "semanticIndex"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "properties": {
+        "immutableRevision": {
+          "const": "proposal-revision+narrative-revision-envelope"
+        },
+        "review": {
+          "const": "decision-ledger"
+        },
+        "freshness": {
+          "const": "narrative_consumer_freshness"
+        },
+        "projectionExecution": {
+          "const": "prepared-commit+typed-writer"
+        },
+        "applicationContribution": {
+          "const": "application-contribution-ledger"
+        },
+        "semanticIndex": {
+          "const": "rebuildable-acceleration-only"
+        }
+      }
     },
     "vocabularies": {
       "type": "object",
@@ -170,6 +210,26 @@
       },
       "additionalProperties": false
     },
+    "v1ProducerMapping": {
+      "type": "object",
+      "required": [
+        "producerKind",
+        "producerIdSource",
+        "producerVersionSource"
+      ],
+      "properties": {
+        "producerKind": {
+          "const": "reconciler-proposal"
+        },
+        "producerIdSource": {
+          "const": "reconcilerId"
+        },
+        "producerVersionSource": {
+          "const": "reconcilerVersion"
+        }
+      },
+      "additionalProperties": false
+    },
     "envelope": {
       "type": "object",
       "required": [
@@ -202,7 +262,38 @@
             "assertionDigest",
             "disclosureFieldsExcludedFromAssertionCore"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "assertionCoreDigest": {
+              "const": [
+                "assertionKind",
+                "payloadSchemaRef",
+                "typedSemanticPayload",
+                "modality",
+                "polarity",
+                "supportClass",
+                "producer",
+                "producerConfidence"
+              ]
+            },
+            "scopeDigest": {
+              "const": [
+                "canonicalNarrativeScopeV2"
+              ]
+            },
+            "assertionDigest": {
+              "const": [
+                "assertionCoreDigest",
+                "scopeDigest"
+              ]
+            },
+            "disclosureFieldsExcludedFromAssertionCore": {
+              "const": [
+                "secret",
+                "revealDocumentRef"
+              ]
+            }
+          }
         },
         "changeIntent": {
           "type": "object",
@@ -211,7 +302,18 @@
             "retractTargetProjectionRef",
             "humanDerivedMustPreserve"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "addTargetProjectionRef": {
+              "const": "forbidden"
+            },
+            "retractTargetProjectionRef": {
+              "const": "required"
+            },
+            "humanDerivedMustPreserve": {
+              "const": "exact"
+            }
+          }
         },
         "projectionBinding": {
           "type": "object",
@@ -220,13 +322,126 @@
             "recomputePayloadDigestInNative",
             "adapterContractRequired"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "proposalKindAndSchemaDistinct": {
+              "const": true
+            },
+            "recomputePayloadDigestInNative": {
+              "const": true
+            },
+            "adapterContractRequired": {
+              "const": true
+            }
+          }
         },
         "producerActorSeparation": {
           "const": true
         },
         "reviewFreshnessProjectionOutsideRevision": {
           "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "monotonicity": {
+      "type": "object",
+      "required": [
+        "currentRevisionRule",
+        "forbiddenTransitions",
+        "semanticAuthority",
+        "typedWriterValidation",
+        "structuralDefense",
+        "contractFreezeOnly"
+      ],
+      "properties": {
+        "currentRevisionRule": {
+          "const": "once-v2-always-v2"
+        },
+        "forbiddenTransitions": {
+          "const": [
+            "v2-to-v1",
+            "v2-to-no-envelope",
+            "v2-to-legacy-unbound",
+            "v2-to-legacy-inherit-reconciliation-envelope"
+          ]
+        },
+        "semanticAuthority": {
+          "const": "typed-writer"
+        },
+        "typedWriterValidation": {
+          "const": [
+            "parent-current-revision-cas",
+            "v2-lineage-monotonicity",
+            "adapter-version",
+            "digest-recomputation",
+            "derivation-invariants",
+            "material-basis",
+            "change-intent",
+            "proposal-binding"
+          ]
+        },
+        "structuralDefense": {
+          "type": "object",
+          "required": [
+            "kind",
+            "role",
+            "state",
+            "productionEntryPoints",
+            "errorCode"
+          ],
+          "properties": {
+            "kind": {
+              "const": "sqlite-before-insert-trigger"
+            },
+            "role": {
+              "const": "structural-defense-only"
+            },
+            "state": {
+              "const": "deferred-until-after-c2-zb"
+            },
+            "productionEntryPoints": {
+              "const": []
+            },
+            "errorCode": {
+              "const": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
+            }
+          },
+          "additionalProperties": false
+        },
+        "contractFreezeOnly": {
+          "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "chroniclePilot": {
+      "type": "object",
+      "required": [
+        "assertionKind",
+        "productWiredChangeKinds",
+        "declaredOrReservedChangeKinds",
+        "existingProjectionRevisionStatus"
+      ],
+      "properties": {
+        "assertionKind": {
+          "const": "scene-event@1"
+        },
+        "productWiredChangeKinds": {
+          "const": [
+            "add"
+          ]
+        },
+        "declaredOrReservedChangeKinds": {
+          "const": [
+            "revise",
+            "retract",
+            "merge",
+            "split"
+          ]
+        },
+        "existingProjectionRevisionStatus": {
+          "const": "requires-separately-ratified-proposal-kind-and-apply-path"
         }
       },
       "additionalProperties": false
@@ -454,7 +669,34 @@
             "scopeOverride",
             "clientCannotSupply"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "projectionOnly": {
+              "const": [
+                "assertionCoreDigest-preserved",
+                "scopeDigest-preserved",
+                "assertionDigest-preserved",
+                "all-paths-projection-only"
+              ]
+            },
+            "scopeOverride": {
+              "const": [
+                "assertionCoreDigest-preserved",
+                "scope-deterministically-rederived",
+                "scopeDigest-may-change",
+                "all-paths-projection-or-scope"
+              ]
+            },
+            "clientCannotSupply": {
+              "const": [
+                "derivationKind",
+                "changedPaths",
+                "scope",
+                "childAssertion",
+                "childDigests"
+              ]
+            }
+          }
         }
       },
       "additionalProperties": false
@@ -470,7 +712,38 @@
         "zeroEdgeCurrentRevision",
         "currentEpochEvaluation"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "properties": {
+        "humanDerivedOwnsDeclarations": {
+          "const": true
+        },
+        "declarations": {
+          "const": [
+            "sourceBasis",
+            "evidenceSet",
+            "dependencySet",
+            "v1CompatibilityEdges",
+            "v2SealedDeclarationSet",
+            "edgeStates",
+            "consumerFreshness"
+          ]
+        },
+        "projectionOnlyInheritance": {
+          "const": "source-evidence-dependency-sets-identical"
+        },
+        "scopeOverridePolicy": {
+          "const": "inherit-applicable-and-rederive-scope-resolution"
+        },
+        "noLineageFreshnessAuthority": {
+          "const": true
+        },
+        "zeroEdgeCurrentRevision": {
+          "const": "forbidden"
+        },
+        "currentEpochEvaluation": {
+          "const": "atomic-before-current-revision-promotion"
+        }
+      }
     },
     "staleValidation": {
       "type": "object",
@@ -486,7 +759,15 @@
             "requireLiveSourceTokenEquality",
             "staleRefusal"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "requireLiveSourceTokenEquality": {
+              "const": true
+            },
+            "staleRefusal": {
+              "const": "NEX_READ_SET_STALE"
+            }
+          }
         },
         "humanDerived": {
           "type": "object",
@@ -500,7 +781,45 @@
             "doesNotClearBuildActions",
             "doesNotPerformSemanticRetraction"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "requireLiveSourceTokenEquality": {
+              "const": false
+            },
+            "preserveObservedTokens": {
+              "const": true
+            },
+            "internalIntegrity": {
+              "const": [
+                "quote-quoteDigest",
+                "source-basis-consistency",
+                "evidence-consistency",
+                "dependency-consistency"
+              ]
+            },
+            "evaluateAgainstCurrentLiveSource": {
+              "const": true
+            },
+            "publishStates": {
+              "const": [
+                "fresh",
+                "stale",
+                "source-missing",
+                "anchor-mismatch",
+                "read-set-drift",
+                "unknown"
+              ]
+            },
+            "doesNotBypassApplyOCC": {
+              "const": true
+            },
+            "doesNotClearBuildActions": {
+              "const": true
+            },
+            "doesNotPerformSemanticRetraction": {
+              "const": true
+            }
+          }
         },
         "fixtures": {
           "type": "array",
@@ -513,7 +832,43 @@
               "basis",
               "expected"
             ],
-            "additionalProperties": false
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "enum": [
+                  "interpretation-live-token-mismatch-refuses",
+                  "human-derived-stale-parent-publishes-state"
+                ]
+              },
+              "basis": {
+                "enum": [
+                  "interpretation",
+                  "human-derived"
+                ]
+              },
+              "expected": {
+                "enum": [
+                  "reject-live-token",
+                  "accept-and-publish-current-state"
+                ]
+              }
+            },
+            "oneOf": [
+              {
+                "const": {
+                  "id": "interpretation-live-token-mismatch-refuses",
+                  "basis": "interpretation",
+                  "expected": "reject-live-token"
+                }
+              },
+              {
+                "const": {
+                  "id": "human-derived-stale-parent-publishes-state",
+                  "basis": "human-derived",
+                  "expected": "accept-and-publish-current-state"
+                }
+              }
+            ]
           }
         }
       },
@@ -606,6 +961,7 @@
       "required": [
         "state",
         "productionEntryPoints",
+        "scanRoots",
         "productionMarkers",
         "prerequisites",
         "v2Emission",
@@ -621,14 +977,19 @@
         "productionEntryPoints": {
           "const": []
         },
+        "scanRoots": {
+          "const": [
+            "src",
+            "electron",
+            "src-tauri"
+          ]
+        },
         "productionMarkers": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
+            "createHumanDerivedNarrativeRevisionV2",
+            "CHRONICLE_SCENE_EVENT_V2_PRODUCTION"
+          ]
         },
         "prerequisites": {
           "type": "array",
