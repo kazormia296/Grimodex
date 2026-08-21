@@ -2269,6 +2269,63 @@ describe("validate-semantic-core-boundary", () => {
           "helper.invoke(database[key]);",
         ].join("\n"),
       },
+      {
+        name: "object method receiver forwarding",
+        source: [
+          "const api = { invoke(fn) { this.consume(fn); }, consume(fn) { fn(); } };",
+          "api.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class static receiver forwarding",
+        source: [
+          "class Helper { static invoke(fn) { this.consume(fn); } static consume(fn) { fn(); } }",
+          "Helper.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply local function",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "Reflect.apply(invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply alias local function",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const apply = Reflect.apply;",
+          "apply(invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.construct local class",
+        source: [
+          "class Helper { constructor(fn) { fn(); } }",
+          "Reflect.construct(Helper, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "object assignment destructuring",
+        source: [
+          "function invoke(arg) { let fn; ({ fn } = arg); fn(); }",
+          "invoke({ fn: database[key] });",
+        ].join("\n"),
+      },
+      {
+        name: "renamed nested assignment destructuring",
+        source: [
+          "function invoke(arg) { let local; ({ nested: { fn: local } } = arg); local(); }",
+          "invoke({ nested: { fn: database[key] } });",
+        ].join("\n"),
+      },
+      {
+        name: "array assignment destructuring",
+        source: [
+          "function invoke(arg) { let fn; [fn] = arg; fn(); }",
+          "invoke([database[key]]);",
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -2400,6 +2457,17 @@ describe("validate-semantic-core-boundary", () => {
         "invoke.apply(null, [() => true]);",
         "const safeAlias = invoke.bind(null);",
         "safeAlias(() => true);",
+        "function invokeRest(label, ...[fn]) { fn(); }",
+        'invokeRest("safe", () => true);',
+        "function assignSafe(arg) { let fn; ({ fn } = arg); fn(); }",
+        "assignSafe({ fn: () => true });",
+        "const safeApi = { invoke(fn) { this.consume(fn); }, consume(fn) { fn(); } };",
+        "safeApi.invoke(() => true);",
+        "Reflect.apply(invoke, null, [() => true]);",
+        "const safeApply = Reflect.apply;",
+        "safeApply(invoke, null, [() => true]);",
+        "class SafeHelper { constructor(fn) { fn(); } }",
+        "Reflect.construct(SafeHelper, [() => true]);",
       ].join("\n"),
     );
 
