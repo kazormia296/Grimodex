@@ -448,6 +448,38 @@ describe("NIR-0 Narrative IR contract", () => {
     assert.match(adr, /not a globally permanent external identifier/i);
   });
 
+  it("binds the V1 reconciler producer mapping and portable referenced closure", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+
+    assert.deepEqual(contract.v1ProducerMapping, {
+      producerKind: "reconciler-proposal",
+      producerIdSource: "reconcilerId",
+      producerVersionSource: "reconcilerVersion",
+    });
+    assert.deepEqual(contract.identity.portableExport, {
+      requiredClosure: "referenced-closure",
+      originalProjectAvailability: "must-not-be-assumed",
+    });
+
+    const driftedMapping = structuredClone(contract);
+    driftedMapping.v1ProducerMapping.producerKind = "ai-inference";
+    assert.ok(
+      validate(driftedMapping).some((error) =>
+        /V1 reconciler.*producer.kind.*reconciler-proposal/i.test(error),
+      ),
+      "expected fail-closed V1 producer mapping validation",
+    );
+
+    const missingClosure = structuredClone(contract);
+    missingClosure.identity.portableExport.requiredClosure = "identity-only";
+    assert.ok(
+      validate(missingClosure).some((error) =>
+        /portable Narrative IR export.*referenced closure/i.test(error),
+      ),
+      "expected fail-closed portable export closure validation",
+    );
+  });
+
   it("declares every required key in each fail-closed object schema", () => {
     const schema = readJson(
       "policies/narrative/schemas/narrative-ir-contract.schema.json",
