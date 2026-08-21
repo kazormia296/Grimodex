@@ -1382,6 +1382,21 @@ describe("validate-semantic-core-boundary", () => {
           'fn("DELETE FROM narrative_proposal_revisions");',
         ].join("\n"),
       },
+      {
+        name: "Reflect.get partially bound receiver",
+        source: [
+          "const get = Reflect.get.bind(null, database);",
+          "const fn = get(key);",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "globalThis computed Reflect partially bound target",
+        source: [
+          "const invoke = globalThis.Reflect['apply'].bind(null, database[key]);",
+          "invoke(null, []);",
+        ].join("\n"),
+      },
     ];
 
     for (const [index, testCase] of sensitiveCases.entries()) {
@@ -1455,6 +1470,8 @@ describe("validate-semantic-core-boundary", () => {
         "const unboundGet = Reflect.get.bind(null);",
         "const unboundSafe = unboundGet({ fn: safe }, 'fn');",
         "unboundSafe();",
+        "const shadowedPartial = Reflect.apply.bind(null, database[key]);",
+        "shadowedPartial(null, []);",
       ].join("\n"),
     );
     assert.deepEqual(benignErrors, []);
