@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -477,6 +484,89 @@ describe("NIR-0 Narrative IR contract", () => {
         /portable Narrative IR export.*referenced closure/i.test(error),
       ),
       "expected fail-closed portable export closure validation",
+    );
+  });
+
+  it("keeps Scope capability blockers conditional on lifecycle state", () => {
+    const schema = readJson(
+      "policies/narrative/schemas/narrative-scope-relation-contract.schema.json",
+    );
+    const capability = schema.$defs.scopeCapabilityStatus;
+    const lifecycleRule = capability.allOf.find(
+      (rule) => rule.if?.properties?.state?.const === "declared",
+    );
+
+    assert.equal(
+      Object.hasOwn(capability.properties.blockedOn, "minItems"),
+      false,
+      "wired capabilities must be able to clear their blockers",
+    );
+    assert.equal(lifecycleRule.then.properties.blockedOn.minItems, 1);
+    assert.equal(lifecycleRule.then.properties.productionEntryPoints.maxItems, 0);
+    assert.equal(lifecycleRule.else.properties.productionEntryPoints.minItems, 1);
+  });
+
+  it("scans only configured production roots for the exact disabled-activation markers", async () => {
+    const validatorModule = await import("./validate-narrative-ir-contract.mjs");
+    assert.equal(
+      typeof validatorModule.scanNarrativeIrProductionMarkers,
+      "function",
+    );
+
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+    assert.deepEqual(contract.activation.scanRoots, [
+      "src",
+      "electron",
+      "src-tauri",
+    ]);
+    assert.deepEqual(contract.activation.productionMarkers, [
+      "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
+      "createHumanDerivedNarrativeRevisionV2",
+      "CHRONICLE_SCENE_EVENT_V2_PRODUCTION",
+    ]);
+
+    const tempRoot = mkdtempSync(path.join(tmpdir(), "nir0-activation-"));
+    try {
+      mkdirSync(path.join(tempRoot, "src"), { recursive: true });
+      mkdirSync(path.join(tempRoot, "docs"), { recursive: true });
+      writeFileSync(
+        path.join(tempRoot, "src", "producer.ts"),
+        "export const marker = 'CHRONICLE_SCENE_EVENT_V2_PRODUCTION';\n",
+      );
+      writeFileSync(
+        path.join(tempRoot, "src", "producer.test.ts"),
+        "const marker = 'NARRATIVE_IR_V2_PRODUCTION_ENABLED';\n",
+      );
+      writeFileSync(
+        path.join(tempRoot, "docs", "contract.md"),
+        "createHumanDerivedNarrativeRevisionV2\n",
+      );
+
+      assert.deepEqual(
+        validatorModule.scanNarrativeIrProductionMarkers(
+          tempRoot,
+          contract.activation.scanRoots,
+          contract.activation.productionMarkers,
+        ),
+        [
+          {
+            marker: "CHRONICLE_SCENE_EVENT_V2_PRODUCTION",
+            path: "src/producer.ts",
+          },
+        ],
+      );
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+
+    const missingMarker = structuredClone(contract);
+    missingMarker.activation.productionMarkers =
+      missingMarker.activation.productionMarkers.slice(1);
+    assert.ok(
+      validate(missingMarker).some((error) =>
+        /activation productionMarkers.*exact reserved vocabulary/i.test(error),
+      ),
+      "expected fail-closed activation marker vocabulary validation",
     );
   });
 
