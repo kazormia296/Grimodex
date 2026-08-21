@@ -147,6 +147,12 @@ const adapterInput: ChronicleSceneEventAdapterInput = {
     .revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
 };
 
+function cloneObservation(
+  source: RawChronicleEventObservation,
+): RawChronicleEventObservation {
+  return JSON.parse(JSON.stringify(source)) as RawChronicleEventObservation;
+}
+
 describe("Chronicle scene-event@1 pure Adapter", () => {
   it("builds and validates an add-only Evidence-bound V2 object from the complete seam", async () => {
     const result = await buildChronicleSceneEventV2(adapterInput);
@@ -173,6 +179,146 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
     });
     expect(result.existingEventMatch).toEqual(existingEventMatch);
     expect(validateChronicleSceneEventV2(result.envelope)).toEqual({
+      valid: true,
+    });
+  });
+
+  it("rejects a merged observation that forges content under an original local ID", async () => {
+    const forgedMergedObservation: RawChronicleEventObservation = {
+      ...observation,
+      payload: {
+        ...observation.payload,
+        predicate: "forged-semantic",
+      },
+    };
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        mergedObservations: [forgedMergedObservation],
+      }),
+    ).rejects.toThrow(/provenance|merged observation/i);
+  });
+
+  it("rejects a merged observation ID that is absent from originals", async () => {
+    const orphanMergedObservation: RawChronicleEventObservation = {
+      ...observation,
+      localId: "observation:orphan",
+    };
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        mergedObservations: [orphanMergedObservation],
+        mergedObservationRefs: [orphanMergedObservation.localId],
+        hypothesis: {
+          ...hypothesis,
+          observationRefs: [orphanMergedObservation.localId],
+        },
+      }),
+    ).rejects.toThrow(/provenance|merged observation/i);
+  });
+
+  it("rejects independently forged nested semantic observation content", async () => {
+    const forgedMergedObservation: RawChronicleEventObservation = {
+      ...observation,
+      payload: {
+        ...observation.payload,
+        participants: [{ surface: "forged participant", role: "subject" }],
+        semanticType: "forged-semantic",
+      },
+    };
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        mergedObservations: [forgedMergedObservation],
+      }),
+    ).rejects.toThrow(/provenance|merged observation/i);
+  });
+
+  it("rejects independently forged nested assertion provenance", async () => {
+    const forgedMergedObservation: RawChronicleEventObservation = {
+      ...observation,
+      assertion: {
+        ...observation.assertion,
+        narrativeFrame: "flashback",
+      },
+    };
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        mergedObservations: [forgedMergedObservation],
+        narrativeFrame: "flashback",
+      }),
+    ).rejects.toThrow(/provenance|merged observation/i);
+  });
+
+  it("rejects independently forged nested evidence provenance", async () => {
+    const forgedEvidenceAnchor = {
+      ...anchor,
+      id: "anchor:forged-evidence",
+      documentRef: "document:2",
+      quote: "Forged evidence.",
+    } as unknown as ResolvedEvidenceAnchor;
+    const forgedMergedObservation: RawChronicleEventObservation = {
+      ...observation,
+      evidence: [
+        {
+          sourceRef: "source:scene:1",
+          quote: forgedEvidenceAnchor.quote,
+        },
+      ],
+    };
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        proposalPayload: {
+          ...proposal,
+          evidenceAnchorIds: [anchor.id, forgedEvidenceAnchor.id],
+          evidenceDocumentRefs: [
+            anchor.documentRef,
+            forgedEvidenceAnchor.documentRef,
+          ],
+        },
+        mergedObservations: [forgedMergedObservation],
+        evidenceAnchors: [anchor, forgedEvidenceAnchor],
+      }),
+    ).rejects.toThrow(/provenance|merged observation/i);
+  });
+
+  it("accepts verbatim deduplication subsets and deeply cloned equal observations", async () => {
+    const deduplicatedResult = await buildChronicleSceneEventV2({
+      ...adapterInput,
+      proposalPayload: {
+        ...proposal,
+        evidenceAnchorIds: [anchor.id, anchorTwo.id],
+        evidenceDocumentRefs: [anchor.documentRef, anchorTwo.documentRef],
+      },
+      hypothesis: {
+        ...hypothesis,
+        observationRefs: [observation.localId],
+      },
+      originalObservations: [observation, observationTwo],
+      mergedObservations: [observation],
+      originalObservationRefs: [observation.localId, observationTwo.localId],
+      mergedObservationRefs: [observation.localId],
+      evidenceAnchors: [anchor, anchorTwo],
+    });
+    expect(validateChronicleSceneEventV2(deduplicatedResult.envelope)).toEqual({
+      valid: true,
+    });
+
+    const clonedObservation = cloneObservation(observation);
+    expect(clonedObservation).toEqual(observation);
+    expect(clonedObservation).not.toBe(observation);
+    const clonedResult = await buildChronicleSceneEventV2({
+      ...adapterInput,
+      mergedObservations: [clonedObservation],
+    });
+    expect(validateChronicleSceneEventV2(clonedResult.envelope)).toEqual({
       valid: true,
     });
   });
