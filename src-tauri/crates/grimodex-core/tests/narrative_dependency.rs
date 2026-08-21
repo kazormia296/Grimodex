@@ -179,7 +179,11 @@ fn normalizer_version_uses_shared_ascii_token_grammar() {
             .expect("normalizer token golden");
         let selector: DependencySelector =
             serde_json::from_value(case["selector"].clone()).expect("text range selector");
-        assert_eq!(validate_dependency_selector(&selector, None).is_ok(), expected_valid, "{id}");
+        assert_eq!(
+            validate_dependency_selector(&selector, None).is_ok(),
+            expected_valid,
+            "{id}"
+        );
     }
 }
 

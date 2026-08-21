@@ -520,8 +520,7 @@ fn is_normalizer_version_token(value: &str) -> bool {
         return false;
     }
     characters.all(|character| {
-        is_ascii_alphanumeric(character)
-            || matches!(character, '-' | '_' | '.' | '/')
+        is_ascii_alphanumeric(character) || matches!(character, '-' | '_' | '.' | '/')
     })
 }
 
