@@ -402,6 +402,25 @@ describe("validate-semantic-core-boundary", () => {
       `durable claim mutation must be detected: ${JSON.stringify(durableErrors)}`,
     );
 
+    const durableDisposition = structuredClone(fixture);
+    const durableDispositionCase = durableDisposition.cases.find(
+      (fixtureCase) => fixtureCase.id === "raw-model-response-durable-rejected",
+    );
+    durableDispositionCase.claim.lifecycle = "ephemeral";
+    durableDispositionCase.expected = "accept";
+    const durableDispositionErrors = validateArtifactFixtureContract(
+      durableDisposition,
+    );
+    assert.ok(
+      durableDispositionErrors.some(
+        (error) =>
+          /raw-model-response-durable-rejected.*ratified|raw-model-response-durable-rejected.*expected reject.*got accept/i.test(
+            error,
+          ),
+      ),
+      `fixture claim and disposition mutations must be pinned: ${JSON.stringify(durableDispositionErrors)}`,
+    );
+
     const indexClaim = structuredClone(fixture);
     indexClaim.cases.find(
       (fixtureCase) => fixtureCase.id === "semantic-index-authority-rejected",
@@ -432,6 +451,25 @@ describe("validate-semantic-core-boundary", () => {
       `source rule swaps must be detected: ${JSON.stringify(sourceErrors)}`,
     );
 
+    const swappedSourceSemantics = structuredClone(fixture);
+    const swappedSourceCase = swappedSourceSemantics.cases.find(
+      (fixtureCase) => fixtureCase.id === "interpreter-sql-import-rejected",
+    );
+    swappedSourceCase.source = "typedWriter.commit({});";
+    swappedSourceCase.rule = "typed-writer";
+    const swappedSourceSemanticErrors = validateArtifactFixtureContract(
+      swappedSourceSemantics,
+    );
+    assert.ok(
+      swappedSourceSemanticErrors.some(
+        (error) =>
+          /interpreter-sql-import-rejected.*ratified|interpreter-sql-import-rejected.*sql-import/i.test(
+            error,
+          ),
+      ),
+      `source semantic and rule swaps must be pinned: ${JSON.stringify(swappedSourceSemanticErrors)}`,
+    );
+
     const arbitrarySafeSource = structuredClone(fixture);
     arbitrarySafeSource.cases.find(
       (fixtureCase) =>
@@ -446,6 +484,20 @@ describe("validate-semantic-core-boundary", () => {
           ),
       ),
       `positive source semantics must be pinned: ${JSON.stringify(safeSourceErrors)}`,
+    );
+
+    const duplicateCase = structuredClone(fixture);
+    duplicateCase.cases.push(
+      structuredClone(
+        duplicateCase.cases.find(
+          (fixtureCase) => fixtureCase.id === "interpreter-sql-import-rejected",
+        ),
+      ),
+    );
+    const duplicateErrors = validateArtifactFixtureContract(duplicateCase);
+    assert.ok(
+      duplicateErrors.some((error) => /duplicate.*interpreter-sql-import-rejected/i.test(error)),
+      `duplicate fixture IDs must be rejected: ${JSON.stringify(duplicateErrors)}`,
     );
   });
 
@@ -2152,6 +2204,13 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "destructured rest after fixed parameter",
+        source: [
+          "function invoke(label, ...[fn]) { fn(); }",
+          'invoke("safe", database[key]);',
+        ].join("\n"),
+      },
+      {
         name: "function expression",
         source: [
           "const invoke = function (fn) { fn(); };",
@@ -2335,6 +2394,8 @@ describe("validate-semantic-core-boundary", () => {
         "recursive(database[key]);",
         "function passthrough(fn) { return fn; }",
         "passthrough(database[key]);",
+        "function observeRest(label, ...[fn]) { return fn; }",
+        'observeRest("safe", database[key]);',
         "invoke.call(null, () => true);",
         "invoke.apply(null, [() => true]);",
         "const safeAlias = invoke.bind(null);",
