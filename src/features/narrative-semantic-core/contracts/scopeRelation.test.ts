@@ -31,7 +31,9 @@ function scopeWith(patch: Partial<NarrativeScopeV2>): NarrativeScopeV2 {
   return { ...anyAxes, ...patch };
 }
 
-function relationAxes(relation: ScopeRelation): Record<ScopeAxis, ScopeRelation> {
+function relationAxes(
+  relation: ScopeRelation,
+): Record<ScopeAxis, ScopeRelation> {
   return Object.fromEntries(
     Object.keys(anyAxes)
       .filter((key) => key !== "schemaVersion" && key !== "registryVersion")
@@ -64,28 +66,41 @@ function orderedOracle(
   };
 }
 
-const storyTimeOracle = orderedOracle(
-  "story-time",
-  "story-time/1",
-  ["story:1", "story:2", "story:3", "story:4", "story:5"],
-);
-const readingOrderOracle = orderedOracle(
-  "reading-order",
-  "reading-order/1",
-  ["read:1", "read:2", "read:3", "read:4", "read:5"],
-);
+const storyTimeOracle = orderedOracle("story-time", "story-time/1", [
+  "story:1",
+  "story:2",
+  "story:3",
+  "story:4",
+  "story:5",
+]);
+const readingOrderOracle = orderedOracle("reading-order", "reading-order/1", [
+  "read:1",
+  "read:2",
+  "read:3",
+  "read:4",
+  "read:5",
+]);
 
 describe("Narrative Scope Relation S2 contract", () => {
   it("executes every ratified basic relation fixture", () => {
     const fixtureById = new Map(
-      scopeRelationPolicy.basicRelationFixtures.map((fixture) => [fixture.id, fixture]),
+      scopeRelationPolicy.basicRelationFixtures.map((fixture) => [
+        fixture.id,
+        fixture,
+      ]),
     );
     expect(fixtureById.get("any-vs-any-is-equal")?.expected).toBe("equal");
-    expect(fixtureById.get("any-vs-exact-is-contains")?.expected).toBe("contains");
+    expect(fixtureById.get("any-vs-exact-is-contains")?.expected).toBe(
+      "contains",
+    );
 
     const cases = [
       ["any-vs-any-is-equal", { kind: "any" }, { kind: "any" }],
-      ["any-vs-exact-is-contains", { kind: "any" }, { kind: "exact", ref: "scene:1" }],
+      [
+        "any-vs-exact-is-contains",
+        { kind: "any" },
+        { kind: "exact", ref: "scene:1" },
+      ],
       [
         "any-vs-unresolved-is-contains",
         { kind: "any" },
@@ -116,8 +131,16 @@ describe("Narrative Scope Relation S2 contract", () => {
     expect(sameReason.basis).toBeNull();
 
     const sameConstraintId = compareScopeRelation(
-      scopeWith({ scene: { kind: "unresolved", reason: "ambiguous", constraintId: "c-1" } }),
-      scopeWith({ scene: { kind: "unresolved", reason: "missing-reference", constraintId: "c-1" } }),
+      scopeWith({
+        scene: { kind: "unresolved", reason: "ambiguous", constraintId: "c-1" },
+      }),
+      scopeWith({
+        scene: {
+          kind: "unresolved",
+          reason: "missing-reference",
+          constraintId: "c-1",
+        },
+      }),
     );
     expect(sameConstraintId.relation).toBe("equal");
     expect(sameConstraintId.oracleUsed).toBe(false);
@@ -136,13 +159,19 @@ describe("Narrative Scope Relation S2 contract", () => {
       scopeWith({ scene: { kind: "exact", ref: "scene:1" } }),
       scopeWith({ scene: { kind: "exact", ref: "scene:1" } }),
     );
-    expect(structural).toMatchObject({ relation: "equal", oracleUsed: false, basis: null });
+    expect(structural).toMatchObject({
+      relation: "equal",
+      oracleUsed: false,
+      basis: null,
+    });
 
     const registry: ScopeRelationRegistry = {
       scopeRegistryVersion: "narrative-scope/2",
       worldlineRevision: "worldline/1",
       compareReference: (_axis, leftRef, rightRef) =>
-        leftRef === "worldline:a" && rightRef === "worldline:b" ? "equal" : "unresolved",
+        leftRef === "worldline:a" && rightRef === "worldline:b"
+          ? "equal"
+          : "unresolved",
     };
     expect(() =>
       compareScopeRelation(
@@ -157,28 +186,86 @@ describe("Narrative Scope Relation S2 contract", () => {
       scopeWith({ worldline: { kind: "exact", ref: "worldline:b" } }),
       { registry, basis },
     );
-    expect(derived).toMatchObject({ relation: "equal", oracleUsed: true, basis });
+    expect(derived).toMatchObject({
+      relation: "equal",
+      oracleUsed: true,
+      basis,
+    });
   });
 
   it("uses independent revisioned order oracles and validates intervals", () => {
     expect(
       validateScopeOrder(
-        { kind: "interval", from: { ref: "story:3", inclusive: true }, until: { ref: "story:2", inclusive: true } },
+        {
+          kind: "interval",
+          from: { ref: "story:3", inclusive: true },
+          until: { ref: "story:2", inclusive: true },
+        },
         storyTimeOracle,
       ),
     ).toEqual({ status: "invalid", reason: "reversed-interval" });
     expect(
       validateScopeOrder(
-        { kind: "interval", from: { ref: "story:2", inclusive: false }, until: { ref: "story:2", inclusive: false } },
+        {
+          kind: "interval",
+          from: { ref: "story:2", inclusive: false },
+          until: { ref: "story:2", inclusive: false },
+        },
         storyTimeOracle,
       ),
     ).toEqual({ status: "invalid", reason: "empty-interval" });
     expect(
       validateScopeOrder(
-        { kind: "interval", from: { ref: "story:2", inclusive: true }, until: { ref: "story:2", inclusive: true } },
+        {
+          kind: "interval",
+          from: { ref: "story:2", inclusive: true },
+          until: { ref: "story:2", inclusive: false },
+        },
+        storyTimeOracle,
+      ),
+    ).toEqual({ status: "invalid", reason: "empty-interval" });
+    expect(
+      validateScopeOrder(
+        {
+          kind: "interval",
+          from: { ref: "story:2", inclusive: false },
+          until: { ref: "story:2", inclusive: true },
+        },
+        storyTimeOracle,
+      ),
+    ).toEqual({ status: "invalid", reason: "empty-interval" });
+    expect(
+      validateScopeOrder(
+        {
+          kind: "interval",
+          from: { ref: "story:2", inclusive: true },
+          until: { ref: "story:2", inclusive: true },
+        },
         storyTimeOracle,
       ),
     ).toEqual({ status: "valid" });
+
+    const structuralIntervals = compareScopeRelation(
+      scopeWith({
+        storyTime: {
+          kind: "interval",
+          from: { ref: "story:a", inclusive: true },
+          until: { ref: "story:b", inclusive: false },
+        },
+      }),
+      scopeWith({
+        storyTime: {
+          kind: "interval",
+          from: { ref: "story:a", inclusive: true },
+          until: { ref: "story:b", inclusive: false },
+        },
+      }),
+    );
+    expect(structuralIntervals.axes.storyTime).toBe("equal");
+    expect(structuralIntervals).toMatchObject({
+      oracleUsed: false,
+      basis: null,
+    });
 
     const result = compareScopeRelation(
       scopeWith({
@@ -225,7 +312,9 @@ describe("Narrative Scope Relation S2 contract", () => {
       scopeRegistryVersion: "narrative-scope/2",
       worldlineRevision: "worldline/1",
       compareReference: (_axis, leftRef, rightRef) =>
-        leftRef === "worldline:a" && rightRef === "worldline:b" ? "disjoint" : "unresolved",
+        leftRef === "worldline:a" && rightRef === "worldline:b"
+          ? "disjoint"
+          : "unresolved",
     };
     const result = compareScopeRelation(
       scopeWith({
@@ -278,16 +367,19 @@ describe("Narrative Scope Relation S2 contract", () => {
   });
 
   it("composes the axis product according to the ratified precedence", () => {
-    expect(composeScopeRelations(relationAxes("unknown"), { scene: "disjoint" })).toBe(
-      "disjoint",
-    );
+    expect(
+      composeScopeRelations(relationAxes("unknown"), { scene: "disjoint" }),
+    ).toBe("disjoint");
     expect(composeScopeRelations(relationAxes("unknown"))).toBe("unknown");
     expect(composeScopeRelations(relationAxes("equal"))).toBe("equal");
     expect(
       composeScopeRelations({ ...relationAxes("equal"), scene: "contains" }),
     ).toBe("contains");
     expect(
-      composeScopeRelations({ ...relationAxes("equal"), scene: "contained-by" }),
+      composeScopeRelations({
+        ...relationAxes("equal"),
+        scene: "contained-by",
+      }),
     ).toBe("contained-by");
     expect(
       composeScopeRelations(

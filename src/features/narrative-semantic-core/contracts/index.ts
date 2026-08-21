@@ -6,5 +6,6 @@ export * from "./mutationAuthority";
 export * from "./narrativeIr";
 export * from "./projectionState";
 export * from "./scope";
+export * from "./scopeRelation";
 export * from "./scopeV2";
 export * from "./stateVocabulary";
