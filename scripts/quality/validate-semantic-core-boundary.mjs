@@ -1869,6 +1869,9 @@ function createStaticStringResolver(sourceFile) {
     isReflectInvocationTainted(node) {
       return invocationTaintResolver.isReflectInvocationTainted(node);
     },
+    isLocalCallTainted(node) {
+      return invocationTaintResolver.isLocalCallTainted(node);
+    },
   };
 }
 
@@ -3181,6 +3184,314 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return isInvocationTainted(targetExpression);
   };
 
+  const LOCAL_CALL_MAX_DEPTH = 16;
+
+  const functionNodeForBinding = (binding) => {
+    const declaration = binding?.declaration;
+    if (!declaration) return undefined;
+    if (
+      ts.isFunctionDeclaration(declaration) ||
+      ts.isFunctionExpression(declaration) ||
+      ts.isArrowFunction(declaration)
+    ) {
+      return declaration;
+    }
+    if (ts.isVariableDeclaration(declaration)) {
+      const initializer = unwrapExpression(declaration.initializer);
+      if (!initializer) return undefined;
+      if (
+        ts.isFunctionExpression(initializer) ||
+        ts.isArrowFunction(initializer)
+      ) {
+        return initializer;
+      }
+    }
+    return undefined;
+  };
+
+  const localFunctionsForCallee = (callee) => {
+    const unwrapped = unwrapExpression(callee);
+    if (!ts.isIdentifier(unwrapped)) return [];
+    const result = lookupBinding(unwrapped);
+    if (!result) return [];
+    const bindings = result.ambiguous ? result.bindings : [result.binding];
+    return bindings.flatMap((binding) => {
+      const node = functionNodeForBinding(binding);
+      return node ? [{ binding, node }] : [];
+    });
+  };
+
+  const bindingsForIdentifier = (identifier) => {
+    if (!ts.isIdentifier(identifier)) return [];
+    const result = lookupBinding(identifier);
+    if (!result) return [];
+    return result.ambiguous ? result.bindings : [result.binding];
+  };
+
+  const environmentValueForIdentifier = (identifier, environment) => {
+    const bindings = bindingsForIdentifier(identifier);
+    let found = false;
+    let value;
+    for (const binding of bindings) {
+      if (!environment.has(binding)) continue;
+      found = true;
+      value = mergeInvocationValues(value, environment.get(binding));
+    }
+    return found ? { found: true, value } : { found: false, value: undefined };
+  };
+
+  const invocationValueIsTainted = (value) =>
+    Boolean(
+      value?.tainted ||
+        isBoundReflectTargetTainted(value?.capability) ||
+        isAmbiguousReflectCapability(value?.capability),
+    );
+
+  function evaluateLocalExpression(expression, environment, activeFunctions, depth) {
+    if (!expression || depth > LOCAL_CALL_MAX_DEPTH) {
+      return cleanInvocationValue();
+    }
+    const unwrapped = unwrapExpression(expression);
+    if (!unwrapped) return cleanInvocationValue();
+    if (ts.isIdentifier(unwrapped)) {
+      const environmentValue = environmentValueForIdentifier(
+        unwrapped,
+        environment,
+      );
+      if (environmentValue.found) return environmentValue.value;
+      return expressionValue(unwrapped);
+    }
+    if (ts.isCallExpression(unwrapped)) {
+      const localValue = evaluateLocalCall(
+        unwrapped,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+      if (localValue !== undefined) return localValue;
+      return expressionValue(unwrapped);
+    }
+    if (ts.isConditionalExpression(unwrapped)) {
+      return mergeInvocationValues(
+        evaluateLocalExpression(
+          unwrapped.whenTrue,
+          environment,
+          activeFunctions,
+          depth + 1,
+        ),
+        evaluateLocalExpression(
+          unwrapped.whenFalse,
+          environment,
+          activeFunctions,
+          depth + 1,
+        ),
+      );
+    }
+    if (ts.isBinaryExpression(unwrapped)) {
+      if (unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken) {
+        return evaluateLocalExpression(
+          unwrapped.right,
+          environment,
+          activeFunctions,
+          depth + 1,
+        );
+      }
+      if (ts.isAssignmentOperator(unwrapped.operatorToken.kind)) {
+        return evaluateLocalExpression(
+          unwrapped.right,
+          environment,
+          activeFunctions,
+          depth + 1,
+        );
+      }
+      if (
+        unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
+      ) {
+        return mergeInvocationValues(
+          evaluateLocalExpression(
+            unwrapped.left,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
+          evaluateLocalExpression(
+            unwrapped.right,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
+        );
+      }
+    }
+    if (
+      ts.isPropertyAccessExpression(unwrapped) ||
+      ts.isElementAccessExpression(unwrapped)
+    ) {
+      const receiver = evaluateLocalExpression(
+        unwrapped.expression,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+      if (receiver.tainted) return taintedInvocationValue(receiver.source);
+    }
+    return expressionValue(unwrapped);
+  }
+
+  function bindLocalPattern(pattern, value, environment) {
+    if (ts.isIdentifier(pattern)) {
+      for (const binding of bindingsForIdentifier(pattern)) {
+        environment.set(binding, value);
+      }
+      return;
+    }
+    if (ts.isObjectBindingPattern(pattern) || ts.isArrayBindingPattern(pattern)) {
+      for (const element of pattern.elements) {
+        if (ts.isBindingElement(element)) {
+          bindLocalPattern(element.name, value, environment);
+        }
+      }
+    }
+  }
+
+  function functionConsumesTaintedParameter(
+    functionNode,
+    environment,
+    activeFunctions,
+    depth,
+  ) {
+    if (!functionNode?.body || depth > LOCAL_CALL_MAX_DEPTH) return false;
+    const localEnvironment = new Map(environment);
+    const bodyRoot = functionNode.body;
+    let consumed = false;
+
+    const visitExecuted = (node) => {
+      if (!node || consumed) return;
+      if (node !== bodyRoot && isFunctionScopeNode(node)) return;
+
+      if (ts.isVariableDeclaration(node) && node.initializer) {
+        bindLocalPattern(
+          node.name,
+          evaluateLocalExpression(
+            node.initializer,
+            localEnvironment,
+            activeFunctions,
+            depth + 1,
+          ),
+          localEnvironment,
+        );
+      }
+      if (
+        ts.isBinaryExpression(node) &&
+        ts.isAssignmentOperator(node.operatorToken.kind)
+      ) {
+        bindLocalPattern(
+          node.left,
+          evaluateLocalExpression(
+            node.right,
+            localEnvironment,
+            activeFunctions,
+            depth + 1,
+          ),
+          localEnvironment,
+        );
+      }
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapExpression(node.expression);
+        if (ts.isIdentifier(callee)) {
+          const calleeValue = environmentValueForIdentifier(
+            callee,
+            localEnvironment,
+          );
+          if (calleeValue.found && invocationValueIsTainted(calleeValue.value)) {
+            consumed = true;
+            return;
+          }
+        } else if (
+          ts.isPropertyAccessExpression(callee) ||
+          ts.isElementAccessExpression(callee)
+        ) {
+          const receiver = unwrapExpression(callee.expression);
+          const key = propertyKeyForAccess(callee);
+          const receiverValue = ts.isIdentifier(receiver)
+            ? environmentValueForIdentifier(receiver, localEnvironment)
+            : { found: false, value: undefined };
+          if (
+            receiverValue.found &&
+            invocationValueIsTainted(receiverValue.value) &&
+            (key === "call" || key === "apply")
+          ) {
+            consumed = true;
+            return;
+          }
+        }
+        if (
+          !consumed &&
+          invocationValueIsTainted(
+            evaluateLocalCall(
+              node,
+              localEnvironment,
+              activeFunctions,
+              depth + 1,
+            ),
+          )
+        ) {
+          consumed = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visitExecuted);
+    };
+
+    visitExecuted(bodyRoot);
+    return consumed;
+  }
+
+  function evaluateLocalCall(node, environment, activeFunctions, depth) {
+    if (!ts.isCallExpression(node) || depth > LOCAL_CALL_MAX_DEPTH) {
+      return undefined;
+    }
+    const candidates = localFunctionsForCallee(node.expression);
+    if (candidates.length === 0) return undefined;
+    for (const candidate of candidates) {
+      if (activeFunctions.has(candidate.node)) continue;
+      const nextActiveFunctions = new Set(activeFunctions);
+      nextActiveFunctions.add(candidate.node);
+      const localEnvironment = new Map(environment);
+      for (const parameter of candidate.node.parameters) {
+        const argument = node.arguments[candidate.node.parameters.indexOf(parameter)];
+        bindLocalPattern(
+          parameter.name,
+          argument === undefined
+            ? cleanInvocationValue(false)
+            : evaluateLocalExpression(
+                argument,
+                environment,
+                nextActiveFunctions,
+                depth + 1,
+              ),
+          localEnvironment,
+        );
+      }
+      if (
+        functionConsumesTaintedParameter(
+          candidate.node,
+          localEnvironment,
+          nextActiveFunctions,
+          depth + 1,
+        )
+      ) {
+        return taintedInvocationValue("local-function");
+      }
+    }
+    return cleanInvocationValue();
+  }
+
+  const isLocalCallTainted = (node) =>
+    invocationValueIsTainted(evaluateLocalCall(node, new Map(), new Set(), 0));
+
   const resolve = () => {
     const maxIterations = Math.max(8, operations.length + 4);
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
@@ -3199,7 +3510,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   };
 
   resolve();
-  return { isInvocationTainted, isReflectInvocationTainted };
+  return {
+    isInvocationTainted,
+    isReflectInvocationTainted,
+    isLocalCallTainted,
+  };
 }
 
 function foldStaticStringExpression(
@@ -3414,7 +3729,8 @@ function scanInterpreterSourceWithAst(file, source) {
       }
       if (
         staticStringResolver.isInvocationTainted(node.expression) ||
-        staticStringResolver.isReflectInvocationTainted(node)
+        staticStringResolver.isReflectInvocationTainted(node) ||
+        staticStringResolver.isLocalCallTainted(node)
       ) {
         findings.add("db-mutation");
       }
