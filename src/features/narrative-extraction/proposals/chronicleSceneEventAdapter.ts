@@ -27,6 +27,10 @@ import type {
   SourceBasis,
 } from "@/features/narrative-extraction/reconciler/types";
 import {
+  canonicalizeChronicleContextSet,
+  digestChronicleContextSet,
+} from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
   CHRONICLE_EVENT_PROPOSAL_KIND,
   type ChronicleEventActuality,
   type ChronicleEventSignificance,
@@ -84,6 +88,8 @@ export interface ChronicleSceneEventExecutionInput {
   readonly taskId: string;
   readonly reconcilerId: string;
   readonly reconcilerVersion: string;
+  /** Audited E2 Context Set digest; C1 never derives an independent domain. */
+  readonly contextSetDigest: Sha256Digest;
   readonly componentContractDigest: Sha256Digest;
   readonly finalRequestDigest: Sha256Digest;
 }
@@ -276,6 +282,20 @@ function assertUniqueStringArray(
   assertStringArray(value, label, minItems);
   if (new Set(value).size !== value.length) {
     throw new TypeError(`${label} must not contain duplicates`);
+  }
+}
+
+function assertExactStringSet(
+  value: readonly string[],
+  expected: ReadonlySet<string>,
+  label: string,
+): void {
+  if (
+    new Set(value).size !== value.length ||
+    value.length !== expected.size ||
+    value.some((item) => !expected.has(item))
+  ) {
+    throw new TypeError(`${label} must exactly cover its retained provenance`);
   }
 }
 
@@ -646,27 +666,26 @@ function assertObservationProvenance(
   if (mergedIds.size !== input.mergedObservations.length) {
     throw new TypeError("merged observations must have unique local IDs");
   }
-  if (
-    input.originalObservationRefs.some((ref) => !originalIds.has(ref)) ||
-    input.mergedObservationRefs.some((ref) => !mergedIds.has(ref))
-  ) {
-    throw new TypeError(
-      "observation refs must resolve to their observation set",
-    );
-  }
+  assertExactStringSet(
+    input.originalObservationRefs,
+    originalIds,
+    "originalObservationRefs",
+  );
+  assertExactStringSet(
+    input.mergedObservationRefs,
+    mergedIds,
+    "mergedObservationRefs",
+  );
   assertUniqueStringArray(
     input.hypothesis.observationRefs,
     "Event Hypothesis observationRefs",
     1,
   );
-  if (
-    input.hypothesis.observationRefs.length === 0 ||
-    input.hypothesis.observationRefs.some((ref) => !mergedIds.has(ref))
-  ) {
-    throw new TypeError(
-      "Event Hypothesis observationRefs must resolve to merged observations",
-    );
-  }
+  assertExactStringSet(
+    input.hypothesis.observationRefs,
+    mergedIds,
+    "Event Hypothesis observationRefs",
+  );
   for (const observation of [
     ...input.originalObservations,
     ...input.mergedObservations,
@@ -755,30 +774,26 @@ function assertEvidenceProvenance(
       referencedAnchors.add(anchor.id);
     }
   }
-  for (const anchorId of input.proposalPayload.evidenceAnchorIds) {
-    if (!anchorsById.has(anchorId)) {
-      throw new TypeError(
-        "Proposal evidenceAnchorIds require resolved Anchors",
-      );
-    }
-  }
-  for (const anchorId of referencedAnchors) {
-    if (!input.proposalPayload.evidenceAnchorIds.includes(anchorId)) {
-      throw new TypeError(
-        "Proposal evidenceAnchorIds must retain Observation provenance",
-      );
-    }
-  }
-  const documents = new Set(
-    input.evidenceAnchors.map((anchor) => anchor.documentRef),
+  assertExactStringSet(
+    input.proposalPayload.evidenceAnchorIds,
+    referencedAnchors,
+    "Proposal evidenceAnchorIds",
   );
-  for (const documentRef of input.proposalPayload.evidenceDocumentRefs) {
-    if (!documents.has(documentRef)) {
+  const referencedDocuments = new Set<string>();
+  for (const anchorId of referencedAnchors) {
+    const anchor = anchorsById.get(anchorId);
+    if (!anchor) {
       throw new TypeError(
-        "Proposal evidenceDocumentRefs require resolved Anchors",
+        "Observation provenance requires every resolved Evidence Anchor",
       );
     }
+    referencedDocuments.add(anchor.documentRef);
   }
+  assertExactStringSet(
+    input.proposalPayload.evidenceDocumentRefs,
+    referencedDocuments,
+    "Proposal evidenceDocumentRefs",
+  );
 }
 
 function assertMaterialBasis(input: ChronicleSceneEventAdapterInput): void {
@@ -840,6 +855,7 @@ function assertAdapterInput(input: ChronicleSceneEventAdapterInput): void {
     input.execution.reconcilerVersion,
     "Adapter reconcilerVersion",
   );
+  assertDigest(input.execution.contextSetDigest, "Adapter contextSetDigest");
   assertDigest(
     input.execution.componentContractDigest,
     "Adapter componentContractDigest",
@@ -1175,6 +1191,16 @@ export async function buildChronicleSceneEventV2(
     input.evidenceAnchors,
     input.proposalPayload,
   );
+  const canonicalContextSet = canonicalizeChronicleContextSet(
+    input.contextManifests,
+  );
+  const computedContextSetDigest =
+    await digestChronicleContextSet(canonicalContextSet);
+  if (computedContextSetDigest !== input.execution.contextSetDigest) {
+    throw new TypeError(
+      "Adapter contextSetDigest does not match the canonical E2 Context Set",
+    );
+  }
   const producer = {
     kind: "reconciler-proposal" as const,
     id: input.execution.reconcilerId,
@@ -1201,7 +1227,7 @@ export async function buildChronicleSceneEventV2(
   const dependencySetDigest = await digestStableJson(
     input.dependencyDeclarations,
   );
-  const contextSetDigest = await digestStableJson(input.contextManifests);
+  const contextSetDigest = input.execution.contextSetDigest;
   const materialBasisDigest = await digestStableJson({
     sourceBasis: input.sourceBasis,
     evidenceSet,
@@ -1246,7 +1272,7 @@ export async function buildChronicleSceneEventV2(
       runId: input.execution.runId,
       taskId: input.execution.taskId,
       producer,
-      contextSet: input.contextManifests,
+      contextSet: canonicalContextSet,
       contextSetDigest,
       componentContractDigest: input.execution.componentContractDigest,
       finalRequestDigest: input.execution.finalRequestDigest,

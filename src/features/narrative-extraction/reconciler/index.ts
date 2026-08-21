@@ -81,8 +81,10 @@ export {
 export {
   buildChroniclePromptArtifact,
   buildChroniclePromptDigests,
+  canonicalizeChronicleContextSet,
   CHRONICLE_CONTEXT_SET_VERSION,
   CHRONICLE_PROMPT_CONTRACT_VERSION,
+  digestChronicleContextSet,
 } from "./chroniclePromptBuilder";
 export type {
   ChroniclePromptArtifact,

@@ -1,58 +1,43 @@
 import type { Sha256Digest } from "../source/types";
+import type {
+  DependencyRole as CanonicalDependencyRole,
+  DependencySelector as CanonicalDependencySelector,
+} from "@/features/narrative-semantic-core/contracts/dependencyRole";
+import type {
+  AssertionModality as CanonicalAssertionModality,
+  AssertionPolarity as CanonicalAssertionPolarity,
+  AssertionSupportClass as CanonicalAssertionSupportClass,
+  ContextSetEntry as CanonicalContextSetEntry,
+  DependencySetEntry as CanonicalDependencySetEntry,
+  HumanDerivedRevisionBasisV2 as CanonicalHumanDerivedRevisionBasisV2,
+  InterpretationRevisionBasisV2 as CanonicalInterpretationRevisionBasisV2,
+  NarrativeAssertionDigests as CanonicalNarrativeAssertionDigests,
+  NarrativeAssertionProducer as CanonicalNarrativeAssertionProducer,
+  NarrativeChangeKind as CanonicalNarrativeChangeKind,
+  NarrativeChangeIntent as CanonicalNarrativeChangeIntent,
+  NarrativeEffectiveMaterialBasis as CanonicalNarrativeEffectiveMaterialBasis,
+  NarrativePayloadSchemaRef as CanonicalNarrativePayloadSchemaRef,
+  NarrativeProjectionBinding as CanonicalNarrativeProjectionBinding,
+  NarrativeRevisionEnvelopeV2 as CanonicalNarrativeRevisionEnvelopeV2,
+} from "@/features/narrative-semantic-core/contracts/narrativeIr";
+import type {
+  NarrativeScopeV2 as CanonicalNarrativeScopeV2,
+  ReferenceScopeConstraint as CanonicalReferenceScopeConstraint,
+  TemporalBoundary as CanonicalTemporalBoundary,
+  TemporalScopeConstraint as CanonicalTemporalScopeConstraint,
+} from "@/features/narrative-semantic-core/contracts/scopeV2";
 
 /** ADR 009 Scope V2 reference-axis constraint. */
 export type NarrativeScopeReferenceConstraint =
-  | { readonly kind: "any" }
-  | { readonly kind: "exact"; readonly ref: string }
-  | {
-      readonly kind: "unresolved";
-      readonly reason:
-        | "not-provided"
-        | "ambiguous"
-        | "missing-reference"
-        | "unsupported-axis"
-        | "legacy-axis-unknown";
-      readonly constraintId?: string;
-    };
+  CanonicalReferenceScopeConstraint;
 
-export interface NarrativeScopeTemporalBoundary {
-  readonly ref: string;
-  readonly inclusive: boolean;
-}
+export type NarrativeScopeTemporalBoundary = CanonicalTemporalBoundary;
 
 /** ADR 009 Scope V2 temporal-axis constraint. */
-export type NarrativeScopeTemporalConstraint =
-  | { readonly kind: "any" }
-  | {
-      readonly kind: "interval";
-      readonly from?: NarrativeScopeTemporalBoundary;
-      readonly until?: NarrativeScopeTemporalBoundary;
-    }
-  | {
-      readonly kind: "unresolved";
-      readonly reason:
-        | "not-provided"
-        | "ambiguous"
-        | "missing-reference"
-        | "unsupported-axis"
-        | "legacy-axis-unknown";
-      readonly constraintId?: string;
-    };
+export type NarrativeScopeTemporalConstraint = CanonicalTemporalScopeConstraint;
 
 /** The complete, explicit Scope shape required by Narrative IR V2. */
-export interface NarrativeScopeV2 {
-  readonly schemaVersion: 2;
-  readonly registryVersion: string;
-  readonly timeline: NarrativeScopeReferenceConstraint;
-  readonly worldline: NarrativeScopeReferenceConstraint;
-  readonly scene: NarrativeScopeReferenceConstraint;
-  readonly viewpoint: NarrativeScopeReferenceConstraint;
-  readonly knowledgeHolder: NarrativeScopeReferenceConstraint;
-  readonly audience: NarrativeScopeReferenceConstraint;
-  readonly narrativeLayer: NarrativeScopeReferenceConstraint;
-  readonly storyTime: NarrativeScopeTemporalConstraint;
-  readonly readingOrder: NarrativeScopeTemporalConstraint;
-}
+export type NarrativeScopeV2 = CanonicalNarrativeScopeV2;
 
 /**
  * Deterministic Core assessment of whether a projection's source basis still
@@ -79,12 +64,7 @@ export type SemanticAssessment =
 /** Sole propagation signal permitted across provenance / dependency edges. */
 export type ReconciliationPropagationSignal = "needs-reconciliation";
 
-export type ProposalChangeKind =
-  | "add"
-  | "revise"
-  | "retract"
-  | "merge"
-  | "split";
+export type ProposalChangeKind = CanonicalNarrativeChangeKind;
 
 export interface ReconcilerIdentity {
   readonly reconcilerId: string;
@@ -178,197 +158,48 @@ export interface ReconciliationEnvelopeV1
   readonly targetProjectionRef?: string;
 }
 
-/** ADR 010 selector contract reused by Envelope V2. */
-export type DependencySelector =
-  | { readonly kind: "whole-source" }
-  | {
-      readonly kind: "text-range";
-      readonly unit: "utf16";
-      readonly from: number;
-      readonly to: number;
-      readonly anchorDigest?: Sha256Digest;
-      readonly normalizerVersion: string;
-    }
-  | {
-      readonly kind: "field-path";
-      readonly objectIdentity: string;
-      readonly fieldPath: string;
-    }
-  | {
-      readonly kind: "exact-object-set";
-      readonly objectIdentities: readonly string[];
-      readonly setDigest: Sha256Digest;
-    }
-  | {
-      readonly kind: "component-contract";
-      readonly contractId: string;
-      readonly contractDigest: Sha256Digest;
-    };
-
-export type DependencyRole =
-  | "direct-evidence"
-  | "opaque-model-context"
-  | "entity-resolution"
-  | "temporal-resolution"
-  | "scope-resolution"
-  | "projection-match"
-  | "author-correction"
-  | "component-contract"
-  | "quality-context"
-  | "ranking-only";
-
-export type ContextExposure =
-  | "model-visible"
-  | "deterministic-stage"
-  | "author-supplied";
-
-export interface ContextSetEntry {
-  readonly contextId: string;
-  readonly inputRef: string;
-  readonly stageId: string;
-  readonly exposure: ContextExposure;
-  readonly selector: DependencySelector;
-}
-
-export interface DependencySetEntry {
-  readonly dependencyId: string;
-  readonly inputRef: string;
-  readonly contextIds: readonly string[];
-  readonly role: DependencyRole;
-  readonly selector: DependencySelector;
-}
+/** ADR 010 selector and role contracts are owned by the semantic core. */
+export type DependencySelector = CanonicalDependencySelector;
+export type DependencyRole = CanonicalDependencyRole;
+export type ContextSetEntry = CanonicalContextSetEntry;
+export type DependencySetEntry = CanonicalDependencySetEntry;
+export type ContextExposure = ContextSetEntry["exposure"];
 
 export type SourceBasisEntry = SourceBasisRevision;
 
-export type NarrativeAssertionModality =
-  | "modality-explicit-text"
-  | "modality-narrator-claim"
-  | "modality-hearsay"
-  | "modality-character-belief"
-  | "modality-inference"
-  | "modality-hypothesis"
-  | "modality-author-declaration"
-  | "modality-imported-assertion";
+export type NarrativeAssertionModality = CanonicalAssertionModality;
 export type AssertionModality = NarrativeAssertionModality;
 
-export type NarrativeAssertionPolarity =
-  | "affirmative"
-  | "negative"
-  | "uncertain";
+export type NarrativeAssertionPolarity = CanonicalAssertionPolarity;
 export type AssertionPolarity = NarrativeAssertionPolarity;
 
-export type NarrativeAssertionSupportClass =
-  | "author-declared"
-  | "direct-source"
-  | "reported-source"
-  | "single-source-inference"
-  | "multi-source-inference"
-  | "imported-assertion"
-  | "unresolved";
+export type NarrativeAssertionSupportClass = CanonicalAssertionSupportClass;
 export type AssertionSupportClass = NarrativeAssertionSupportClass;
 
-export type NarrativeProducerKind =
-  | "ai-inference"
-  | "reconciler-proposal"
-  | "author-declaration"
-  | "import-metadata"
-  | "legacy-migration";
+export type NarrativeProducerKind = CanonicalNarrativeAssertionProducer["kind"];
 export type ProducerKind = NarrativeProducerKind;
 
-export interface NarrativeAssertionProducer {
-  readonly kind: NarrativeProducerKind;
-  readonly id: string;
-  readonly version: string;
-}
+export type NarrativeAssertionProducer = CanonicalNarrativeAssertionProducer;
 
-export interface NarrativePayloadSchemaRef {
-  readonly id: string;
-  readonly version: string;
-}
+export type NarrativePayloadSchemaRef = CanonicalNarrativePayloadSchemaRef;
 
-export interface NarrativeAssertionDigests {
-  readonly assertionCoreDigest: Sha256Digest;
-  readonly scopeDigest: Sha256Digest;
-  readonly assertionDigest: Sha256Digest;
-}
+export type NarrativeAssertionDigests = CanonicalNarrativeAssertionDigests;
 
-export interface NarrativeRevisionChangeIntent {
-  readonly changeKind: ProposalChangeKind;
-  readonly targetProjectionRef?: string;
-}
+export type NarrativeRevisionChangeIntent = CanonicalNarrativeChangeIntent;
 
-export interface NarrativeEffectiveMaterialBasis {
-  readonly sourceBasis: readonly SourceBasisEntry[];
-  readonly evidenceSet: readonly EvidenceSetEntry[];
-  readonly dependencySet: readonly DependencySetEntry[];
-  readonly dependencySetDigest: Sha256Digest;
-  readonly materialBasisDigest: Sha256Digest;
-}
+export type NarrativeEffectiveMaterialBasis =
+  CanonicalNarrativeEffectiveMaterialBasis;
 
-export interface InterpretationRevisionBasisV2 {
-  readonly kind: "interpretation";
-  readonly runId: string;
-  readonly taskId: string;
-  readonly producer: NarrativeAssertionProducer;
-  readonly contextSet: readonly ContextSetEntry[];
-  readonly contextSetDigest: Sha256Digest;
-  readonly componentContractDigest: Sha256Digest;
-  readonly finalRequestDigest: Sha256Digest;
-}
+export type InterpretationRevisionBasisV2 =
+  CanonicalInterpretationRevisionBasisV2;
 
-export interface HumanDerivedRevisionBasisV2 {
-  readonly kind: "human-derived";
-  readonly parentRevisionId: string;
-  readonly expectedParentEnvelopeDigest: Sha256Digest;
-  readonly parentAssertionDigest: Sha256Digest;
-  readonly rootInterpretationRevisionId: string;
-  readonly derivation: {
-    readonly adapterId: string;
-    readonly adapterVersion: string;
-    readonly kind: "projection-only" | "scope-override";
-    readonly proposalPayloadChangedPaths: readonly string[];
-  };
-  readonly revisionActor: {
-    readonly kind: "human";
-    readonly surfaceId: string;
-  };
-  readonly derivationContextSet: readonly ContextSetEntry[];
-  readonly derivationContextSetDigest: Sha256Digest;
-}
+export type HumanDerivedRevisionBasisV2 = CanonicalHumanDerivedRevisionBasisV2;
 
-export interface NarrativeProjectionBindingV2 {
-  /** `narrative_proposals.kind`; intentionally distinct from schema ref. */
-  readonly proposalKind: string;
-  readonly proposalSchemaRef: NarrativePayloadSchemaRef;
-  readonly proposalPayloadDigest: Sha256Digest;
-  readonly adapterContractId: string;
-  readonly adapterContractVersion: string;
-}
+export type NarrativeProjectionBindingV2 = CanonicalNarrativeProjectionBinding;
 
-export interface NarrativeRevisionEnvelopeV2<
+export type NarrativeRevisionEnvelopeV2<
   TPayload = Readonly<Record<string, unknown>>,
-> {
-  readonly schemaVersion: 2;
-  readonly assertion: {
-    readonly assertionId: string | null;
-    readonly assertionKind: string;
-    readonly payloadSchemaRef: NarrativePayloadSchemaRef;
-    readonly payload: TPayload;
-    readonly scope: NarrativeScopeV2;
-    readonly modality: NarrativeAssertionModality;
-    readonly polarity: NarrativeAssertionPolarity;
-    readonly supportClass: NarrativeAssertionSupportClass;
-    readonly producer: NarrativeAssertionProducer;
-    readonly producerConfidence?: number;
-  };
-  readonly assertionDigests: NarrativeAssertionDigests;
-  readonly changeIntent: NarrativeRevisionChangeIntent;
-  readonly effectiveMaterialBasis: NarrativeEffectiveMaterialBasis;
-  readonly revisionBasis:
-    | InterpretationRevisionBasisV2
-    | HumanDerivedRevisionBasisV2;
-  readonly projectionBinding: NarrativeProjectionBindingV2;
-}
+> = CanonicalNarrativeRevisionEnvelopeV2<TPayload>;
 export type ReconciliationEnvelopeV2<
   TPayload = Readonly<Record<string, unknown>>,
 > = NarrativeRevisionEnvelopeV2<TPayload>;

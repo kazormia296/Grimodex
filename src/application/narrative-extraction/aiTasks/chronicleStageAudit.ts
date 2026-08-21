@@ -17,6 +17,8 @@ export type ChronicleTerminalStatus =
   | "cancelled"
   | "skipped";
 
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
 export interface ChronicleStageAuditDigests {
   readonly contextSetDigest: Sha256Digest;
   readonly componentContractDigest: Sha256Digest;
@@ -71,6 +73,15 @@ function stageMetadata(
   >,
 ): ChronicleStageAuditMetadata {
   assertStageExecutionContext(stageExecution);
+  assertDigest(digests.contextSetDigest, "Chronicle Stage contextSetDigest");
+  assertDigest(
+    digests.componentContractDigest,
+    "Chronicle Stage componentContractDigest",
+  );
+  assertDigest(
+    digests.finalRequestDigest,
+    "Chronicle Stage finalRequestDigest",
+  );
   return {
     kind: "chronicle-stage",
     version: CHRONICLE_STAGE_AUDIT_VERSION,
@@ -97,6 +108,15 @@ function stageMetadata(
       ? {}
       : { repairChildStageExecutionId: terminal.repairChildStageExecutionId }),
   };
+}
+
+function assertDigest(
+  value: unknown,
+  label: string,
+): asserts value is Sha256Digest {
+  if (typeof value !== "string" || !SHA256_DIGEST_PATTERN.test(value)) {
+    throw new TypeError(`${label} must be a sha256 digest`);
+  }
 }
 
 /**

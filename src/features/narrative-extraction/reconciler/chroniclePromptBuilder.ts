@@ -1,5 +1,6 @@
 import { digestStableJson } from "../source/digest";
 import type { Sha256Digest } from "../source/types";
+import { validateDependencySelector } from "@/features/narrative-semantic-core/contracts/dependencyRole";
 import {
   NARRATIVE_STAGE_IDS,
   type ChronicleNarrativeStageId,
@@ -72,9 +73,15 @@ function contextSortKey(entry: ContextSetEntry): string {
   );
 }
 
-function canonicalContextSet(
-  stageId: ChronicleNarrativeStageId,
+function compareCodeUnitStrings(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+export function canonicalizeChronicleContextSet(
   contextSet: readonly ContextSetEntry[],
+  expectedStageId?: string,
 ): readonly ContextSetEntry[] {
   const seenContextIds = new Set<string>();
   const seenInputRefs = new Set<string>();
@@ -82,14 +89,20 @@ function canonicalContextSet(
     assertNonEmptyString("Context Set contextId", entry.contextId);
     assertNonEmptyString("Context Set inputRef", entry.inputRef);
     assertNonEmptyString("Context Set stageId", entry.stageId);
-    if (entry.stageId !== stageId) {
+    if (expectedStageId !== undefined && entry.stageId !== expectedStageId) {
       throw new TypeError(
-        `Context Set entry ${entry.contextId} belongs to ${entry.stageId}, expected ${stageId}`,
+        `Context Set entry ${entry.contextId} belongs to ${entry.stageId}, expected ${expectedStageId}`,
       );
     }
     if (!CONTEXT_EXPOSURES.has(entry.exposure)) {
       throw new TypeError(
         `Unsupported Context Set exposure for ${entry.contextId}`,
+      );
+    }
+    const selectorResult = validateDependencySelector(entry.selector);
+    if (!selectorResult.valid) {
+      throw new TypeError(
+        `Invalid Context Set selector for ${entry.contextId}: ${selectorResult.error.code}`,
       );
     }
     if (seenContextIds.has(entry.contextId)) {
@@ -104,8 +117,22 @@ function canonicalContextSet(
     seenInputRefs.add(entry.inputRef);
   }
   return [...contextSet].sort((left, right) =>
-    contextSortKey(left).localeCompare(contextSortKey(right)),
+    compareCodeUnitStrings(contextSortKey(left), contextSortKey(right)),
   );
+}
+
+export async function digestChronicleContextSet(
+  contextSet: readonly ContextSetEntry[],
+  expectedStageId?: string,
+): Promise<Sha256Digest> {
+  const canonicalContextSet = canonicalizeChronicleContextSet(
+    contextSet,
+    expectedStageId,
+  );
+  return digestStableJson({
+    version: CHRONICLE_CONTEXT_SET_VERSION,
+    entries: canonicalContextSet,
+  });
 }
 
 function assertComponentContract(
@@ -198,7 +225,10 @@ export function buildChroniclePromptArtifact(
     throw new TypeError(`Unsupported Chronicle stage: ${input.stageId}`);
   }
   assertComponentContract(input.componentContract);
-  const contextSet = canonicalContextSet(input.stageId, input.contextSet);
+  const contextSet = canonicalizeChronicleContextSet(
+    input.contextSet,
+    input.stageId,
+  );
   const modelInputs = buildModelInputMap(contextSet, input.modelInputs);
   const content = [
     input.componentContract.instruction,
@@ -224,10 +254,10 @@ export function buildChroniclePromptArtifact(
 export async function buildChroniclePromptDigests(
   artifact: ChroniclePromptArtifact,
 ): Promise<ChroniclePromptDigests> {
-  const contextSetDigest = await digestStableJson({
-    version: artifact.contextSetVersion,
-    entries: artifact.contextSet,
-  });
+  const contextSetDigest = await digestChronicleContextSet(
+    artifact.contextSet,
+    artifact.stageId,
+  );
   const componentContractDigest = await digestStableJson({
     schemaVersion: artifact.schemaVersion,
     contextSetVersion: artifact.contextSetVersion,
