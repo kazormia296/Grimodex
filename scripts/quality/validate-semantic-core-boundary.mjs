@@ -1960,6 +1960,7 @@ function cleanInvocationValue(defined = true) {
     defined,
     capability: undefined,
     container: undefined,
+    callables: new Set(),
   };
 }
 
@@ -1970,6 +1971,18 @@ function taintedInvocationValue(source = "computed", defined = undefined) {
     defined,
     capability: undefined,
     container: undefined,
+    callables: new Set(),
+  };
+}
+
+function callableInvocationValue(node) {
+  return {
+    tainted: false,
+    source: undefined,
+    defined: true,
+    capability: undefined,
+    container: undefined,
+    callables: new Set([node]),
   };
 }
 
@@ -1993,6 +2006,7 @@ function reflectCapabilityValue(
       ambiguous,
     },
     container: undefined,
+    callables: new Set(),
   };
 }
 
@@ -2020,7 +2034,12 @@ function reflectGlobalValue() {
   for (const method of REFLECT_CAPABILITY_METHODS) {
     container.entries.set(method, reflectCapabilityValue(method));
   }
-  return { tainted: false, defined: true, container };
+  return {
+    tainted: false,
+    defined: true,
+    container,
+    callables: new Set(),
+  };
 }
 
 function mergeInvocationCapabilities(left, right) {
@@ -2104,12 +2123,18 @@ function mergeInvocationValues(left, right) {
     left.defined === true &&
     !left.tainted &&
     !left.capability &&
-    !left.container;
+    !left.container &&
+    !left.callables?.size;
   const rightIsNeutral =
     right.defined === true &&
     !right.tainted &&
     !right.capability &&
-    !right.container;
+    !right.container &&
+    !right.callables?.size;
+  const callables = new Set([
+    ...(left.callables ?? []),
+    ...(right.callables ?? []),
+  ]);
   if (leftIsNeutral) return right;
   if (rightIsNeutral) return left;
   if (left.container && left.container === right.container) {
@@ -2127,6 +2152,7 @@ function mergeInvocationValues(left, right) {
         right.capability,
       ),
       container: left.container,
+      callables,
       containerAlternatives:
         alternatives.size > 0 && !alternatives.has(left.container)
           ? alternatives
@@ -2176,6 +2202,7 @@ function mergeInvocationValues(left, right) {
       right.capability,
     ),
     container,
+    callables,
     containerAlternatives:
       alternatives.size > 0 && !alternatives.has(container)
         ? alternatives
@@ -2200,6 +2227,14 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
       left.capability?.boundArguments,
       right.capability?.boundArguments,
     )
+  ) {
+    return false;
+  }
+  const leftCallables = left.callables ?? new Set();
+  const rightCallables = right.callables ?? new Set();
+  if (
+    leftCallables.size !== rightCallables.size ||
+    [...leftCallables].some((callable) => !rightCallables.has(callable))
   ) {
     return false;
   }
@@ -2261,13 +2296,43 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     defined: true,
     capability: undefined,
     container: globalThisContainer,
+    callables: new Set(),
   };
   globalThisContainer.entries.set("Reflect", globalReflectValue);
   globalThisContainer.entries.set("undefined", cleanInvocationValue(false));
   globalThisContainer.entries.set("globalThis", globalThisValue);
 
+  const functionLikeNodeForBinding = (binding) => {
+    const declaration = binding?.declaration;
+    if (!declaration) return undefined;
+    if (
+      ts.isFunctionDeclaration(declaration) ||
+      ts.isFunctionExpression(declaration) ||
+      ts.isArrowFunction(declaration) ||
+      ts.isMethodDeclaration(declaration) ||
+      ts.isGetAccessorDeclaration(declaration) ||
+      ts.isSetAccessorDeclaration(declaration)
+    ) {
+      return declaration;
+    }
+    if (ts.isVariableDeclaration(declaration)) {
+      const initializer = unwrapExpression(declaration.initializer);
+      if (
+        initializer &&
+        (ts.isFunctionExpression(initializer) ||
+          ts.isArrowFunction(initializer))
+      ) {
+        return initializer;
+      }
+    }
+    return undefined;
+  };
+
   const valueForBinding = (binding) =>
-    bindingValues.get(binding) ?? cleanInvocationValue();
+    bindingValues.get(binding) ??
+    (functionLikeNodeForBinding(binding)
+      ? callableInvocationValue(functionLikeNodeForBinding(binding))
+      : cleanInvocationValue());
 
   const assignBinding = (binding, value) => {
     if (!binding || !value) return false;
@@ -2444,6 +2509,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       defined: value?.defined ?? true,
       capability: value?.capability,
       container,
+      callables: new Set(value?.callables ?? []),
       containerAlternatives:
         value?.containerAlternatives?.size > 0
           ? value.containerAlternatives
@@ -2553,7 +2619,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       lengths.every((length) => length !== undefined && length === lengths[0])
         ? lengths[0]
         : undefined;
-    return { tainted: false, defined: true, container };
+    return {
+      tainted: false,
+      defined: true,
+      container,
+      callables: new Set(value.callables ?? []),
+    };
   };
 
   const knownSpreadLength = (expression, value) => {
@@ -2627,6 +2698,16 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     }
     if (ts.isSatisfiesExpression(unwrapped)) {
       return expressionValue(unwrapped.expression, seenBindings, depth + 1);
+    }
+    if (
+      ts.isFunctionDeclaration(unwrapped) ||
+      ts.isFunctionExpression(unwrapped) ||
+      ts.isArrowFunction(unwrapped) ||
+      ts.isMethodDeclaration(unwrapped) ||
+      ts.isGetAccessorDeclaration(unwrapped) ||
+      ts.isSetAccessorDeclaration(unwrapped)
+    ) {
+      return callableInvocationValue(unwrapped);
     }
     if (ts.isVoidExpression(unwrapped)) {
       return cleanInvocationValue(false);
@@ -2801,7 +2882,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       evaluatedContainer.length = positionKnown ? index : undefined;
       mergeContainer(
         container,
-        { tainted: false, container: evaluatedContainer },
+        { tainted: false, container: evaluatedContainer, callables: new Set() },
         0,
       );
       if (evaluatedContainer.uncertain || evaluatedContainer.length === undefined) {
@@ -2810,7 +2891,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       } else if (!container.uncertain) {
         container.length = Math.max(container.length ?? 0, evaluatedContainer.length);
       }
-      return { tainted: false, defined: true, container };
+      return {
+        tainted: false,
+        defined: true,
+        container,
+        callables: new Set(),
+      };
     }
     if (ts.isObjectLiteralExpression(unwrapped)) {
       const container =
@@ -2830,6 +2916,29 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             property.name.text,
             expressionValue(property.name, seenBindings, depth + 1),
           );
+          continue;
+        }
+        if (
+          ts.isMethodDeclaration(property) ||
+          ts.isGetAccessorDeclaration(property) ||
+          ts.isSetAccessorDeclaration(property)
+        ) {
+          const key = staticPropertyKey(property.name);
+          const propertyValue = callableInvocationValue(property);
+          if (key === undefined) {
+            evaluatedContainer.unknown = mergeInvocationValues(
+              evaluatedContainer.unknown,
+              propertyValue,
+            );
+          } else {
+            evaluatedContainer.entries.set(
+              key,
+              mergeInvocationValues(
+                evaluatedContainer.entries.get(key),
+                propertyValue,
+              ),
+            );
+          }
           continue;
         }
         if (ts.isPropertyAssignment(property)) {
@@ -2856,7 +2965,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         }
       }
       mergeContainer(container, { tainted: false, container: evaluatedContainer });
-      return { tainted: false, defined: true, container };
+      return {
+        tainted: false,
+        defined: true,
+        container,
+        callables: new Set(),
+      };
     }
     if (ts.isConditionalExpression(unwrapped)) {
       return mergeInvocationValues(
@@ -3223,7 +3337,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return (
       value.tainted ||
       isBoundReflectTargetTainted(value.capability) ||
-      isAmbiguousReflectCapability(value.capability)
+      isAmbiguousReflectCapability(value.capability) ||
+      isReturnedLocalCapabilityTainted(expression)
     );
   };
 
@@ -3261,41 +3376,6 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
 
   const LOCAL_CALL_MAX_DEPTH = 16;
 
-  const functionNodeForBinding = (binding) => {
-    const declaration = binding?.declaration;
-    if (!declaration) return undefined;
-    if (
-      ts.isFunctionDeclaration(declaration) ||
-      ts.isFunctionExpression(declaration) ||
-      ts.isArrowFunction(declaration)
-    ) {
-      return declaration;
-    }
-    if (ts.isVariableDeclaration(declaration)) {
-      const initializer = unwrapExpression(declaration.initializer);
-      if (!initializer) return undefined;
-      if (
-        ts.isFunctionExpression(initializer) ||
-        ts.isArrowFunction(initializer)
-      ) {
-        return initializer;
-      }
-    }
-    return undefined;
-  };
-
-  const localFunctionsForCallee = (callee) => {
-    const unwrapped = unwrapExpression(callee);
-    if (!ts.isIdentifier(unwrapped)) return [];
-    const result = lookupBinding(unwrapped);
-    if (!result) return [];
-    const bindings = result.ambiguous ? result.bindings : [result.binding];
-    return bindings.flatMap((binding) => {
-      const node = functionNodeForBinding(binding);
-      return node ? [{ binding, node }] : [];
-    });
-  };
-
   const bindingsForIdentifier = (identifier) => {
     if (!ts.isIdentifier(identifier)) return [];
     const result = lookupBinding(identifier);
@@ -3322,32 +3402,107 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         isAmbiguousReflectCapability(value?.capability),
     );
 
+  const cleanLocalResult = (returnValue = cleanInvocationValue()) => ({
+    consumed: false,
+    returnValue,
+  });
+
+  const mergeLocalResults = (left, right) => ({
+    consumed: Boolean(left?.consumed) || Boolean(right?.consumed),
+    returnValue:
+      mergeInvocationValues(left?.returnValue, right?.returnValue) ??
+      cleanInvocationValue(),
+  });
+
+  const localFunctionsForCallee = (
+    callee,
+    environment,
+    activeFunctions,
+    depth,
+  ) => {
+    const value = evaluateLocalExpression(
+      callee,
+      environment,
+      activeFunctions,
+      depth + 1,
+    ).returnValue;
+    return [...(value?.callables ?? [])].map((node) => ({ node }));
+  };
+
   function evaluateLocalExpression(expression, environment, activeFunctions, depth) {
     if (!expression || depth > LOCAL_CALL_MAX_DEPTH) {
-      return cleanInvocationValue();
+      return cleanLocalResult();
     }
     const unwrapped = unwrapExpression(expression);
-    if (!unwrapped) return cleanInvocationValue();
+    if (!unwrapped) return cleanLocalResult();
+    if (ts.isSatisfiesExpression(unwrapped)) {
+      return evaluateLocalExpression(
+        unwrapped.expression,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+    }
     if (ts.isIdentifier(unwrapped)) {
       const environmentValue = environmentValueForIdentifier(
         unwrapped,
         environment,
       );
-      if (environmentValue.found) return environmentValue.value;
-      return expressionValue(unwrapped);
+      if (environmentValue.found) return cleanLocalResult(environmentValue.value);
+      return cleanLocalResult(expressionValue(unwrapped));
     }
     if (ts.isCallExpression(unwrapped)) {
-      const localValue = evaluateLocalCall(
+      const calleeResult = evaluateLocalExpression(
+        unwrapped.expression,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+      const callee = unwrapExpression(unwrapped.expression);
+      let taintedCallee = invocationValueIsTainted(calleeResult.returnValue);
+      if (
+        taintedCallee &&
+        (ts.isPropertyAccessExpression(callee) ||
+          ts.isElementAccessExpression(callee))
+      ) {
+        const receiverResult = evaluateLocalExpression(
+          callee.expression,
+          environment,
+          activeFunctions,
+          depth + 1,
+        );
+        const key = propertyKeyForAccess(callee);
+        if (invocationValueIsTainted(receiverResult.returnValue)) {
+          taintedCallee = key === "call" || key === "apply";
+        }
+      }
+      const localResult = evaluateLocalCall(
         unwrapped,
         environment,
         activeFunctions,
         depth + 1,
       );
-      if (localValue !== undefined) return localValue;
-      return expressionValue(unwrapped);
+      const fallbackValue = expressionValue(unwrapped);
+      if (localResult !== undefined) {
+        return mergeLocalResults(
+          {
+          consumed:
+              calleeResult.consumed ||
+              taintedCallee,
+            returnValue: fallbackValue,
+          },
+          localResult,
+        );
+      }
+      return {
+        consumed:
+          calleeResult.consumed ||
+          taintedCallee,
+        returnValue: fallbackValue,
+      };
     }
     if (ts.isConditionalExpression(unwrapped)) {
-      return mergeInvocationValues(
+      return mergeLocalResults(
         evaluateLocalExpression(
           unwrapped.whenTrue,
           environment,
@@ -3364,11 +3519,19 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     }
     if (ts.isBinaryExpression(unwrapped)) {
       if (unwrapped.operatorToken.kind === ts.SyntaxKind.CommaToken) {
-        return evaluateLocalExpression(
-          unwrapped.right,
-          environment,
-          activeFunctions,
-          depth + 1,
+        return mergeLocalResults(
+          evaluateLocalExpression(
+            unwrapped.left,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
+          evaluateLocalExpression(
+            unwrapped.right,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
         );
       }
       if (ts.isAssignmentOperator(unwrapped.operatorToken.kind)) {
@@ -3384,7 +3547,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
         unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
       ) {
-        return mergeInvocationValues(
+        return mergeLocalResults(
           evaluateLocalExpression(
             unwrapped.left,
             environment,
@@ -3410,162 +3573,466 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         activeFunctions,
         depth + 1,
       );
-      if (receiver.tainted) return taintedInvocationValue(receiver.source);
+      const key = propertyKeyForAccess(unwrapped);
+      const selected =
+        key === undefined
+          ? { found: false, value: unknownContainerValue(receiver.returnValue) }
+          : readContainerProperty(receiver.returnValue, key);
+      const fallbackValue = expressionValue(unwrapped);
+      return {
+        consumed: receiver.consumed,
+        returnValue:
+          key === undefined &&
+          !invocationContainerAlternatives(receiver.returnValue).some(
+            (container) => container.unknown !== undefined,
+          )
+            ? fallbackValue
+            : selected.value ?? fallbackValue,
+      };
     }
-    return expressionValue(unwrapped);
-  }
-
-  function bindLocalPattern(pattern, value, environment) {
-    if (ts.isIdentifier(pattern)) {
-      for (const binding of bindingsForIdentifier(pattern)) {
-        environment.set(binding, value);
-      }
-      return;
-    }
-    if (ts.isObjectBindingPattern(pattern) || ts.isArrayBindingPattern(pattern)) {
-      for (const element of pattern.elements) {
-        if (ts.isBindingElement(element)) {
-          bindLocalPattern(element.name, value, environment);
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+      const container = createInvocationContainer("array");
+      let consumed = false;
+      let index = 0;
+      for (const element of unwrapped.elements) {
+        if (ts.isOmittedExpression(element)) {
+          index += 1;
+          continue;
+        }
+        const elementResult = ts.isSpreadElement(element)
+          ? evaluateLocalExpression(
+              element.expression,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : evaluateLocalExpression(
+              element,
+              environment,
+              activeFunctions,
+              depth + 1,
+            );
+        consumed ||= elementResult.consumed;
+        if (ts.isSpreadElement(element)) {
+          mergeContainer(container, elementResult.returnValue, index);
+          index += knownSpreadLength(element.expression, elementResult.returnValue) ?? 1;
+        } else {
+          container.entries.set(String(index), elementResult.returnValue);
+          index += 1;
         }
       }
+      container.length = index;
+      return {
+        consumed,
+        returnValue: { tainted: false, defined: true, container, callables: new Set() },
+      };
     }
+    if (ts.isObjectLiteralExpression(unwrapped)) {
+      const container = createInvocationContainer("object");
+      let consumed = false;
+      for (const property of unwrapped.properties) {
+        if (ts.isSpreadAssignment(property)) {
+          const spreadResult = evaluateLocalExpression(
+            property.expression,
+            environment,
+            activeFunctions,
+            depth + 1,
+          );
+          consumed ||= spreadResult.consumed;
+          mergeContainer(container, spreadResult.returnValue);
+          continue;
+        }
+        if (ts.isShorthandPropertyAssignment(property)) {
+          const shorthandResult = evaluateLocalExpression(
+            property.name,
+            environment,
+            activeFunctions,
+            depth + 1,
+          );
+          consumed ||= shorthandResult.consumed;
+          container.entries.set(property.name.text, shorthandResult.returnValue);
+          continue;
+        }
+        if (
+          ts.isMethodDeclaration(property) ||
+          ts.isGetAccessorDeclaration(property) ||
+          ts.isSetAccessorDeclaration(property)
+        ) {
+          const key = staticPropertyKey(property.name);
+          const methodValue = callableInvocationValue(property);
+          if (key === undefined) {
+            container.unknown = mergeInvocationValues(container.unknown, methodValue);
+          } else {
+            container.entries.set(
+              key,
+              mergeInvocationValues(container.entries.get(key), methodValue),
+            );
+          }
+          continue;
+        }
+        if (ts.isPropertyAssignment(property)) {
+          const propertyResult = evaluateLocalExpression(
+            property.initializer,
+            environment,
+            activeFunctions,
+            depth + 1,
+          );
+          consumed ||= propertyResult.consumed;
+          const key = staticPropertyKey(property.name);
+          if (key === undefined) {
+            container.unknown = mergeInvocationValues(
+              container.unknown,
+              propertyResult.returnValue,
+            );
+          } else {
+            container.entries.set(
+              key,
+              mergeInvocationValues(
+                container.entries.get(key),
+                propertyResult.returnValue,
+              ),
+            );
+          }
+        }
+      }
+      return {
+        consumed,
+        returnValue: { tainted: false, defined: true, container, callables: new Set() },
+      };
+    }
+    if (ts.isAwaitExpression(unwrapped) || ts.isYieldExpression(unwrapped)) {
+      return evaluateLocalExpression(
+        unwrapped.expression,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+    }
+    if (ts.isSpreadElement(unwrapped)) {
+      return evaluateLocalExpression(
+        unwrapped.expression,
+        environment,
+        activeFunctions,
+        depth + 1,
+      );
+    }
+    return cleanLocalResult(expressionValue(unwrapped));
   }
 
-  function functionConsumesTaintedParameter(
-    functionNode,
+  function bindLocalPattern(
+    pattern,
+    value,
     environment,
     activeFunctions,
     depth,
   ) {
-    if (!functionNode?.body || depth > LOCAL_CALL_MAX_DEPTH) return false;
+    if (!pattern || depth > LOCAL_CALL_MAX_DEPTH) return cleanLocalResult();
+    if (ts.isIdentifier(pattern)) {
+      for (const binding of bindingsForIdentifier(pattern)) {
+        environment.set(binding, value);
+      }
+      return cleanLocalResult();
+    }
+    if (ts.isObjectBindingPattern(pattern)) {
+      const excludedKeys = [];
+      let result = cleanLocalResult();
+      for (const element of pattern.elements) {
+        if (!ts.isBindingElement(element)) continue;
+        if (element.dotDotDotToken) {
+          result = mergeLocalResults(
+            result,
+            bindLocalPattern(
+              element.name,
+              restContainerValue(value, excludedKeys),
+              environment,
+              activeFunctions,
+              depth + 1,
+            ),
+          );
+          continue;
+        }
+        const property = element.propertyName ?? element.name;
+        const key = staticPropertyKey(property);
+        if (key !== undefined) excludedKeys.push(key);
+        const selected =
+          key === undefined
+            ? { found: false, value: unknownContainerValue(value) }
+            : readContainerProperty(value, key);
+        let selectedValue = selected.value;
+        if (
+          (!selected.found || selectedValue.defined !== true) &&
+          element.initializer
+        ) {
+          const defaultResult = evaluateLocalExpression(
+            element.initializer,
+            environment,
+            activeFunctions,
+            depth + 1,
+          );
+          result = mergeLocalResults(result, defaultResult);
+          selectedValue = mergeInvocationValues(
+            selectedValue,
+            defaultResult.returnValue,
+          );
+        }
+        result = mergeLocalResults(
+          result,
+          bindLocalPattern(
+            element.name,
+            selectedValue,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
+        );
+      }
+      return result;
+    }
+    if (ts.isArrayBindingPattern(pattern)) {
+      let result = cleanLocalResult();
+      let index = 0;
+      for (const element of pattern.elements) {
+        if (ts.isOmittedExpression(element)) {
+          index += 1;
+          continue;
+        }
+        if (!ts.isBindingElement(element)) continue;
+        if (element.dotDotDotToken) {
+          result = mergeLocalResults(
+            result,
+            bindLocalPattern(
+              element.name,
+              restContainerValue(value, [], index),
+              environment,
+              activeFunctions,
+              depth + 1,
+            ),
+          );
+          continue;
+        }
+        const selected = readContainerProperty(value, String(index));
+        let selectedValue = selected.value;
+        if (
+          (!selected.found || selectedValue.defined !== true) &&
+          element.initializer
+        ) {
+          const defaultResult = evaluateLocalExpression(
+            element.initializer,
+            environment,
+            activeFunctions,
+            depth + 1,
+          );
+          result = mergeLocalResults(result, defaultResult);
+          selectedValue = mergeInvocationValues(
+            selectedValue,
+            defaultResult.returnValue,
+          );
+        }
+        result = mergeLocalResults(
+          result,
+          bindLocalPattern(
+            element.name,
+            selectedValue,
+            environment,
+            activeFunctions,
+            depth + 1,
+          ),
+        );
+        index += 1;
+      }
+      return result;
+    }
+    return cleanLocalResult();
+  }
+
+  function evaluateLocalFunction(functionNode, environment, activeFunctions, depth) {
+    if (!functionNode?.body || depth > LOCAL_CALL_MAX_DEPTH) {
+      return cleanLocalResult();
+    }
     const localEnvironment = new Map(environment);
-    const bodyRoot = functionNode.body;
-    let consumed = false;
-
+    if (!ts.isBlock(functionNode.body)) {
+      return evaluateLocalExpression(
+        functionNode.body,
+        localEnvironment,
+        activeFunctions,
+        depth + 1,
+      );
+    }
+    let result = cleanLocalResult();
     const visitExecuted = (node) => {
-      if (!node || consumed) return;
-      if (node !== bodyRoot && isFunctionScopeNode(node)) return;
-
+      if (!node) return;
+      if (node !== functionNode.body && isFunctionScopeNode(node)) return;
       if (ts.isVariableDeclaration(node) && node.initializer) {
-        bindLocalPattern(
-          node.name,
-          evaluateLocalExpression(
-            node.initializer,
+        const valueResult = evaluateLocalExpression(
+          node.initializer,
+          localEnvironment,
+          activeFunctions,
+          depth + 1,
+        );
+        result = mergeLocalResults(result, valueResult);
+        result = mergeLocalResults(
+          result,
+          bindLocalPattern(
+            node.name,
+            valueResult.returnValue,
             localEnvironment,
             activeFunctions,
             depth + 1,
           ),
-          localEnvironment,
         );
       }
       if (
         ts.isBinaryExpression(node) &&
         ts.isAssignmentOperator(node.operatorToken.kind)
       ) {
-        bindLocalPattern(
-          node.left,
-          evaluateLocalExpression(
-            node.right,
+        const valueResult = evaluateLocalExpression(
+          node.right,
+          localEnvironment,
+          activeFunctions,
+          depth + 1,
+        );
+        result = mergeLocalResults(result, valueResult);
+        result = mergeLocalResults(
+          result,
+          bindLocalPattern(
+            node.left,
+            valueResult.returnValue,
             localEnvironment,
             activeFunctions,
             depth + 1,
           ),
-          localEnvironment,
         );
       }
-      if (ts.isCallExpression(node)) {
-        const callee = unwrapExpression(node.expression);
-        if (ts.isIdentifier(callee)) {
-          const calleeValue = environmentValueForIdentifier(
-            callee,
-            localEnvironment,
-          );
-          if (calleeValue.found && invocationValueIsTainted(calleeValue.value)) {
-            consumed = true;
-            return;
-          }
-        } else if (
-          ts.isPropertyAccessExpression(callee) ||
-          ts.isElementAccessExpression(callee)
-        ) {
-          const receiver = unwrapExpression(callee.expression);
-          const key = propertyKeyForAccess(callee);
-          const receiverValue = ts.isIdentifier(receiver)
-            ? environmentValueForIdentifier(receiver, localEnvironment)
-            : { found: false, value: undefined };
-          if (
-            receiverValue.found &&
-            invocationValueIsTainted(receiverValue.value) &&
-            (key === "call" || key === "apply")
-          ) {
-            consumed = true;
-            return;
-          }
-        }
-        if (
-          !consumed &&
-          invocationValueIsTainted(
-            evaluateLocalCall(
-              node,
+      if (ts.isReturnStatement(node)) {
+        const returnResult = node.expression
+          ? evaluateLocalExpression(
+              node.expression,
               localEnvironment,
               activeFunctions,
               depth + 1,
-            ),
-          )
-        ) {
-          consumed = true;
-          return;
-        }
+            )
+          : cleanLocalResult(cleanInvocationValue(false));
+        result = mergeLocalResults(result, returnResult);
+      } else if (ts.isCallExpression(node)) {
+        const callResult = evaluateLocalExpression(
+          node,
+          localEnvironment,
+          activeFunctions,
+          depth + 1,
+        );
+        result = mergeLocalResults(result, {
+          consumed: callResult.consumed,
+          returnValue: cleanInvocationValue(),
+        });
       }
       ts.forEachChild(node, visitExecuted);
     };
-
-    visitExecuted(bodyRoot);
-    return consumed;
+    visitExecuted(functionNode.body);
+    return result;
   }
 
   function evaluateLocalCall(node, environment, activeFunctions, depth) {
     if (!ts.isCallExpression(node) || depth > LOCAL_CALL_MAX_DEPTH) {
       return undefined;
     }
-    const candidates = localFunctionsForCallee(node.expression);
+    const candidates = localFunctionsForCallee(
+      node.expression,
+      environment,
+      activeFunctions,
+      depth + 1,
+    );
     if (candidates.length === 0) return undefined;
+    let result = cleanLocalResult();
+    let evaluatedCandidate = false;
     for (const candidate of candidates) {
       if (activeFunctions.has(candidate.node)) continue;
+      evaluatedCandidate = true;
       const nextActiveFunctions = new Set(activeFunctions);
       nextActiveFunctions.add(candidate.node);
       const localEnvironment = new Map(environment);
+      let argumentResult = cleanLocalResult();
+      let argumentIndex = 0;
       for (const parameter of candidate.node.parameters) {
-        const argument = node.arguments[candidate.node.parameters.indexOf(parameter)];
-        bindLocalPattern(
-          parameter.name,
-          argument === undefined
-            ? cleanInvocationValue(false)
-            : evaluateLocalExpression(
-                argument,
-                environment,
-                nextActiveFunctions,
-                depth + 1,
-              ),
-          localEnvironment,
+        let parameterValue;
+        if (parameter.dotDotDotToken) {
+          const argumentContainer = createInvocationContainer("array");
+          for (; argumentIndex < node.arguments.length; argumentIndex += 1) {
+            const currentArgument = evaluateLocalExpression(
+              node.arguments[argumentIndex],
+              environment,
+              nextActiveFunctions,
+              depth + 1,
+            );
+            argumentResult = mergeLocalResults(argumentResult, currentArgument);
+            argumentContainer.entries.set(
+              String(argumentIndex),
+              currentArgument.returnValue,
+            );
+          }
+          argumentContainer.length = node.arguments.length;
+          parameterValue = {
+            tainted: false,
+            defined: true,
+            container: argumentContainer,
+            callables: new Set(),
+          };
+        } else {
+          const argument = node.arguments[argumentIndex];
+          argumentIndex += 1;
+          if (argument !== undefined) {
+            const currentArgument = evaluateLocalExpression(
+              argument,
+              environment,
+              nextActiveFunctions,
+              depth + 1,
+            );
+            argumentResult = mergeLocalResults(argumentResult, currentArgument);
+            parameterValue = currentArgument.returnValue;
+          } else if (parameter.initializer) {
+            const defaultResult = evaluateLocalExpression(
+              parameter.initializer,
+              localEnvironment,
+              nextActiveFunctions,
+              depth + 1,
+            );
+            argumentResult = mergeLocalResults(argumentResult, defaultResult);
+            parameterValue = defaultResult.returnValue;
+          } else {
+            parameterValue = cleanInvocationValue(false);
+          }
+        }
+        argumentResult = mergeLocalResults(
+          argumentResult,
+          bindLocalPattern(
+            parameter.name,
+            parameterValue,
+            localEnvironment,
+            nextActiveFunctions,
+            depth + 1,
+          ),
         );
       }
-      if (
-        functionConsumesTaintedParameter(
-          candidate.node,
-          localEnvironment,
-          nextActiveFunctions,
-          depth + 1,
-        )
-      ) {
-        return taintedInvocationValue("local-function");
-      }
+      const functionResult = evaluateLocalFunction(
+        candidate.node,
+        localEnvironment,
+        nextActiveFunctions,
+        depth + 1,
+      );
+      result = mergeLocalResults(result, argumentResult);
+      result = mergeLocalResults(result, functionResult);
     }
-    return cleanInvocationValue();
+    return evaluatedCandidate ? result : cleanLocalResult();
   }
 
-  const isLocalCallTainted = (node) =>
-    invocationValueIsTainted(evaluateLocalCall(node, new Map(), new Set(), 0));
+  const isLocalCallTainted = (node) => {
+    const result = evaluateLocalCall(node, new Map(), new Set(), 0);
+    return Boolean(result?.consumed);
+  };
+
+  const isReturnedLocalCapabilityTainted = (node) => {
+    const result = evaluateLocalCall(node, new Map(), new Set(), 0);
+    return invocationValueIsTainted(result?.returnValue);
+  };
 
   const resolve = () => {
     const maxIterations = Math.max(8, operations.length + 4);
@@ -3589,6 +4056,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     isInvocationTainted,
     isReflectInvocationTainted,
     isLocalCallTainted,
+    isReturnedLocalCapabilityTainted,
   };
 }
 
