@@ -1242,7 +1242,10 @@ function evaluateArtifactAuthorityFixtureSource(contract, fixtureCase, errors) {
     sourceFile,
     dependencySource,
   );
-  const findings = new Set(dependencyScan.findings);
+  const findings = new Set([
+    ...dependencyScan.findings,
+    ...(dependencyScan.freshnessFindings ?? []),
+  ]);
   for (const rule of Array.isArray(boundary.forbiddenDependencies)
     ? boundary.forbiddenDependencies
     : []) {
@@ -3297,17 +3300,54 @@ function scanInterpreterSourceWithAst(file, source) {
   );
   const parseDiagnostics = sourceFile.parseDiagnostics ?? [];
   if (parseDiagnostics.length > 0) {
-    return { findings: [], parseDiagnostics };
+    return { findings: [], freshnessFindings: [], parseDiagnostics };
   }
 
   const findings = new Set();
+  const freshnessFindings = new Set();
   const staticStringResolver = createStaticStringResolver(sourceFile);
   const addModuleFindings = (moduleSpecifier) => {
     for (const ruleId of findRequiredImportDependencyRules(moduleSpecifier)) {
       findings.add(ruleId);
     }
   };
+  const addNormalizedIdentifierFindings = (identifier) => {
+    for (const ruleId of REQUIRED_INTERPRETER_DEPENDENCY_RULES) {
+      const patterns = REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS[ruleId] ?? [];
+      if (
+        patterns.some((pattern) => {
+          try {
+            return new RegExp(pattern).test(identifier);
+          } catch {
+            return false;
+          }
+        })
+      ) {
+        findings.add(ruleId);
+      }
+    }
+    for (const [ruleId, pattern] of Object.entries(
+      REQUIRED_INTERPRETER_FRESHNESS_PATTERNS,
+    )) {
+      try {
+        if (new RegExp(pattern).test(identifier)) {
+          freshnessFindings.add(ruleId);
+        }
+      } catch {
+        // The ratified patterns are compiled by contract validation. Keep the
+        // AST scan fail-closed if a future pattern is malformed.
+        freshnessFindings.add(ruleId);
+      }
+    }
+  };
   const visit = (node) => {
+    if (ts.isIdentifier(node)) {
+      // TypeScript resolves Unicode escapes in identifiers to their semantic
+      // spelling (`typed\\u0057riter` -> `typedWriter`). Scanning the AST name
+      // closes the raw-source regex bypass without treating strings/comments
+      // as declarations or calls.
+      addNormalizedIdentifierFindings(node.text);
+    }
     if (ts.isImportDeclaration(node)) {
       if (ts.isStringLiteral(node.moduleSpecifier)) {
         addModuleFindings(node.moduleSpecifier.text);
@@ -3394,7 +3434,11 @@ function scanInterpreterSourceWithAst(file, source) {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
-  return { findings: [...findings], parseDiagnostics };
+  return {
+    findings: [...findings],
+    freshnessFindings: [...freshnessFindings],
+    parseDiagnostics,
+  };
 }
 
 export function validateInterpreterBoundary(repoRoot, contract, errors) {
@@ -3602,6 +3646,11 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
       for (const ruleId of astScan.findings) {
         errors.push(
           `Interpreter boundary forbidden dependency '${ruleId}' in ${relativeFile}`,
+        );
+      }
+      for (const ruleId of astScan.freshnessFindings ?? []) {
+        errors.push(
+          `Interpreter boundary detected unauthorized Freshness authority '${ruleId}' in ${relativeFile}`,
         );
       }
       for (const rule of compiledDependencies) {
