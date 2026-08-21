@@ -1,5 +1,6 @@
 import dependencyRolePolicy from "../../../../policies/narrative/narrative-dependency-role-registry.json";
 import { sha256Hex } from "@grimodex/scan-contract";
+import { stableJsonStringify } from "@/features/narrative-extraction/source/digest";
 
 export const DEPENDENCY_ROLE_CONTRACT_VERSION =
   "narrative-dependency-role/1" as const;
@@ -397,61 +398,14 @@ function canonicalSelector(selector: DependencySelector): DependencySelector {
   if (selector.kind !== "exact-object-set") return selector;
   return {
     ...selector,
-    objectIdentities: [...selector.objectIdentities].sort(),
+    objectIdentities: [...selector.objectIdentities].sort(compareUtf16),
   };
 }
 
-function hasLoneSurrogate(value: string): boolean {
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) return true;
-      index += 1;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function canonicalJson(value: unknown, ancestors = new Set<object>()): string {
-  if (value === null) return "null";
-  if (typeof value === "string") {
-    if (hasLoneSurrogate(value)) {
-      throw new TypeError(
-        "canonical Dependency JSON cannot contain a lone surrogate",
-      );
-    }
-    return JSON.stringify(value);
-  }
-  if (typeof value === "boolean") return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw new TypeError("canonical Dependency JSON requires finite numbers");
-    return JSON.stringify(value);
-  }
-  if (typeof value !== "object") {
-    throw new TypeError("canonical Dependency JSON cannot encode this value");
-  }
-  if (ancestors.has(value))
-    throw new TypeError("canonical Dependency JSON cannot encode cycles");
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) {
-      return `[${value.map((item) => canonicalJson(item, ancestors)).join(",")}]`;
-    }
-    const record = value as Record<string, unknown>;
-    const fields = Object.keys(record)
-      .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonicalJson(record[key], ancestors)}`,
-      );
-    return `{${fields.join(",")}}`;
-  } finally {
-    ancestors.delete(value);
-  }
+function compareUtf16(left: string, right: string): number {
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
 }
 
 function normalizedSelector(value: unknown): DependencySelector {
@@ -463,7 +417,7 @@ function normalizedSelector(value: unknown): DependencySelector {
 }
 
 export function canonicalizeDependencySelector(value: unknown): string {
-  return canonicalJson(normalizedSelector(value));
+  return stableJsonStringify(normalizedSelector(value));
 }
 
 export function canonicalizeDependencyKeyInput(
@@ -473,7 +427,7 @@ export function canonicalizeDependencyKeyInput(
   if (!isKnown(DEPENDENCY_ROLE_IDS, role)) {
     throw new TypeError(`unknown-role: Unknown Dependency role: ${role}`);
   }
-  return canonicalJson({ role, selector: normalizedSelector(selector) });
+  return stableJsonStringify({ role, selector: normalizedSelector(selector) });
 }
 
 export function computeDependencyKeySync(
@@ -507,10 +461,14 @@ export function canonicalizeDependencySet(
       selectorDigest: entry.selectorDigest,
     };
   });
-  normalized.sort((left, right) =>
-    canonicalJson(left).localeCompare(canonicalJson(right)),
-  );
-  return canonicalJson(normalized);
+  normalized.sort((left, right) => {
+    return (
+      compareUtf16(left.sourceObjectIdentity, right.sourceObjectIdentity) ||
+      compareUtf16(left.dependencyKey, right.dependencyKey) ||
+      compareUtf16(left.selectorDigest, right.selectorDigest)
+    );
+  });
+  return stableJsonStringify(normalized);
 }
 
 export function computeDependencySetDigestSync(
@@ -584,12 +542,18 @@ export function validateDependencyEffectRegistry(
     errors.push("registry source change classes are incomplete or duplicated");
   }
   if (
+    registry.consumerKinds.length !== NARRATIVE_CONSUMER_KIND_IDS.length ||
     registry.consumerKinds.some(
       (consumerKind) => !isNarrativeConsumerKind(consumerKind),
     ) ||
-    new Set(registry.consumerKinds).size !== registry.consumerKinds.length
+    new Set(registry.consumerKinds).size !== registry.consumerKinds.length ||
+    !NARRATIVE_CONSUMER_KIND_IDS.every((consumerKind) =>
+      registry.consumerKinds.includes(consumerKind),
+    )
   ) {
-    errors.push("registry consumer kinds contain unknown or duplicate values");
+    errors.push(
+      "registry consumer kinds are incomplete or contain unknown or duplicate values",
+    );
   }
   const ruleIds = new Set<string>();
   const effectKeys = new Set<string>();

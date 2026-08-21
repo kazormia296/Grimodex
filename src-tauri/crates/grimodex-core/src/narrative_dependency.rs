@@ -5,12 +5,14 @@
 //! Consumer × Source Change mapping, canonicalizes selectors and digest
 //! inputs, and keeps required Build Actions separate from advisory actions.
 
-use std::collections::HashSet;
+use std::{cmp::Ordering, collections::HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+use crate::canonical_json::canonical_json_string;
 
 pub const DEPENDENCY_ROLE_CONTRACT_VERSION: &str = "narrative-dependency-role/1";
 
@@ -326,7 +328,7 @@ pub struct DependencyEffectInput<'a> {
     pub change_class: &'a str,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DependencySetDigestEntry {
     pub source_object_identity: String,
@@ -412,6 +414,9 @@ pub fn validate_dependency_selector(
             if unit != "utf16" || from >= to || normalizer_version.trim().is_empty() {
                 return Err(DependencyContractError::InvalidTextRange);
             }
+            if *from > 9_007_199_254_740_991 || *to > 9_007_199_254_740_991 {
+                return Err(DependencyContractError::InvalidTextRange);
+            }
             if anchor_digest
                 .as_deref()
                 .is_some_and(|digest| !is_digest(digest))
@@ -491,50 +496,8 @@ fn is_surrogate_boundary(units: &[u16], offset: u64) -> bool {
     (0xd800..=0xdbff).contains(&previous) && (0xdc00..=0xdfff).contains(&current)
 }
 
-fn canonical_json(value: &Value, output: &mut String) -> Result<(), DependencyContractError> {
-    match value {
-        Value::Null => output.push_str("null"),
-        Value::Bool(value) => output.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => output.push_str(&value.to_string()),
-        Value::String(value) => output.push_str(
-            &serde_json::to_string(value)
-                .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?,
-        ),
-        Value::Array(values) => {
-            output.push('[');
-            for (index, value) in values.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                canonical_json(value, output)?;
-            }
-            output.push(']');
-        }
-        Value::Object(values) => {
-            let mut keys: Vec<&String> = values.keys().collect();
-            keys.sort();
-            output.push('{');
-            for (index, key) in keys.iter().enumerate() {
-                if index > 0 {
-                    output.push(',');
-                }
-                output.push_str(
-                    &serde_json::to_string(key).map_err(|error| {
-                        DependencyContractError::CanonicalJson(error.to_string())
-                    })?,
-                );
-                output.push(':');
-                canonical_json(
-                    values.get(*key).ok_or_else(|| {
-                        DependencyContractError::CanonicalJson("missing object key".to_string())
-                    })?,
-                    output,
-                )?;
-            }
-            output.push('}');
-        }
-    }
-    Ok(())
+fn compare_utf16(left: &str, right: &str) -> Ordering {
+    left.encode_utf16().cmp(right.encode_utf16())
 }
 
 pub fn canonicalize_dependency_selector(
@@ -546,13 +509,12 @@ pub fn canonicalize_dependency_selector(
         object_identities, ..
     } = &mut canonical_selector
     {
-        object_identities.sort();
+        object_identities.sort_by(|left, right| compare_utf16(left, right));
     }
     let value = serde_json::to_value(canonical_selector)
         .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?;
-    let mut output = String::new();
-    canonical_json(&value, &mut output)?;
-    Ok(output)
+    canonical_json_string(&value)
+        .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))
 }
 
 pub fn canonicalize_dependency_key_input(
@@ -563,9 +525,8 @@ pub fn canonicalize_dependency_key_input(
     let selector_value: Value = serde_json::from_str(&canonicalize_dependency_selector(selector)?)
         .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?;
     let input = serde_json::json!({ "role": role, "selector": selector_value });
-    let mut output = String::new();
-    canonical_json(&input, &mut output)?;
-    Ok(output)
+    canonical_json_string(&input)
+        .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))
 }
 
 pub fn compute_dependency_key(
@@ -592,22 +553,14 @@ pub fn canonicalize_dependency_set(
         }
     }
     normalized.sort_by(|left, right| {
-        (
-            &left.source_object_identity,
-            &left.dependency_key,
-            &left.selector_digest,
-        )
-            .cmp(&(
-                &right.source_object_identity,
-                &right.dependency_key,
-                &right.selector_digest,
-            ))
+        compare_utf16(&left.source_object_identity, &right.source_object_identity)
+            .then_with(|| compare_utf16(&left.dependency_key, &right.dependency_key))
+            .then_with(|| compare_utf16(&left.selector_digest, &right.selector_digest))
     });
     let value = serde_json::to_value(normalized)
         .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?;
-    let mut output = String::new();
-    canonical_json(&value, &mut output)?;
-    Ok(output)
+    canonical_json_string(&value)
+        .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))
 }
 
 pub fn compute_dependency_set_digest(

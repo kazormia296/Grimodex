@@ -18,7 +18,9 @@ type FixtureCase = (typeof dependencyFixture.cases)[number];
 describe("narrative dependency role contract", () => {
   it("evaluates representative Role × Consumer × Source Change effects", () => {
     const cases = dependencyFixture.cases.filter(
-      (fixtureCase): fixtureCase is FixtureCase & {
+      (
+        fixtureCase,
+      ): fixtureCase is FixtureCase & {
         input: { role: string; consumerKind: string; changeClass: string };
         expected: {
           freshness: string;
@@ -26,7 +28,9 @@ describe("narrative dependency role contract", () => {
           buildAction: string;
           actionRequirement: string;
         };
-      } => fixtureCase.kind === "effect-evaluation" && fixtureCase.expected !== "reject",
+      } =>
+        fixtureCase.kind === "effect-evaluation" &&
+        fixtureCase.expected !== "reject",
     );
 
     for (const fixtureCase of cases) {
@@ -46,14 +50,18 @@ describe("narrative dependency role contract", () => {
       (fixtureCase) => fixtureCase.id === "unknown-role-fails-closed",
     );
     const unknownCombination = dependencyFixture.cases.find(
-      (fixtureCase) => fixtureCase.id === "unknown-effect-combination-fails-closed",
+      (fixtureCase) =>
+        fixtureCase.id === "unknown-effect-combination-fails-closed",
     );
     const unknownSelector = dependencyFixture.cases.find(
       (fixtureCase) => fixtureCase.id === "unknown-selector-fails-closed",
     );
 
     expect(
-      evaluateDependencyEffect(DEFAULT_DEPENDENCY_EFFECT_REGISTRY, unknownRole!.input),
+      evaluateDependencyEffect(
+        DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+        unknownRole!.input,
+      ),
     ).toMatchObject({ ok: false, error: { code: "unknown-role" } });
     expect(
       evaluateDependencyEffect(
@@ -94,10 +102,10 @@ describe("narrative dependency role contract", () => {
     const setCase = dependencyFixture.cases.find(
       (candidate) => candidate.id === "utf16-dependency-set-tuple-order-golden",
     )!;
-    expect(canonicalizeDependencySet(setCase.entries)).toBe(
+    expect(canonicalizeDependencySet(setCase.entries!)).toBe(
       setCase.canonicalDependencySet,
     );
-    expect(computeDependencySetDigestSync(setCase.entries)).toBe(
+    expect(computeDependencySetDigestSync(setCase.entries!)).toBe(
       setCase.dependencySetDigest,
     );
   });
@@ -126,7 +134,9 @@ describe("narrative dependency role contract", () => {
     const fixtureCase = dependencyFixture.cases.find(
       (candidate) => candidate.id === "utf16-range-rejects-surrogate-interior",
     )!;
-    expect(validateDependencySelector(fixtureCase.selector, fixtureCase.source)).toEqual({
+    expect(
+      validateDependencySelector(fixtureCase.selector, fixtureCase.source),
+    ).toEqual({
       valid: false,
       error: { code: "surrogate-boundary" },
     });
