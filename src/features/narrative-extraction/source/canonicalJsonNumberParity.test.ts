@@ -16,9 +16,7 @@ describe("canonical JSON number parity", () => {
   });
 
   it("fails closed for non-JSON numbers", () => {
-    expect(() => stableJsonStringify(Number.NaN)).toThrow(
-      /non-finite number/i,
-    );
+    expect(() => stableJsonStringify(Number.NaN)).toThrow(/non-finite number/i);
     expect(() => stableJsonStringify(Number.POSITIVE_INFINITY)).toThrow(
       /non-finite number/i,
     );

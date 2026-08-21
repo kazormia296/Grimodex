@@ -88,6 +88,7 @@ const validEnvelope = (): NarrativeRevisionEnvelopeV2<
 
 type MutableEnvelope = {
   effectiveMaterialBasis: {
+    sourceBasis: Array<Record<string, unknown>>;
     evidenceSet: Array<Record<string, unknown>>;
     dependencySet: Array<Record<string, unknown>>;
   };
@@ -260,10 +261,9 @@ describe("Narrative IR V2 registry and structural schema", () => {
 
   it("rejects present empty or non-string revisionObservedAt values", () => {
     for (const revisionObservedAt of ["", 42]) {
-      const candidate = structuredClone(validEnvelope()) as unknown as Record<
-        string,
-        any
-      >;
+      const candidate = structuredClone(
+        validEnvelope(),
+      ) as unknown as MutableEnvelope;
       candidate.effectiveMaterialBasis.sourceBasis[0].revisionObservedAt =
         revisionObservedAt;
       expect(validateNarrativeRevisionEnvelopeV2(candidate)).toMatchObject({
