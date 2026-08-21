@@ -430,7 +430,7 @@ const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
     "\\b(?:db|database|conn|connection|tx|transaction)\\s*(?:\\.|\\?\\.)\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*(?:\\?\\.)?\\s*\\(",
     "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
-    "(?:\\b[A-Za-z_$][A-Za-z0-9_$]*|\\)|\\])\\s*(?:\\?\\.)?\\s*\\[\\s*[\\x22\\x27\\x60](?:execute|exec|run|prepare|query|insert|update|delete)[\\x22\\x27\\x60]\\s*\\]\\s*(?:\\?\\.)?\\s*\\(",
+    "\\[\\s*[\\x22\\x27\\x60](?:execute|exec|run|prepare|query|insert|update|delete)[\\x22\\x27\\x60]\\s*\\]\\s*(?:\\?\\.)?\\s*\\(",
   ]),
   "prepared-commit": Object.freeze([
     "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",

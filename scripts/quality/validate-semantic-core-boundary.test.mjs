@@ -536,12 +536,31 @@ describe("validate-semantic-core-boundary", () => {
       [
         'getStorage()["execute"]("DELETE FROM narrative_proposal_revisions");',
         '(storage)["execute"]("DELETE FROM narrative_proposal_revisions");',
+        'storageArray[0]["execute"]("DELETE FROM narrative_proposal_revisions");',
       ].join("\n"),
     );
 
     assert.ok(
       errors.some((error) => /db-mutation.*computed-receivers\.mts/i.test(error)),
       `computed mutations on arbitrary receivers must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects sensitive computed calls split by comments and newlines", () => {
+    const errors = validateInterpreterSourceFixture(
+      "comment-computed-receiver.mts",
+      [
+        'const storage = getStorage();',
+        'storage /* alias */',
+        '  ["execute"]?.(',
+        '    "DELETE FROM narrative_proposal_revisions",',
+        '  );',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*comment-computed-receiver\.mts/i.test(error)),
+      `computed mutation calls split by comments/newlines must be rejected: ${JSON.stringify(errors)}`,
     );
   });
 
