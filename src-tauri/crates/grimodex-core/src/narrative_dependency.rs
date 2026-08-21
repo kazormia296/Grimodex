@@ -411,7 +411,7 @@ pub fn validate_dependency_selector(
             normalizer_version,
             anchor_digest,
         } => {
-            if unit != "utf16" || from >= to || !is_trimmed_non_empty(normalizer_version) {
+            if unit != "utf16" || from >= to || !is_normalizer_version_token(normalizer_version) {
                 return Err(DependencyContractError::InvalidTextRange);
             }
             if *from > 9_007_199_254_740_991 || *to > 9_007_199_254_740_991 {
@@ -505,6 +505,24 @@ pub fn validate_dependency_selector_value(
 
 fn is_trimmed_non_empty(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
+}
+
+fn is_ascii_alphanumeric(value: char) -> bool {
+    value.is_ascii_alphanumeric()
+}
+
+fn is_normalizer_version_token(value: &str) -> bool {
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !is_ascii_alphanumeric(first) {
+        return false;
+    }
+    characters.all(|character| {
+        is_ascii_alphanumeric(character)
+            || matches!(character, '-' | '_' | '.' | '/')
+    })
 }
 
 fn is_surrogate_boundary(units: &[u16], offset: u64) -> bool {

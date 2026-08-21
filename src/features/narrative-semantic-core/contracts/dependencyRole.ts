@@ -238,6 +238,31 @@ function nonEmpty(value: unknown): value is string {
   );
 }
 
+function isAsciiAlphaNumeric(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  return (
+    codePoint !== undefined &&
+    ((codePoint >= 0x30 && codePoint <= 0x39) ||
+      (codePoint >= 0x41 && codePoint <= 0x5a) ||
+      (codePoint >= 0x61 && codePoint <= 0x7a))
+  );
+}
+
+function isNormalizerVersionToken(value: unknown): value is string {
+  const characters = typeof value === "string" ? Array.from(value) : [];
+  if (characters.length === 0 || !isAsciiAlphaNumeric(characters[0])) {
+    return false;
+  }
+  return characters.slice(1).every(
+    (character) =>
+      isAsciiAlphaNumeric(character) ||
+      character === "-" ||
+      character === "_" ||
+      character === "." ||
+      character === "/",
+  );
+}
+
 function isDigest(value: unknown): value is string {
   return typeof value === "string" && SHA256_DIGEST.test(value);
 }
@@ -301,7 +326,7 @@ export function validateDependencySelector(
         !Number.isSafeInteger(to) ||
         from < 0 ||
         to <= from ||
-        !nonEmpty(normalizerVersion)
+        !isNormalizerVersionToken(normalizerVersion)
       ) {
         return selectorError("invalid-range");
       }
