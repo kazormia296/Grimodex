@@ -72,6 +72,40 @@ const REQUIRED_TYPED_WRITER_VALIDATION = Object.freeze([
   "proposal-binding",
 ]);
 
+const REQUIRED_HUMAN_REQUEST_FIELDS = Object.freeze([
+  "proposalId",
+  "expectedCurrentRevisionId",
+  "parentRevisionId",
+  "expectedParentEnvelopeDigest",
+  "proposalPayload",
+  "adapter",
+  "surfaceId",
+]);
+
+const REQUIRED_NATIVE_OWNED_FIELDS = Object.freeze([
+  "parentLookupAndCas",
+  "proposalPayloadDiff",
+  "pathClassification",
+  "strongestDerivationClassification",
+  "childAssertionAndScope",
+  "effectiveMaterialBasis",
+  "digestComputation",
+  "dependencyDeclaration",
+  "currentEpochFreshness",
+  "finalPersistence",
+]);
+
+const REQUIRED_PERSISTED_BASIS_FIELDS = Object.freeze([
+  "parentRevisionId",
+  "expectedParentEnvelopeDigest",
+  "parentAssertionDigest",
+  "rootInterpretationRevisionId",
+  "derivation",
+  "revisionActor",
+  "derivationContextSet",
+  "derivationContextSetDigest",
+]);
+
 const REQUIRED_ACTIVATION_SCAN_ROOTS = Object.freeze([
   "src",
   "electron",
@@ -142,6 +176,10 @@ function sameStringSet(actual, expected) {
     new Set(actual).size === actual.length &&
     expected.every((value) => actual.includes(value))
   );
+}
+
+function sameStringArray(actual, expected) {
+  return Array.isArray(actual) && JSON.stringify(actual) === JSON.stringify(expected);
 }
 
 export function scanNarrativeIrProductionMarkers(
@@ -671,7 +709,11 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
 
   const human = contract.humanDerived;
   pushIf(errors, hasPaths(human?.contextExposureAllowed, ["deterministic-stage","author-supplied"]) && human?.contextExposureForbidden?.includes("model-visible"), "Human-derived Context Set must exclude model-visible exposure");
-  pushIf(errors, hasPaths(human?.nativeOwnedFields, ["proposalPayloadDiff","pathClassification","strongestDerivationClassification","effectiveMaterialBasis","dependencyDeclaration","currentEpochFreshness"]), "Native must own Human-derived diff, classification, basis, Dependencies, and Freshness");
+  pushIf(errors, sameStringArray(human?.requestFields, REQUIRED_HUMAN_REQUEST_FIELDS), "Human-derived requestFields must match the exact frozen request boundary");
+  pushIf(errors, sameStringArray(human?.clientSubmittedFields, REQUIRED_HUMAN_REQUEST_FIELDS), "Human-derived clientSubmittedFields must match the exact frozen client boundary");
+  pushIf(errors, sameStringArray(human?.requestFields, human?.clientSubmittedFields), "Human-derived requestFields and clientSubmittedFields must be identical");
+  pushIf(errors, sameStringArray(human?.nativeOwnedFields, REQUIRED_NATIVE_OWNED_FIELDS), "Human-derived nativeOwnedFields must match the exact frozen Native ownership boundary");
+  pushIf(errors, sameStringArray(human?.persistedBasis, REQUIRED_PERSISTED_BASIS_FIELDS), "Human-derived persistedBasis must match the exact frozen persistence basis");
   pushIf(errors, !human?.clientSubmittedFields?.some((field) => ["derivationKind","changedPaths","scope","childAssertion","childDigests"].includes(field)), "Clients must not submit derivation metadata, child Scope, Assertion, or digests");
   const classes = human?.classification;
   pushIf(errors, JSON.stringify(classes?.precedence) === JSON.stringify(["assertion-override","scope-override","projection-only"]), "Human-derived classification precedence must be assertion-override > scope-override > projection-only");

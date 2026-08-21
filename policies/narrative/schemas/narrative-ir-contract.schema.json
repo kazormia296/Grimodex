@@ -460,40 +460,52 @@
       ],
       "properties": {
         "requestFields": {
-          "type": "array",
-          "minItems": 7,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "proposalId",
+            "expectedCurrentRevisionId",
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "proposalPayload",
+            "adapter",
+            "surfaceId"
+          ]
         },
         "clientSubmittedFields": {
-          "type": "array",
-          "minItems": 7,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "proposalId",
+            "expectedCurrentRevisionId",
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "proposalPayload",
+            "adapter",
+            "surfaceId"
+          ]
         },
         "nativeOwnedFields": {
-          "type": "array",
-          "minItems": 10,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "parentLookupAndCas",
+            "proposalPayloadDiff",
+            "pathClassification",
+            "strongestDerivationClassification",
+            "childAssertionAndScope",
+            "effectiveMaterialBasis",
+            "digestComputation",
+            "dependencyDeclaration",
+            "currentEpochFreshness",
+            "finalPersistence"
+          ]
         },
         "persistedBasis": {
-          "type": "array",
-          "minItems": 7,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "parentRevisionId",
+            "expectedParentEnvelopeDigest",
+            "parentAssertionDigest",
+            "rootInterpretationRevisionId",
+            "derivation",
+            "revisionActor",
+            "derivationContextSet",
+            "derivationContextSetDigest"
+          ]
         },
         "contextExposureAllowed": {
           "const": [

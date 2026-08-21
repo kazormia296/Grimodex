@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import Ajv2020 from "ajv/dist/2020.js";
 import {
   mkdirSync,
   mkdtempSync,
@@ -37,6 +38,15 @@ function validate(contract = readJson("policies/narrative/narrative-ir-contract.
     errors,
   );
   return errors;
+}
+
+function validateSchema(contract) {
+  const schema = readJson(
+    "policies/narrative/schemas/narrative-ir-contract.schema.json",
+  );
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  const validate = ajv.compile(schema);
+  return validate(contract) ? [] : (validate.errors ?? []);
 }
 
 function findClosedObjectSchemaOmissions(schema, schemaPath = "#") {
@@ -105,6 +115,107 @@ describe("NIR-0 Narrative IR contract", () => {
       errors.some((error) => /human-derived.*must not require live source token/i.test(error)),
       `expected a stale validation split error: ${JSON.stringify(errors)}`,
     );
+  });
+
+  it("freezes the Human-derived request, Native ownership, and persisted basis boundaries", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+    const expectedRequestFields = [
+      "proposalId",
+      "expectedCurrentRevisionId",
+      "parentRevisionId",
+      "expectedParentEnvelopeDigest",
+      "proposalPayload",
+      "adapter",
+      "surfaceId",
+    ];
+    const expectedNativeOwnedFields = [
+      "parentLookupAndCas",
+      "proposalPayloadDiff",
+      "pathClassification",
+      "strongestDerivationClassification",
+      "childAssertionAndScope",
+      "effectiveMaterialBasis",
+      "digestComputation",
+      "dependencyDeclaration",
+      "currentEpochFreshness",
+      "finalPersistence",
+    ];
+    const expectedPersistedBasis = [
+      "parentRevisionId",
+      "expectedParentEnvelopeDigest",
+      "parentAssertionDigest",
+      "rootInterpretationRevisionId",
+      "derivation",
+      "revisionActor",
+      "derivationContextSet",
+      "derivationContextSetDigest",
+    ];
+
+    assert.deepEqual(contract.humanDerived.requestFields, expectedRequestFields);
+    assert.deepEqual(contract.humanDerived.clientSubmittedFields, expectedRequestFields);
+    assert.deepEqual(contract.humanDerived.nativeOwnedFields, expectedNativeOwnedFields);
+    assert.deepEqual(contract.humanDerived.persistedBasis, expectedPersistedBasis);
+    assert.deepEqual(validateSchema(contract), []);
+
+    const mutations = [
+      {
+        label: "clientSubmittedFields accepts changeIntent",
+        mutate: (candidate) => candidate.humanDerived.clientSubmittedFields.push("changeIntent"),
+      },
+      {
+        label: "requestFields renames proposalId",
+        mutate: (candidate) => {
+          candidate.humanDerived.requestFields[0] = "clientChosenScope";
+        },
+      },
+      {
+        label: "nativeOwnedFields loses parentLookupAndCas",
+        mutate: (candidate) => {
+          candidate.humanDerived.nativeOwnedFields = candidate.humanDerived.nativeOwnedFields.filter(
+            (field) => field !== "parentLookupAndCas",
+          );
+        },
+      },
+      {
+        label: "nativeOwnedFields loses digestComputation",
+        mutate: (candidate) => {
+          candidate.humanDerived.nativeOwnedFields = candidate.humanDerived.nativeOwnedFields.filter(
+            (field) => field !== "digestComputation",
+          );
+        },
+      },
+      {
+        label: "persistedBasis loses rootInterpretationRevisionId",
+        mutate: (candidate) => {
+          candidate.humanDerived.persistedBasis = candidate.humanDerived.persistedBasis.filter(
+            (field) => field !== "rootInterpretationRevisionId",
+          );
+        },
+      },
+      {
+        label: "persistedBasis loses revisionActor",
+        mutate: (candidate) => {
+          candidate.humanDerived.persistedBasis = candidate.humanDerived.persistedBasis.filter(
+            (field) => field !== "revisionActor",
+          );
+        },
+      },
+    ];
+
+    for (const { label, mutate } of mutations) {
+      const mutated = structuredClone(contract);
+      mutate(mutated);
+      assert.notDeepEqual(
+        validate(mutated),
+        [],
+        `${label} must fail semantic validation`,
+      );
+      assert.notDeepEqual(
+        validateSchema(mutated),
+        [],
+        `${label} must fail JSON Schema validation`,
+      );
+    }
   });
 
   it("keeps V2 production activation disabled until C2B child declarations and Freshness", () => {
