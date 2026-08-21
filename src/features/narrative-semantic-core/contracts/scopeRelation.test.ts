@@ -307,6 +307,74 @@ describe("Narrative Scope Relation S2 contract", () => {
     expect(result.basis).toEqual(basis);
   });
 
+  it("fails closed when an Order Oracle violates antisymmetry", () => {
+    const contradictoryOracle = orderedOracle("story-time", "story-time/1", [
+      "story:a",
+      "story:b",
+      "story:c",
+      "story:d",
+    ]);
+    const oracle: ScopeOrderOracle = {
+      ...contradictoryOracle,
+      compare(leftRef, rightRef) {
+        if (leftRef === rightRef) return 0;
+        // Deliberately return the same direction for both ordered pairs.
+        return -1;
+      },
+    };
+
+    expect(() =>
+      compareScopeRelation(
+        scopeWith({
+          storyTime: {
+            kind: "interval",
+            from: { ref: "story:a", inclusive: true },
+            until: { ref: "story:c", inclusive: true },
+          },
+        }),
+        scopeWith({
+          storyTime: {
+            kind: "interval",
+            from: { ref: "story:b", inclusive: true },
+            until: { ref: "story:d", inclusive: true },
+          },
+        }),
+        { orderOracles: { "story-time": oracle }, basis },
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "ScopeRelationContractError",
+        code: "contradictory-proof",
+      }),
+    );
+  });
+
+  it("fails closed when an Order Oracle gives a nonzero identity result", () => {
+    const oracle: ScopeOrderOracle = {
+      axis: "story-time",
+      revisionToken: "story-time/1",
+      compare(leftRef, rightRef) {
+        return leftRef === rightRef ? 1 : -1;
+      },
+    };
+
+    expect(() =>
+      validateScopeOrder(
+        {
+          kind: "interval",
+          from: { ref: "story:a", inclusive: true },
+          until: { ref: "story:b", inclusive: true },
+        },
+        oracle,
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "ScopeRelationContractError",
+        code: "invalid-order-oracle",
+      }),
+    );
+  });
+
   it("gives disjoint precedence over unknown and never invents overlap", () => {
     const registry: ScopeRelationRegistry = {
       scopeRegistryVersion: "narrative-scope/2",

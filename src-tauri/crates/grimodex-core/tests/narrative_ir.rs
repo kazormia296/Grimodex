@@ -269,6 +269,53 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
         "selector": {"kind": "whole-source"}
     }]);
     assert!(validate_narrative_revision_envelope_v2(&conservative_fallback).is_ok());
+
+    let mut ranking_only = valid_envelope();
+    ranking_only["effectiveMaterialBasis"]["dependencySet"] = json!([
+        {
+            "dependencyId": "dependency:1",
+            "inputRef": "anchor:1",
+            "contextIds": [],
+            "role": "direct-evidence",
+            "selector": {"kind": "whole-source"}
+        },
+        {
+            "dependencyId": "dependency:ranking",
+            "inputRef": "ranking:context",
+            "contextIds": [],
+            "role": "ranking-only",
+            "selector": {"kind": "whole-source"}
+        }
+    ]);
+    assert!(validate_narrative_revision_envelope_v2(&ranking_only).is_err());
+
+    let mut quality_context = valid_envelope();
+    quality_context["effectiveMaterialBasis"]["dependencySet"] = json!([
+        {
+            "dependencyId": "dependency:1",
+            "inputRef": "anchor:1",
+            "contextIds": [],
+            "role": "direct-evidence",
+            "selector": {"kind": "whole-source"}
+        },
+        {
+            "dependencyId": "dependency:quality",
+            "inputRef": "quality:context",
+            "contextIds": [],
+            "role": "quality-context",
+            "selector": {"kind": "whole-source"}
+        }
+    ]);
+    assert!(validate_narrative_revision_envelope_v2(&quality_context).is_ok());
+}
+
+#[test]
+fn rejects_present_empty_or_non_string_revision_observed_at_values() {
+    for observed_at in [json!(""), json!(42)] {
+        let mut candidate = valid_envelope();
+        candidate["effectiveMaterialBasis"]["sourceBasis"][0]["revisionObservedAt"] = observed_at;
+        assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+    }
 }
 
 #[test]
@@ -379,7 +426,7 @@ fn refuses_unsupported_human_path_without_deriving_a_scope() {
 }
 
 #[test]
-fn refuses_empty_chronicle_proposal_note() {
+fn accepts_empty_chronicle_proposal_note_as_a_string() {
     let corpus = fixture();
     let case = case_by_id(&corpus, "non-secret-event");
     let input = object(case, "input");
@@ -390,7 +437,7 @@ fn refuses_empty_chronicle_proposal_note() {
         &proposal,
         object(input, "revealBasis"),
     )
-    .is_err());
+    .is_ok());
 }
 
 #[test]

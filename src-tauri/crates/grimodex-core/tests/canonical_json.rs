@@ -1,5 +1,20 @@
 use grimodex_core::{canonical_json_digest, canonical_json_string};
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+#[derive(Debug, Deserialize)]
+struct NumberParityFixture {
+    cases: Vec<NumberParityCase>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NumberParityCase {
+    id: String,
+    value: Value,
+    #[serde(rename = "canonicalJson")]
+    canonical_json: String,
+    digest: String,
+}
 
 #[test]
 fn sorts_nested_object_keys_and_keeps_array_order() {
@@ -23,4 +38,27 @@ fn emits_sha256_prefixed_digest_for_canonical_bytes() {
         canonical_json_digest(&value).expect("canonical digest"),
         "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
     );
+}
+
+#[test]
+fn matches_ecmascript_number_spelling_and_digest_goldens() {
+    let fixture: NumberParityFixture = serde_json::from_str(include_str!(
+        "../../../../policies/narrative/fixtures/canonical-json-number-parity.json"
+    ))
+    .expect("canonical JSON number parity fixture parses");
+
+    for case in fixture.cases {
+        assert_eq!(
+            canonical_json_string(&case.value).expect("canonical JSON"),
+            case.canonical_json,
+            "{}",
+            case.id
+        );
+        assert_eq!(
+            canonical_json_digest(&case.value).expect("canonical digest"),
+            case.digest,
+            "{}",
+            case.id
+        );
+    }
 }

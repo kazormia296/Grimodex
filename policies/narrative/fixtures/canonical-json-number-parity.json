@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "id": "one-e20",
+      "value": 1e20,
+      "canonicalJson": "100000000000000000000",
+      "digest": "sha256:c344e9487bfbd5c4e03c9fb90d62a5dde5e00b54d55c46e9f4a803aea162b80c"
+    },
+    {
+      "id": "one-point-zero",
+      "value": 1.0,
+      "canonicalJson": "1",
+      "digest": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"
+    },
+    {
+      "id": "one-e21",
+      "value": 1e21,
+      "canonicalJson": "1e+21",
+      "digest": "sha256:241c4643fa70b1dcde1205b71be4e3bebb17e9f880c8e1a33d0ead6c27271d3c"
+    },
+    {
+      "id": "scientific-mantissa-e21",
+      "value": 1.234e21,
+      "canonicalJson": "1.234e+21",
+      "digest": "sha256:47107eae6aeae1591a1e22acf5ee719181bed0533402c17ae40ebc4b8444b68e"
+    },
+    {
+      "id": "one-e-minus-six",
+      "value": 1e-6,
+      "canonicalJson": "0.000001",
+      "digest": "sha256:159fb29a827ad04b260aa6c8ab6d8637f8f2b38af5c4f3cb49d6a21205e040f8"
+    },
+    {
+      "id": "one-e-minus-seven",
+      "value": 1e-7,
+      "canonicalJson": "1e-7",
+      "digest": "sha256:5b33e02f2c5103a05d32f6ba9cb058294452bfbf393967f68bb30c1bdcbbab22"
+    },
+    {
+      "id": "negative-zero",
+      "value": -0,
+      "canonicalJson": "0",
+      "digest": "sha256:5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "id": "ordinary-fraction",
+      "value": 0.125,
+      "canonicalJson": "0.125",
+      "digest": "sha256:52c003e77e74cbacd60930b997433027175ca60b20b7fbb4ec6073b2c4932bb9"
+    }
+  ]
+}

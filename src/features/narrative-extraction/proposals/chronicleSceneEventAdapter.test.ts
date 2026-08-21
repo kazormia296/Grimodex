@@ -230,6 +230,17 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
     ).rejects.toThrow(/context.?set.*digest/i);
   });
 
+  it("accepts an empty Chronicle Proposal note as a string", async () => {
+    await expect(
+      deriveChronicleSceneEventScope({
+        sceneRef: nonSecretCase.input.sceneRef,
+        proposalPayload: { ...proposal, note: "" },
+        revealBasis: nonSecretCase.input
+          .revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
+      }),
+    ).resolves.toMatchObject({ scope: expect.any(Object) });
+  });
+
   it("rejects an invalid Context Set selector before accepting its audit seam", async () => {
     await expect(
       buildChronicleSceneEventV2({

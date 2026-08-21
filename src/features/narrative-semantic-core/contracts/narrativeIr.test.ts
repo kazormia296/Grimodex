@@ -231,6 +231,49 @@ describe("Narrative IR V2 registry and structural schema", () => {
     ).toMatchObject({ valid: false, reason: "invalid-material-basis" });
   });
 
+  it("rejects a role without a proposal-revision effect rule", () => {
+    const rankingOnly = mutableEnvelope();
+    rankingOnly.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:ranking",
+      inputRef: "ranking:context",
+      contextIds: [],
+      role: "ranking-only",
+      selector: { kind: "whole-source" },
+    });
+    expect(validateNarrativeRevisionEnvelopeV2(rankingOnly)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+    });
+
+    const qualityContext = mutableEnvelope();
+    qualityContext.effectiveMaterialBasis.dependencySet.push({
+      dependencyId: "dependency:quality",
+      inputRef: "quality:context",
+      contextIds: [],
+      role: "quality-context",
+      selector: { kind: "whole-source" },
+    });
+    expect(validateNarrativeRevisionEnvelopeV2(qualityContext)).toEqual({
+      valid: true,
+    });
+  });
+
+  it("rejects present empty or non-string revisionObservedAt values", () => {
+    for (const revisionObservedAt of ["", 42]) {
+      const candidate = structuredClone(validEnvelope()) as unknown as Record<
+        string,
+        any
+      >;
+      candidate.effectiveMaterialBasis.sourceBasis[0].revisionObservedAt =
+        revisionObservedAt;
+      expect(validateNarrativeRevisionEnvelopeV2(candidate)).toMatchObject({
+        valid: false,
+        reason: "invalid-material-basis",
+        path: "effectiveMaterialBasis.sourceBasis[0].revisionObservedAt",
+      });
+    }
+  });
+
   it("requires model-visible Context coverage and a conservative role", () => {
     const modelVisibleContext = {
       contextId: "context:1",

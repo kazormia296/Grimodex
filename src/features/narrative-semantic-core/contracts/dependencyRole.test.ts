@@ -150,4 +150,17 @@ describe("narrative dependency role contract", () => {
       fixtureCase.expected,
     );
   });
+
+  it("fails closed for a required refresh-available action", () => {
+    expect(() =>
+      aggregateDependencyBuildActions([
+        {
+          freshness: "stale",
+          reasonCode: "source-revision-changed",
+          buildAction: "refresh-available",
+          actionRequirement: "required",
+        },
+      ]),
+    ).toThrow(/action channel is inconsistent/i);
+  });
 });

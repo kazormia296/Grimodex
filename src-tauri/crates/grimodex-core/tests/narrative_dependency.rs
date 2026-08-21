@@ -172,3 +172,16 @@ fn required_and_advisory_actions_are_aggregated_independently() {
         BuildAction::ResolveOnly
     );
 }
+
+#[test]
+fn malformed_required_refresh_available_fails_closed_to_manual() {
+    let summary = aggregate_dependency_build_actions(&[DependencyEffect {
+        freshness: EvidenceFreshness::Stale,
+        reason_code: Some("source-revision-changed".to_string()),
+        build_action: BuildAction::RefreshAvailable,
+        action_requirement: ActionRequirement::Required,
+    }]);
+    assert_eq!(summary.required_actions, vec![BuildAction::Manual]);
+    assert!(summary.advisory_actions.is_empty());
+    assert_eq!(summary.compatibility_primary_action, BuildAction::Manual);
+}
