@@ -68,8 +68,12 @@ function expectDirectRootRepairContract(
   prompt: string,
   expectedShape: string,
 ): void {
-  expect(prompt).toContain("Return the repaired JSON object itself at the root");
-  expect(prompt).toContain("Do not wrap it in `repairedJson` or any other wrapper property");
+  expect(prompt).toContain(
+    "Return the repaired JSON object itself at the root",
+  );
+  expect(prompt).toContain(
+    "Do not wrap it in `repairedJson` or any other wrapper property",
+  );
   expect(prompt).not.toContain('{"repairedJson"');
   expect(prompt).toContain(expectedShape);
 
@@ -179,7 +183,7 @@ describe("structured repair root-object contract", () => {
 
   it("keeps repaired observation output at the caller's root schema", async () => {
     const expectedShape =
-      '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}]}]}';
+      '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}';
     const repair = captureRepairSend(repairedObservations);
     const parentStage = createStageExecutionContext({
       projectId: "project-test",
@@ -220,7 +224,7 @@ describe("structured repair root-object contract", () => {
 
   it("keeps repaired event output at the caller's root schema", async () => {
     const expectedShape =
-      '{"clusterRef":"cluster-1","resolution":"single-event","events":[]}';
+      '{"clusterRef":"cluster-1","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}';
     const repair = captureRepairSend(repairedEvents);
     const parentStage = createStageExecutionContext({
       projectId: "project-test",

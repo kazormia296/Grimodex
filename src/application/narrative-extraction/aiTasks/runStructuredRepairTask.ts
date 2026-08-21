@@ -54,7 +54,8 @@ const STRUCTURED_REPAIR_COMPONENT_CONTRACT = {
   contractVersion: "1",
   instruction: `次のモデル出力を、指定の JSON 形へ修復してください。説明文は付けず JSON だけを返します。
 Project ID / Scene ID / Event ID などの DB 識別子は新たに作らず、入力に含まれる Source View ref（S0001 形式）だけを維持してください。`,
-  outputShape: '{"repairedJson":"JSON object matching the declared shape"}',
+  outputShape:
+    "Return the repaired JSON object itself at the root, matching the expected shape supplied in the Context Set. Do not wrap it in `repairedJson` or any other wrapper property.",
 } as const;
 
 function buildStructuredRepairPromptArtifact(
