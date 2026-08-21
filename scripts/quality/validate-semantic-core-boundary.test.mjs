@@ -495,10 +495,90 @@ describe("validate-semantic-core-boundary", () => {
         "await import(`./literal-template-module`);",
         'const registry = { lookup: () => true };',
         'registry["lookup"]();',
+        'const method = "lookup";',
+        "registry[method]();",
       ].join("\n"),
     );
 
     assert.deepEqual(errors, []);
+  });
+
+  it("rejects a const string identifier used as a computed database method", () => {
+    const errors = validateInterpreterSourceFixture(
+      "const-method-mutation.mts",
+      [
+        'const method = "execute";',
+        'database[method]("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*const-method-mutation\.mts/i.test(error)),
+      `const computed database methods must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects destructured aliases of sensitive database methods", () => {
+    const errors = validateInterpreterSourceFixture(
+      "destructured-method-alias.mts",
+      [
+        "const { execute: mutate } = database;",
+        'mutate("DELETE FROM narrative_proposal_revisions");',
+      ].join("\n"),
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*destructured-method-alias\.mts/i.test(error)),
+      `destructured sensitive database methods must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects indirect call invocations of sensitive database methods", () => {
+    const errors = validateInterpreterSourceFixture(
+      "indirect-method-call.mts",
+      'database.execute.call(database, "DELETE FROM narrative_proposal_revisions");\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*indirect-method-call\.mts/i.test(error)),
+      `indirect call database methods must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects indirect apply invocations of sensitive database methods", () => {
+    const errors = validateInterpreterSourceFixture(
+      "indirect-method-apply.mts",
+      'database.execute.apply(database, ["DELETE FROM narrative_proposal_revisions"]);\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*indirect-method-apply\.mts/i.test(error)),
+      `indirect apply database methods must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("rejects indirect bind invocations of sensitive database methods", () => {
+    const errors = validateInterpreterSourceFixture(
+      "indirect-method-bind.mts",
+      'database.execute.bind(database)("DELETE FROM narrative_proposal_revisions");\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*indirect-method-bind\.mts/i.test(error)),
+      `indirect bind database methods must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
+  it("classifies re-exported database modules with the ratified dependency rule", () => {
+    const errors = validateInterpreterSourceFixture(
+      "reexported-database-module.mts",
+      'export { database as storage } from /* comment */ "@/db/client";\n',
+    );
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*reexported-database-module\.mts/i.test(error)),
+      `re-exported database modules must be rejected: ${JSON.stringify(errors)}`,
+    );
   });
 
   it("rejects concatenated dynamic loader specifiers", () => {
