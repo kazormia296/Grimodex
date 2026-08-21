@@ -1186,6 +1186,172 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(benignErrors, []);
   });
 
+  it("closes conditional containers, indexed writes, undefined defaults, and Reflect indirection", () => {
+    const sensitiveCases = [
+      {
+        name: "conditional object container alias",
+        source: [
+          "const left = { box: {} };",
+          "const right = { box: {} };",
+          "const box = flag ? left.box : right.box;",
+          "box.fn = database[key];",
+          "const fn = left.box.fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "conditional array container alias",
+        source: [
+          "const left = [{}];",
+          "const right = [{}];",
+          "const box = flag ? left[0] : right[0];",
+          "box.fn = database[key];",
+          "const fn = left[0].fn;",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "indexed numeric write length",
+        source: [
+          "const safe = () => true;",
+          "const xs = [];",
+          "xs[2] = safe;",
+          "const ys = [...xs, database[key]];",
+          "const fn = ys[3];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "indexed numeric string write length",
+        source: [
+          "const safe = () => true;",
+          "const xs = [];",
+          'xs["2"] = safe;',
+          "const ys = [...xs, database[key]];",
+          "const fn = ys[3];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "indexed write with later spread",
+        source: [
+          "const safe = () => true;",
+          "const xs = [];",
+          "const tail = [safe];",
+          "xs[2] = safe;",
+          "const ys = [...xs, ...tail, database[key]];",
+          "const fn = ys[4];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "array undefined default",
+        source: [
+          "const [fn = database[key]] = [undefined];",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "object undefined default",
+        source: [
+          "const { fn = database[key] } = { fn: undefined };",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "object void default",
+        source: [
+          "const { fn = database[key] } = { fn: void 0 };",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "nested undefined default",
+        source: [
+          "const { outer: { fn = database[key] } = {} } = { outer: { fn: undefined } };",
+          'fn("DELETE FROM narrative_proposal_revisions");',
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply call indirection",
+        source: [
+          "const fn = database[key];",
+          "Reflect.apply.call(Reflect, fn, null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply bound indirection",
+        source: [
+          "const fn = database[key];",
+          "const invoke = Reflect.apply.bind(Reflect);",
+          "invoke(fn, null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.construct call indirection",
+        source: [
+          "const fn = database[key];",
+          "Reflect.construct.call(Reflect, fn, []);",
+        ].join("\n"),
+      },
+      {
+        name: "globalThis Reflect capability",
+        source: [
+          "const fn = database[key];",
+          "globalThis.Reflect.apply(fn, null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "destructured Reflect capability",
+        source: [
+          "const fn = database[key];",
+          "const { apply } = Reflect;",
+          "apply(fn, null, []);",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `invocation-taint-round3-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject the local/shallow bypass: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const benignErrors = validateInterpreterSourceFixture(
+      "invocation-taint-round3-benign.mts",
+      [
+        "const safe = () => true;",
+        "const left = { box: { fn: safe } };",
+        "const right = { box: { fn: safe } };",
+        "const box = flag ? left.box : right.box;",
+        "box.fn = safe;",
+        "left.box.fn();",
+        "const safeXs = [];",
+        "safeXs[2] = safe;",
+        "const safeYs = [...safeXs, safe];",
+        "const safeFn = safeYs[3];",
+        "safeFn();",
+        "const [definedArray = database[key]] = [safe];",
+        "definedArray();",
+        "const { definedObject = database[key] } = { definedObject: safe };",
+        "definedObject();",
+        "Reflect.apply(safe, null, []);",
+        "globalThis.Reflect.apply(safe, null, []);",
+        "const Reflect = { apply: () => true, construct: () => true };",
+        "Reflect.apply.call(Reflect, safe, null, []);",
+        "Reflect.apply.bind(Reflect)(safe, null, []);",
+        "Reflect.construct.call(Reflect, safe, []);",
+        "const globalThis = { Reflect: { apply: () => true } };",
+        "globalThis.Reflect.apply(safe, null, []);",
+      ].join("\n"),
+    );
+    assert.deepEqual(benignErrors, []);
+  });
+
   it("rejects indirect call invocations of sensitive database methods", () => {
     const errors = validateInterpreterSourceFixture(
       "indirect-method-call.mts",
