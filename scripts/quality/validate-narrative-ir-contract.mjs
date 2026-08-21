@@ -437,12 +437,17 @@ export function validateNarrativeIrGoldenFixture(
       }
       pushIf(
         errors,
+        !Object.hasOwn(entry.expected ?? {}, "allowedPathClasses"),
+        `Narrative IR golden fixture ${id} allowedPathClasses is ambiguous; use changedPathClasses for observed classes`,
+      );
+      pushIf(
+        errors,
         entry.expected?.derivationKind === classification.derivationKind &&
           sameStringSet(
-            entry.expected?.allowedPathClasses,
+            entry.expected?.changedPathClasses,
             classification.pathClasses,
           ),
-        `Narrative IR golden fixture ${id} strongest derivation classification is invalid`,
+        `Narrative IR golden fixture ${id} strongest derivation classification or changedPathClasses is invalid`,
       );
     } else {
       pushIf(
@@ -559,8 +564,24 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   pushIf(errors, classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes("projection-only") && classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes("scope-affecting"), "scope-override must allow the cumulative projection-only and scope-affecting path union");
   pushIf(errors, classes?.unknownPathPolicy === "reject" && classes?.clientMetadataAuthority === "forbid" && classes?.assertionOverrideStatus === "reserved-rejected", "unknown paths, client metadata, and assertion override must fail closed");
 
-  const classFixtures = new Map((classes?.fixtures ?? []).map((fixture) => [fixture?.id, fixture]));
-  pushIf(errors, classFixtures.get("mixed-title-secret-uses-scope-override")?.expectedDerivationKind === "scope-override" && hasPaths(classFixtures.get("mixed-title-secret-uses-scope-override")?.allowedPathClasses, ["projection-only","scope-affecting"]), "mixed-title-secret-uses-scope-override must be scope-override with the cumulative path union");
+  const classificationFixtures = classes?.fixtures ?? [];
+  const classFixtures = new Map(classificationFixtures.map((fixture) => [fixture?.id, fixture]));
+  for (const fixture of classificationFixtures) {
+    if (Object.hasOwn(fixture, "allowedPathClasses")) {
+      errors.push(`${String(fixture.id)} allowedPathClasses is ambiguous; changedPathClasses must record observed classes`);
+    }
+    const observed = classifyChangedPaths(fixture?.changedPaths ?? []);
+    pushIf(errors, fixture?.expectedDisposition === observed.disposition, `${String(fixture?.id)} disposition differs from its changed paths`);
+    if (observed.disposition === "accept") {
+      pushIf(
+        errors,
+        fixture?.expectedDerivationKind === observed.derivationKind &&
+          sameStringSet(fixture?.changedPathClasses, observed.pathClasses),
+        `${String(fixture?.id)} changedPathClasses must match the observed changed paths`,
+      );
+    }
+  }
+  pushIf(errors, classFixtures.get("mixed-title-secret-uses-scope-override")?.expectedDerivationKind === "scope-override" && hasPaths(classFixtures.get("mixed-title-secret-uses-scope-override")?.changedPathClasses, ["projection-only","scope-affecting"]), "mixed-title-secret-uses-scope-override must be scope-override with both observed path classes");
   pushIf(errors, classFixtures.get("mixed-note-reveal-document-uses-scope-override")?.expectedDerivationKind === "scope-override", "mixed-note-reveal-document edit must be scope-override");
 
   pushIf(errors, contract.materialBasis?.humanDerivedOwnsDeclarations === true && contract.materialBasis?.noLineageFreshnessAuthority === true && contract.materialBasis?.zeroEdgeCurrentRevision === "forbidden" && contract.materialBasis?.currentEpochEvaluation === "atomic-before-current-revision-promotion", "Human-derived material basis must own child declarations and atomic current-Epoch Freshness");

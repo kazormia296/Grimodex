@@ -206,10 +206,10 @@
             "/title"
           ],
           "expectedDerivationKind": "projection-only",
-          "allowedPathClasses": [
+          "expectedDisposition": "accept",
+          "changedPathClasses": [
             "projection-only"
-          ],
-          "expectedDisposition": "accept"
+          ]
         },
         {
           "id": "secret-only-edit",
@@ -217,10 +217,10 @@
             "/disclosure/secret"
           ],
           "expectedDerivationKind": "scope-override",
-          "allowedPathClasses": [
+          "expectedDisposition": "accept",
+          "changedPathClasses": [
             "scope-affecting"
-          ],
-          "expectedDisposition": "accept"
+          ]
         },
         {
           "id": "reveal-document-only-edit",
@@ -228,10 +228,10 @@
             "/disclosure/revealDocumentRef"
           ],
           "expectedDerivationKind": "scope-override",
-          "allowedPathClasses": [
+          "expectedDisposition": "accept",
+          "changedPathClasses": [
             "scope-affecting"
-          ],
-          "expectedDisposition": "accept"
+          ]
         },
         {
           "id": "mixed-title-secret-uses-scope-override",
@@ -240,11 +240,11 @@
             "/disclosure/secret"
           ],
           "expectedDerivationKind": "scope-override",
-          "allowedPathClasses": [
+          "expectedDisposition": "accept",
+          "changedPathClasses": [
             "projection-only",
             "scope-affecting"
-          ],
-          "expectedDisposition": "accept"
+          ]
         },
         {
           "id": "mixed-note-reveal-document-uses-scope-override",
@@ -253,11 +253,11 @@
             "/disclosure/revealDocumentRef"
           ],
           "expectedDerivationKind": "scope-override",
-          "allowedPathClasses": [
+          "expectedDisposition": "accept",
+          "changedPathClasses": [
             "projection-only",
             "scope-affecting"
-          ],
-          "expectedDisposition": "accept"
+          ]
         },
         {
           "id": "unsupported-path-refused",

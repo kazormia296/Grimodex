@@ -302,7 +302,150 @@
             "assertionOverrideStatus",
             "fixtures"
           ],
-          "additionalProperties": false
+          "additionalProperties": false,
+          "properties": {
+            "pathClasses": {
+              "type": "object",
+              "required": [
+                "projectionOnly",
+                "scopeAffecting",
+                "assertionAffecting"
+              ],
+              "properties": {
+                "projectionOnly": {
+                  "const": [
+                    "/title",
+                    "/note"
+                  ]
+                },
+                "scopeAffecting": {
+                  "const": [
+                    "/disclosure/secret",
+                    "/disclosure/revealDocumentRef"
+                  ]
+                },
+                "assertionAffecting": {
+                  "const": []
+                }
+              },
+              "additionalProperties": false
+            },
+            "precedence": {
+              "const": [
+                "assertion-override",
+                "scope-override",
+                "projection-only"
+              ]
+            },
+            "cumulativeAllowedPathClasses": {
+              "type": "object",
+              "required": [
+                "projectionOnly",
+                "scopeOverride",
+                "assertionOverride"
+              ],
+              "properties": {
+                "projectionOnly": {
+                  "const": [
+                    "projection-only"
+                  ]
+                },
+                "scopeOverride": {
+                  "const": [
+                    "projection-only",
+                    "scope-affecting"
+                  ]
+                },
+                "assertionOverride": {
+                  "const": []
+                }
+              },
+              "additionalProperties": false
+            },
+            "unknownPathPolicy": {
+              "const": "reject"
+            },
+            "clientMetadataAuthority": {
+              "const": "forbid"
+            },
+            "assertionOverrideStatus": {
+              "const": "reserved-rejected"
+            },
+            "fixtures": {
+              "type": "array",
+              "minItems": 6,
+              "uniqueItems": true,
+              "items": {
+                "type": "object",
+                "required": [
+                  "id",
+                  "changedPaths",
+                  "expectedDisposition"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "changedPaths": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/"
+                    }
+                  },
+                  "expectedDerivationKind": {
+                    "enum": [
+                      "projection-only",
+                      "scope-override",
+                      "assertion-override"
+                    ]
+                  },
+                  "changedPathClasses": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "enum": [
+                        "projection-only",
+                        "scope-affecting",
+                        "assertion-affecting"
+                      ]
+                    }
+                  },
+                  "expectedDisposition": {
+                    "enum": [
+                      "accept",
+                      "reject"
+                    ]
+                  }
+                },
+                "additionalProperties": false,
+                "allOf": [
+                  {
+                    "if": {
+                      "properties": {
+                        "expectedDisposition": {
+                          "const": "accept"
+                        }
+                      },
+                      "required": [
+                        "expectedDisposition"
+                      ]
+                    },
+                    "then": {
+                      "required": [
+                        "expectedDerivationKind",
+                        "changedPathClasses"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          }
         },
         "invariants": {
           "type": "object",

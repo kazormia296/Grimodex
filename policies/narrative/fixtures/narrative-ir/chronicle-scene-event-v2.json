@@ -155,11 +155,11 @@
           "/title"
         ],
         "derivationKind": "projection-only",
-        "allowedPathClasses": [
-          "projection-only"
-        ],
         "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7",
+        "changedPathClasses": [
+          "projection-only"
+        ]
       }
     },
     {
@@ -220,11 +220,11 @@
           "/disclosure/secret"
         ],
         "derivationKind": "scope-override",
-        "allowedPathClasses": [
-          "scope-affecting"
-        ],
         "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "scope-affecting"
+        ]
       }
     },
     {
@@ -285,11 +285,11 @@
           "/disclosure/revealDocumentRef"
         ],
         "derivationKind": "scope-override",
-        "allowedPathClasses": [
-          "scope-affecting"
-        ],
         "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "scope-affecting"
+        ]
       }
     },
     {
@@ -351,12 +351,12 @@
           "/disclosure/secret"
         ],
         "derivationKind": "scope-override",
-        "allowedPathClasses": [
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
           "projection-only",
           "scope-affecting"
-        ],
-        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        ]
       }
     },
     {
@@ -418,12 +418,12 @@
           "/disclosure/revealDocumentRef"
         ],
         "derivationKind": "scope-override",
-        "allowedPathClasses": [
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
           "projection-only",
           "scope-affecting"
-        ],
-        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
-        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+        ]
       }
     },
     {
