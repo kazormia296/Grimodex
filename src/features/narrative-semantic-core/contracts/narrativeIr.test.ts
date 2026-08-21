@@ -232,6 +232,55 @@ describe("Narrative IR V2 registry and structural schema", () => {
     ).toMatchObject({ valid: false, reason: "invalid-material-basis" });
   });
 
+  it("rejects malformed optional evidence metadata and orphan context ids", () => {
+    const invalidMetadata = [
+      ["documentRef", 42],
+      ["quote", { raw: "x" }],
+      ["sourceKey", false],
+      ["revisionToken", []],
+      ["documentRef", ""],
+      ["quote", ""],
+      ["sourceKey", ""],
+      ["revisionToken", ""],
+    ] as const;
+    for (const [field, value] of invalidMetadata) {
+      const candidate = mutableEnvelope();
+      candidate.effectiveMaterialBasis.evidenceSet[0][field] = value;
+      expect(validateNarrativeRevisionEnvelopeV2(candidate)).toMatchObject({
+        valid: false,
+        reason: "invalid-material-basis",
+        path: `effectiveMaterialBasis.evidenceSet[0].${field}`,
+      });
+    }
+
+    const validMetadata = mutableEnvelope();
+    validMetadata.effectiveMaterialBasis.evidenceSet[0] = {
+      evidenceRef: "anchor:1",
+      documentRef: "document:1",
+      quote: "quoted text",
+      sourceKey: "anchor:1",
+      revisionToken: "rev:1",
+    };
+    expect(validateNarrativeRevisionEnvelopeV2(validMetadata)).toEqual({
+      valid: true,
+    });
+
+    const orphanContext = mutableEnvelope();
+    orphanContext.effectiveMaterialBasis.dependencySet[0].contextIds = [
+      "missing-context",
+    ];
+    expect(validateNarrativeRevisionEnvelopeV2(orphanContext)).toMatchObject({
+      valid: false,
+      reason: "invalid-material-basis",
+      path: "effectiveMaterialBasis.dependencySet[0].contextIds",
+    });
+
+    const emptyContextIds = mutableEnvelope();
+    expect(validateNarrativeRevisionEnvelopeV2(emptyContextIds)).toEqual({
+      valid: true,
+    });
+  });
+
   it("rejects a role without a proposal-revision effect rule", () => {
     const rankingOnly = mutableEnvelope();
     rankingOnly.effectiveMaterialBasis.dependencySet.push({

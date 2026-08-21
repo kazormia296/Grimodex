@@ -310,6 +310,42 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
 }
 
 #[test]
+fn rejects_malformed_optional_evidence_metadata_and_orphan_context_ids() {
+    for (field, value) in [
+        ("documentRef", json!(42)),
+        ("quote", json!({"raw": "x"})),
+        ("sourceKey", json!(false)),
+        ("revisionToken", json!([])),
+        ("documentRef", json!("")),
+        ("quote", json!("")),
+        ("sourceKey", json!("")),
+        ("revisionToken", json!("")),
+    ] {
+        let mut candidate = valid_envelope();
+        candidate["effectiveMaterialBasis"]["evidenceSet"][0][field] = value;
+        assert!(validate_narrative_revision_envelope_v2(&candidate).is_err());
+    }
+
+    let mut valid_metadata = valid_envelope();
+    valid_metadata["effectiveMaterialBasis"]["evidenceSet"][0] = json!({
+        "evidenceRef": "anchor:1",
+        "documentRef": "document:1",
+        "quote": "quoted text",
+        "sourceKey": "anchor:1",
+        "revisionToken": "rev:1"
+    });
+    assert!(validate_narrative_revision_envelope_v2(&valid_metadata).is_ok());
+
+    let mut orphan_context = valid_envelope();
+    orphan_context["effectiveMaterialBasis"]["dependencySet"][0]["contextIds"] =
+        json!(["missing-context"]);
+    assert!(validate_narrative_revision_envelope_v2(&orphan_context).is_err());
+
+    let empty_context_ids = valid_envelope();
+    assert!(validate_narrative_revision_envelope_v2(&empty_context_ids).is_ok());
+}
+
+#[test]
 fn rejects_present_empty_or_non_string_revision_observed_at_values() {
     for observed_at in [json!(""), json!(42)] {
         let mut candidate = valid_envelope();
