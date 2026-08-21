@@ -8,7 +8,16 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { normalizeWindowObservations } from "@/features/chronicle/extraction/windowExtractor";
 import { parseRawChronicleEventObservationList } from "@/features/chronicle/extraction/schemas";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
-import { runStructuredRepairTask } from "./runStructuredRepairTask";
+import {
+  runStructuredRepairTask,
+  type StructuredRepairSend,
+} from "./runStructuredRepairTask";
+import {
+  assertStageExecutionContext,
+  createChildStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+  type NarrativeStageExecutionContext,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
 
 export const NARRATIVE_OBSERVATION_EXTRACT_PATH =
   "narrative_observation_extract" as const;
@@ -20,7 +29,9 @@ export interface ObservationExtractionWindowInput {
 
 export type ObservationExtractionSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
-  options: Parameters<typeof sendChatMessageWithThinking>[1],
+  options: Parameters<typeof sendChatMessageWithThinking>[1] & {
+    readonly stageExecution?: NarrativeStageExecutionContext;
+  },
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
@@ -36,6 +47,12 @@ export interface RunObservationExtractionTaskInput {
   readonly onParseStatus?: (status: "parsed" | "invalid") => void;
   /** Live eval / tests may inject OpenRouter (or other) transport. */
   readonly send?: ObservationExtractionSend;
+  /** Pure Chronicle stage identity; repair is derived as its child. */
+  readonly stageExecution?: NarrativeStageExecutionContext;
+  /** Injectable ID source for deterministic child-stage tests. */
+  readonly createStageExecutionId?: () => string;
+  /** Optional transport injection for the inline structured-repair child. */
+  readonly repairSend?: StructuredRepairSend;
 }
 
 /** Production observation prompt (shared with live eval certification). */
@@ -92,18 +109,43 @@ export async function runObservationExtractionTask(
   if (blockNarrativeAiTask()) return [];
   if (input.windows.length === 0) return [];
 
+  if (input.stageExecution) {
+    assertStageExecutionContext(input.stageExecution);
+    if (
+      input.projectId !== undefined &&
+      input.projectId !== null &&
+      input.projectId !== input.stageExecution.projectId
+    ) {
+      throw new TypeError(
+        "Observation extraction projectId must match stage execution projectId",
+      );
+    }
+    if (
+      input.stageExecution.stageId !== NARRATIVE_STAGE_IDS.observationExtraction
+    ) {
+      throw new TypeError(
+        `Observation extraction requires stageId '${NARRATIVE_STAGE_IDS.observationExtraction}'`,
+      );
+    }
+  }
+
   const allowedSourceRefs = new Set(
     input.windows.map((window) => window.sourceRef),
   );
   const prompt = buildObservationExtractionPrompt(input.windows);
   const projectId = requireAuditProjectId(
-    input.projectId ?? useTreeStore.getState().projectId,
+    input.projectId ??
+      input.stageExecution?.projectId ??
+      useTreeStore.getState().projectId,
   );
   const ov = resolveRoleSendOverride("narrative_observation_extract");
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         projectId,
         pathId: "narrative_observation_extract",
+        ...(input.stageExecution
+          ? { stageExecution: input.stageExecution }
+          : {}),
       })
     : await sendChatMessageWithThinking(
         [{ role: "user", content: prompt }],
@@ -148,6 +190,16 @@ export async function runObservationExtractionTask(
     expectedShape:
       '{"observations":[{"localId":"string","evidence":[{"sourceRef":"S0001","quote":"string"}],"assertion":{"attribution":"narrator","narrativeFrame":"story-world"},"payload":{"predicate":"string","actuality":"actual","participants":[],"temporalExpressions":[],"durationKind":"instant"}}]}',
     projectId,
+    ...(input.stageExecution
+      ? {
+          stageExecution: createChildStageExecutionContext(
+            input.stageExecution,
+            NARRATIVE_STAGE_IDS.structuredRepair,
+            (input.createStageExecutionId ?? (() => crypto.randomUUID()))(),
+          ),
+        }
+      : {}),
+    send: input.repairSend,
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");

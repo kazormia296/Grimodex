@@ -2,6 +2,32 @@ export type {
   EvidenceFreshness,
   EvidenceReadSetSeparation,
   EvidenceSetEntry,
+  AssertionModality,
+  AssertionPolarity,
+  AssertionSupportClass,
+  ContextExposure,
+  ContextSetEntry,
+  DependencyRole,
+  DependencySelector,
+  DependencySetEntry,
+  HumanDerivedRevisionBasisV2,
+  InterpretationRevisionBasisV2,
+  NarrativeAssertionDigests,
+  NarrativeAssertionModality,
+  NarrativeAssertionPolarity,
+  NarrativeAssertionProducer,
+  NarrativeAssertionSupportClass,
+  NarrativeEffectiveMaterialBasis,
+  NarrativePayloadSchemaRef,
+  NarrativeProjectionBindingV2,
+  NarrativeRevisionChangeIntent,
+  NarrativeRevisionEnvelopeV2,
+  NarrativeScopeReferenceConstraint,
+  NarrativeScopeTemporalBoundary,
+  NarrativeScopeTemporalConstraint,
+  NarrativeScopeV2,
+  NarrativeProducerKind,
+  ProducerKind,
   NarrativeProposalDraftEnvelope,
   NarrativeProposalDraftPayload,
   NarrativeReconciler,
@@ -12,6 +38,7 @@ export type {
   ProposalChangeKind,
   ProposalSchemaRef,
   ReconciliationEnvelopeV1,
+  ReconciliationEnvelopeV2,
   ReadSetDigest,
   ReadSetEntry,
   ReconcilerIdentity,
@@ -19,6 +46,7 @@ export type {
   SemanticAssessment,
   SourceBasis,
   SourceBasisRevision,
+  SourceBasisEntry,
 } from "./types";
 
 export {
@@ -31,3 +59,21 @@ export {
   rollupProjectionFreshness,
   staleProjectionRefs,
 } from "./contract";
+
+export type { NarrativeStageExecutionContext } from "./stageExecution";
+export {
+  NARRATIVE_STAGE_IDS,
+  assertStageExecutionContext,
+  createChildStageExecutionContext,
+  createStageExecutionContext,
+  isStageExecutionContext,
+} from "./stageExecution";
+
+export {
+  adaptReconciliationEnvelopeV1ToV2,
+  adaptV1ToV2,
+  assertNarrativeRevisionEnvelopeV2,
+  assertV2LineageMonotonicity,
+  toNarrativeRevisionEnvelopeV2,
+  validateNarrativeRevisionEnvelopeV2,
+} from "./v2Adapter";

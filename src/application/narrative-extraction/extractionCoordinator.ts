@@ -51,6 +51,10 @@ import {
 import { cancelRun, createRun } from "./runRepository";
 import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
 import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
+import {
+  createStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
 
 /** Run surface path id (not a stage AI attempt path). */
 export const CHRONICLE_EXTRACT_SURFACE_PATH = "chronicle.extract" as const;
@@ -358,6 +362,11 @@ function documentSourceKeyForRef(
 async function executeTask(
   taskKind: string,
   runId: string,
+  taskExecution: {
+    readonly projectId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+  },
   request: ChronicleExtractionRequest,
   deps: ExtractionCoordinatorDeps,
   createId: () => string,
@@ -419,6 +428,15 @@ async function executeTask(
             windows: [{ sourceRef: window.sourceRef, text: view.text }],
             projectId: request.projectId,
             createId,
+            stageExecution: createStageExecutionContext({
+              projectId: taskExecution.projectId,
+              runId,
+              taskId: taskExecution.taskId,
+              attemptId: taskExecution.attemptId,
+              stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+              stageExecutionId: createId(),
+            }),
+            createStageExecutionId: createId,
           });
           collected.push(...rekeyObservationsForWindow(window.windowId, batch));
         }
@@ -545,6 +563,15 @@ async function executeTask(
             observations: clusterObservations,
             projectId: request.projectId,
             createId,
+            stageExecution: createStageExecutionContext({
+              projectId: taskExecution.projectId,
+              runId,
+              taskId: taskExecution.taskId,
+              attemptId: taskExecution.attemptId,
+              stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+              stageExecutionId: createId(),
+            }),
+            createStageExecutionId: createId,
           });
           collected.push(...batch);
         }
@@ -857,6 +884,11 @@ export async function runChronicleExtractionCoordinator(
       const executed = await executeTask(
         taskKind,
         runId,
+        {
+          projectId: request.projectId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+        },
         request,
         deps,
         createId,

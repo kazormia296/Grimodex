@@ -9,14 +9,25 @@ import { normalizeEventSynthesis } from "@/features/chronicle/extraction/eventSy
 import { parseRawEventSynthesisResult } from "@/features/chronicle/extraction/schemas";
 import type { EventHypothesis } from "@/features/narrative-extraction/ir/inferences/eventHypothesis";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
-import { runStructuredRepairTask } from "./runStructuredRepairTask";
+import {
+  runStructuredRepairTask,
+  type StructuredRepairSend,
+} from "./runStructuredRepairTask";
+import {
+  assertStageExecutionContext,
+  createChildStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+  type NarrativeStageExecutionContext,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
 
 export const NARRATIVE_EVENT_SYNTHESIZE_PATH =
   "narrative_event_synthesize" as const;
 
 export type EventSynthesisSend = (
   messages: Parameters<typeof sendChatMessageWithThinking>[0],
-  options: Parameters<typeof sendChatMessageWithThinking>[1],
+  options: Parameters<typeof sendChatMessageWithThinking>[1] & {
+    readonly stageExecution?: NarrativeStageExecutionContext;
+  },
 ) => Promise<
   Pick<
     Awaited<ReturnType<typeof sendChatMessageWithThinking>>,
@@ -33,6 +44,12 @@ export interface RunEventSynthesisTaskInput {
   readonly onParseStatus?: (status: "parsed" | "invalid") => void;
   /** Live eval / tests may inject OpenRouter (or other) transport. */
   readonly send?: EventSynthesisSend;
+  /** Pure Chronicle stage identity; repair is derived as its child. */
+  readonly stageExecution?: NarrativeStageExecutionContext;
+  /** Injectable ID source for deterministic child-stage tests. */
+  readonly createStageExecutionId?: () => string;
+  /** Optional transport injection for the inline structured-repair child. */
+  readonly repairSend?: StructuredRepairSend;
 }
 
 function buildSynthesisPrompt(input: RunEventSynthesisTaskInput): string {
@@ -95,15 +112,38 @@ export async function runEventSynthesisTask(
   if (blockNarrativeAiTask()) return [];
   if (input.observations.length === 0) return [];
 
+  if (input.stageExecution) {
+    assertStageExecutionContext(input.stageExecution);
+    if (
+      input.projectId !== undefined &&
+      input.projectId !== null &&
+      input.projectId !== input.stageExecution.projectId
+    ) {
+      throw new TypeError(
+        "Event synthesis projectId must match stage execution projectId",
+      );
+    }
+    if (input.stageExecution.stageId !== NARRATIVE_STAGE_IDS.eventSynthesis) {
+      throw new TypeError(
+        `Event synthesis requires stageId '${NARRATIVE_STAGE_IDS.eventSynthesis}'`,
+      );
+    }
+  }
+
   const prompt = buildSynthesisPrompt(input);
   const projectId = requireAuditProjectId(
-    input.projectId ?? useTreeStore.getState().projectId,
+    input.projectId ??
+      input.stageExecution?.projectId ??
+      useTreeStore.getState().projectId,
   );
   const ov = resolveRoleSendOverride("narrative_event_synthesize");
   const response = input.send
     ? await input.send([{ role: "user", content: prompt }], {
         projectId,
         pathId: "narrative_event_synthesize",
+        ...(input.stageExecution
+          ? { stageExecution: input.stageExecution }
+          : {}),
       })
     : await sendChatMessageWithThinking(
         [{ role: "user", content: prompt }],
@@ -143,6 +183,16 @@ export async function runEventSynthesisTask(
     brokenText: response.text,
     expectedShape: `{"clusterRef":"${input.clusterRef}","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
     projectId,
+    ...(input.stageExecution
+      ? {
+          stageExecution: createChildStageExecutionContext(
+            input.stageExecution,
+            NARRATIVE_STAGE_IDS.structuredRepair,
+            (input.createStageExecutionId ?? (() => crypto.randomUUID()))(),
+          ),
+        }
+      : {}),
+    send: input.repairSend,
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");
