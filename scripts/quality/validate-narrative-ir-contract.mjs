@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import Ajv2020 from "ajv/dist/2020.js";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
@@ -105,6 +106,18 @@ const REQUIRED_PERSISTED_BASIS_FIELDS = Object.freeze([
   "derivationContextSet",
   "derivationContextSetDigest",
 ]);
+
+const REQUIRED_ENVELOPE_FIELDS = Object.freeze([
+  "assertion",
+  "assertionDigests",
+  "changeIntent",
+  "effectiveMaterialBasis",
+  "revisionBasis",
+  "projectionBinding",
+]);
+
+const CHRONICLE_PROPOSAL_SCHEMA_REF =
+  "policies/narrative/schemas/chronicle-event-proposal-v1.schema.json";
 
 const REQUIRED_ACTIVATION_SCAN_ROOTS = Object.freeze([
   "src",
@@ -401,7 +414,37 @@ function validateCanonicalScope(scope, scopeContract, label, errors) {
   }
 }
 
-function deriveScopeFromInput(entry, scopeContract, errors) {
+function createProposalPayloadValidator(proposalSchema, errors) {
+  if (!isObject(proposalSchema)) {
+    errors.push(
+      "Narrative IR golden fixture Chronicle Proposal payload schema is required",
+    );
+    return null;
+  }
+  try {
+    const ajv = new Ajv2020({allErrors: true, strict: false});
+    return ajv.compile(proposalSchema);
+  } catch (error) {
+    errors.push(
+      `Narrative IR golden fixture Chronicle Proposal payload schema is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+function validateProposalPayload(payload, label, proposalValidator, errors) {
+  if (!proposalValidator) return;
+  if (!proposalValidator(payload)) {
+    const details = (proposalValidator.errors ?? [])
+      .map((error) => `${error.instancePath || "/"} ${error.message}`)
+      .join("; ");
+    errors.push(
+      `${label} must be a complete chronicle.create-event@1 Proposal payload: ${details || "schema validation failed"}`,
+    );
+  }
+}
+
+function deriveScopeFromInput(entry, scopeContract, proposalValidator, errors) {
   const input = entry.input;
   if (!isObject(input)) {
     errors.push(`Narrative IR golden fixture ${entry.id} input is required`);
@@ -423,6 +466,34 @@ function deriveScopeFromInput(entry, scopeContract, errors) {
     `Narrative IR golden fixture ${entry.id} input sceneRef is required`,
   );
 
+  if (entry.kind === "human-derivation") {
+    if (!isObject(input.parentPayload) || !isObject(input.editedPayload)) {
+      errors.push(
+        `Narrative IR golden fixture ${entry.id} parent/edited payloads are required`,
+      );
+      return null;
+    }
+    validateProposalPayload(
+      input.parentPayload,
+      `Narrative IR golden fixture ${entry.id} input.parentPayload`,
+      proposalValidator,
+      errors,
+    );
+    validateProposalPayload(
+      input.editedPayload,
+      `Narrative IR golden fixture ${entry.id} input.editedPayload`,
+      proposalValidator,
+      errors,
+    );
+  } else {
+    validateProposalPayload(
+      input.proposalPayload,
+      `Narrative IR golden fixture ${entry.id} input.proposalPayload`,
+      proposalValidator,
+      errors,
+    );
+  }
+
   const proposalPayload = entry.kind === "human-derivation"
     ? input.editedPayload
     : input.proposalPayload;
@@ -432,16 +503,6 @@ function deriveScopeFromInput(entry, scopeContract, errors) {
     );
     return null;
   }
-  if (
-    entry.kind === "human-derivation" &&
-    (!isObject(input.parentPayload) || !isObject(input.editedPayload))
-  ) {
-    errors.push(
-      `Narrative IR golden fixture ${entry.id} parent/edited payloads are required`,
-    );
-    return null;
-  }
-
   const scope = {
     schemaVersion: scopeContract.scopeSchemaVersion,
     registryVersion: scopeContract.registryVersion,
@@ -492,6 +553,7 @@ export function validateNarrativeIrGoldenFixture(
   fixture,
   scopeContract,
   errors = [],
+  proposalSchema = null,
 ) {
   if (!isObject(fixture) || !isObject(scopeContract)) {
     errors.push("Narrative IR golden fixture and ADR 009 Scope contract are required");
@@ -508,6 +570,7 @@ export function validateNarrativeIrGoldenFixture(
     fixture.canonicalization === "sorted-object-keys-json",
     "Narrative IR golden fixture canonicalization must sort object keys",
   );
+  const proposalValidator = createProposalPayloadValidator(proposalSchema, errors);
 
   const entries = Array.isArray(fixture.cases) ? fixture.cases : [];
   const ids = entries.map((entry) => entry?.id);
@@ -549,7 +612,12 @@ export function validateNarrativeIrGoldenFixture(
       `Narrative IR golden fixture ${id} must have one authoritative expected result`,
     );
 
-    const derivedScope = deriveScopeFromInput(entry, scopeContract, errors);
+    const derivedScope = deriveScopeFromInput(
+      entry,
+      scopeContract,
+      proposalValidator,
+      errors,
+    );
     if (entry.kind === "human-derivation") {
       const changedPaths =
         isObject(entry.input?.parentPayload) && isObject(entry.input?.editedPayload)
@@ -693,7 +761,7 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   pushIf(errors, contract.v1ProducerMapping?.producerKind === "reconciler-proposal" && contract.v1ProducerMapping?.producerIdSource === "reconcilerId" && contract.v1ProducerMapping?.producerVersionSource === "reconcilerVersion", "V1 reconciler mapping must bind producer.kind to reconciler-proposal, producer.id to reconcilerId, and producer.version to reconcilerVersion");
 
   pushIf(errors, contract.envelope?.schemaVersion === 2, "Narrative Revision Envelope must be V2");
-  pushIf(errors, hasPaths(contract.envelope?.requiredFields, ["assertion","assertionDigests","changeIntent","effectiveMaterialBasis","revisionBasis","projectionBinding"]), "Narrative Revision Envelope V2 required fields are incomplete");
+  pushIf(errors, sameStringArray(contract.envelope?.requiredFields, REQUIRED_ENVELOPE_FIELDS), "Narrative Revision Envelope V2 requiredFields must match the exact frozen six-field shape");
   pushIf(errors, contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("secret") && contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("revealDocumentRef"), "Disclosure fields must remain outside Assertion Core");
   pushIf(errors, contract.envelope?.changeIntent?.humanDerivedMustPreserve === "exact", "Human-derived Revision must preserve root-level Change Intent exactly");
   pushIf(errors, contract.envelope?.projectionBinding?.recomputePayloadDigestInNative === true && contract.envelope?.projectionBinding?.proposalKindAndSchemaDistinct === true, "Native must own payload digest and Proposal kind/schema binding");
@@ -753,13 +821,17 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
   const adapter = contract.crossRuntimeAdapter;
   pushIf(errors, adapter?.id === "chronicle.scene-event" && adapter?.version === "1" && adapter?.assertionKind === "scene-event@1" && adapter?.goldenFixtureRequired === true && adapter?.initialScopeDerivationRuntime === "typescript" && adapter?.humanDerivedScopeRuntime === "rust", "Chronicle Adapter must be versioned and cross-runtime golden-bound");
   pushIf(errors, adapter?.canonicalOutput === "byte-identical-canonical-scope-json-and-scope-digest" && adapter?.noIndependentRuntimeInterpretation === true, "TypeScript and Rust Scope derivation must share canonical output and avoid independent interpretation");
+  pushIf(errors, adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF, "Chronicle Adapter must bind the canonical CreateChronicleEventProposalPayloadV1 schema");
   pushIf(errors, JSON.stringify(adapter?.requiredCaseIds) === JSON.stringify(REQUIRED_CASE_IDS), "cross-runtime Adapter golden case list is incomplete");
 
   const fixturePath = adapter?.fixtureFile;
   const fixture = fixturePath ? readJson(repoRoot, fixturePath, errors, "Narrative IR golden fixture corpus") : null;
+  const proposalSchema = adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF
+    ? readJson(repoRoot, CHRONICLE_PROPOSAL_SCHEMA_REF, errors, "Chronicle Proposal payload schema")
+    : null;
   if (fixture) {
     pushIf(errors, fixture.adapter?.id === adapter.id && fixture.adapter?.version === adapter.version, "golden fixture corpus Adapter binding is invalid");
-    validateNarrativeIrGoldenFixture(fixture, scopeContract, errors);
+    validateNarrativeIrGoldenFixture(fixture, scopeContract, errors, proposalSchema);
   }
 
   const activation = contract.activation;

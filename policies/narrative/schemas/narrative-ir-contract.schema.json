@@ -246,13 +246,14 @@
           "const": 2
         },
         "requiredFields": {
-          "type": "array",
-          "minItems": 6,
-          "uniqueItems": true,
-          "items": {
-            "type": "string",
-            "minLength": 1
-          }
+          "const": [
+            "assertion",
+            "assertionDigests",
+            "changeIntent",
+            "effectiveMaterialBasis",
+            "revisionBasis",
+            "projectionBinding"
+          ]
         },
         "assertionDigestDomains": {
           "type": "object",
@@ -897,6 +898,7 @@
         "canonicalOutput",
         "goldenFixtureRequired",
         "fixtureFile",
+        "proposalSchemaRef",
         "requiredCaseIds",
         "noIndependentRuntimeInterpretation"
       ],
@@ -924,6 +926,9 @@
         },
         "fixtureFile": {
           "const": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json"
+        },
+        "proposalSchemaRef": {
+          "const": "policies/narrative/schemas/chronicle-event-proposal-v1.schema.json"
         },
         "requiredCaseIds": {
           "type": "array",

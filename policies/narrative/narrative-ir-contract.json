@@ -312,7 +312,7 @@
         {
           "id": "unsupported-path-refused",
           "changedPaths": [
-            "/semanticPayload/actuality"
+            "/actuality"
           ],
           "expectedDisposition": "reject"
         }
@@ -406,6 +406,7 @@
     "canonicalOutput": "byte-identical-canonical-scope-json-and-scope-digest",
     "goldenFixtureRequired": true,
     "fixtureFile": "policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json",
+    "proposalSchemaRef": "policies/narrative/schemas/chronicle-event-proposal-v1.schema.json",
     "requiredCaseIds": [
       "non-secret-event",
       "secret-event-with-resolved-reveal",

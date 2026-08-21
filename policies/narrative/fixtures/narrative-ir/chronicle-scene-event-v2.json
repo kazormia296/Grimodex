@@ -18,11 +18,25 @@
         "operation": "initial-scope-derivation",
         "sceneRef": "scene:1",
         "proposalPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
-            "revealDocumentRef": null
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -45,11 +59,25 @@
         "operation": "initial-scope-derivation",
         "sceneRef": "scene:1",
         "proposalPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -94,11 +122,25 @@
         "operation": "initial-scope-derivation",
         "sceneRef": "scene:1",
         "proposalPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:missing"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -130,19 +172,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
-            "revealDocumentRef": null
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival at Dawn",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
-            "revealDocumentRef": null
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -173,19 +243,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -238,19 +336,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:2"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -303,19 +429,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival at Dawn",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -370,19 +524,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": "first note",
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:2"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": "revised note",
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -437,25 +619,47 @@
         "operation": "human-derived-scope-derivation",
         "sceneRef": "scene:1",
         "parentPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
-            "revealDocumentRef": null
+            "revealDocumentRef": "document:1"
           },
-          "semanticPayload": {
-            "actuality": "asserted"
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "editedPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "attempted",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": false,
-            "revealDocumentRef": null
+            "revealDocumentRef": "document:1"
           },
-          "semanticPayload": {
-            "actuality": "uncertain"
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {
@@ -466,7 +670,7 @@
         "disposition": "reject",
         "reason": "unsupported-path",
         "changedPaths": [
-          "/semanticPayload/actuality"
+          "/actuality"
         ]
       }
     },
@@ -481,11 +685,25 @@
         "operation": "cross-runtime-scope-parity",
         "sceneRef": "scene:1",
         "proposalPayload": {
+          "eventId": "event:arrival",
           "title": "Arrival",
           "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
           "disclosure": {
             "secret": true,
             "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
           }
         },
         "revealBasis": {

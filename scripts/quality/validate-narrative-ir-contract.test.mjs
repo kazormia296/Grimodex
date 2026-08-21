@@ -49,6 +49,12 @@ function validateSchema(contract) {
   return validate(contract) ? [] : (validate.errors ?? []);
 }
 
+function readProposalSchema() {
+  return readJson(
+    "policies/narrative/schemas/chronicle-event-proposal-v1.schema.json",
+  );
+}
+
 function findClosedObjectSchemaOmissions(schema, schemaPath = "#") {
   if (schema === null || typeof schema !== "object") {
     return [];
@@ -218,6 +224,36 @@ describe("NIR-0 Narrative IR contract", () => {
     }
   });
 
+  it("freezes the Envelope V2 required field shape", () => {
+    const contract = readJson("policies/narrative/narrative-ir-contract.json");
+    const expectedRequiredFields = [
+      "assertion",
+      "assertionDigests",
+      "changeIntent",
+      "effectiveMaterialBasis",
+      "revisionBasis",
+      "projectionBinding",
+    ];
+
+    assert.deepEqual(contract.envelope.requiredFields, expectedRequiredFields);
+    assert.deepEqual(validate(contract), []);
+    assert.deepEqual(validateSchema(contract), []);
+
+    for (const extraField of ["reviewDecision", "freshnessState"]) {
+      const mutated = structuredClone(contract);
+      mutated.envelope.requiredFields.push(extraField);
+      assert.ok(
+        validate(mutated).some((error) => /Envelope V2 requiredFields/i.test(error)),
+        `${extraField} must fail semantic validation`,
+      );
+      assert.notDeepEqual(
+        validateSchema(mutated),
+        [],
+        `${extraField} must fail JSON Schema validation`,
+      );
+    }
+  });
+
   it("keeps V2 production activation disabled until C2B child declarations and Freshness", () => {
     const contract = structuredClone(
       readJson("policies/narrative/narrative-ir-contract.json"),
@@ -328,11 +364,13 @@ describe("NIR-0 Narrative IR contract", () => {
     const scopeContract = readJson(
       "policies/narrative/narrative-scope-relation-contract.json",
     );
+    const proposalSchema = readProposalSchema();
     const errors = [];
     validatorModule.validateNarrativeIrGoldenFixture(
       fixture,
       scopeContract,
       errors,
+      proposalSchema,
     );
     assert.deepEqual(errors, []);
 
@@ -362,6 +400,7 @@ describe("NIR-0 Narrative IR contract", () => {
       badDigest,
       scopeContract,
       digestErrors,
+      proposalSchema,
     );
     assert.ok(
       digestErrors.some((error) => /scopeDigest.*SHA-256/i.test(error)),
@@ -382,6 +421,7 @@ describe("NIR-0 Narrative IR contract", () => {
       badOrder,
       scopeContract,
       orderErrors,
+      proposalSchema,
     );
     assert.ok(
       orderErrors.some((error) => /canonical Scope JSON.*key order/i.test(error)),
@@ -397,10 +437,63 @@ describe("NIR-0 Narrative IR contract", () => {
       badHumanDiff,
       scopeContract,
       diffErrors,
+      proposalSchema,
     );
     assert.ok(
       diffErrors.some((error) => /mixed-title-secret.*changedPaths/i.test(error)),
       `expected Human-derived diff error: ${JSON.stringify(diffErrors)}`,
+    );
+
+    const missingRequiredField = structuredClone(fixture);
+    delete missingRequiredField.cases.find(
+      (entry) => entry.id === "non-secret-event",
+    ).input.proposalPayload.actuality;
+    const missingFieldErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      missingRequiredField,
+      scopeContract,
+      missingFieldErrors,
+      proposalSchema,
+    );
+    assert.ok(
+      missingFieldErrors.some((error) => /non-secret-event.*complete.*Proposal payload/i.test(error)),
+      `expected missing Proposal field error: ${JSON.stringify(missingFieldErrors)}`,
+    );
+
+    const nullRevealDocumentRef = structuredClone(fixture);
+    nullRevealDocumentRef.cases.find(
+      (entry) => entry.id === "non-secret-event",
+    ).input.proposalPayload.disclosure.revealDocumentRef = null;
+    const nullRevealErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      nullRevealDocumentRef,
+      scopeContract,
+      nullRevealErrors,
+      proposalSchema,
+    );
+    assert.ok(
+      nullRevealErrors.some((error) => /non-secret-event.*complete.*Proposal payload/i.test(error)),
+      `expected null revealDocumentRef error: ${JSON.stringify(nullRevealErrors)}`,
+    );
+
+    const wronglyAcceptedActuality = structuredClone(fixture);
+    const unsupportedPathCase = wronglyAcceptedActuality.cases.find(
+      (entry) => entry.id === "unsupported-path-refused",
+    );
+    assert.deepEqual(unsupportedPathCase.expected.changedPaths, ["/actuality"]);
+    unsupportedPathCase.expected.disposition = "accept";
+    unsupportedPathCase.expected.derivationKind = "projection-only";
+    unsupportedPathCase.expected.changedPathClasses = ["projection-only"];
+    const actualityErrors = [];
+    validatorModule.validateNarrativeIrGoldenFixture(
+      wronglyAcceptedActuality,
+      scopeContract,
+      actualityErrors,
+      proposalSchema,
+    );
+    assert.ok(
+      actualityErrors.some((error) => /unsupported-path-refused.*disposition/i.test(error)),
+      `expected root /actuality rejection error: ${JSON.stringify(actualityErrors)}`,
     );
   });
 
