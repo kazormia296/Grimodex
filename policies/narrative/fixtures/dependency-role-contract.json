@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "fixtureKind": "narrative-dependency-role-contract",
+  "requirementIds": [
+    "GDX-NARR-SEMANTIC-CONTRACT-001",
+    "GDX-TRACE-001"
+  ],
+  "cases": [
+    {
+      "id": "direct-evidence-content-changed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "direct-evidence",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "rebuild-required",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "catalog-content-change-is-stale-not-unknown",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "entity-resolution",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "resolve-only",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "quality-context-remains-fresh-with-advisory-action",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "quality-context",
+        "consumerKind": "proposal-revision",
+        "changeClass": "quality-input-changed"
+      },
+      "expected": {
+        "freshness": "fresh",
+        "reasonCode": null,
+        "buildAction": "refresh-available",
+        "actionRequirement": "advisory"
+      }
+    },
+    {
+      "id": "ranking-input-recompiles-semantic-index",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "ranking-only",
+        "consumerKind": "semantic-index",
+        "changeClass": "ranking-input-changed"
+      },
+      "expected": {
+        "freshness": "stale",
+        "reasonCode": "source-revision-changed",
+        "buildAction": "recompile-only",
+        "actionRequirement": "required"
+      }
+    },
+    {
+      "id": "unknown-role-fails-closed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "future-role",
+        "consumerKind": "proposal-revision",
+        "changeClass": "source-content-changed"
+      },
+      "expected": "reject",
+      "error": "unknown-role"
+    },
+    {
+      "id": "unknown-effect-combination-fails-closed",
+      "kind": "effect-evaluation",
+      "input": {
+        "role": "direct-evidence",
+        "consumerKind": "semantic-index",
+        "changeClass": "source-content-changed"
+      },
+      "expected": "reject",
+      "error": "missing-effect-rule"
+    },
+    {
+      "id": "unknown-selector-fails-closed",
+      "kind": "selector-validation",
+      "selector": {
+        "kind": "future-selector"
+      },
+      "expected": "reject",
+      "error": "unknown-selector"
+    },
+    {
+      "id": "utf16-range-rejects-surrogate-interior",
+      "kind": "selector-validation",
+      "source": "A😀B",
+      "selector": {
+        "kind": "text-range",
+        "unit": "utf16",
+        "from": 2,
+        "to": 3,
+        "normalizerVersion": "gdx-canonical-text/1"
+      },
+      "expected": "reject",
+      "error": "surrogate-boundary"
+    },
+    {
+      "id": "whole-source-dependency-key-golden",
+      "kind": "dependency-key",
+      "role": "direct-evidence",
+      "selector": {
+        "kind": "whole-source"
+      },
+      "canonicalSelector": "{\"kind\":\"whole-source\"}",
+      "dependencyKey": "sha256:dc5ae15ade6f6ce31c7dece2a1ec161caed32628ae27e1c70f88bf035b54fc0c",
+      "expected": "accept"
+    },
+    {
+      "id": "mixed-actions-stay-independent",
+      "kind": "action-aggregation",
+      "effects": [
+        {
+          "freshness": "fresh",
+          "reasonCode": null,
+          "buildAction": "refresh-available",
+          "actionRequirement": "advisory"
+        },
+        {
+          "freshness": "stale",
+          "reasonCode": "source-revision-changed",
+          "buildAction": "resolve-only",
+          "actionRequirement": "required"
+        }
+      ],
+      "expected": {
+        "requiredActions": ["resolve-only"],
+        "advisoryActions": ["refresh-available"],
+        "compatibilityPrimaryAction": "resolve-only"
+      }
+    }
+  ]
+}
