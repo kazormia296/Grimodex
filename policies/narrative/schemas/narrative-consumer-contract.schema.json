@@ -11,7 +11,8 @@
     "keyFormat",
     "freshnessAuthority",
     "dependencySetDigest",
-    "negativeFixture"
+    "negativeFixture",
+    "revisionIdentityBinding"
   ],
   "properties": {
     "schemaVersion": {
@@ -19,6 +20,59 @@
     },
     "contract": {
       "const": "narrative-consumer-contract"
+    },
+    "revisionIdentityBinding": {
+      "type": "object",
+      "required": [
+        "consumerKind",
+        "revisionTable",
+        "revisionIdColumn",
+        "projectScoped",
+        "durability",
+        "humanDerivedRevisionUsesSameConsumer",
+        "independentConsumer",
+        "independentConsumerStatus",
+        "heuristicIdentity",
+        "portableReference"
+      ],
+      "properties": {
+        "consumerKind": {
+          "const": "proposal-revision"
+        },
+        "revisionTable": {
+          "const": "narrative_proposal_revisions"
+        },
+        "revisionIdColumn": {
+          "const": "id"
+        },
+        "projectScoped": {
+          "const": true
+        },
+        "durability": {
+          "const": "while-project-exists"
+        },
+        "humanDerivedRevisionUsesSameConsumer": {
+          "const": true
+        },
+        "independentConsumer": {
+          "const": "narrative-ir-revision"
+        },
+        "independentConsumerStatus": {
+          "const": "not-yet-modelled"
+        },
+        "heuristicIdentity": {
+          "const": "forbid"
+        },
+        "portableReference": {
+          "const": [
+            "projectId",
+            "revisionId",
+            "envelopeDigest",
+            "contractVersion"
+          ]
+        }
+      },
+      "additionalProperties": false
     },
     "consumerKinds": {
       "type": "array",

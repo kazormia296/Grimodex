@@ -1,6 +1,23 @@
 {
   "schemaVersion": 1,
   "contract": "narrative-consumer-contract",
+  "revisionIdentityBinding": {
+    "consumerKind": "proposal-revision",
+    "revisionTable": "narrative_proposal_revisions",
+    "revisionIdColumn": "id",
+    "projectScoped": true,
+    "durability": "while-project-exists",
+    "humanDerivedRevisionUsesSameConsumer": true,
+    "independentConsumer": "narrative-ir-revision",
+    "independentConsumerStatus": "not-yet-modelled",
+    "heuristicIdentity": "forbid",
+    "portableReference": [
+      "projectId",
+      "revisionId",
+      "envelopeDigest",
+      "contractVersion"
+    ]
+  },
   "consumerKinds": [
     {
       "kind": "narrative-extraction-run",

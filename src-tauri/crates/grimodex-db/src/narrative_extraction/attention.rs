@@ -1051,7 +1051,7 @@ mod tests {
         seed_orphan_attention(&db, "legacy-material", "req-orphan-rehome");
 
         let unresolved = db
-            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .with_conn(rehome_orphaned_attention_in_tx)
             .expect("rehome orphan attention");
         assert!(unresolved.is_empty(), "unique mapping should be moved");
 
@@ -1111,7 +1111,7 @@ mod tests {
         seed_orphan_attention(&db, "legacy-material", "req-orphan-ambiguous");
 
         let unresolved = db
-            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .with_conn(rehome_orphaned_attention_in_tx)
             .expect("inspect ambiguous orphan attention");
         assert_eq!(unresolved.len(), 1);
         let old = db
@@ -1153,7 +1153,7 @@ mod tests {
             .expect("seed target attention");
 
         let unresolved = db
-            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .with_conn(rehome_orphaned_attention_in_tx)
             .expect("inspect conflicting orphan attention");
         assert_eq!(unresolved.len(), 1);
         let old = db
@@ -1208,7 +1208,7 @@ mod tests {
         seed_orphan_attention(&db, "legacy-material", "req-orphan-cross-finding");
 
         let unresolved = db
-            .with_conn(|conn| rehome_orphaned_attention_in_tx(conn))
+            .with_conn(rehome_orphaned_attention_in_tx)
             .expect("inspect cross-finding orphan");
         assert_eq!(unresolved.len(), 1);
         assert!(db

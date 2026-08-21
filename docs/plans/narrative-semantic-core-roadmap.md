@@ -14,6 +14,9 @@ It does not replace architectural decisions or machine-readable policy:
 - [ADR 004: Narrative Reconciliation Boundary](../adr/004-narrative-reconciliation-boundary.md) owns semantic assessment, deterministic-core limits, and semantic retraction boundaries.
 - [ADR 005: Narrative Semantic Core Boundary](../adr/005-narrative-semantic-core-boundary.md) owns the bounded context, Narrative IR, Semantic Build Graph, Retrieval Engine, and adoption principles.
 - [ADR 006: Narrative Mutation Origin and Authority Routes](../adr/006-narrative-mutation-authority-routes.md) owns mutation authority routes.
+- [ADR 009: Narrative Scope Relation Contract](../adr/009-narrative-scope-relation-contract.md) owns Scope V2, Scope Relation, capability status, and the independent Scope Disclosure adoption track.
+- [ADR 010: Narrative Dependency Role Granularity Contract](../adr/010-narrative-dependency-role-granularity-contract.md) owns Context Set, Dependency Set, Dependency Roles, Selectors, and V1/V2 priority.
+- [ADR 011: Narrative IR Revision Semantics Contract](../adr/011-narrative-ir-revision-semantics-contract.md) owns the NIR-0 shared revision semantics.
 - [`policies/narrative/`](../../policies/narrative/) owns machine-readable runtime contracts and the current Gate C2 status record.
 - Merged pull requests are implementation evidence. Pull request descriptions and chat history are not the roadmap authority.
 
@@ -318,21 +321,43 @@ Backfill / Verify / Rebuild-Derived or provide their shared recovery policy
 
 ## NIR-0: Shared contract adoption
 
-**State:** Planned
+**State:** Active — Wave 0 / NIR0-00 contract freeze
 
-### Deliverables
+The detailed authority for this work is the [NIR-0 implementation
+plan](narrative-ir-nir0-implementation-plan.md), under ADR 011 and the
+ADR 009/010 contracts. NIR0-00 freezes the policy, schema, semantic
+validator, and Chronicle `scene-event@1` golden corpus while leaving all
+production Entry Points empty.
 
-- Versioned Narrative IR Envelope type shared across feature extractors.
-- Assertion Kind, Scope, Modality, Polarity, and Support Class registries.
-- Mapping from existing Reconciliation Envelope / Proposal payloads into the shared contract.
-- Clear Durable versus Rebuildable storage classification for each Artifact.
-- Architecture checks preventing Interpreter output from containing SQL, DB operations, Prepared Commit commands, or Typed Writer commands.
+### NIR0-00 contract-freeze deliverables
+
+- Envelope V2 and project-scoped `proposal-revision` identity at
+  `narrative_proposal_revisions.id`; `narrative-ir-revision` remains
+  not-yet-modelled.
+- Native-verified Human-derived request boundaries, path classes, strongest
+  mixed-edit classification, child material-basis ownership, and the split
+  between interpretation live-token validation and Human-derived stale-state
+  publication.
+- Shared versioned Adapter golden requirement for canonical Scope JSON and
+  Scope Digest; future TypeScript and Rust implementations must pass the same
+  corpus.
+- Activation remains disabled until C2B, D1, D2, focused
+  persistence/Freshness journeys, and atomic implementation-status evidence.
+- ADR 009 capability status and independent Scope Disclosure adoption remain
+  declared and are not implied by NIR activation.
+
+NIR-0 does not add runtime code, a persistence/schema migration, a second
+Freshness authority, or a production product claim. The milestone is complete
+only after a later certification step demonstrates a validated producer and the
+activation prerequisites; this contract-freeze slice does not claim completion.
 
 ### Exit criteria
 
-- At least one existing extractor emits a validated Evidence-bound Narrative IR Revision without a feature-private authority model.
-- Review, Freshness, and Projection state remain separate from the immutable Revision.
-
+- Policy/schema/fixture/validator checks pass without enabling a V2 production
+  Entry Point.
+- A later implementation lane demonstrates a validated Evidence-bound
+  `scene-event@1` Revision while Review, Freshness, and Projection remain
+  separate.
 ## NIR-1: First Retrieval Vertical Slice
 
 **State:** Blocked on C2-Z and NIR-0

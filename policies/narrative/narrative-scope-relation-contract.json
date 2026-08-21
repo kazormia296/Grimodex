@@ -21,7 +21,34 @@
       "scope-v2-contract-adapter",
       "scope-order-oracle",
       "disclosure-shadow-wiring"
-    ]
+    ],
+    "capabilities": {
+      "structuralValidation": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["scope-v2-contract-adapter"]
+      },
+      "relationComparison": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["scope-order-oracle"]
+      },
+      "disclosureAdmission": {
+        "state": "declared",
+        "productionEntryPoints": [],
+        "blockedOn": ["disclosure-shadow-wiring"]
+      }
+    }
+  },
+  "adoptionTrack": {
+    "id": "scope-disclosure-adoption",
+    "owner": "adr-009-scope-contract",
+    "independentFrom": "narrative-ir-contract",
+    "states": ["declared", "shadow", "wired"],
+    "lifecycleAuthority": "adr-009-scope-contract",
+    "firstLikelyConsumer": "NIR-1 pre-ranking disclosure",
+    "nir1OwnsLifecycle": false,
+    "productionEntryPointPolicy": "declared-is-empty-entry-points"
   },
   "axes": [
     {

@@ -189,6 +189,24 @@ pub struct InvalidLegacyDependency {
     pub reason: String,
 }
 
+type LegacyDependencyLoad = (BTreeMap<String, Vec<String>>, Vec<InvalidLegacyDependency>);
+type BackfillRunRow = (String, String, Option<String>);
+type VerifyRunRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+type IncrementalCursorRow = (
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<String>,
+);
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FreshnessParityReport {
@@ -729,12 +747,9 @@ fn current_epoch_id(conn: &Connection, project_id: &str) -> Result<Option<String
 
 fn aggregate_states(states: impl IntoIterator<Item = ReadinessState>) -> ReadinessState {
     let states = states.into_iter().collect::<Vec<_>>();
-    if states.iter().any(|state| *state == ReadinessState::Blocked) {
+    if states.contains(&ReadinessState::Blocked) {
         ReadinessState::Blocked
-    } else if states
-        .iter()
-        .any(|state| *state == ReadinessState::Incomplete)
-    {
+    } else if states.contains(&ReadinessState::Incomplete) {
         ReadinessState::Incomplete
     } else {
         ReadinessState::Passed
@@ -796,10 +811,7 @@ fn legacy_status_value_is_supported(value: &str) -> bool {
     )
 }
 
-fn load_legacy_dependencies(
-    conn: &Connection,
-    project_id: &str,
-) -> Result<(BTreeMap<String, Vec<String>>, Vec<InvalidLegacyDependency>)> {
+fn load_legacy_dependencies(conn: &Connection, project_id: &str) -> Result<LegacyDependencyLoad> {
     let mut statement = conn.prepare(
         "SELECT a.id, d.source_kind, d.source_key
            FROM narrative_proposal_applications a
@@ -970,7 +982,7 @@ fn inspect_backfill_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<(String, String, Option<String>)> = conn
+    let row: Option<BackfillRunRow> = conn
         .query_row(
             "SELECT id, status, semantic_epoch_id
                FROM narrative_extraction_runs
@@ -1007,13 +1019,7 @@ fn inspect_verify_gate(
             "current-semantic-epoch-missing",
         )));
     };
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn
+    let row: Option<VerifyRunRow> = conn
         .query_row(
             "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
                FROM narrative_extraction_runs
@@ -1039,11 +1045,7 @@ fn inspect_verify_gate(
     let mut result = VerifyReadiness::from_gate(ReadinessGate::incomplete("verify-incomplete"));
     result.run_id = Some(run_id);
     if status != "completed" {
-        result.state = if matches!(status.as_str(), "pending" | "running") {
-            ReadinessState::Blocked
-        } else {
-            ReadinessState::Blocked
-        };
+        result.state = ReadinessState::Blocked;
         result.reasons = vec!["verify-run-not-completed".to_string()];
         return Ok(result);
     }
@@ -1169,13 +1171,7 @@ fn inspect_rebuild_gate(
     let Some(epoch_id) = epoch_id else {
         return Ok(ReadinessGate::incomplete("current-semantic-epoch-missing"));
     };
-    let row: Option<(
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = conn
+    let row: Option<VerifyRunRow> = conn
         .query_row(
             "SELECT id, status, semantic_epoch_id, work_key, outcome_summary_json
                FROM narrative_extraction_runs
@@ -1366,14 +1362,7 @@ fn inspect_incremental_runtime_gate(
         params![project_id],
         |row| row.get(0),
     )?;
-    let cursor: Option<(
-        i64,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<i64>,
-        Option<String>,
-    )> = conn
+    let cursor: Option<IncrementalCursorRow> = conn
         .query_row(
             "SELECT acknowledged_through_sequence, last_error, semantic_epoch_id,
                     active_run_id, reserved_through_sequence, lease_expires_at

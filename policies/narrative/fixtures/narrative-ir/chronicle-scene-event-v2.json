@@ -1,0 +1,741 @@
+{
+  "schemaVersion": 1,
+  "fixtureKind": "narrative-ir-cross-runtime-golden",
+  "adapter": {
+    "id": "chronicle.scene-event",
+    "version": "1"
+  },
+  "canonicalization": "sorted-object-keys-json",
+  "cases": [
+    {
+      "id": "non-secret-event",
+      "kind": "scope-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
+        }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7"
+      }
+    },
+    {
+      "id": "secret-event-with-resolved-reveal",
+      "kind": "scope-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      }
+    },
+    {
+      "id": "secret-event-with-unresolved-reveal",
+      "kind": "scope-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "initial-scope-derivation",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:missing"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "unresolved",
+          "documentRef": "document:missing",
+          "audience": {
+            "reason": "missing-reference",
+            "constraintId": "scope:scene-event:1:audience"
+          },
+          "readingOrder": {
+            "reason": "ambiguous",
+            "constraintId": "scope:scene-event:1:reading-order"
+          }
+        }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"constraintId\":\"scope:scene-event:1:audience\",\"kind\":\"unresolved\",\"reason\":\"missing-reference\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"constraintId\":\"scope:scene-event:1:reading-order\",\"kind\":\"unresolved\",\"reason\":\"ambiguous\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:3af313649dd45a4a2abfca33cf40eaa39576fa5849563013bb0de3a6accb91a5"
+      }
+    },
+    {
+      "id": "title-only-edit",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival at Dawn",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
+        }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/title"
+        ],
+        "derivationKind": "projection-only",
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"any\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"kind\":\"any\"},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"kind\":\"any\"},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:8b60e41fbbeadaf24e3714d16567733645713ab9cd0350785b7402bc54bba7d7",
+        "changedPathClasses": [
+          "projection-only"
+        ]
+      }
+    },
+    {
+      "id": "secret-only-edit",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/disclosure/secret"
+        ],
+        "derivationKind": "scope-override",
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "scope-affecting"
+        ]
+      }
+    },
+    {
+      "id": "reveal-document-only-edit",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:2"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/disclosure/revealDocumentRef"
+        ],
+        "derivationKind": "scope-override",
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "scope-affecting"
+        ]
+      }
+    },
+    {
+      "id": "mixed-title-secret-uses-scope-override",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival at Dawn",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/title",
+          "/disclosure/secret"
+        ],
+        "derivationKind": "scope-override",
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "projection-only",
+          "scope-affecting"
+        ]
+      }
+    },
+    {
+      "id": "mixed-note-reveal-document-uses-scope-override",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": "first note",
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:2"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": "revised note",
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "disposition": "accept",
+        "changedPaths": [
+          "/note",
+          "/disclosure/revealDocumentRef"
+        ],
+        "derivationKind": "scope-override",
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156",
+        "changedPathClasses": [
+          "projection-only",
+          "scope-affecting"
+        ]
+      }
+    },
+    {
+      "id": "unsupported-path-refused",
+      "kind": "human-derivation",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "human-derived-scope-derivation",
+        "sceneRef": "scene:1",
+        "parentPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "editedPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "attempted",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": false,
+            "revealDocumentRef": "document:1"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "not-secret"
+        }
+      },
+      "expected": {
+        "disposition": "reject",
+        "reason": "unsupported-path",
+        "changedPaths": [
+          "/actuality"
+        ]
+      }
+    },
+    {
+      "id": "canonical-scope-digest-parity",
+      "kind": "cross-runtime-parity",
+      "input": {
+        "adapter": {
+          "id": "chronicle.scene-event",
+          "version": "1"
+        },
+        "operation": "cross-runtime-scope-parity",
+        "sceneRef": "scene:1",
+        "proposalPayload": {
+          "eventId": "event:arrival",
+          "title": "Arrival",
+          "note": null,
+          "actuality": "actual",
+          "significance": "major",
+          "evidenceAnchorIds": [
+            "anchor:arrival"
+          ],
+          "evidenceDocumentRefs": [
+            "document:1"
+          ],
+          "disclosure": {
+            "secret": true,
+            "revealDocumentRef": "document:3"
+          },
+          "unresolvedMetadata": {
+            "participantSurfaces": [],
+            "locationSurface": null,
+            "temporalExpressions": []
+          }
+        },
+        "revealBasis": {
+          "status": "resolved",
+          "documentRef": "document:3",
+          "audienceRef": "reader",
+          "readingOrder": {
+            "from": {
+              "ref": "reading:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "reading:3",
+              "inclusive": false
+            }
+          },
+          "storyTime": {
+            "from": {
+              "ref": "story:1",
+              "inclusive": true
+            },
+            "until": {
+              "ref": "story:4",
+              "inclusive": false
+            }
+          }
+        }
+      },
+      "expected": {
+        "canonicalScopeJson": "{\"audience\":{\"kind\":\"exact\",\"ref\":\"reader\"},\"knowledgeHolder\":{\"kind\":\"any\"},\"narrativeLayer\":{\"kind\":\"any\"},\"readingOrder\":{\"from\":{\"inclusive\":true,\"ref\":\"reading:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"reading:3\"}},\"registryVersion\":\"narrative-scope/2\",\"scene\":{\"kind\":\"exact\",\"ref\":\"scene:1\"},\"schemaVersion\":2,\"storyTime\":{\"from\":{\"inclusive\":true,\"ref\":\"story:1\"},\"kind\":\"interval\",\"until\":{\"inclusive\":false,\"ref\":\"story:4\"}},\"timeline\":{\"kind\":\"any\"},\"viewpoint\":{\"kind\":\"any\"},\"worldline\":{\"kind\":\"any\"}}",
+        "scopeDigest": "sha256:c4eed33233738d7d988122ef9f65f7c1ae6433a52ba5e326c050fc6780a6d156"
+      }
+    }
+  ]
+}

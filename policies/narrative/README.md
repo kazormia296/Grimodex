@@ -146,6 +146,40 @@ Edge remains Source-grained, and
 identity set. No performance improvement, V2 cutover, or new Freshness
 authority is claimed by this contract-only step.
 
+## NIR-0 Shared Narrative IR contracts — DECLARED
+
+NIR-0 freezes the shared Narrative IR contract through [ADR
+011](../../docs/adr/011-narrative-ir-revision-semantics-contract.md) and keeps
+production on the existing V1 path:
+
+- `narrative-ir-contract.json` — Envelope V2 and V2 monotonicity, project-scoped
+  `narrative_proposal_revisions.id` identity, Native-verified Human-derived
+  edits, material-basis ownership, stale-validation split, Chronicle add-only
+  pilot wiring, activation rule, and the independent Scope Disclosure adoption
+  reference;
+- `schemas/narrative-ir-contract.schema.json` — machine-readable contract
+  schema;
+- `fixtures/narrative-ir/chronicle-scene-event-v2.json` — shared versioned
+  Adapter golden corpus that future TypeScript and Rust implementations must
+  pass for Scope derivation, Human-derived old/new payload classification,
+  unsupported-path refusal, and canonical Scope/digest agreement; stale
+  validation and activation remain semantic contract tests;
+- `validate-narrative-ir-contract.mjs` — semantic checks for identity,
+  monotonicity, Human-derived boundaries, cumulative mixed-edit
+  classification, golden-corpus integrity, Chronicle add-only wiring, and
+  disabled-activation production markers.
+
+ADR 009 remains the owner of Scope capability status and the independent Scope
+Disclosure adoption track. ADR 010 remains the owner of Context Set and
+Dependency Role semantics. All NIR-0 production entry points are empty and V2
+emission/UI/current-Revision promotion remain blocked until C2B plus the
+declared D1/D2 and focused persistence/Freshness evidence.
+
+These are contract-only artifacts: they do not create C2 tables, perform a
+runtime/schema migration, connect Disclosure to Retrieval, or add a second
+Freshness or semantic authority. The existing `scope.ts`, Disclosure
+evaluator, Dependency Edge, and Consumer Freshness paths remain V1-compatible.
+
 ## Gate C2 — IN PROGRESS
 
 Gate C2 begins from ADR 005's existing "Authority matrix and C2 start

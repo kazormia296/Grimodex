@@ -82,6 +82,18 @@ pub(crate) struct FindingObservationWrite<'a> {
     pub observed_at: &'a str,
 }
 
+type FindingObservationLookupRow = (
+    Option<String>,
+    String,
+    String,
+    String,
+    i64,
+    String,
+    String,
+    String,
+    String,
+);
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum FindingLifecycleState {
@@ -456,17 +468,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
         .resolve(write.rule_id, write.rule_version)?;
     ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
     if let Some(lifecycle_observation_digest) = write.observation_digest {
-        let observation: Option<(
-            Option<String>,
-            String,
-            String,
-            String,
-            i64,
-            String,
-            String,
-            String,
-            String,
-        )> = conn
+        let observation: Option<FindingObservationLookupRow> = conn
             .query_row(
                 "SELECT edge_id, finding_identity, material_basis_digest, rule_id,
                         rule_version, finding_key, reason_code,
