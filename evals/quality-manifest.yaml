@@ -417,11 +417,23 @@ requirements:
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
@@ -431,10 +443,18 @@ requirements:
       - src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts
       - src/features/narrative-semantic-core/contracts/scope.test.ts
       - src/features/narrative-semantic-core/contracts/disclosure.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.test.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
       - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - scripts/quality/impact-map.test.mjs
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:

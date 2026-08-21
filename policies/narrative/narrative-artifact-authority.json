@@ -138,6 +138,8 @@
     "interpreterRoots": [
       "src/features/narrative-semantic-core",
       "src/features/narrative-extraction/ir",
+      "src/features/narrative-extraction/proposals",
+      "src/features/narrative-extraction/reconciler",
       "src/application/narrative-extraction/aiTasks"
     ],
     "allowlist": {

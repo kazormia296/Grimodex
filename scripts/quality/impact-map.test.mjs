@@ -227,7 +227,10 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     );
   }
 
-  for (const relativePath of [...implementations, ...tests]) {
+  for (const relativePath of [
+    ...implementations,
+    ...tests.filter((relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs"),
+  ]) {
     const selection = selectImpact(map, [relativePath]);
     assert.ok(
       selection.matchedRuleIds.includes("narrative-semantic-contract"),

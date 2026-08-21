@@ -256,6 +256,121 @@ const REQUIRED_ARTIFACT_IDS = Object.freeze([
   "renderer-state",
 ]);
 
+// G1 is a ratified authority matrix, not a free-form vocabulary. Keep the
+// complete row classification in validator-owned code so a policy edit cannot
+// silently turn a durable interpretation into a non-authoritative cache (or
+// move any other required artifact to a different authority).
+const REQUIRED_ARTIFACT_AUTHORITY_ROWS = Object.freeze([
+  Object.freeze({
+    id: "source-snapshot",
+    lifecycle: "durable",
+    authority: "source-identity",
+    authoritative: true,
+    storage: "source-revision-and-canonical-text",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "stage-execution",
+    lifecycle: "durable",
+    authority: "none",
+    authoritative: false,
+    storage: "narrative-extraction-run-task-stage-identity",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "raw-model-response",
+    lifecycle: "ephemeral",
+    authority: "none",
+    authoritative: false,
+    storage: "provider-response-buffer",
+    retentionDefault: "not-retained",
+    retentionScope: "request-scoped",
+  }),
+  Object.freeze({
+    id: "response-digest",
+    lifecycle: "durable",
+    authority: "none",
+    authoritative: false,
+    storage: "stage-execution-response-digest",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "extraction-artifact",
+    lifecycle: "durable",
+    authority: "none",
+    authoritative: false,
+    storage: "narrative_extraction_artifacts",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "narrative-ir-revision",
+    lifecycle: "durable",
+    authority: "immutable-interpretation",
+    authoritative: true,
+    storage: "narrative_proposal_revisions",
+    retentionDefault: "retained",
+    retentionScope: "while-project-exists",
+  }),
+  Object.freeze({
+    id: "review-decision",
+    lifecycle: "durable",
+    authority: "review",
+    authoritative: true,
+    storage: "decision-ledger",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "consumer-freshness",
+    lifecycle: "durable",
+    authority: "evidence-freshness",
+    authoritative: true,
+    storage: "narrative_consumer_freshness",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "projection-application",
+    lifecycle: "durable",
+    authority: "projection-execution",
+    authoritative: true,
+    storage: "application-and-commit-ledger",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "application-contribution",
+    lifecycle: "durable",
+    authority: "application-contribution",
+    authoritative: true,
+    storage: "narrative_application_contributions",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "semantic-index",
+    lifecycle: "rebuildable",
+    authority: "rebuildable-acceleration",
+    authoritative: false,
+    storage: "semantic-index-and-metadata",
+    retentionDefault: "reconstructable",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "renderer-state",
+    lifecycle: "ephemeral",
+    authority: "none",
+    authoritative: false,
+    storage: "renderer-memory",
+    retentionDefault: "not-retained",
+    retentionScope: "window-scoped",
+  }),
+]);
+
 const REQUIRED_INTERPRETER_DEPENDENCY_RULES = Object.freeze([
   "sql-import",
   "db-mutation",
@@ -270,6 +385,65 @@ const REQUIRED_FRESHNESS_AUTHORITY_RULES = Object.freeze([
   "freshness-authority",
   "stale-store",
 ]);
+
+// These patterns are the ratified G2 deny semantics. They intentionally live
+// in the validator rather than being derived from the policy being scanned:
+// replacing a policy rule with a valid no-op regex must fail closed.
+const REQUIRED_INTERPRETER_BOUNDARY_ROOTS = Object.freeze([
+  "src/features/narrative-semantic-core",
+  "src/features/narrative-extraction/ir",
+  "src/features/narrative-extraction/proposals",
+  "src/features/narrative-extraction/reconciler",
+  "src/application/narrative-extraction/aiTasks",
+]);
+
+const REQUIRED_INTERPRETER_ALLOWLIST_FILES = Object.freeze([]);
+const REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS = Object.freeze([
+  Object.freeze({
+    id: "type-only-domain-vocabulary",
+    pattern: "@/db/schema",
+    mode: "type-only",
+  }),
+]);
+
+const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
+  "sql-import": Object.freeze([
+    "\\bfrom\\s+[\\\"'`]drizzle-orm(?:/[^\\\"'`]+)?[\\\"'`]",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]",
+  ]),
+  "db-mutation": Object.freeze([
+    "\\b(?:db|database|conn|connection|tx|transaction)\\s*\\.\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*\\(",
+    "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
+  ]),
+  "prepared-commit": Object.freeze([
+    "\\b(?:PreparedCommit|preparedCommit|prepared_commit|prepareCommit|prepare_commit|runPreparedCommit)\\b",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*prepared[-_]?commit[^\\\"'`]*[\\\"'`]",
+  ]),
+  "typed-writer": Object.freeze([
+    "\\b(?:TypedWriter|typedWriter|typed_writer|runTypedWriter|writeWithTypedWriter)\\b",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*typed[-_]?writer[^\\\"'`]*[\\\"'`]",
+  ]),
+  "agent-writer": Object.freeze([
+    "\\b(?:AgentWriter|agentWriter|agent_writer|agent_writes|writeWithAgentWriter)\\b",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:agent[-_/]writes|codex[-_]writes)[^\\\"'`]*[\\\"'`]",
+  ]),
+  "generic-mcp-sql": Object.freeze([
+    "\\b(?:mcpSql|mcp_sql|genericMcpSql|generic_mcp_sql)\\b",
+    "\\b(?:mcp|Mcp)[A-Za-z0-9_]*(?:sql|query|execute)\\s*\\(",
+    "\\b(?:mcp|Mcp)[A-Za-z0-9_]*::(?:sql|query|execute)\\b",
+    "\\bfrom\\s+[\\\"'`][^\\\"'`]*(?:mcp|model-context-protocol)[^\\\"'`]*(?:sql|query|execute)[^\\\"'`]*[\\\"'`]",
+  ]),
+});
+
+const REQUIRED_INTERPRETER_FRESHNESS_PATTERNS = Object.freeze({
+  "freshness-store":
+    "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*Freshness(?:Store|Cache|ReadModel|Flag|State|Map|Index)|freshness(?:Store|Cache|ReadModel|Flag|State|Map|Index))\\b",
+  "freshness-authority":
+    "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*FreshnessAuthority|freshnessAuthority|isAuthoritativeFresh|assertionFresh|isFresh|hasFreshness|semanticTruth)\\b",
+  "stale-store":
+    "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*Stale(?:Store|Cache|ReadModel|Flag|State|Map|Index)|stale(?:Store|Cache|ReadModel|Flag|State|Map|Index))\\b",
+});
 
 const REQUIRED_ARTIFACT_FIXTURES = Object.freeze([
   "raw-model-response-durable-rejected",
@@ -402,6 +576,19 @@ function sameStringSet(actual, expected) {
     new Set(actual).size === actual.length &&
     expected.every((value) => actual.includes(value))
   );
+}
+
+function sameAllowlistImports(actual, expected) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  const normalize = (entries) =>
+    entries
+      .map((entry) => ({
+        id: entry?.id,
+        pattern: entry?.pattern,
+        mode: entry?.mode,
+      }))
+      .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  return JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected));
 }
 
 function validateImplementationStatus(repoRoot, label, status, errors) {
@@ -1153,6 +1340,36 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
       errors.push(`narrative artifact authority contract is missing artifact: ${artifactId}`);
     }
   }
+  const expectedArtifactRows = new Map(
+    REQUIRED_ARTIFACT_AUTHORITY_ROWS.map((row) => [row.id, row]),
+  );
+  for (const artifactId of REQUIRED_ARTIFACT_IDS) {
+    const artifact = artifactById.get(artifactId);
+    const expected = expectedArtifactRows.get(artifactId);
+    if (!artifact || !expected) continue;
+    for (const [field, actual, ratified] of [
+      ["lifecycle", artifact.lifecycle, expected.lifecycle],
+      ["authority", artifact.authority, expected.authority],
+      ["authoritative", artifact.authoritative, expected.authoritative],
+      ["storage", artifact.storage, expected.storage],
+      [
+        "retention.default",
+        artifact.retention?.default,
+        expected.retentionDefault,
+      ],
+      [
+        "retention.scope",
+        artifact.retention?.scope,
+        expected.retentionScope,
+      ],
+    ]) {
+      if (actual !== ratified) {
+        errors.push(
+          `narrative artifact ${artifactId} ${field} does not match ratified classification: expected ${String(ratified)}, got ${String(actual)}`,
+        );
+      }
+    }
+  }
 
   const rawResponse = artifactById.get("raw-model-response");
   if (rawResponse?.lifecycle === "durable") {
@@ -1264,6 +1481,10 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
     : [];
   if (roots.length === 0) {
     errors.push("Interpreter boundary must declare interpreterRoots");
+  } else if (!sameStringSet(roots, REQUIRED_INTERPRETER_BOUNDARY_ROOTS)) {
+    errors.push(
+      `Interpreter boundary roots must match ratified required roots: ${REQUIRED_INTERPRETER_BOUNDARY_ROOTS.join(", ")}`,
+    );
   }
   if (!isObject(boundary.allowlist)) {
     errors.push("Interpreter boundary must declare an allowlist");
@@ -1274,6 +1495,16 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   }
   if (!Array.isArray(allowlist.imports)) {
     errors.push("Interpreter boundary allowlist.imports must be an array");
+  }
+  if (!sameStringSet(allowlist.files, REQUIRED_INTERPRETER_ALLOWLIST_FILES)) {
+    errors.push(
+      `Interpreter allowlist files do not match ratified Interpreter allowlist files: ${REQUIRED_INTERPRETER_ALLOWLIST_FILES.join(", ") || "(none)"}`,
+    );
+  }
+  if (!sameAllowlistImports(allowlist.imports, REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS)) {
+    errors.push(
+      `Interpreter allowlist imports do not match ratified Interpreter allowlist import entries: ${REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS.map((entry) => entry.id).join(", ")}`,
+    );
   }
   const allowlistedFiles = new Set(
     Array.isArray(allowlist.files)
@@ -1335,6 +1566,14 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   for (const requiredRule of REQUIRED_INTERPRETER_DEPENDENCY_RULES) {
     if (!dependencyRuleIds.has(requiredRule)) {
       errors.push(`Interpreter boundary is missing forbidden dependency rule: ${requiredRule}`);
+      continue;
+    }
+    const rule = dependencyRules.find((candidate) => candidate?.id === requiredRule);
+    const requiredPatterns = REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS[requiredRule];
+    if (!sameStringSet(rule?.patterns, requiredPatterns)) {
+      errors.push(
+        `Interpreter boundary ratified forbidden dependency patterns do not match: ${requiredRule}`,
+      );
     }
   }
   const freshnessRuleIds = new Set();
@@ -1350,6 +1589,13 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   for (const requiredRule of REQUIRED_FRESHNESS_AUTHORITY_RULES) {
     if (!freshnessRuleIds.has(requiredRule)) {
       errors.push(`Interpreter boundary is missing freshness authority rule: ${requiredRule}`);
+      continue;
+    }
+    const rule = freshnessRules.find((candidate) => candidate?.id === requiredRule);
+    if (rule?.pattern !== REQUIRED_INTERPRETER_FRESHNESS_PATTERNS[requiredRule]) {
+      errors.push(
+        `Interpreter boundary ratified Freshness authority pattern does not match: ${requiredRule}`,
+      );
     }
   }
   const boundaryFixtures = Array.isArray(boundary.fixtures)

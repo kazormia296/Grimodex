@@ -180,10 +180,28 @@ rules:
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/**
       - src/features/narrative-semantic-core/**
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     requirements:
@@ -194,6 +212,8 @@ rules:
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:
       - src/features/narrative-extraction/**
+      - src/application/narrative-extraction/aiTasks/**
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - src/application/narrative-extraction/temporal/**
       - src/features/chronicle/extractEventsApi.ts
       - src/features/chronicle/extractEventsApi.test.ts
