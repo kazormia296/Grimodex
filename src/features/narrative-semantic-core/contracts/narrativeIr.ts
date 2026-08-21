@@ -454,6 +454,16 @@ function validateEvidenceSet(
     if (hasOwn(entry, "quoteDigest") && !isDigest(entry.quoteDigest)) {
       return invalid("invalid-digest", `${path}[${index}].quoteDigest`);
     }
+    for (const field of [
+      "documentRef",
+      "quote",
+      "sourceKey",
+      "revisionToken",
+    ] as const) {
+      if (hasOwn(entry, field) && !isNonEmptyString(entry[field])) {
+        return invalid("invalid-material-basis", `${path}[${index}].${field}`);
+      }
+    }
   }
   return undefined;
 }
@@ -571,6 +581,28 @@ function validateMaterialConsistency(
 
   if (!Array.isArray(contextSet)) {
     return invalid("invalid-revision-basis", contextPath);
+  }
+  const availableContextIds = new Set(
+    contextSet
+      .filter(isRecord)
+      .map((context) => context.contextId)
+      .filter(isNonEmptyString),
+  );
+  for (const [index, dependency] of material.dependencySet.entries()) {
+    if (!isRecord(dependency)) continue;
+    const contextIds = dependency.contextIds;
+    if (
+      !Array.isArray(contextIds) ||
+      contextIds.some(
+        (contextId) =>
+          !isNonEmptyString(contextId) || !availableContextIds.has(contextId),
+      )
+    ) {
+      return invalid(
+        "invalid-material-basis",
+        `effectiveMaterialBasis.dependencySet[${index}].contextIds`,
+      );
+    }
   }
   for (const [index, context] of contextSet.entries()) {
     if (!isRecord(context) || context.exposure !== "model-visible") continue;

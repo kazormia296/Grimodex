@@ -488,6 +488,16 @@ fn validate_evidence_set(value: &Value, path: &str) -> Result<(), NarrativeIrVal
                 ));
             }
         }
+        for field in ["documentRef", "quote", "sourceKey", "revisionToken"] {
+            if let Some(value) = entry.get(field) {
+                if !non_empty_string(value) {
+                    return Err(validation_error(
+                        "invalid-material-basis",
+                        format!("{entry_path}.{field}"),
+                    ));
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -664,6 +674,35 @@ fn validate_material_consistency(
     let context_values = context_set
         .as_array()
         .ok_or_else(|| validation_error("invalid-revision-basis", context_path))?;
+    let available_context_ids = context_values
+        .iter()
+        .filter_map(|context| context.get("contextId").and_then(Value::as_str))
+        .collect::<std::collections::HashSet<_>>();
+    for (index, dependency) in dependency_values.iter().enumerate() {
+        let dependency = object(
+            dependency,
+            &format!("effectiveMaterialBasis.dependencySet[{index}]"),
+        )?;
+        let context_ids = dependency
+            .get("contextIds")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                validation_error(
+                    "invalid-material-basis",
+                    format!("effectiveMaterialBasis.dependencySet[{index}].contextIds"),
+                )
+            })?;
+        if context_ids.iter().any(|context_id| {
+            context_id
+                .as_str()
+                .is_none_or(|context_id| !available_context_ids.contains(context_id))
+        }) {
+            return Err(validation_error(
+                "invalid-material-basis",
+                format!("effectiveMaterialBasis.dependencySet[{index}].contextIds"),
+            ));
+        }
+    }
     for (index, context) in context_values.iter().enumerate() {
         let Some(context) = context.as_object() else {
             continue;
