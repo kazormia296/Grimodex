@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import scopeRelationPolicy from "../../../../policies/narrative/narrative-scope-relation-contract.json";
 import {
+  compareScopeAxis,
   compareScopeRelation,
   composeScopeRelations,
   validateScopeOrder,
@@ -14,6 +15,7 @@ import {
   type ScopeRelationRegistry,
   type TemporalScopeConstraint,
 } from "./scopeRelation";
+import { SCOPE_AXES } from "./scopeV2";
 
 const anyAxes: NarrativeScopeV2 = {
   schemaVersion: 2,
