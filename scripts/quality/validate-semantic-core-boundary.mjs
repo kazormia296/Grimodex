@@ -4,6 +4,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
+import ts from "typescript";
 
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1501,6 +1502,161 @@ function removeAllowlistedTypeOnlyImports(source, allowlistedImports) {
   );
 }
 
+const INTERPRETER_AST_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+const REQUIRED_DB_MUTATION_METHODS = new Set([
+  "execute",
+  "exec",
+  "run",
+  "prepare",
+  "query",
+  "insert",
+  "update",
+  "delete",
+]);
+
+function unwrapExpression(expression) {
+  let current = expression;
+  while (
+    current &&
+    (ts.isParenthesizedExpression(current) ||
+      ts.isAsExpression(current) ||
+      ts.isTypeAssertionExpression(current) ||
+      ts.isNonNullExpression(current))
+  ) {
+    current = current.expression;
+  }
+  return current;
+}
+
+function foldStaticStringExpression(expression) {
+  if (!expression) return undefined;
+  if (
+    ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression)
+  ) {
+    return expression.text;
+  }
+  if (ts.isParenthesizedExpression(expression)) {
+    return foldStaticStringExpression(expression.expression);
+  }
+  if (
+    ts.isAsExpression(expression) ||
+    ts.isTypeAssertionExpression(expression) ||
+    ts.isNonNullExpression(expression)
+  ) {
+    return foldStaticStringExpression(expression.expression);
+  }
+  if (
+    ts.isBinaryExpression(expression) &&
+    expression.operatorToken.kind === ts.SyntaxKind.PlusToken
+  ) {
+    const left = foldStaticStringExpression(expression.left);
+    const right = foldStaticStringExpression(expression.right);
+    return left === undefined || right === undefined ? undefined : left + right;
+  }
+  if (ts.isTemplateExpression(expression)) {
+    let value = expression.head.text;
+    for (const span of expression.templateSpans) {
+      const expressionValue = foldStaticStringExpression(span.expression);
+      if (expressionValue === undefined) return undefined;
+      value += expressionValue + span.literal.text;
+    }
+    return value;
+  }
+  return undefined;
+}
+
+function readStaticLoaderSpecifier(expression) {
+  if (
+    ts.isStringLiteral(expression) ||
+    ts.isNoSubstitutionTemplateLiteral(expression)
+  ) {
+    return expression.text;
+  }
+  return undefined;
+}
+
+function findRequiredImportDependencyRules(moduleSpecifier) {
+  const contexts = [
+    `from ${JSON.stringify(moduleSpecifier)}`,
+    `import(${JSON.stringify(moduleSpecifier)})`,
+    `require(${JSON.stringify(moduleSpecifier)})`,
+  ];
+  const matches = [];
+  for (const ruleId of REQUIRED_INTERPRETER_DEPENDENCY_RULES) {
+    if (ruleId === "non-literal-dynamic-import") continue;
+    const patterns = REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS[ruleId] ?? [];
+    const matchesPattern = patterns.some((pattern) => {
+      try {
+        const expression = new RegExp(pattern);
+        return contexts.some((context) => expression.test(context));
+      } catch {
+        return false;
+      }
+    });
+    if (matchesPattern) matches.push(ruleId);
+  }
+  return matches;
+}
+
+function scanInterpreterSourceWithAst(file, source) {
+  if (!INTERPRETER_AST_SOURCE_EXTENSIONS.test(file)) {
+    return { findings: [], parseDiagnostics: [] };
+  }
+  const sourceFile = ts.createSourceFile(
+    file,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.getScriptKindFromFileName(file),
+  );
+  const parseDiagnostics = sourceFile.parseDiagnostics ?? [];
+  if (parseDiagnostics.length > 0) {
+    return { findings: [], parseDiagnostics };
+  }
+
+  const findings = new Set();
+  const addModuleFindings = (moduleSpecifier) => {
+    for (const ruleId of findRequiredImportDependencyRules(moduleSpecifier)) {
+      findings.add(ruleId);
+    }
+  };
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node)) {
+      if (ts.isStringLiteral(node.moduleSpecifier)) {
+        addModuleFindings(node.moduleSpecifier.text);
+      }
+    }
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequireCall =
+        ts.isIdentifier(node.expression) && node.expression.text === "require";
+      if (isDynamicImport || isRequireCall) {
+        const argument = node.arguments.length === 1 ? node.arguments[0] : undefined;
+        const moduleSpecifier = readStaticLoaderSpecifier(argument);
+        if (moduleSpecifier === undefined) {
+          findings.add("non-literal-dynamic-import");
+        } else {
+          addModuleFindings(moduleSpecifier);
+        }
+      }
+      let method;
+      const callee = unwrapExpression(node.expression);
+      if (ts.isElementAccessExpression(callee)) {
+        method = foldStaticStringExpression(callee.argumentExpression);
+      } else if (ts.isPropertyAccessExpression(callee)) {
+        method = callee.name.text;
+      }
+      if (method !== undefined && REQUIRED_DB_MUTATION_METHODS.has(method)) {
+        findings.add("db-mutation");
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return { findings: [...findings], parseDiagnostics };
+}
+
 export function validateInterpreterBoundary(repoRoot, contract, errors) {
   const boundary = contract?.interpreterBoundary;
   if (!isObject(boundary)) {
@@ -1688,6 +1844,26 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
       )
         ? ""
         : removeAllowlistedTypeOnlyImports(source, allowlistedImports);
+      const astScan = scanInterpreterSourceWithAst(
+        file,
+        dependencySource,
+      );
+      if (astScan.parseDiagnostics.length > 0) {
+        const diagnostics = astScan.parseDiagnostics
+          .slice(0, 3)
+          .map((diagnostic) =>
+            ts.flattenDiagnosticMessageText(diagnostic.messageText, " "),
+          )
+          .join("; ");
+        errors.push(
+          `Interpreter boundary AST parse diagnostics in ${relativeFile}: ${diagnostics}`,
+        );
+      }
+      for (const ruleId of astScan.findings) {
+        errors.push(
+          `Interpreter boundary forbidden dependency '${ruleId}' in ${relativeFile}`,
+        );
+      }
       for (const rule of compiledDependencies) {
         if (rule.expression.test(dependencySource)) {
           errors.push(
