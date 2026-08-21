@@ -2021,6 +2021,77 @@ describe("validate-semantic-core-boundary", () => {
     assert.deepEqual(errors, [], `controls must remain allowed: ${JSON.stringify(errors)}`);
   });
 
+  it("tracks tainted arguments into invoked local function parameters", () => {
+    const sensitiveCases = [
+      {
+        name: "function declaration",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "function expression",
+        source: [
+          "const invoke = function (fn) { fn(); };",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "arrow function",
+        source: [
+          "const invoke = (fn) => fn();",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "local declaration chain",
+        source: [
+          "function leaf(fn) { fn(); }",
+          "function invoke(fn) { leaf(fn); }",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+    ];
+
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `local-call-capability-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject a tainted invoked parameter: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
+  it("keeps safe callbacks, non-invoked parameters, shadowing, and recursive cycles bounded", () => {
+    const errors = validateInterpreterSourceFixture(
+      "local-call-capability-controls.mts",
+      [
+        "const safe = () => true;",
+        "function invoke(fn) { fn(); }",
+        "invoke(safe);",
+        "function observe(fn) { return fn; }",
+        "observe(database[key]);",
+        "function shadowed(fn) {",
+        "  { const fn = () => true; fn(); }",
+        "}",
+        "shadowed(database[key]);",
+        "function recursive(fn) { recursive(fn); }",
+        "recursive(database[key]);",
+        "function mutualA(fn) { mutualB(fn); }",
+        "function mutualB(fn) { mutualA(fn); }",
+        "mutualA(database[key]);",
+      ].join("\n"),
+    );
+
+    assert.deepEqual(
+      errors,
+      [],
+      `safe and bounded local calls must remain allowed: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("rejects an Interpreter boundary with no roots or no deny rules", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
