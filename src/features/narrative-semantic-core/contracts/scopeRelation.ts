@@ -951,6 +951,57 @@ function axisRelationInternal(
   );
 }
 
+function isReferenceScopeConstraint(
+  value: unknown,
+): value is ReferenceScopeConstraint {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const kind = (value as { readonly kind?: unknown }).kind;
+  return kind === "any" || kind === "exact" || kind === "unresolved";
+}
+
+function isTemporalScopeConstraint(
+  value: unknown,
+): value is TemporalScopeConstraint {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const kind = (value as { readonly kind?: unknown }).kind;
+  return kind === "any" || kind === "interval" || kind === "unresolved";
+}
+
+function validateAxisConstraintFamily(
+  axis: ScopeAxis,
+  left: unknown,
+  right: unknown,
+): void {
+  const expected = REFERENCE_AXES.has(axis as ScopeReferenceAxis)
+    ? isReferenceScopeConstraint
+    : isTemporalScopeConstraint;
+  if (!expected(left) || !expected(right)) {
+    const family = REFERENCE_AXES.has(axis as ScopeReferenceAxis)
+      ? "reference"
+      : "temporal";
+    throw contractError(
+      "invalid-scope",
+      `Scope axis ${axis} requires ${family} constraints`,
+    );
+  }
+}
+
+export function compareScopeAxis(
+  axis: ScopeReferenceAxis,
+  left: ReferenceScopeConstraint,
+  right: ReferenceScopeConstraint,
+  options?: ScopeRelationComparisonOptions,
+): ScopeAxisRelationResult;
+export function compareScopeAxis(
+  axis: ScopeTemporalAxis,
+  left: TemporalScopeConstraint,
+  right: TemporalScopeConstraint,
+  options?: ScopeRelationComparisonOptions,
+): ScopeAxisRelationResult;
 export function compareScopeAxis(
   axis: ScopeAxis,
   left: ReferenceScopeConstraint | TemporalScopeConstraint,
@@ -960,6 +1011,7 @@ export function compareScopeAxis(
   if (!(SCOPE_AXES as readonly string[]).includes(axis)) {
     throw contractError("invalid-scope", `Unknown Scope axis: ${axis}`);
   }
+  validateAxisConstraintFamily(axis, left, right);
   const result = axisRelationInternal(axis, left, right, options);
   enforceBasis(options, result, {
     registryAxes: result.usedRegistryAxes,
@@ -1063,7 +1115,7 @@ export function composeScopeRelations(
   evidence?: Partial<Record<ScopeAxis, boolean | ScopeRelation>>,
 ): ScopeRelation {
   const overridden = relationOverrides(axes, evidence);
-  const relations = Object.values(overridden.relations);
+  const relations = SCOPE_AXES.map((axis) => overridden.relations[axis]);
   if (relations.some((relation) => relation === "disjoint")) return "disjoint";
   if (relations.some((relation) => relation === "unknown")) return "unknown";
   if (relations.every((relation) => relation === "equal")) return "equal";
@@ -1087,8 +1139,8 @@ export function composeScopeRelations(
     relations.every(
       (relation) => relation !== "disjoint" && relation !== "unknown",
     ) &&
-    relations.every((relation, index) => {
-      const axis = SCOPE_AXES[index];
+    SCOPE_AXES.every((axis) => {
+      const relation = overridden.relations[axis];
       return relation !== "overlaps"
         ? (overridden.intersections[axis] ?? true)
         : overridden.intersections[axis] === true;
