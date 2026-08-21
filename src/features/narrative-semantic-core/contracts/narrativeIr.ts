@@ -13,7 +13,10 @@ import {
 } from "./scopeV2";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 import {
+  DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+  SOURCE_CHANGE_CLASS_IDS,
   canonicalizeDependencySelector,
+  evaluateDependencyEffect,
   isDependencyRole,
   validateDependencySelector,
 } from "./dependencyRole";
@@ -413,6 +416,15 @@ function validateSourceBasis(
     ) {
       return invalid("invalid-material-basis", `${path}[${index}]`);
     }
+    if (
+      hasOwn(entry, "revisionObservedAt") &&
+      !isNonEmptyString(entry.revisionObservedAt)
+    ) {
+      return invalid(
+        "invalid-material-basis",
+        `${path}[${index}].revisionObservedAt`,
+      );
+    }
   }
   return undefined;
 }
@@ -471,6 +483,9 @@ function validateDependencySet(
     ) {
       return invalid("invalid-material-basis", `${path}[${index}]`);
     }
+    if (!hasProposalRevisionEffect(entry.role as DependencyRole)) {
+      return invalid("invalid-material-basis", `${path}[${index}].role`);
+    }
   }
   return undefined;
 }
@@ -493,6 +508,28 @@ function canonicalDependencySelector(value: unknown): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+function hasProposalRevisionEffect(role: DependencyRole): boolean {
+  let effectFound = false;
+  for (const changeClass of SOURCE_CHANGE_CLASS_IDS) {
+    const result = evaluateDependencyEffect(
+      DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+      {
+        role,
+        consumerKind: "proposal-revision",
+        changeClass,
+      },
+    );
+    if (result.ok) {
+      effectFound = true;
+      continue;
+    }
+    // A role may cover only the source changes relevant to this Consumer.
+    // Registry/effect failures other than an absent triple are unsafe.
+    if (result.error.code !== "missing-effect-rule") return false;
+  }
+  return effectFound;
 }
 
 function validateMaterialConsistency(

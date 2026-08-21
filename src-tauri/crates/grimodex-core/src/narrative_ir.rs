@@ -10,7 +10,9 @@ use thiserror::Error;
 
 use crate::canonical_json::{canonical_json_digest, canonical_json_string};
 use crate::narrative_dependency::{
-    canonicalize_dependency_selector, validate_dependency_selector_value, DependencyRole,
+    canonicalize_dependency_selector, evaluate_dependency_effect, load_dependency_role_registry,
+    validate_dependency_selector_value, DependencyContractError, DependencyEffectInput,
+    DependencyRole,
 };
 
 pub const NARRATIVE_SCOPE_V2_SCHEMA_VERSION: u64 = 2;
@@ -494,6 +496,8 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-material-basis", path))?;
+    let registry = load_dependency_role_registry()
+        .map_err(|_| validation_error("invalid-material-basis", path))?;
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
         let entry = object(entry, &entry_path)?;
@@ -516,12 +520,39 @@ fn validate_dependency_set(value: &Value, path: &str) -> Result<(), NarrativeIrV
         if context_ids.iter().any(|id| !non_empty_string(id)) {
             return Err(validation_error("invalid-material-basis", &entry_path));
         }
-        DependencyRole::try_from(
+        let role = DependencyRole::try_from(
             require(entry, "role", &entry_path)?
                 .as_str()
                 .ok_or_else(|| validation_error("invalid-material-basis", &entry_path))?,
         )
         .map_err(|_| validation_error("invalid-material-basis", format!("{entry_path}.role")))?;
+        let role_name = role.as_str();
+        let mut effect_found = false;
+        for change_class in &registry.source_change_classes {
+            match evaluate_dependency_effect(
+                &registry,
+                DependencyEffectInput {
+                    role: role_name,
+                    consumer_kind: "proposal-revision",
+                    change_class: change_class.as_str(),
+                },
+            ) {
+                Ok(_) => effect_found = true,
+                Err(DependencyContractError::MissingEffectRule { .. }) => {}
+                Err(_) => {
+                    return Err(validation_error(
+                        "invalid-material-basis",
+                        format!("{entry_path}.role"),
+                    ));
+                }
+            }
+        }
+        if !effect_found {
+            return Err(validation_error(
+                "invalid-material-basis",
+                format!("{entry_path}.role"),
+            ));
+        }
         validate_dependency_selector_value(require(entry, "selector", &entry_path)?, None)
             .map_err(|_| {
                 validation_error("invalid-material-basis", format!("{entry_path}.selector"))
@@ -1182,7 +1213,7 @@ fn validate_proposal_payload(value: &Value) -> Result<(), NarrativeIrValidationE
         }
     }
     if let Some(note) = value.get("note") {
-        if !note.is_null() && !non_empty_string(note) {
+        if !note.is_null() && note.as_str().is_none() {
             return Err(validation_error(
                 "invalid-proposal-payload",
                 "proposalPayload.note",

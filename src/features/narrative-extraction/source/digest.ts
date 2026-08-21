@@ -38,7 +38,10 @@ function encodeStableJson(
     case "boolean":
       return value ? "true" : "false";
     case "number":
-      return Number.isFinite(value) ? JSON.stringify(value) : "null";
+      if (!Number.isFinite(value)) {
+        throw new TypeError("stable JSON cannot encode a non-finite number");
+      }
+      return JSON.stringify(value);
     case "undefined":
     case "function":
     case "symbol":

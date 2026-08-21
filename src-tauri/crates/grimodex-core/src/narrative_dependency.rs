@@ -808,6 +808,14 @@ pub fn aggregate_dependency_build_actions(effects: &[DependencyEffect]) -> Consu
                     required_actions.push(BuildAction::Manual);
                 }
             }
+            (ActionRequirement::Required, BuildAction::RefreshAvailable) => {
+                // Refresh-available is advisory-only in the D0 contract. A
+                // malformed required declaration must never be downgraded
+                // into an advisory action or exposed as a required refresh.
+                if !required_actions.contains(&BuildAction::Manual) {
+                    required_actions.push(BuildAction::Manual);
+                }
+            }
             (ActionRequirement::Required, action) => {
                 if !required_actions.contains(&action) {
                     required_actions.push(action);

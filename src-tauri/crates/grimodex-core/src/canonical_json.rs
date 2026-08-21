@@ -11,6 +11,8 @@ pub enum CanonicalJsonError {
     Serialize(#[from] serde_json::Error),
     #[error("canonical JSON number is not finite")]
     NonFiniteNumber,
+    #[error("canonical JSON number formatter returned an invalid representation")]
+    InvalidNumberFormat,
 }
 
 fn compare_utf16(left: &str, right: &str) -> Ordering {
@@ -22,19 +24,115 @@ fn write_string(value: &str, output: &mut String) -> Result<(), CanonicalJsonErr
     Ok(())
 }
 
-fn write_number(value: &Number, output: &mut String) -> Result<(), CanonicalJsonError> {
-    // serde_json::Number cannot normally contain NaN or Infinity. Keep the
-    // check explicit so this primitive remains fail-closed if its feature set
-    // changes, and normalize negative zero to JSON.stringify's "0".
-    let encoded = value.to_string();
-    if encoded == "-0" || encoded == "-0.0" {
-        output.push('0');
-        return Ok(());
-    }
-    if value.as_f64().is_some_and(|number| !number.is_finite()) {
+/// Format a finite Rust `f64` using ECMAScript's JSON number spelling.
+///
+/// Rust's shortest-float formatter and ECMAScript choose the same significant
+/// digits, but they use different fixed/scientific cutovers. Rust also keeps a
+/// decimal `.0` for some `serde_json::Number` values. Starting from the
+/// shortest fixed representation lets this dependency-free formatter apply
+/// ECMAScript's `10^-6 <= abs(x) < 10^21` fixed-range rule exactly.
+fn format_ecmascript_number(number: f64) -> Result<String, CanonicalJsonError> {
+    if !number.is_finite() {
         return Err(CanonicalJsonError::NonFiniteNumber);
     }
-    output.push_str(&encoded);
+    if number == 0.0 {
+        return Ok("0".to_owned());
+    }
+
+    let negative = number.is_sign_negative();
+    let representation = number.abs().to_string();
+    let (mantissa, exponent_part) = representation
+        .as_bytes()
+        .iter()
+        .position(|byte| *byte == b'e' || *byte == b'E')
+        .map(|index| (&representation[..index], Some(&representation[index + 1..])))
+        .unwrap_or((representation.as_str(), None));
+    let representation_exponent = if let Some(exponent_part) = exponent_part {
+        let (negative_exponent, digits) = match exponent_part.as_bytes().first() {
+            Some(b'-') => (true, &exponent_part[1..]),
+            Some(b'+') => (false, &exponent_part[1..]),
+            _ => (false, exponent_part),
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(CanonicalJsonError::InvalidNumberFormat);
+        }
+        let mut parsed = 0_i32;
+        for byte in digits.bytes() {
+            parsed = parsed
+                .checked_mul(10)
+                .and_then(|value| value.checked_add(i32::from(byte - b'0')))
+                .ok_or(CanonicalJsonError::InvalidNumberFormat)?;
+        }
+        if negative_exponent {
+            -parsed
+        } else {
+            parsed
+        }
+    } else {
+        0
+    };
+    let (integer, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if integer.bytes().any(|byte| !byte.is_ascii_digit())
+        || fraction.bytes().any(|byte| !byte.is_ascii_digit())
+        || (integer.is_empty() && fraction.is_empty())
+    {
+        return Err(CanonicalJsonError::InvalidNumberFormat);
+    }
+    let mut digits = String::with_capacity(integer.len() + fraction.len());
+    digits.push_str(integer);
+    digits.push_str(fraction);
+    let mut decimal_position = integer.len() as i32 + representation_exponent;
+
+    let leading_zero_count = digits.bytes().take_while(|byte| *byte == b'0').count();
+    if leading_zero_count > 0 {
+        digits.drain(..leading_zero_count);
+        decimal_position -= leading_zero_count as i32;
+    }
+    while digits.ends_with('0') {
+        digits.pop();
+    }
+    if digits.is_empty() {
+        return Ok("0".to_owned());
+    }
+
+    let exponent = decimal_position - 1;
+    let mut encoded = if (-6..=20).contains(&exponent) {
+        if decimal_position <= 0 {
+            format!("0.{}{}", "0".repeat((-decimal_position) as usize), digits)
+        } else if decimal_position as usize >= digits.len() {
+            format!(
+                "{}{}",
+                digits,
+                "0".repeat(decimal_position as usize - digits.len())
+            )
+        } else {
+            let split = decimal_position as usize;
+            format!("{}.{}", &digits[..split], &digits[split..])
+        }
+    } else {
+        let coefficient = if digits.len() == 1 {
+            digits.clone()
+        } else {
+            format!("{}.{}", &digits[..1], &digits[1..])
+        };
+        if exponent >= 0 {
+            format!("{coefficient}e+{exponent}")
+        } else {
+            format!("{coefficient}e{exponent}")
+        }
+    };
+    if negative {
+        encoded.insert(0, '-');
+    }
+    Ok(encoded)
+}
+
+fn write_number(value: &Number, output: &mut String) -> Result<(), CanonicalJsonError> {
+    // Canonical JSON follows the JavaScript Number domain used by the
+    // TypeScript writer. Converting through f64 also applies JavaScript's
+    // rounding to integer-shaped JSON numbers outside its safe-integer range.
+    let number = value.as_f64().ok_or(CanonicalJsonError::NonFiniteNumber)?;
+    output.push_str(&format_ecmascript_number(number)?);
     Ok(())
 }
 

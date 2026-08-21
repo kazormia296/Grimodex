@@ -145,6 +145,11 @@ interface BoundComparison {
   readonly usedOracle: boolean;
 }
 
+interface OrderOracleValidationState {
+  readonly comparisons: Map<string, Map<string, -1 | 0 | 1 | "unresolved">>;
+  readonly strictOrder: Map<string, Set<string>>;
+}
+
 const REFERENCE_AXES = new Set<ScopeReferenceAxis>([
   "timeline",
   "worldline",
@@ -222,6 +227,79 @@ function validateOrderOracle(
   return oracle;
 }
 
+function createOrderOracleValidationState(): OrderOracleValidationState {
+  return {
+    comparisons: new Map(),
+    strictOrder: new Map(),
+  };
+}
+
+function cachedOrderComparison(
+  state: OrderOracleValidationState,
+  leftRef: string,
+  rightRef: string,
+): (-1 | 0 | 1 | "unresolved") | undefined {
+  return state.comparisons.get(leftRef)?.get(rightRef);
+}
+
+function cacheOrderComparison(
+  state: OrderOracleValidationState,
+  leftRef: string,
+  rightRef: string,
+  value: -1 | 0 | 1 | "unresolved",
+): void {
+  const row = state.comparisons.get(leftRef) ?? new Map();
+  row.set(rightRef, value);
+  state.comparisons.set(leftRef, row);
+}
+
+function hasStrictOrderPath(
+  state: OrderOracleValidationState,
+  from: string,
+  to: string,
+  visited = new Set<string>(),
+): boolean {
+  if (from === to) return true;
+  if (visited.has(from)) return false;
+  visited.add(from);
+  for (const next of state.strictOrder.get(from) ?? []) {
+    if (hasStrictOrderPath(state, next, to, visited)) return true;
+  }
+  return false;
+}
+
+function recordStrictOrderProof(
+  state: OrderOracleValidationState,
+  leftRef: string,
+  rightRef: string,
+  value: -1 | 0 | 1 | "unresolved",
+): void {
+  if (value === "unresolved" || value === 0) {
+    if (
+      value === 0 &&
+      (hasStrictOrderPath(state, leftRef, rightRef) ||
+        hasStrictOrderPath(state, rightRef, leftRef))
+    ) {
+      throw contractError(
+        "contradictory-proof",
+        "ScopeOrderOracle returned equality after proving a strict order",
+      );
+    }
+    return;
+  }
+  const lower = value === -1 ? leftRef : rightRef;
+  const upper = value === -1 ? rightRef : leftRef;
+  if (hasStrictOrderPath(state, upper, lower)) {
+    throw contractError(
+      "contradictory-proof",
+      "ScopeOrderOracle returned a cyclic order proof",
+    );
+  }
+  const successors = state.strictOrder.get(lower) ?? new Set<string>();
+  successors.add(upper);
+  state.strictOrder.set(lower, successors);
+}
+
 function orderOracleFor(
   axis: ScopeTemporalAxis,
   options: ScopeRelationComparisonOptions,
@@ -236,16 +314,94 @@ function compareReferences(
   leftRef: string,
   rightRef: string,
   oracle: ScopeOrderOracle | undefined,
+  state = createOrderOracleValidationState(),
 ): BoundComparison {
-  if (leftRef === rightRef) return { value: 0, usedOracle: false };
-  if (!oracle) return { value: "unresolved", usedOracle: false };
-  const value = oracle.compare(leftRef, rightRef);
+  if (!oracle) {
+    return leftRef === rightRef
+      ? { value: 0, usedOracle: false }
+      : { value: "unresolved", usedOracle: false };
+  }
+
+  if (leftRef !== rightRef) {
+    // Validate identity for both endpoints before accepting any pairwise
+    // proof. This keeps a malformed oracle from masking its identity
+    // contradiction behind an earlier antisymmetry failure.
+    compareReferences(leftRef, leftRef, oracle, state);
+    compareReferences(rightRef, rightRef, oracle, state);
+  }
+
+  const cached = cachedOrderComparison(state, leftRef, rightRef);
+  if (cached !== undefined) {
+    return { value: cached, usedOracle: leftRef !== rightRef };
+  }
+
+  let value: -1 | 0 | 1 | "unresolved";
+  try {
+    value = oracle.compare(leftRef, rightRef);
+  } catch {
+    throw contractError(
+      "invalid-order-oracle",
+      `ScopeOrderOracle ${oracle.axis} threw while comparing references`,
+    );
+  }
   if (value !== -1 && value !== 0 && value !== 1 && value !== "unresolved") {
     throw contractError(
       "invalid-order-oracle",
       `ScopeOrderOracle ${oracle.axis} returned an invalid comparison`,
     );
   }
+
+  if (leftRef === rightRef) {
+    if (value !== 0 && value !== "unresolved") {
+      throw contractError(
+        "invalid-order-oracle",
+        `ScopeOrderOracle ${oracle.axis} returned a nonzero identity comparison`,
+      );
+    }
+    // An unknown reference may legitimately be unresolved even when both
+    // operands are the same. Structural identity remains a zero proof.
+    cacheOrderComparison(state, leftRef, rightRef, 0);
+    return { value: 0, usedOracle: false };
+  }
+
+  let reverse: -1 | 0 | 1 | "unresolved";
+  const cachedReverse = cachedOrderComparison(state, rightRef, leftRef);
+  if (cachedReverse !== undefined) {
+    reverse = cachedReverse;
+  } else {
+    try {
+      reverse = oracle.compare(rightRef, leftRef);
+    } catch {
+      throw contractError(
+        "invalid-order-oracle",
+        `ScopeOrderOracle ${oracle.axis} threw while comparing reverse references`,
+      );
+    }
+    if (
+      reverse !== -1 &&
+      reverse !== 0 &&
+      reverse !== 1 &&
+      reverse !== "unresolved"
+    ) {
+      throw contractError(
+        "invalid-order-oracle",
+        `ScopeOrderOracle ${oracle.axis} returned an invalid reverse comparison`,
+      );
+    }
+    cacheOrderComparison(state, rightRef, leftRef, reverse);
+  }
+  const contradictoryUnresolved =
+    (value === "unresolved") !== (reverse === "unresolved");
+  const contradictoryDirection =
+    value !== "unresolved" && reverse !== "unresolved" && reverse !== -value;
+  if (contradictoryUnresolved || contradictoryDirection) {
+    throw contractError(
+      "contradictory-proof",
+      `ScopeOrderOracle ${oracle.axis} returned contradictory comparisons for ${leftRef} and ${rightRef}`,
+    );
+  }
+  cacheOrderComparison(state, leftRef, rightRef, value);
+  recordStrictOrderProof(state, leftRef, rightRef, value);
   return { value, usedOracle: true };
 }
 
@@ -607,6 +763,15 @@ function temporalConstraintRelation(
     left.until?.ref === right.until?.ref &&
     left.until?.inclusive === right.until?.inclusive
   ) {
+    const oracle = orderOracleFor(axis, options);
+    if (oracle) {
+      const state = createOrderOracleValidationState();
+      for (const boundary of [left.from, left.until]) {
+        if (boundary) {
+          compareReferences(boundary.ref, boundary.ref, oracle, state);
+        }
+      }
+    }
     if (
       left.from &&
       left.until &&
@@ -625,13 +790,19 @@ function temporalConstraintRelation(
 
   const orderAxis = ORDER_AXIS_BY_SCOPE_AXIS[axis];
   const oracle = orderOracleFor(axis, options);
+  const oracleState = createOrderOracleValidationState();
   const cache = new Map<string, BoundComparison>();
   let orderOracleUsed = false;
   const compareRef = (leftRef: string, rightRef: string): BoundComparison => {
     const key = `${leftRef}\u0000${rightRef}`;
     const cached = cache.get(key);
     if (cached) return cached;
-    const comparison = compareReferences(leftRef, rightRef, oracle);
+    const comparison = compareReferences(
+      leftRef,
+      rightRef,
+      oracle,
+      oracleState,
+    );
     orderOracleUsed ||= comparison.usedOracle;
     cache.set(key, comparison);
     return comparison;
@@ -967,12 +1138,18 @@ export function validateScopeOrder(
   if (constraint.kind === "unresolved") {
     return { status: "unresolved", reason: constraint.reason };
   }
+  const oracleState = createOrderOracleValidationState();
   const cache = new Map<string, BoundComparison>();
   const compareRef = (leftRef: string, rightRef: string): BoundComparison => {
     const key = `${leftRef}\u0000${rightRef}`;
     const cached = cache.get(key);
     if (cached) return cached;
-    const comparison = compareReferences(leftRef, rightRef, oracle);
+    const comparison = compareReferences(
+      leftRef,
+      rightRef,
+      oracle,
+      oracleState,
+    );
     cache.set(key, comparison);
     return comparison;
   };
