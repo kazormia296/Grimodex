@@ -423,7 +423,7 @@ const REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS = Object.freeze({
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:sqlite|database)/(?:client|connection|repository|sql)[^\\\"'`]*[\\\"'`]",
   ]),
   "db-mutation": Object.freeze([
-    "\\b(?:db|database|conn|connection|tx|transaction)\\s*\\.\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*\\(",
+    "\\b(?:db|database|conn|connection|tx|transaction)\\s*(?:\\.|\\?\\.)\\s*(?:execute|exec|run|prepare|query|insert|update|delete)\\s*(?:\\?\\.)?\\s*\\(",
     "\\b(?:executeSql|querySql|runSql|prepareSql)\\s*\\(",
     "\\b(?:from\\s+|(?:import|require)\\s*\\(\\s*)[\\\"'`][^\\\"'`]*(?:database|sqlite|db)/(?:client|connection|repository|mutation|writer|sql)[^\\\"'`]*[\\\"'`]",
   ]),

@@ -364,6 +364,45 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("rejects optional-chained database mutation calls", () => {
+    const root = minimalFixtureRoot();
+    const contract = JSON.parse(
+      readFileSync(
+        path.join(
+          REPO_ROOT,
+          "policies/narrative/narrative-artifact-authority.json",
+        ),
+        "utf8",
+      ),
+    );
+    const interpreterRoot = "src/features/narrative-extraction/ir";
+    contract.interpreterBoundary.interpreterRoots = [interpreterRoot];
+    mkdirSync(path.join(root, interpreterRoot), { recursive: true });
+    mkdirSync(path.join(root, "policies/narrative/fixtures"), {
+      recursive: true,
+    });
+    writeFileSync(
+      path.join(root, "policies/narrative/fixtures/artifact-authority.json"),
+      "{}\n",
+    );
+    writeFileSync(
+      path.join(root, interpreterRoot, "optional-db.ts"),
+      [
+        'database?.execute("UPDATE narrative_proposal_revisions SET payload_json = ?");',
+        'database.execute?.("UPDATE narrative_proposal_revisions SET payload_json = ?");',
+      ].join("\n"),
+    );
+    const errors = [];
+
+    validateInterpreterBoundary(root, contract, errors);
+    rmSync(root, { recursive: true, force: true });
+
+    assert.ok(
+      errors.some((error) => /db-mutation.*optional-db\.ts/i.test(error)),
+      `optional-chained database mutation calls must be rejected: ${JSON.stringify(errors)}`,
+    );
+  });
+
   it("detects an unauthorized local Freshness authority in code", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
