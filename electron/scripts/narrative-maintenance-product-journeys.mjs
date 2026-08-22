@@ -31,6 +31,13 @@ export const NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN";
 export const NARRATIVE_MAINTENANCE_OWNER_TOKEN =
   "c2-5b-product-journey-owner-v1";
+export const NARRATIVE_MAINTENANCE_TRANSIENT_CODE =
+  "NEX_MAINTENANCE_TRANSIENT";
+export const NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE =
+  "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION";
+export const NARRATIVE_MAINTENANCE_INTERRUPTED_CODE =
+  "NEX_MAINTENANCE_INTERRUPTED";
+export const NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS = 1_250;
 export const NARRATIVE_MAINTENANCE_FAULTS = Object.freeze([
   "transient-io",
   "contract-violation",
@@ -81,7 +88,17 @@ const RUN_COLUMNS = `
     WHERE a.run_id = r.id) AS attemptCount,
   (SELECT MAX(a.attempt_number)
      FROM narrative_extraction_attempts a
-    WHERE a.run_id = r.id) AS maxAttemptNumber`;
+    WHERE a.run_id = r.id) AS maxAttemptNumber,
+  (SELECT a.status
+     FROM narrative_extraction_attempts a
+    WHERE a.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptStatus,
+  (SELECT a.failure_code
+     FROM narrative_extraction_attempts a
+    WHERE a.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptFailureCode`;
 
 function rowsOf(result) {
   return Array.isArray(result?.rows) ? result.rows : [];
@@ -136,6 +153,8 @@ function summarizeRuns(rows) {
     terminalReasonCode: row.terminalReasonCode,
     attemptCount: row.attemptCount,
     maxAttemptNumber: row.maxAttemptNumber,
+    lastAttemptStatus: row.lastAttemptStatus,
+    lastAttemptFailureCode: row.lastAttemptFailureCode,
   }));
 }
 
@@ -152,6 +171,14 @@ function parseOutcome(value) {
   } catch {
     return null;
   }
+}
+
+function parseInstant(value, label) {
+  const timestamp = Date.parse(String(value ?? ""));
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`${label} must be a valid RFC3339 timestamp: ${value}`);
+  }
+  return timestamp;
 }
 
 const DIGEST_EVIDENCE_FIELD_BY_TRIGGER = Object.freeze({
@@ -215,7 +242,7 @@ async function runLedger(harness, page, projectId) {
     `SELECT ${RUN_COLUMNS}
        FROM narrative_extraction_runs r
       WHERE r.project_id = ?
-      ORDER BY created_at, id`,
+      ORDER BY created_at`,
     [projectId],
   );
 }
@@ -310,7 +337,14 @@ async function waitForLedger(
   );
 }
 
-async function waitForReadiness(context, label) {
+async function waitForReadiness(
+  context,
+  label,
+  { baselineRuns = null, minimumFeedHead = 0, requireFreshRun = false } = {},
+) {
+  const baselineIds = new Set(
+    (baselineRuns ?? []).map((run) => String(run.id)),
+  );
   return context.harness.waitUntil(
     async () => {
       const rows = await runLedger(
@@ -335,10 +369,12 @@ async function waitForReadiness(context, label) {
       const ready =
         latestEpoch &&
         latestFreshness?.status === "completed" &&
+        (!requireFreshRun || !baselineIds.has(String(latestFreshness.id))) &&
         latestFreshness.semanticEpochId === latestEpoch.id &&
         latestFreshness.completedAt &&
         feedAndCursor.cursor &&
         feedAndCursor.cursor.semanticEpochId === latestEpoch.id &&
+        feedAndCursor.feedHead >= minimumFeedHead &&
         Number(feedAndCursor.cursor.acknowledgedThrough) ===
           feedAndCursor.feedHead &&
         feedAndCursor.cursor.activeRunId == null &&
@@ -679,25 +715,88 @@ async function countInboxObservations(context) {
   return Number(rows[0]?.count ?? 0);
 }
 
-async function waitForStableLedger(context, baselineRows, label) {
+async function listMaintenanceInbox(context, page = context.page) {
+  const value = await context.harness.invokeOk(
+    page,
+    "narrative_maintenance_inbox_list",
+    { payload: { projectId: context.projectId } },
+  );
+  const entries = Array.isArray(value)
+    ? value
+    : Array.isArray(value?.entries)
+      ? value.entries
+      : null;
+  if (!entries) {
+    throw new Error(
+      `narrative_maintenance_inbox_list returned a non-list value: ${JSON.stringify(value)}`,
+    );
+  }
+  return entries;
+}
+
+function terminalInboxEntryForRun(entries, failedRun) {
+  const expectedConsumerKey = `${failedRun.runKind}:${failedRun.workKey}`;
+  return entries.find((entry) => {
+    const observation = entry.latest_observation ?? entry.latestObservation;
+    const runId = observation?.run_id ?? observation?.runId;
+    const findingIdentity =
+      observation?.finding_identity ?? observation?.findingIdentity;
+    const failureCode = observation?.failure_code ?? observation?.failureCode;
+    const consumerKind = entry.consumer_kind ?? entry.consumerKind;
+    const consumerKey = entry.consumer_key ?? entry.consumerKey;
+    return (
+      entry.entry_kind === "terminal-failure" &&
+      consumerKind === "narrative-maintenance-failure" &&
+      consumerKey === expectedConsumerKey &&
+      runId === failedRun.id &&
+      findingIdentity &&
+      typeof findingIdentity === "string" &&
+      findingIdentity.trim() !== "" &&
+      failureCode === failedRun.terminalReasonCode
+    );
+  });
+}
+
+async function waitForStableLedger(
+  context,
+  baselineRows,
+  label,
+  {
+    minimumObservationMs = NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS,
+    timeoutMs = minimumObservationMs + 2_000,
+  } = {},
+) {
+  const observationStartedAt = Date.now();
   let previous = null;
   let stableSamples = 0;
   return context.harness.waitUntil(
     async () => {
       const rows = await context.runs();
       const fresh = rowsAfter(rows, baselineRows);
-      const signature = JSON.stringify(fresh.map((row) => row.id));
+      const signature = JSON.stringify(
+        fresh.map((row) => ({
+          id: row.id,
+          status: row.status,
+          terminalReasonCode: row.terminalReasonCode,
+          completedAt: row.completedAt,
+        })),
+      );
       if (signature === previous) stableSamples += 1;
       else stableSamples = 0;
       previous = signature;
-      if (stableSamples >= 3) return rows;
+      if (
+        stableSamples >= 3 &&
+        Date.now() - observationStartedAt >= minimumObservationMs
+      ) {
+        return rows;
+      }
       throw new Error(
         `${label}: ledger is still changing; ` +
           `observed=${JSON.stringify(summarizeRuns(rows))}`,
       );
     },
     label,
-    2_000,
+    timeoutMs,
     100,
   );
 }
@@ -976,17 +1075,93 @@ async function runTransientRetry(harness, configureWorkspace) {
         context,
         (allRows) => {
           const fresh = rowsAfter(allRows, context.baselineRuns);
-          return fresh.some(
-            (row) => row.runKind === "backfill" && row.status === "completed",
-          )
-            ? allRows
-            : null;
+          const failedIndex = fresh.findIndex(
+            (row) =>
+              row.runKind === "backfill" &&
+              row.status === "failed" &&
+              row.terminalReasonCode === NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+          );
+          if (failedIndex < 0) return null;
+          const failed = fresh[failedIndex];
+          const failedCreatedAt = parseInstant(
+            failed.createdAt,
+            "transient failed Run createdAt",
+          );
+          const completed = fresh.find(
+            (row) =>
+              row.id !== failed.id &&
+              row.runKind === failed.runKind &&
+              row.workKey === failed.workKey &&
+              row.status === "completed" &&
+              parseInstant(row.createdAt, "transient completed Run createdAt") >
+                failedCreatedAt,
+          );
+          return completed ? allRows : null;
         },
         "transient bounded retry",
       );
       const freshAttempts = rowsAfter(rows, context.baselineRuns).filter(
         (row) => row.runKind === "backfill",
       );
+      const failedIndex = freshAttempts.findIndex(
+        (row) =>
+          row.status === "failed" &&
+          row.terminalReasonCode === NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+      );
+      const failed = failedIndex >= 0 ? freshAttempts[failedIndex] : null;
+      const completed = failed
+        ? (() => {
+            const failedCreatedAt = parseInstant(
+              failed.createdAt,
+              "transient failed Run createdAt",
+            );
+            return freshAttempts.find(
+              (row) =>
+                row.id !== failed.id &&
+                row.runKind === failed.runKind &&
+                row.workKey === failed.workKey &&
+                row.status === "completed" &&
+                parseInstant(
+                  row.createdAt,
+                  "transient completed Run createdAt",
+                ) > failedCreatedAt,
+            );
+          })()
+        : null;
+      if (!failed || !completed) {
+        throw new Error(
+          `transient retry did not produce a failed Run followed by a distinct completed same-work Run: ${JSON.stringify(summarizeRuns(freshAttempts))}`,
+        );
+      }
+      const attemptClassification =
+        failed.lastAttemptFailureCode ?? failed.terminalReasonCode;
+      const attemptNumber = Number(failed.maxAttemptNumber ?? 0);
+      if (attemptClassification !== NARRATIVE_MAINTENANCE_TRANSIENT_CODE) {
+        throw new Error(
+          `transient retry attempt used the wrong durable classification: ${JSON.stringify({
+            runId: failed.id,
+            terminalReasonCode: failed.terminalReasonCode,
+            lastAttemptFailureCode: failed.lastAttemptFailureCode,
+          })}`,
+        );
+      }
+      if (failed.lastAttemptStatus !== "failed") {
+        throw new Error(
+          `transient retry did not retain a failed Attempt alongside the failed Run: ${JSON.stringify({
+            runId: failed.id,
+            lastAttemptStatus: failed.lastAttemptStatus,
+          })}`,
+        );
+      }
+      if (attemptNumber < 2 || Number(failed.attemptCount ?? 0) < 2) {
+        throw new Error(
+          `transient retry did not record attempt >= 2 on the failed Run: ${JSON.stringify({
+            runId: failed.id,
+            attemptCount: failed.attemptCount,
+            maxAttemptNumber: failed.maxAttemptNumber,
+          })}`,
+        );
+      }
       const maxAttempt = Math.max(
         0,
         ...freshAttempts.map((row) => Number(row.maxAttemptNumber ?? 0)),
@@ -994,7 +1169,7 @@ async function runTransientRetry(harness, configureWorkspace) {
       if (
         freshAttempts.length > 3 ||
         maxAttempt > 3 ||
-        freshAttempts.at(-1)?.status !== "completed"
+        completed.status !== "completed"
       ) {
         throw new Error(
           `transient retry exceeded bounded policy: ${JSON.stringify(summarizeRuns(freshAttempts))}`,
@@ -1008,6 +1183,8 @@ async function runTransientRetry(harness, configureWorkspace) {
       }
       context.record("transient-retry-succeeded", {
         runIds: freshAttempts.map((run) => run.id),
+        failedRunId: failed.id,
+        completedRunId: completed.id,
         maxAttempt,
       });
     },
@@ -1016,84 +1193,175 @@ async function runTransientRetry(harness, configureWorkspace) {
 }
 
 async function runTerminalFailureInbox(harness, configureWorkspace) {
-  return withWorkspace(
-    harness,
-    configureWorkspace,
-    "c2-5b-terminal-failure-inbox",
-    async (context) => {
-      context.record("terminal-fault-requested", {
-        fault: "contract-violation",
-      });
-      const rows = await waitForLedger(
-        context,
-        (allRows) => {
-          const fresh = rowsAfter(allRows, context.baselineRuns);
-          return fresh.find(
-            (row) =>
-              row.runKind === "backfill" &&
-              row.status === "failed" &&
-              String(row.terminalReasonCode ?? "").length > 0,
-          )
-            ? allRows
-            : null;
-        },
-        "terminal contract failure",
-      );
-      const fresh = rowsAfter(rows, context.baselineRuns);
-      const failed = fresh.find(
-        (row) =>
-          row.runKind === "backfill" &&
-          row.status === "failed" &&
-          String(row.terminalReasonCode ?? "").length > 0,
-      );
-      if (!failed?.terminalReasonCode) {
-        throw new Error(
-          `terminal failure did not persist an immutable reason code: ${JSON.stringify(summarizeRuns(fresh))}`,
-        );
-      }
-      if (!String(failed.terminalReasonCode).startsWith("NEX_")) {
-        throw new Error(
-          `terminal failure used a non-contract reason code: ${failed.terminalReasonCode}`,
-        );
-      }
-      const inbox = await context.query(
-        `SELECT finding_identity AS findingIdentity, run_id AS runId
-           FROM narrative_maintenance_finding_observations
-          WHERE project_id = ?
-          ORDER BY observed_at, id`,
-        [context.projectId],
-      );
-      if (!inbox.some((row) => row.runId === failed.id)) {
-        throw new Error(
-          `terminal failure did not project durable Inbox evidence: ${JSON.stringify(inbox)}`,
-        );
-      }
-      const settledRows = await waitForStableLedger(
-        context,
-        context.baselineRuns,
-        "terminal failure retry boundary",
-      );
-      const laterBackfills = rowsAfter(
-        settledRows,
-        context.baselineRuns,
-      ).filter(
-        (row) =>
-          row.runKind === "backfill" &&
-          row.createdAt > failed.createdAt &&
-          row.id !== failed.id,
-      );
-      if (laterBackfills.length > 0) {
-        throw new Error(
-          `terminal contract failure was automatically retried: ${JSON.stringify(summarizeRuns(laterBackfills))}`,
-        );
-      }
-      context.record("terminal-failure-inbox-projected", {
-        runId: failed.id,
-        terminalReasonCode: failed.terminalReasonCode,
-      });
+  const id = "c2-5b-terminal-failure-inbox";
+  const workspace = harness.workspacePath(id);
+  await configureJourneyWorkspace(harness, configureWorkspace, workspace);
+  const baselineRuns = await readRunSnapshot(workspace);
+  const launched = await withLaunchEnvironment(
+    {
+      fault: "contract-violation",
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
     },
-    { fault: "contract-violation" },
+    () => harness.launch(`${id}/open`),
   );
+  let failed;
+  try {
+    const context = await contextForLaunch(
+      harness,
+      launched,
+      workspace,
+      id,
+      baselineRuns,
+    );
+    context.record("terminal-fault-requested", {
+      fault: "contract-violation",
+    });
+    const rows = await waitForLedger(
+      context,
+      (allRows) => {
+        const fresh = rowsAfter(allRows, context.baselineRuns);
+        return fresh.find(
+          (row) =>
+            row.runKind === "backfill" &&
+            row.status === "failed" &&
+            row.terminalReasonCode ===
+              NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+        )
+          ? allRows
+          : null;
+      },
+      "terminal contract failure",
+    );
+    const fresh = rowsAfter(rows, context.baselineRuns);
+    failed = fresh.find(
+      (row) =>
+        row.runKind === "backfill" &&
+        row.status === "failed" &&
+        row.terminalReasonCode ===
+          NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+    );
+    if (!failed?.terminalReasonCode) {
+      throw new Error(
+        `terminal failure did not persist an immutable reason code: ${JSON.stringify(summarizeRuns(fresh))}`,
+      );
+    }
+    if (
+      failed.terminalReasonCode !==
+      NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE
+    ) {
+      throw new Error(
+        `terminal failure used a non-contract reason code: ${failed.terminalReasonCode}`,
+      );
+    }
+    const settledRows = await waitForStableLedger(
+      context,
+      context.baselineRuns,
+      "terminal failure retry boundary",
+    );
+    const settledFresh = rowsAfter(settledRows, context.baselineRuns);
+    if (!settledFresh.some((row) => row.id === failed.id)) {
+      throw new Error(
+        `terminal failure disappeared from the durable ledger: ${failed.id}`,
+      );
+    }
+    const failedLifecycleAt = parseInstant(
+      failed.completedAt ?? failed.createdAt,
+      "terminal failed Run lifecycle instant",
+    );
+    const laterBackfills = settledFresh.filter((row) => {
+      if (
+        row.id === failed.id ||
+        row.runKind !== failed.runKind ||
+        row.workKey !== failed.workKey
+      ) {
+        return false;
+      }
+      return (
+        parseInstant(row.createdAt, "terminal retry candidate createdAt") >
+        failedLifecycleAt
+      );
+    });
+    if (laterBackfills.length > 0) {
+      throw new Error(
+        `terminal contract failure was automatically retried: ${JSON.stringify(summarizeRuns(laterBackfills))}`,
+      );
+    }
+    const inbox = await listMaintenanceInbox(context);
+    const inboxEntry = terminalInboxEntryForRun(inbox, failed);
+    if (!inboxEntry) {
+      throw new Error(
+        `terminal failure did not project a matching production Inbox entry: ${JSON.stringify(inbox)}`,
+      );
+    }
+    const repeatedInboxEntry = terminalInboxEntryForRun(
+      await listMaintenanceInbox(context),
+      failed,
+    );
+    const firstObservation =
+      inboxEntry.latest_observation ?? inboxEntry.latestObservation;
+    const repeatedObservation =
+      repeatedInboxEntry?.latest_observation ??
+      repeatedInboxEntry?.latestObservation;
+    const firstIdentity =
+      firstObservation?.finding_identity ?? firstObservation?.findingIdentity;
+    const repeatedIdentity =
+      repeatedObservation?.finding_identity ??
+      repeatedObservation?.findingIdentity;
+    if (!repeatedInboxEntry || firstIdentity !== repeatedIdentity) {
+      throw new Error(
+        `terminal production Inbox identity was not stable across reads: ${JSON.stringify({
+          firstIdentity,
+          repeatedIdentity,
+        })}`,
+      );
+    }
+    context.record("terminal-failure-inbox-projected", {
+      runId: failed.id,
+      terminalReasonCode: failed.terminalReasonCode,
+      findingIdentity: firstIdentity,
+    });
+  } finally {
+    await harness.close(launched.app, launched.page, `${id}/open`);
+  }
+
+  const reopened = await withLaunchEnvironment(
+    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    () => harness.launch(`${id}/reopened`),
+  );
+  try {
+    const context = await contextForLaunch(
+      harness,
+      reopened,
+      workspace,
+      id,
+      baselineRuns,
+    );
+    const reopenedEntry = await context.harness.waitUntil(
+      async () =>
+        terminalInboxEntryForRun(
+          await listMaintenanceInbox(context, reopened.page),
+          failed,
+        ) ?? null,
+      "terminal production Inbox after reopen",
+      NARRATIVE_MAINTENANCE_WAIT_MS,
+      100,
+    );
+    const observation =
+      reopenedEntry.latest_observation ?? reopenedEntry.latestObservation;
+    const findingIdentity =
+      observation?.finding_identity ?? observation?.findingIdentity;
+    if (!findingIdentity || findingIdentity.trim() === "") {
+      throw new Error(
+        `terminal production Inbox lost findingIdentity after reopen: ${JSON.stringify(reopenedEntry)}`,
+      );
+    }
+    context.record("terminal-failure-inbox-persisted-after-reopen", {
+      runId: failed.id,
+      findingIdentity,
+    });
+  } finally {
+    await harness.close(reopened.app, reopened.page, `${id}/reopened`);
+  }
 }
 
 async function runInterruptedRecovery(harness, configureWorkspace) {
@@ -1165,28 +1433,55 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       (rows) => {
         const fresh = rowsAfter(rows, baselineRuns);
         const stale = fresh.find((row) => row.id === interruptedRun.id);
+        const staleCreatedAt = stale
+          ? parseInstant(stale.createdAt, "interrupted Run createdAt")
+          : null;
         const followup = fresh.find(
           (row) =>
             row.id !== interruptedRun.id &&
             ["backfill", "dependency-verify"].includes(row.runKind) &&
-            row.status === "completed",
+            row.status === "completed" &&
+            staleCreatedAt !== null &&
+            parseInstant(row.createdAt, "interruption recovery Run createdAt") >
+              staleCreatedAt,
         );
         return stale && stale.status !== "running" && followup ? rows : null;
       },
       "process interruption durable recovery",
     );
     const stale = recoveredRows.find((row) => row.id === interruptedRun.id);
-    if (
-      stale?.status === "failed" &&
-      !String(stale.terminalReasonCode).includes("INTERRUPT")
-    ) {
+    if (!stale || stale.status !== "failed") {
       throw new Error(
-        `interrupted Run was closed without an interruption reason: ${JSON.stringify(stale)}`,
+        `interrupted Run did not become a durable failed Run: ${JSON.stringify(stale)}`,
+      );
+    }
+    if (stale.terminalReasonCode !== NARRATIVE_MAINTENANCE_INTERRUPTED_CODE) {
+      throw new Error(
+        `interrupted Run was closed without the exact interruption reason: ${JSON.stringify(stale)}`,
       );
     }
     const fresh = rowsAfter(recoveredRows, baselineRuns);
+    const staleCreatedAt = parseInstant(
+      stale.createdAt,
+      "interrupted stale Run createdAt",
+    );
+    const recoveryRun = fresh.find(
+      (row) =>
+        row.id !== stale.id &&
+        row.runKind === stale.runKind &&
+        row.workKey === stale.workKey &&
+        row.status === "completed" &&
+        parseInstant(row.createdAt, "interrupted recovery Run createdAt") >
+          staleCreatedAt,
+    );
+    if (!recoveryRun) {
+      throw new Error(
+        `interrupted Run did not produce a distinct completed recovery Run in the same work cycle: ${JSON.stringify(summarizeRuns(fresh))}`,
+      );
+    }
     recoveredContext.record("interrupted-run-recovered", {
       interruptedRunId: interruptedRun.id,
+      recoveredRunId: recoveryRun.id,
       recoveredRunIds: fresh.map((run) => run.id),
     });
   } finally {
@@ -1269,33 +1564,104 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       (rows) => {
         const fresh = rowsAfter(rows, wakeBaseline);
         return fresh.find(
-          (row) =>
-            ["backfill", "dependency-verify", "freshness-evaluation"].includes(
-              row.runKind,
-            ) && row.status === "running",
+          (row) => {
+            if (
+              !["backfill", "dependency-verify", "freshness-evaluation"].includes(
+                row.runKind,
+              ) ||
+              row.status !== "running"
+            ) {
+              return false;
+            }
+            const createdAt = parseInstant(
+              row.createdAt,
+              "workspace wake scheduler createdAt",
+            );
+            const startedAt = parseInstant(
+              row.startedAt,
+              "workspace wake scheduler startedAt",
+            );
+            return (
+              createdAt >= workspaceOpenedAt &&
+              startedAt >= workspaceOpenedAt
+            );
+          },
         );
       },
       "foreground workspace wake scheduler running barrier",
     );
-    const schedulerCreatedAt = Date.parse(schedulerRun.createdAt ?? "");
-    if (
-      Number.isFinite(schedulerCreatedAt) &&
-      schedulerCreatedAt < workspaceOpenedAt - 1_000
-    ) {
+    const freshAfterWake = rowsAfter(await context.runs(), wakeBaseline);
+    const wakeCandidates = freshAfterWake.filter(
+      (row) =>
+        parseInstant(row.createdAt, "workspace wake candidate createdAt") >=
+        workspaceOpenedAt,
+    );
+    if (wakeCandidates[0]?.id !== schedulerRun.id) {
       throw new Error(
-        `workspace wake scheduler Run ${schedulerRun.id} predates the A workspace:opened event`,
+        `foreground journey selected an unrelated Run instead of the first A workspace-wake Run: ${JSON.stringify(
+          summarizeRuns(wakeCandidates),
+        )}`,
       );
     }
+    const runningBarrier = await waitForLedger(
+      context,
+      (rows) =>
+        rows.find(
+          (row) => row.id === schedulerRun.id && row.status === "running",
+        ) ?? null,
+      "foreground workspace wake exact running barrier",
+    );
     const foregroundWriteStartedAt = Date.now();
     context.record("foreground-write-started-while-scheduler-running", {
-      schedulerRunId: schedulerRun.id,
-      schedulerRunStatus: schedulerRun.status,
-      schedulerRunCreatedAt: schedulerRun.createdAt,
+      schedulerRunId: runningBarrier.id,
+      schedulerRunStatus: runningBarrier.status,
+      schedulerRunCreatedAt: runningBarrier.createdAt,
       workspaceOpenedAt,
       foregroundWriteStartedAt,
     });
-    const writer = patchScene(context, scene, body);
-    await writer;
+    await patchScene(context, scene, body);
+    const completedSchedulerRun = await waitForLedger(
+      context,
+      (rows) =>
+        rows.find(
+          (row) => row.id === schedulerRun.id && row.status === "completed",
+        ) ?? null,
+      "foreground workspace wake exact Run completion",
+    );
+    const schedulerStartedAt = parseInstant(
+      completedSchedulerRun.startedAt,
+      "foreground scheduler startedAt",
+    );
+    const schedulerCompletedAt = parseInstant(
+      completedSchedulerRun.completedAt,
+      "foreground scheduler completedAt",
+    );
+    if (
+      foregroundWriteStartedAt < schedulerStartedAt ||
+      foregroundWriteStartedAt > schedulerCompletedAt
+    ) {
+      throw new Error(
+        `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify({
+          schedulerRunId: schedulerRun.id,
+          schedulerStartedAt,
+          foregroundWriteStartedAt,
+          schedulerCompletedAt,
+        })}`,
+      );
+    }
+    const schedulerOutcomeText = String(
+      completedSchedulerRun.outcomeSummaryJson ?? "",
+    );
+    if (
+      completedSchedulerRun.terminalReasonCode ||
+      /BUSY_SNAPSHOT|SQLITE_BUSY|error/i.test(schedulerOutcomeText)
+    ) {
+      throw new Error(
+        `workspace wake scheduler Run carried a busy/error outcome: ${JSON.stringify(
+          completedSchedulerRun,
+        )}`,
+      );
+    }
     const persisted = await harness.waitUntil(
       async () => {
         const rows = await queryRows(
@@ -1311,31 +1677,8 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       100,
     );
     const runs = await runLedger(harness, first.page, context.projectId);
-    if (
-      runs.some((row) =>
-        String(row.outcomeSummaryJson).includes("BUSY_SNAPSHOT"),
-      )
-    ) {
-      throw new Error(
-        "workspace wake surfaced SQLITE_BUSY_SNAPSHOT in durable Run evidence",
-      );
-    }
-    const persistedOnWake = await harness.waitUntil(
-      async () => {
-        const rows = await queryRows(
-          harness,
-          first.page,
-          "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
-          [scene.id, context.projectId],
-        );
-        return String(rows[0]?.content ?? "").includes(body) ? rows[0] : null;
-      },
-      "workspace wake observes foreground body",
-      30_000,
-      100,
-    );
     context.record("foreground-write-workspace-wake-complete", {
-      persisted: Boolean(persisted && persistedOnWake),
+      persisted: Boolean(persisted),
       schedulerRunId: schedulerRun.id,
       runCount: runs.length,
     });
@@ -1383,18 +1726,36 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
       id,
       beforeRuns,
     );
+    const restartBaselineFeed = await afterContext.feedAndCursor();
+    const restartScene = await createSceneIfNeeded(
+      afterContext,
+      "incremental-liveness-restart",
+    );
+    const restartBody = `C2-5B-LIVENESS-RESTART-${Date.now()}`;
+    await patchScene(afterContext, restartScene, restartBody);
     const afterReadiness = await waitForReadiness(
       afterContext,
       "incremental runtime after restart",
+      {
+        baselineRuns: beforeRuns,
+        minimumFeedHead: restartBaselineFeed.feedHead + 1,
+        requireFreshRun: true,
+      },
     );
     if (afterReadiness.epoch.id !== beforeReadiness.epoch.id) {
       throw new Error(
         `incremental restart changed the durable current epoch unexpectedly: ${beforeReadiness.epoch.id} -> ${afterReadiness.epoch.id}`,
       );
     }
-    if (afterReadiness.feedAndCursor.feedHead <= 0) {
+    if (
+      afterReadiness.feedAndCursor.feedHead <=
+      restartBaselineFeed.feedHead
+    ) {
       throw new Error(
-        "incremental restart did not retain a durable change-feed head",
+        `incremental restart mutation did not append a new durable change-feed head: ${JSON.stringify({
+          before: restartBaselineFeed.feedHead,
+          after: afterReadiness.feedAndCursor.feedHead,
+        })}`,
       );
     }
     if (
@@ -1411,18 +1772,41 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
         `incremental restart lost completed freshness outcome evidence: ${JSON.stringify(afterReadiness.freshness)}`,
       );
     }
-    const persistedRun = beforeRuns.find(
+    const afterRuns = await afterContext.runs();
+    const newFreshnessRun = afterRuns.find(
       (run) => run.id === afterReadiness.freshness.id,
     );
-    if (!persistedRun) {
+    if (
+      !newFreshnessRun ||
+      beforeRuns.some((run) => run.id === newFreshnessRun.id)
+    ) {
       throw new Error(
-        `incremental restart freshness Run ${afterReadiness.freshness.id} was not durable before restart`,
+        `incremental restart did not persist a new freshness Run after the new mutation: ${JSON.stringify(
+          summarizeRuns(afterRuns),
+        )}`,
+      );
+    }
+    const restartSceneRows = await afterContext.query(
+      "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
+      [restartScene.id, afterContext.projectId],
+    );
+    if (!String(restartSceneRows[0]?.content ?? "").includes(restartBody)) {
+      throw new Error(
+        "incremental restart mutation body was not durable after the restarted launch",
+      );
+    }
+    if (afterReadiness.feedAndCursor.cursor.lastError != null) {
+      throw new Error(
+        `incremental restart cursor retained an error after the new mutation: ${JSON.stringify(afterReadiness.feedAndCursor)}`,
       );
     }
     afterContext.record("incremental-liveness-proven", {
       epochId: afterReadiness.epoch.id,
       freshnessRunId: afterReadiness.freshness.id,
       feedHead: afterReadiness.feedAndCursor.feedHead,
+      previousFeedHead: restartBaselineFeed.feedHead,
+      newMutationBody: restartBody,
+      newRunId: newFreshnessRun.id,
     });
   } finally {
     await harness.close(restarted.app, restarted.page, `${id}/after-restart`);
