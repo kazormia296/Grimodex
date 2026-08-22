@@ -24,7 +24,10 @@ import {
   digestStageModelExecutionBinding,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import { useAiSettingsStore } from "./store";
-import { getOpenaiCompatibleEndpoints } from "./types";
+import {
+  getOpenaiCompatibleEndpoints,
+  resolveActiveOpenaiCompatibleEndpoint,
+} from "./types";
 import { isAinoveristV1Model } from "./aiNovelist";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
 
@@ -84,6 +87,96 @@ export interface ChatResponsePayload {
   outputTokens?: number;
 }
 
+function normalizeSingleShotResponse(value: unknown): ChatResponsePayload {
+  if (!isJsonObject(value)) {
+    throw new TypeError("Single-shot response must be an object");
+  }
+  const rawBlocks = value.blocks;
+  if (!Array.isArray(rawBlocks)) {
+    throw new TypeError("Single-shot response blocks must be an array");
+  }
+  const blocks = rawBlocks.map((rawBlock, index) => {
+    if (!isJsonObject(rawBlock) || typeof rawBlock.type !== "string") {
+      throw new TypeError(`Single-shot response block ${index} is invalid`);
+    }
+    if (rawBlock.type === "text") {
+      if (typeof rawBlock.content !== "string") {
+        throw new TypeError(
+          `Single-shot response text block ${index} is invalid`,
+        );
+      }
+      return { type: "text" as const, content: rawBlock.content };
+    }
+    if (rawBlock.type === "tool_use") {
+      if (
+        typeof rawBlock.id !== "string" ||
+        typeof rawBlock.name !== "string" ||
+        !Object.hasOwn(rawBlock, "input")
+      ) {
+        throw new TypeError(
+          `Single-shot response tool_use block ${index} is invalid`,
+        );
+      }
+      return {
+        type: "tool_use" as const,
+        id: rawBlock.id,
+        name: rawBlock.name,
+        input: rawBlock.input,
+      };
+    }
+    if (rawBlock.type === "thinking") {
+      if (typeof rawBlock.content !== "string") {
+        throw new TypeError(
+          `Single-shot response thinking block ${index} is invalid`,
+        );
+      }
+      const thinking: {
+        type: "thinking";
+        content: string;
+        summary?: string;
+        signature?: string;
+      } = { type: "thinking", content: rawBlock.content };
+      if (Object.hasOwn(rawBlock, "summary")) {
+        if (typeof rawBlock.summary !== "string") {
+          throw new TypeError(
+            `Single-shot response thinking summary ${index} is invalid`,
+          );
+        }
+        thinking.summary = rawBlock.summary;
+      }
+      if (Object.hasOwn(rawBlock, "signature")) {
+        if (typeof rawBlock.signature !== "string") {
+          throw new TypeError(
+            `Single-shot response thinking signature ${index} is invalid`,
+          );
+        }
+        thinking.signature = rawBlock.signature;
+      }
+      return thinking;
+    }
+    throw new TypeError(`Single-shot response block ${index} has unknown type`);
+  });
+  if (typeof value.stopReason !== "string") {
+    throw new TypeError("Single-shot response stopReason is invalid");
+  }
+  const optionalToken = (key: "inputTokens" | "outputTokens") => {
+    const raw = value[key];
+    if (raw === undefined || raw === null) return undefined;
+    if (typeof raw !== "number" || !Number.isFinite(raw) || raw < 0) {
+      throw new TypeError(`Single-shot response ${key} is invalid`);
+    }
+    return raw;
+  };
+  const inputTokens = optionalToken("inputTokens");
+  const outputTokens = optionalToken("outputTokens");
+  return {
+    blocks,
+    stopReason: value.stopReason,
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+  };
+}
+
 /**
  * `send_chat_message` is an HTTP-provider command. CLI exec and Codex App
  * Server use their own streaming transports and cannot be sent through it.
@@ -106,9 +199,10 @@ export class SingleShotCliUnsupportedError extends Error {
 export function assertSingleShotTransportSupported(
   providerOverride?: string | null,
 ): void {
-  const explicitProvider = providerOverride?.trim();
   const effectiveProvider =
-    explicitProvider || useAiSettingsStore.getState().settings?.provider;
+    providerOverride === undefined
+      ? useAiSettingsStore.getState().settings?.provider
+      : providerOverride?.trim() || null;
   if (effectiveProvider === "cli") {
     throw new SingleShotCliUnsupportedError();
   }
@@ -386,16 +480,34 @@ export function resolveChatAuditRoute(
     typeof args.endpointId === "string" && args.endpointId.trim()
       ? args.endpointId
       : null;
+  const configuredCompatibleEndpoints = settings
+    ? getOpenaiCompatibleEndpoints(settings)
+    : [];
+  if (requestedEndpointId !== null && provider !== "openai-compatible") {
+    throw new TypeError(
+      "OpenAI-compatible endpoint override does not match the selected provider",
+    );
+  }
+  if (
+    provider === "openai-compatible" &&
+    requestedEndpointId !== null &&
+    !configuredCompatibleEndpoints.some(
+      (candidate) => candidate.id === requestedEndpointId,
+    )
+  ) {
+    throw new TypeError("OpenAI-compatible endpoint is not configured");
+  }
   const endpointId =
-    requestedEndpointId !== null
-      ? requestedEndpointId
-      : provider === "openai-compatible"
-        ? (settings?.activeOpenaiCompatibleEndpointId ?? null)
-        : null;
+    provider === "openai-compatible"
+      ? (requestedEndpointId ??
+        (settings
+          ? (resolveActiveOpenaiCompatibleEndpoint(settings)?.id ?? null)
+          : null))
+      : null;
   let resolvedEndpointOrigin: string | null = null;
   const compatibleEndpoint =
-    provider === "openai-compatible" && settings
-      ? getOpenaiCompatibleEndpoints(settings).find(
+    provider === "openai-compatible"
+      ? configuredCompatibleEndpoints.find(
           (candidate) => candidate.id === endpointId,
         )
       : undefined;
@@ -556,14 +668,25 @@ export async function invokeSingleShotChat(
   args: Record<string, unknown>,
   auditContext: AiAuditTransportContext,
 ): Promise<ChatResponsePayload> {
-  const provider = typeof args.provider === "string" ? args.provider : null;
   const route = resolveChatAuditRoute(args);
+  // Materialize every route field before the first await.  The settings store
+  // is mutable, so passing the caller's nullable overrides through to IPC
+  // would let native route resolution observe a different provider/model than
+  // the binding sealed by the begin event.
+  const dispatchArgs: Record<string, unknown> = {
+    ...args,
+    provider: route.provider,
+    model: route.model,
+    apiVariant: route.apiVariant,
+    endpointId: route.endpointId,
+  };
+  const provider = route.provider;
   // Route metadata is resolved exactly once and sealed into the durable begin
   // event before dispatch. The callback is non-persistent application state;
   // only its returned, allowlisted metadata enters the audit ledger.
   const resolvedRouteMetadata = await auditContext.onResolvedRouteMetadata?.(
     route,
-    args,
+    dispatchArgs,
   );
   const durableMetadata = mergeAuditMetadata(
     auditContext.metadata,
@@ -629,14 +752,17 @@ export async function invokeSingleShotChat(
     }
     throw error;
   }
-  args.auditContext = nativeAiAuditContext(audit);
+  dispatchArgs.auditContext = nativeAiAuditContext(audit);
   await markAiAuditDispatched(
     audit,
     beforeIpcDispatchDetails("send_chat_message"),
   );
   let response: ChatResponsePayload;
   try {
-    response = await invoke<ChatResponsePayload>("send_chat_message", args);
+    response = await invoke<ChatResponsePayload>(
+      "send_chat_message",
+      dispatchArgs,
+    );
   } catch (error) {
     const cancellation = isSingleShotCancellationError(error);
     const terminalStatus = cancellation ? "cancelled" : "failed";
@@ -692,83 +818,142 @@ export async function invokeSingleShotChat(
     }
     throw error;
   }
-  const responseText = response.blocks
-    .filter((block) => block.type === "text")
-    .map((block) => (block as { type: "text"; content: string }).content)
-    .join("\n");
-  const responseDigest = await sha256ResponseDigest(responseText);
-  let terminalMetadata: AiAuditJsonObject | undefined;
-  try {
-    terminalMetadata = await auditContext.onTerminalMetadata?.(
-      responseText,
-      durableMetadata,
-    );
-  } catch (error) {
-    const chronicleStage = durableMetadata?.chronicleStage;
+  // Everything after provider dispatch belongs to the same terminal boundary.
+  // Response normalization and digesting are part of that boundary too: a
+  // malformed provider payload must never leave a dispatched execution
+  // pending merely because it failed before the old terminal try/catch.
+  let responseTerminalAttempted = false;
+  let responsePreprocessingComplete = false;
+  const failPostResponseAudit = async (error: unknown): Promise<void> => {
+    if (responseTerminalAttempted) return;
+
+    const beginStage = chronicleStageFromMetadata(durableMetadata);
     if (
-      isJsonObject(chronicleStage) &&
-      chronicleStage.kind === "chronicle-stage"
+      !responsePreprocessingComplete &&
+      beginStage !== undefined &&
+      hasChronicleBindingSeal(beginStage)
     ) {
-      // Chronicle provenance is part of the stage's acceptance boundary. Close
-      // the already-dispatched audit as failed and do not return an output that
-      // has no sealed terminal receipt.
+      let completionMetadata: AiAuditJsonObject | undefined;
+      try {
+        completionMetadata = await buildNoResponseTerminalMetadata(
+          auditContext,
+          "failed",
+          durableMetadata,
+        );
+      } catch {
+        // A no-response hook or seal failure cannot publish an incomplete
+        // Chronicle v2 object. Close the generic audit exactly once instead.
+        responseTerminalAttempted = true;
+        try {
+          await failAiAuditExecution(audit, {
+            error: auditErrorSnapshot(error),
+            metadata: stripChronicleStageMetadata(durableMetadata),
+          });
+        } catch {
+          // The audit API owns persistence-failure recording.
+        }
+        return;
+      }
+
+      // Mark the durable terminal boundary before the append. If persistence
+      // rejects, the audit API records that failure and no second fallback may
+      // create an orphan or duplicate terminal.
+      responseTerminalAttempted = true;
+      try {
+        await failAiAuditExecution(audit, {
+          error: auditErrorSnapshot(error),
+          metadata: completionMetadata,
+        });
+      } catch {
+        return;
+      }
+      try {
+        await auditContext.onAuditCompleted?.(completionMetadata);
+      } catch {
+        // Preserve the original response/preprocessing error. The durable
+        // terminal is already closed and cannot be retried here.
+      }
+      return;
+    }
+
+    responseTerminalAttempted = true;
+    try {
       await failAiAuditExecution(audit, {
         error: auditErrorSnapshot(error),
         metadata: stripChronicleStageMetadata(durableMetadata),
       });
-      throw error;
+    } catch {
+      // The audit API owns persistence-failure recording. Preserve the
+      // original response/provenance error for the caller.
     }
-    // A provenance helper must not strand the already-dispatched execution
-    // without its existing terminal audit events. The response digest below
-    // remains durable even when an optional Chronicle status hook fails.
-    terminalMetadata = {
-      chronicleStageMetadataError: { ...auditErrorSnapshot(error) },
-    };
-  }
-  const completionMetadata = mergeAuditMetadata(
-    withChronicleResponseDigest(durableMetadata, responseDigest),
-    terminalMetadata,
-  );
+  };
   try {
+    const normalizedResponse = normalizeSingleShotResponse(response);
+    const responseText = normalizedResponse.blocks
+      .filter((block) => block.type === "text")
+      .map((block) => block.content)
+      .join("\n");
+    const responseDigest = await sha256ResponseDigest(responseText);
+    responsePreprocessingComplete = true;
+    let terminalMetadata: AiAuditJsonObject | undefined;
+    try {
+      terminalMetadata = await auditContext.onTerminalMetadata?.(
+        responseText,
+        durableMetadata,
+      );
+    } catch (error) {
+      const chronicleStage = durableMetadata?.chronicleStage;
+      if (
+        isJsonObject(chronicleStage) &&
+        chronicleStage.kind === "chronicle-stage"
+      ) {
+        // Chronicle provenance is part of the acceptance boundary. Let the
+        // outer catch close this execution with a generic failed terminal.
+        throw error;
+      }
+      // Optional provenance metadata must not strand a generic audit. The
+      // response digest remains durable even when this helper fails.
+      terminalMetadata = {
+        chronicleStageMetadataError: { ...auditErrorSnapshot(error) },
+      };
+    }
+    const completionMetadata = mergeAuditMetadata(
+      withChronicleResponseDigest(durableMetadata, responseDigest),
+      terminalMetadata,
+    );
     await assertChronicleTerminalSeal(
       durableMetadata,
       completionMetadata,
       responseDigest,
     );
-  } catch (error) {
-    const chronicleStage = durableMetadata?.chronicleStage;
-    if (
-      isJsonObject(chronicleStage) &&
-      chronicleStage.kind === "chronicle-stage"
-    ) {
-      await failAiAuditExecution(audit, {
-        error: auditErrorSnapshot(error),
-        metadata: stripChronicleStageMetadata(durableMetadata),
-      });
+    // Once complete is called, the audit API has the single durable terminal
+    // authority. A later receipt callback error must not trigger a second one.
+    responseTerminalAttempted = true;
+    await completeAiAuditExecution(audit, {
+      response: normalizedResponse as unknown as AiAuditJsonObject,
+      usage: {
+        inputTokens: normalizedResponse.inputTokens ?? null,
+        outputTokens: normalizedResponse.outputTokens ?? null,
+        stopReason: normalizedResponse.stopReason,
+      },
+      metadata: completionMetadata,
+    });
+    try {
+      await auditContext.onAuditCompleted?.(completionMetadata);
+    } catch (error) {
+      const chronicleStage = completionMetadata?.chronicleStage;
+      if (
+        isJsonObject(chronicleStage) &&
+        chronicleStage.kind === "chronicle-stage"
+      ) {
+        // The durable audit terminal is already closed, but a Chronicle Stage
+        // without its required receipt is not an acceptable Stage result.
+        throw error;
+      }
     }
+    return normalizedResponse;
+  } catch (error) {
+    await failPostResponseAudit(error);
     throw error;
   }
-  await completeAiAuditExecution(audit, {
-    response: response as unknown as AiAuditJsonObject,
-    usage: {
-      inputTokens: response.inputTokens ?? null,
-      outputTokens: response.outputTokens ?? null,
-      stopReason: response.stopReason,
-    },
-    metadata: completionMetadata,
-  });
-  try {
-    await auditContext.onAuditCompleted?.(completionMetadata);
-  } catch (error) {
-    const chronicleStage = completionMetadata?.chronicleStage;
-    if (
-      isJsonObject(chronicleStage) &&
-      chronicleStage.kind === "chronicle-stage"
-    ) {
-      // The durable audit terminal is closed, but a Chronicle Stage without
-      // its required provenance receipt is not an acceptable Stage result.
-      throw error;
-    }
-  }
-  return response;
 }

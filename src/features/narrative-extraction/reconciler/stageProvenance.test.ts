@@ -118,6 +118,21 @@ describe("Chronicle stage provenance/model binding contract", () => {
       }),
     ).not.toThrow();
     for (const endpointBindingId of [
+      "default",
+      "endpoint-a",
+      "legacy-endpoint",
+      "openai-compatible-local",
+      "123e4567-e89b-12d3-a456-426614174000",
+      DIGEST,
+    ]) {
+      expect(() =>
+        createStageModelExecutionBindingV1({
+          ...requestedOnlyBinding,
+          endpointBindingId,
+        }),
+      ).not.toThrow();
+    }
+    for (const endpointBindingId of [
       "sk-12345678",
       "ghp_012345678901234567890123456789012345",
       "AIzaSy01234567890123456789012345678901234",
@@ -129,6 +144,15 @@ describe("Chronicle stage provenance/model binding contract", () => {
       "javascript:alert(1)",
       "ssh:evil.example",
       "prefix:https://user:supersecret@evil.example/v1",
+      "2001:db8::1",
+      "fe80::1",
+      "evil.xn--p1ai:443",
+      "router.xn--zckzah:443",
+      "2130706433:80",
+      "0x7f000001:80",
+      "2130706433",
+      "0x7f000001",
+      "017700000001",
       "https://evil.example/v1",
       "ws://evil.example",
       "wss://evil.example",
@@ -147,7 +171,7 @@ describe("Chronicle stage provenance/model binding contract", () => {
           ...requestedOnlyBinding,
           endpointBindingId,
         }),
-      ).toThrow(/credential|safe|URL|origin/i);
+      ).toThrow(/credential|safe|URL|origin|stable identifier/i);
     }
     expect(JSON.stringify(requestedOnlyBinding)).not.toContain("http");
   });
@@ -184,6 +208,58 @@ describe("Chronicle stage provenance/model binding contract", () => {
         "javascript:alert(1)",
         "ssh:evil.example",
         "prefix:https://user:supersecret@evil.example/v1",
+        "2001:db8::1",
+        "fe80::1",
+        "evil.xn--p1ai:443",
+        "router.xn--zckzah:443",
+        "2130706433:80",
+        "0x7f000001:80",
+        "例え.テスト:443",
+        "router.xn--zckzah:443",
+        "evil.xn--p1ai/v1",
+        "例え.テスト/v1",
+        "user:pass@evil.xn--p1ai:443",
+        "user:pass@2001:db8::1",
+        "user:pass@例え.テスト:443",
+        "例え。テスト",
+        "2130706433",
+        "0x7f000001",
+        "017700000001",
+        "127.1",
+        "127.1:80",
+        "0177.0.0.1:80",
+        "0x7f.1:80",
+        "fe80::1%eth0",
+        "fe80::1%25eth0",
+        "user:pass@2130706433",
+        "user:pass@0x7f000001:80",
+        "user:pass@017700000001",
+        "user:pass@127.1:80",
+        "user:pass@0177.0.0.1:80",
+        "user:pass@0x7f.1:80",
+        "user:pass@fe80::1%eth0",
+        "user:pass@fe80::1%25eth0",
+        "[fe80::1%eth0]",
+        "[fe80::1%25eth0]",
+        "[fe80::1%eth0]:80",
+        "[fe80::1%25eth0]:80",
+        "user:pass@[fe80::1%25eth0]:80",
+        "127.0.0.1.",
+        "127.1.",
+        "2130706433.",
+        "localhost.",
+        "127.0.0.1.:80",
+        "127",
+        "1",
+        "0177",
+        "0777",
+        "10000",
+        "65535",
+        "1234567",
+        "9999999",
+        "65535.",
+        "127%2e0%2e0%2e1",
+        "127%2E0%2E0%2E1:80",
         "https://evil.example/v1",
         "ws://evil.example",
         "wss://evil.example",
@@ -234,9 +310,12 @@ describe("Chronicle stage provenance/model binding contract", () => {
     ).toMatchObject({ requestedModel: "namespace/model:tag@revision" });
     for (const requestedModel of [
       "openrouter/anthropic/claude-sonnet-4-6",
+      "openrouter/anthropic/claude-sonnet-4.6",
       "amazon-bedrock/anthropic.claude-sonnet",
       "gemma4:latest",
       "shared:latest",
+      "2.0.0-GHQ",
+      "gpt-4.1",
     ]) {
       expect(
         createStageModelExecutionBindingV1({

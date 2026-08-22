@@ -8086,6 +8086,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         a,
         d,
         "send_chat_message",
+        true,
       );
       return parseWire(await b.sendChatMessage(a, settings, apiKey));
     },
@@ -8106,6 +8107,7 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         a,
         d,
         "send_chat_message_stream",
+        true,
       );
       await b.sendChatMessageStream(a, settings, apiKey);
       return null;
@@ -8313,17 +8315,84 @@ async function resolveRequiredAiKeyAndSettings(
   args: CommandArgs,
   deps: DispatchDeps,
   cmd: string,
+  validateEndpointOverride = false,
 ): Promise<{ settings: unknown; apiKey: string }> {
   if (!deps.secrets) {
     throw new Error(`IPC_SECRETS_UNAVAILABLE: ${cmd}`);
   }
   const settings = parseWire(await backend.getAiSettings());
+  if (validateEndpointOverride) {
+    assertExplicitOpenaiCompatibleEndpointConfigured(settings, args, cmd);
+  }
   const apiKey = deps.secrets.resolveApiKeyForRequest(
     settings,
     args.provider,
     args.endpointId,
   );
   return { settings, apiKey };
+}
+
+/**
+ * The renderer seals an explicit OpenAI-compatible endpoint before begin and
+ * dispatch. Re-check that identity against the same main-process settings
+ * snapshot before resolving credentials or entering native code; otherwise a
+ * deleted override would be silently retargeted to the active endpoint.
+ * Non-compatible providers intentionally retain the legacy ignored-endpoint
+ * behavior for older callers; the renderer rejects that contradiction.
+ */
+function assertExplicitOpenaiCompatibleEndpointConfigured(
+  settings: unknown,
+  args: CommandArgs,
+  cmd: string,
+): void {
+  const requestedEndpointId = args.endpointId;
+  if (
+    typeof requestedEndpointId !== "string" ||
+    requestedEndpointId.trim().length === 0
+  ) {
+    return;
+  }
+  const settingsRecord =
+    typeof settings === "object" &&
+    settings !== null &&
+    !Array.isArray(settings)
+      ? (settings as Record<string, unknown>)
+      : {};
+  const requestedProvider =
+    typeof args.provider === "string" && args.provider.trim().length > 0
+      ? args.provider
+      : settingsRecord.provider;
+  if (requestedProvider !== "openai-compatible") return;
+
+  const configuredEndpoints = settingsRecord.openaiCompatibleEndpoints;
+  const endpointIsConfigured =
+    Array.isArray(configuredEndpoints) && configuredEndpoints.length > 0
+      ? configuredEndpoints.some(
+          (candidate) =>
+            typeof candidate === "object" &&
+            candidate !== null &&
+            !Array.isArray(candidate) &&
+            (candidate as Record<string, unknown>).id === requestedEndpointId,
+        )
+      : (() => {
+          const legacy = settingsRecord.openaiCompatible;
+          const legacyBaseUrl =
+            typeof legacy === "object" &&
+            legacy !== null &&
+            !Array.isArray(legacy)
+              ? (legacy as Record<string, unknown>).baseUrl
+              : undefined;
+          return (
+            typeof legacyBaseUrl === "string" &&
+            legacyBaseUrl.trim().length > 0 &&
+            requestedEndpointId === "default"
+          );
+        })();
+  if (!endpointIsConfigured) {
+    throw new Error(
+      `invalid args \`endpointId\` for command \`${cmd}\`: OpenAI-compatible endpoint is not configured`,
+    );
+  }
 }
 
 /** 旧 native binding を誤って組み合わせた場合も TypeError ではなく明示的に失敗させる。 */

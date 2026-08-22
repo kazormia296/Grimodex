@@ -1,4 +1,12 @@
 import {
+  beginAiAuditExecution,
+  skipAiAuditExecution,
+} from "@/features/ai-audit/api";
+import type {
+  AiAuditJsonObject,
+  AiAuditRequestSnapshot,
+} from "@/features/ai-audit/types";
+import {
   assertStageExecutionContext,
   type NarrativeStageExecutionContext,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
@@ -16,7 +24,6 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
-import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import type {
   AiAuditResolvedRouteSnapshot,
   AiAuditTransportContext,
@@ -336,6 +343,68 @@ export async function buildChronicleStageAuditNoResponseTerminal(
       stageExecutionReceiptDigest: receipt.stageExecutionReceiptDigest,
     },
   );
+}
+
+/**
+ * Close a supplied Stage execution when policy/preflight prevents dispatch.
+ * The receipt intentionally carries the unresolved binding and null response
+ * digest; it is still a durable, canonical terminal rather than an omitted
+ * audit event.
+ */
+export async function emitChronicleStageAuditSkippedReceipt(
+  input: Omit<BuildChronicleStageAuditNoResponseInput, "terminalStatus"> & {
+    readonly projectId: string;
+    readonly pathId: string;
+    readonly request: AiAuditRequestSnapshot;
+    readonly reason: string;
+    readonly expectedWorkspacePath?: string;
+  },
+): Promise<void> {
+  let capturedReceipt: ChronicleStageTerminalReceiptV1 | undefined;
+  const terminal = await buildChronicleStageAuditNoResponseTerminal({
+    stageExecution: input.stageExecution,
+    contextSetDigest: input.contextSetDigest,
+    componentContractDigest: input.componentContractDigest,
+    finalRequestDigest: input.finalRequestDigest,
+    terminalStatus: "skipped",
+    modelExecutionBinding: input.modelExecutionBinding,
+    onReceipt: (receipt) => {
+      capturedReceipt = receipt;
+    },
+  });
+  const metadata = {
+    chronicleStage: terminal as unknown as AiAuditJsonObject,
+  };
+  const {
+    responseDigest: _responseDigest,
+    parseStatus: _parseStatus,
+    terminalStatus: _terminalStatus,
+    stageExecutionReceiptDigest: _stageExecutionReceiptDigest,
+    ...beginStage
+  } = terminal;
+  const beginMetadata = {
+    chronicleStage: beginStage as unknown as AiAuditJsonObject,
+  };
+  const audit = await beginAiAuditExecution({
+    projectId: input.projectId,
+    ...(input.expectedWorkspacePath === undefined
+      ? {}
+      : { expectedWorkspacePath: input.expectedWorkspacePath }),
+    pathId: input.pathId,
+    operationId: operationIdForStage(input.stageExecution),
+    executionId: input.stageExecution.stageExecutionId,
+    parentExecutionId: input.stageExecution.parentStageExecutionId ?? null,
+    request: input.request,
+    metadata: beginMetadata,
+    captureState: "complete",
+  });
+  await skipAiAuditExecution(audit, {
+    reason: input.reason,
+    metadata,
+  });
+  if (capturedReceipt !== undefined) {
+    await input.onReceipt?.(capturedReceipt);
+  }
 }
 
 /** Extract the exact binding from durable begin metadata for terminal sealing. */

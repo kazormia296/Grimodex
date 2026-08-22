@@ -8218,6 +8218,81 @@ describe("AI チャットコマンド", () => {
     expect(calls.filter((c) => c.method === "getAiSettings")).toHaveLength(1);
   });
 
+  it("send_chat_message は削除済み OpenAI 互換 endpoint override を native 前に拒否する", async () => {
+    const { backend, calls } = fakeBackend({
+      getAiSettings: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          provider: "openai-compatible",
+          model: "local-model",
+          openaiCompatible: { baseUrl: "" },
+          openaiCompatibleEndpoints: [
+            { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+          ],
+          activeOpenaiCompatibleEndpointId: "endpoint-b",
+        }),
+      ),
+    });
+    const secrets = fakeSecrets("sk-compat");
+    const env = await dispatchInvoke(
+      "send_chat_message",
+      {
+        messages: [{ role: "user", content: "must not retarget" }],
+        provider: "openai-compatible",
+        model: "local-model",
+        endpointId: "endpoint-a",
+        auditContext: nativeAiAuditContext,
+      },
+      { backend, shell: noShell, secrets },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/endpoint.*configured/i),
+    });
+    expect(secrets.resolveApiKeyForRequest).not.toHaveBeenCalled();
+    expect(calls.some((call) => call.method === "sendChatMessage")).toBe(false);
+  });
+
+  it("send_chat_message keeps a known explicit endpoint and preserves no-override compatibility", async () => {
+    const settings = {
+      provider: "openai-compatible",
+      model: "local-model",
+      openaiCompatible: { baseUrl: "" },
+      openaiCompatibleEndpoints: [
+        { id: "endpoint-a", label: "A", baseUrl: "http://a/v1" },
+        { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+      ],
+      activeOpenaiCompatibleEndpointId: "endpoint-b",
+    };
+    const { backend, calls } = fakeBackend({
+      getAiSettings: vi.fn().mockResolvedValue(JSON.stringify(settings)),
+    });
+    const secrets = fakeSecrets("sk-compat");
+    const args = {
+      messages: [{ role: "user", content: "known endpoint" }],
+      provider: "openai-compatible",
+      model: "local-model",
+      endpointId: "endpoint-a",
+      auditContext: nativeAiAuditContext,
+    };
+    const env = await dispatchInvoke("send_chat_message", args, {
+      backend,
+      shell: noShell,
+      secrets,
+    });
+
+    expect(env.ok).toBe(true);
+    expect(secrets.resolveApiKeyForRequest).toHaveBeenCalledWith(
+      settings,
+      "openai-compatible",
+      "endpoint-a",
+    );
+    expect(calls).toContainEqual({
+      method: "sendChatMessage",
+      args: [args, settings, "sk-compat"],
+    });
+  });
+
   it("send_chat_message_stream はキーを注入し null を resolve する", async () => {
     const { backend, calls } = fakeBackend();
     const secrets = fakeSecrets("sk-stream");
@@ -8244,6 +8319,41 @@ describe("AI チャットコマンド", () => {
       method: "sendChatMessageStream",
       args: [args, { provider: "openai", model: "gpt-x" }, "sk-stream"],
     });
+  });
+
+  it("send_chat_message_stream は削除済み OpenAI 互換 endpoint を native 前に拒否する", async () => {
+    const { backend, calls } = fakeBackend({
+      getAiSettings: vi.fn().mockResolvedValue(
+        JSON.stringify({
+          provider: "openai-compatible",
+          model: "local-model",
+          openaiCompatible: { baseUrl: "" },
+          openaiCompatibleEndpoints: [
+            { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+          ],
+          activeOpenaiCompatibleEndpointId: "endpoint-b",
+        }),
+      ),
+    });
+    const env = await dispatchInvoke(
+      "send_chat_message_stream",
+      {
+        messages: [{ role: "user", content: "must not stream elsewhere" }],
+        provider: "openai-compatible",
+        endpointId: "endpoint-a",
+        streamId: nativeAiAuditContext.executionId,
+        auditContext: nativeAiAuditContext,
+      },
+      { backend, shell: noShell, secrets: fakeSecrets() },
+    );
+
+    expect(env).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/endpoint.*configured/i),
+    });
+    expect(calls.some((call) => call.method === "sendChatMessageStream")).toBe(
+      false,
+    );
   });
 
   it("send_chat_message_stream は不正な requestMaxOutputTokens を main 境界で拒否する", async () => {

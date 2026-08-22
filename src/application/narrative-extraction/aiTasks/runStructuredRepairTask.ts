@@ -20,6 +20,7 @@ import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
   buildChronicleStageAuditNoResponseTerminal,
+  emitChronicleStageAuditSkippedReceipt,
   createChronicleStageReceiptEmitter,
   stageModelBindingFromAuditMetadata,
   type ChronicleStageAuditMetadata,
@@ -224,8 +225,6 @@ async function recordStructuredRepairStageAudit(
 export async function runStructuredRepairTask(
   input: RunStructuredRepairTaskInput,
 ): Promise<string | null> {
-  if (blockNarrativeAiTask()) return null;
-
   if (input.stageExecution) {
     assertStageExecutionContext(input.stageExecution);
     if (
@@ -242,6 +241,31 @@ export async function runStructuredRepairTask(
         `Structured repair requires stageId '${NARRATIVE_STAGE_IDS.structuredRepair}'`,
       );
     }
+  }
+
+  const blocked = blockNarrativeAiTask();
+  const emptyInput =
+    input.stageExecution !== undefined && input.brokenText.trim().length === 0;
+  if (blocked || emptyInput) {
+    if (input.stageExecution) {
+      const promptArtifact = buildStructuredRepairPromptArtifact(input);
+      const promptDigests = await buildChroniclePromptDigests(promptArtifact);
+      await emitChronicleStageAuditSkippedReceipt({
+        stageExecution: input.stageExecution,
+        ...promptDigests,
+        projectId: input.stageExecution.projectId,
+        pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
+        request: { messages: promptArtifact.messages },
+        reason: blocked
+          ? "narrative-structured-repair-preflight-blocked"
+          : "narrative-structured-repair-preflight-empty",
+        onReceipt: input.onStageReceipt,
+      });
+    }
+    return null;
+  }
+
+  if (input.stageExecution) {
     assertStructuredRepairStageContract(input);
   }
 

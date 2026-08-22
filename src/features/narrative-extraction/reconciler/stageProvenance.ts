@@ -64,7 +64,10 @@ export type ChronicleStageTerminalStatus =
   | "skipped";
 
 const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
-const SAFE_STABLE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+/** Endpoint IDs are named ASCII keys; UUIDs and digests are accepted separately. */
+const SAFE_NAMED_ENDPOINT_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,127}$/u;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -108,8 +111,7 @@ function assertSafeString(
   if (
     value.includes("://") ||
     NESTED_URI_SCHEME_PATTERN.test(value) ||
-    HOST_LIKE_ORIGIN_PATTERN.test(value) ||
-    USERINFO_HOST_ORIGIN_PATTERN.test(value)
+    hasUnsafeIdentityHost(value)
   ) {
     throw new TypeError(`${label} must not contain a URL or origin`);
   }
@@ -131,7 +133,10 @@ function assertSafeString(
   if (options.digestAllowed === true && SHA256_DIGEST_PATTERN.test(value)) {
     return;
   }
-  if (!SAFE_STABLE_ID_PATTERN.test(value)) {
+  if (
+    !SAFE_NAMED_ENDPOINT_ID_PATTERN.test(value) &&
+    !UUID_PATTERN.test(value)
+  ) {
     throw new TypeError(`${label} must be a stable identifier or digest`);
   }
 }
@@ -163,8 +168,7 @@ function assertTokenString(
     URL_ORIGIN_SHAPED_PATTERN.test(value) ||
     value.includes("://") ||
     NESTED_URI_SCHEME_PATTERN.test(value) ||
-    HOST_LIKE_ORIGIN_PATTERN.test(value) ||
-    USERINFO_HOST_ORIGIN_PATTERN.test(value) ||
+    hasUnsafeIdentityHost(value) ||
     CREDENTIAL_SHAPED_TOKEN_PATTERN.test(value)
   ) {
     throw new TypeError(`${label} must be a safe non-empty token`);
@@ -189,9 +193,60 @@ const URL_ORIGIN_SHAPED_PATTERN =
 const NESTED_URI_SCHEME_PATTERN =
   /(?:^|[^A-Za-z0-9])(?:https?|wss?|ftp|file|data|urn|javascript|ssh|mailto|blob|about):/iu;
 const HOST_LIKE_ORIGIN_PATTERN =
-  /(?:^|:)(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})?(?:[/?#]|$)/iu;
+  /(?:^|:)(?=[^/\s:@]*\.[A-Za-z\u0080-\uFFFF])(?:[^/\s:@]+\.)+[^/\s:@]+(?::\d{1,5})?(?:[/?#]|$)|(?:^|:)(?:localhost|(?:\d{1,3}\.){3}\d{1,3})(?::\d{1,5})?(?:[/?#]|$)/iu;
 const USERINFO_HOST_ORIGIN_PATTERN =
-  /(?:^|[^A-Za-z0-9])[^/\s:@]+:[^/\s@]+@(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})?(?:[/?#]|$)/iu;
+  /(?:^|[^A-Za-z0-9])[^/\s:@]+:[^/\s@]+@(?:(?:[^/\s:@]+\.)+[^/\s:@]+|localhost|(?:\d{1,3}\.){3}\d{1,3}|\[[0-9A-F:.]+\]|(?:[0-9A-F]{1,4}:){2,}[0-9A-F:.]+)(?::\d{1,5})?(?:[/?#]|$)/iu;
+const UNBRACKETED_IPV6_PATTERN =
+  /(?:^|[^A-Za-z0-9])(?=[0-9A-F:.]+(?:%(?:25)?[A-Za-z0-9_.~-]+)?(?:[/?#]|$))[0-9A-F:.]*:[0-9A-F:.]*:[0-9A-F:.]*(?:%(?:25)?[A-Za-z0-9_.~-]+)?(?:[/?#]|$)/iu;
+const NUMERIC_HOST_PATTERN =
+  /(?:^|[@/\s])(?:0x[0-9A-F]+|0[0-7]{6,}|\d+)(?::\d{1,5})?(?:[/?#]|$)/iu;
+const NUMERIC_HOST_PART = "(?:0x[0-9a-f]{1,8}|0[0-7]{1,12}|[0-9]{1,4})";
+const NUMERIC_DOTTED_HOST_PATTERN = new RegExp(
+  `(?:^|[^A-Za-z0-9_-])(?:${NUMERIC_HOST_PART}\\.){1,3}${NUMERIC_HOST_PART}(?::\\d{1,5})?(?:[/?#]|$)`,
+  "iu",
+);
+const SHORT_NUMERIC_HOST_PATTERN =
+  /(?:^|[@:/\s])(?:0[0-7]*|[1-9]\d{0,3})(?::\d{1,5})?(?:[/?#]|$)/iu;
+const BRACKETED_IPV6_ORIGIN_PATTERN =
+  /(?:^|[^A-Za-z0-9])\[[0-9A-F:.]+(?:%(?:25)?[A-Za-z0-9_.~-]+)?\](?::\d{1,5})?(?:[/?#]|$)/iu;
+const IPV6_ZONE_SUFFIX_PATTERN = /%(?:25)?[A-Za-z0-9_.~-]+(?=$|[/?#])/iu;
+const TRAILING_HOST_DOT_PATTERN = /\.+(?=:\d{1,5}(?:[/?#]|$)|[/?#]|$)/u;
+
+/**
+ * Normalize alternate Unicode dot separators before looking for host-shaped
+ * identity values. Model namespaces and revision separators remain untouched.
+ */
+function normalizeIdentityHostSeparators(value: string): string {
+  return value.replace(/%2e/giu, ".").replace(/[\u3002\uFF0E\uFF61]/gu, ".");
+}
+
+/** Reject a raw host/origin in any token, including after userinfo. */
+function hasUnsafeIdentityHost(value: string): boolean {
+  const normalized = normalizeIdentityHostSeparators(value);
+  const userinfoIndex = normalized.lastIndexOf("@");
+  const hostCandidate =
+    userinfoIndex >= 0 ? normalized.slice(userinfoIndex + 1) : normalized;
+  const candidates = [normalized, hostCandidate].flatMap((candidate) => {
+    const withoutZone = candidate.replace(IPV6_ZONE_SUFFIX_PATTERN, "");
+    const withoutTrailingDot = candidate.replace(TRAILING_HOST_DOT_PATTERN, "");
+    return [
+      candidate,
+      withoutZone,
+      withoutTrailingDot,
+      withoutTrailingDot.replace(IPV6_ZONE_SUFFIX_PATTERN, ""),
+    ];
+  });
+  return candidates.some(
+    (candidate) =>
+      HOST_LIKE_ORIGIN_PATTERN.test(candidate) ||
+      USERINFO_HOST_ORIGIN_PATTERN.test(candidate) ||
+      BRACKETED_IPV6_ORIGIN_PATTERN.test(candidate) ||
+      UNBRACKETED_IPV6_PATTERN.test(candidate) ||
+      NUMERIC_HOST_PATTERN.test(candidate) ||
+      NUMERIC_DOTTED_HOST_PATTERN.test(candidate) ||
+      SHORT_NUMERIC_HOST_PATTERN.test(candidate),
+  );
+}
 
 function assertNullableTokenString(
   value: unknown,

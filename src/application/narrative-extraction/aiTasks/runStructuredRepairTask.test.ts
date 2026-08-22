@@ -18,11 +18,29 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import type { RawChronicleEventObservation } from "@/features/narrative-extraction/ir/observations/eventOccurrence";
 
+const blockPolicyMock = vi.hoisted(() => vi.fn(() => false));
+const blockLicenseMock = vi.hoisted(() => vi.fn(() => false));
+const beginSkippedAuditMock = vi.hoisted(() =>
+  vi.fn(async (input: Record<string, unknown>) => ({
+    ...input,
+    expectedWorkspacePath: "/workspace",
+    operationId: input.operationId ?? "preflight-operation",
+    executionId: input.executionId ?? "preflight-execution",
+    parentExecutionId: input.parentExecutionId ?? null,
+    startedAt: 1,
+  })),
+);
+const skipSkippedAuditMock = vi.hoisted(() => vi.fn(async () => undefined));
+
 vi.mock("@/features/ai-policy/policyGuard", () => ({
-  blockIfPolicyOff: () => false,
+  blockIfPolicyOff: blockPolicyMock,
 }));
 vi.mock("@/features/license/gate", () => ({
-  blockIfUnlicensed: () => false,
+  blockIfUnlicensed: blockLicenseMock,
+}));
+vi.mock("@/features/ai-audit/api", () => ({
+  beginAiAuditExecution: beginSkippedAuditMock,
+  skipAiAuditExecution: skipSkippedAuditMock,
 }));
 vi.mock("@/features/ai-usage/recordAiUsage", () => ({
   recordAiUsage: vi.fn(),
@@ -139,6 +157,10 @@ function createRepairStageExecution(input: {
 describe("structured repair root-object contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    blockPolicyMock.mockReturnValue(false);
+    blockLicenseMock.mockReturnValue(false);
+    beginSkippedAuditMock.mockClear();
+    skipSkippedAuditMock.mockClear();
   });
 
   it("sends the declared direct-root contract through the audited stage seam", async () => {
@@ -182,6 +204,333 @@ describe("structured repair root-object contract", () => {
         },
       },
     });
+  });
+
+  it("emits one skipped no-response receipt for policy-blocked supplied stages", async () => {
+    blockPolicyMock.mockReturnValue(true);
+    const observationStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-policy",
+      taskId: "task-observation",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "observation-preflight-policy",
+    });
+    const eventStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-policy",
+      taskId: "task-event",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "event-preflight-policy",
+    });
+    const repairStage = createRepairStageExecution({
+      projectId: "project-test",
+      runId: "run-preflight-policy",
+      taskId: "task-repair",
+      attemptId: "attempt-1",
+      stageExecutionId: "repair-preflight-policy",
+    });
+    const receipts: unknown[][] = [[], [], []];
+
+    await expect(
+      runObservationExtractionTask({
+        windows: [{ sourceRef: "S0001", text: "本文" }],
+        projectId: "project-test",
+        stageExecution: observationStage,
+        onStageReceipt: (receipt) => {
+          receipts[0]!.push(receipt);
+        },
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      runEventSynthesisTask({
+        clusterRef: "cluster-1",
+        observations: [observation],
+        projectId: "project-test",
+        stageExecution: eventStage,
+        onStageReceipt: (receipt) => {
+          receipts[1]!.push(receipt);
+        },
+      }),
+    ).resolves.toEqual([]);
+    await expect(
+      runStructuredRepairTask({
+        brokenText: "not-json",
+        expectedShape: '{"observations":[]}',
+        projectId: "project-test",
+        stageExecution: repairStage,
+        responseValidator: () => "invalid",
+        onStageReceipt: (receipt) => {
+          receipts[2]!.push(receipt);
+        },
+      }),
+    ).resolves.toBeNull();
+
+    for (const [index, stageId] of [
+      NARRATIVE_STAGE_IDS.observationExtraction,
+      NARRATIVE_STAGE_IDS.eventSynthesis,
+      NARRATIVE_STAGE_IDS.structuredRepair,
+    ].entries()) {
+      expect(receipts[index]).toHaveLength(1);
+      expect(receipts[index]?.[0]).toMatchObject({
+        responseDigest: null,
+        parseStatus: "not-attempted",
+        terminalStatus: "skipped",
+        stageExecution: { stageId },
+        modelExecutionBinding: { resolutionStatus: "unresolved" },
+        stageExecutionReceiptDigest: expect.stringMatching(
+          /^sha256:[0-9a-f]{64}$/,
+        ),
+      });
+    }
+    expect(beginSkippedAuditMock).toHaveBeenCalledTimes(3);
+    expect(skipSkippedAuditMock).toHaveBeenCalledTimes(3);
+    expect(skipSkippedAuditMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        reason: expect.stringMatching(/preflight-blocked/),
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            terminalStatus: "skipped",
+            responseDigest: null,
+            parseStatus: "not-attempted",
+          }),
+        }),
+      }),
+    );
+    expect(beginSkippedAuditMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: {
+          chronicleStage: expect.not.objectContaining({
+            terminalStatus: expect.anything(),
+            parseStatus: expect.anything(),
+            responseDigest: expect.anything(),
+            stageExecutionReceiptDigest: expect.anything(),
+          }),
+        },
+      }),
+    );
+  });
+
+  it("emits one skipped no-response receipt for license-blocked supplied stages", async () => {
+    blockLicenseMock.mockReturnValue(true);
+    const stages = [
+      createStageExecutionContext({
+        projectId: "project-test",
+        runId: "run-preflight-license",
+        taskId: "task-observation",
+        attemptId: "attempt-1",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: "observation-preflight-license",
+      }),
+      createStageExecutionContext({
+        projectId: "project-test",
+        runId: "run-preflight-license",
+        taskId: "task-event",
+        attemptId: "attempt-1",
+        stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+        stageExecutionId: "event-preflight-license",
+      }),
+      createRepairStageExecution({
+        projectId: "project-test",
+        runId: "run-preflight-license",
+        taskId: "task-repair",
+        attemptId: "attempt-1",
+        stageExecutionId: "repair-preflight-license",
+      }),
+    ];
+    const receipts: unknown[][] = [[], [], []];
+    await runObservationExtractionTask({
+      windows: [{ sourceRef: "S0001", text: "本文" }],
+      projectId: "project-test",
+      stageExecution: stages[0],
+      onStageReceipt: (receipt) => {
+        receipts[0]!.push(receipt);
+      },
+    });
+    await runEventSynthesisTask({
+      clusterRef: "cluster-1",
+      observations: [observation],
+      projectId: "project-test",
+      stageExecution: stages[1],
+      onStageReceipt: (receipt) => {
+        receipts[1]!.push(receipt);
+      },
+    });
+    await runStructuredRepairTask({
+      brokenText: "not-json",
+      expectedShape: '{"observations":[]}',
+      projectId: "project-test",
+      stageExecution: stages[2],
+      responseValidator: () => "invalid",
+      onStageReceipt: (receipt) => {
+        receipts[2]!.push(receipt);
+      },
+    });
+    expect(receipts.map((value) => value)).toHaveLength(3);
+    expect(receipts.flat()).toHaveLength(3);
+    expect(receipts.flat()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          responseDigest: null,
+          parseStatus: "not-attempted",
+          terminalStatus: "skipped",
+        }),
+      ]),
+    );
+    expect(beginSkippedAuditMock).toHaveBeenCalledTimes(3);
+    expect(skipSkippedAuditMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("uses skipped receipts for empty supplied executions without dispatch", async () => {
+    const observationStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-empty",
+      taskId: "task-observation",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "observation-preflight-empty",
+    });
+    const eventStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-empty",
+      taskId: "task-event",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "event-preflight-empty",
+    });
+    const repairStage = createRepairStageExecution({
+      projectId: "project-test",
+      runId: "run-preflight-empty",
+      taskId: "task-repair",
+      attemptId: "attempt-1",
+      stageExecutionId: "repair-preflight-empty",
+    });
+    const receipts: unknown[] = [];
+    await runObservationExtractionTask({
+      windows: [],
+      projectId: "project-test",
+      stageExecution: observationStage,
+      onStageReceipt: (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    await runEventSynthesisTask({
+      clusterRef: "cluster-empty",
+      observations: [],
+      projectId: "project-test",
+      stageExecution: eventStage,
+      onStageReceipt: (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    await runStructuredRepairTask({
+      brokenText: "",
+      expectedShape: '{"observations":[]}',
+      projectId: "project-test",
+      stageExecution: repairStage,
+      responseValidator: () => "invalid",
+      onStageReceipt: (receipt) => {
+        receipts.push(receipt);
+      },
+    });
+    expect(receipts).toHaveLength(3);
+    expect(receipts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          responseDigest: null,
+          parseStatus: "not-attempted",
+          terminalStatus: "skipped",
+        }),
+      ]),
+    );
+    expect(beginSkippedAuditMock).toHaveBeenCalledTimes(3);
+    expect(skipSkippedAuditMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not publish a skipped receipt when durable preflight closure fails", async () => {
+    blockPolicyMock.mockReturnValue(true);
+    skipSkippedAuditMock.mockRejectedValueOnce(
+      new Error("preflight terminal append failed"),
+    );
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-persist-failure",
+      taskId: "task-observation",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "observation-preflight-persist-failure",
+    });
+    const receipts: unknown[] = [];
+
+    await expect(
+      runObservationExtractionTask({
+        windows: [{ sourceRef: "S0001", text: "本文" }],
+        projectId: "project-test",
+        stageExecution,
+        onStageReceipt: (receipt) => {
+          receipts.push(receipt);
+        },
+      }),
+    ).rejects.toThrow("preflight terminal append failed");
+    expect(beginSkippedAuditMock).toHaveBeenCalledOnce();
+    expect(skipSkippedAuditMock).toHaveBeenCalledOnce();
+    expect(receipts).toEqual([]);
+  });
+
+  it("validates stage identity before policy and empty-input preflight", async () => {
+    blockPolicyMock.mockReturnValue(true);
+    const wrongObservationStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-wrong",
+      taskId: "task-observation",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "observation-preflight-wrong",
+    });
+    const wrongEventStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-wrong",
+      taskId: "task-event",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "event-preflight-wrong",
+    });
+    const wrongRepairStage = createStageExecutionContext({
+      projectId: "project-test",
+      runId: "run-preflight-wrong",
+      taskId: "task-repair",
+      attemptId: "attempt-1",
+      stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+      stageExecutionId: "repair-preflight-wrong",
+    });
+    await expect(
+      runObservationExtractionTask({
+        windows: [],
+        projectId: "project-test",
+        stageExecution: wrongObservationStage,
+      }),
+    ).rejects.toThrow(/stageId/);
+    await expect(
+      runEventSynthesisTask({
+        clusterRef: "cluster-wrong",
+        observations: [],
+        projectId: "project-test",
+        stageExecution: wrongEventStage,
+      }),
+    ).rejects.toThrow(/stageId/);
+    await expect(
+      runStructuredRepairTask({
+        brokenText: "",
+        expectedShape: '{"observations":[]}',
+        projectId: "project-test",
+        stageExecution: wrongRepairStage,
+        responseValidator: () => "invalid",
+      }),
+    ).rejects.toThrow(/stageId/);
+    expect(beginSkippedAuditMock).not.toHaveBeenCalled();
+    expect(skipSkippedAuditMock).not.toHaveBeenCalled();
   });
 
   it("fails closed before dispatch when a Chronicle stage omits its schema validator", async () => {

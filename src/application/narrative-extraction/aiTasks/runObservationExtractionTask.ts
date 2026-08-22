@@ -28,6 +28,7 @@ import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
   buildChronicleStageAuditNoResponseTerminal,
+  emitChronicleStageAuditSkippedReceipt,
   createChronicleStageReceiptEmitter,
   stageModelBindingFromAuditMetadata,
   type ChronicleStageAuditMetadata,
@@ -209,9 +210,6 @@ function observationParseStatus(responseText: string): "parsed" | "invalid" {
 export async function runObservationExtractionTask(
   input: RunObservationExtractionTaskInput,
 ): Promise<readonly RawChronicleEventObservation[]> {
-  if (blockNarrativeAiTask()) return [];
-  if (input.windows.length === 0) return [];
-
   if (input.stageExecution) {
     assertStageExecutionContext(input.stageExecution);
     if (
@@ -230,6 +228,27 @@ export async function runObservationExtractionTask(
         `Observation extraction requires stageId '${NARRATIVE_STAGE_IDS.observationExtraction}'`,
       );
     }
+  }
+
+  const blocked = blockNarrativeAiTask();
+  const emptyInput = input.windows.length === 0;
+  if (blocked || emptyInput) {
+    if (input.stageExecution) {
+      const promptArtifact = buildObservationPromptArtifact(input.windows);
+      const promptDigests = await buildChroniclePromptDigests(promptArtifact);
+      await emitChronicleStageAuditSkippedReceipt({
+        stageExecution: input.stageExecution,
+        ...promptDigests,
+        projectId: input.stageExecution.projectId,
+        pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
+        request: { messages: promptArtifact.messages },
+        reason: blocked
+          ? "narrative-observation-preflight-blocked"
+          : "narrative-observation-preflight-empty",
+        onReceipt: input.onStageReceipt,
+      });
+    }
+    return [];
   }
 
   const allowedSourceRefs = new Set(

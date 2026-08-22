@@ -29,6 +29,7 @@ import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
   buildChronicleStageAuditNoResponseTerminal,
+  emitChronicleStageAuditSkippedReceipt,
   createChronicleStageReceiptEmitter,
   stageModelBindingFromAuditMetadata,
   type ChronicleStageAuditMetadata,
@@ -221,9 +222,6 @@ function synthesisParseStatus(responseText: string): "parsed" | "invalid" {
 export async function runEventSynthesisTask(
   input: RunEventSynthesisTaskInput,
 ): Promise<readonly EventHypothesis[]> {
-  if (blockNarrativeAiTask()) return [];
-  if (input.observations.length === 0) return [];
-
   if (input.stageExecution) {
     assertStageExecutionContext(input.stageExecution);
     if (
@@ -240,6 +238,27 @@ export async function runEventSynthesisTask(
         `Event synthesis requires stageId '${NARRATIVE_STAGE_IDS.eventSynthesis}'`,
       );
     }
+  }
+
+  const blocked = blockNarrativeAiTask();
+  const emptyInput = input.observations.length === 0;
+  if (blocked || emptyInput) {
+    if (input.stageExecution) {
+      const promptArtifact = buildSynthesisPromptArtifact(input);
+      const promptDigests = await buildChroniclePromptDigests(promptArtifact);
+      await emitChronicleStageAuditSkippedReceipt({
+        stageExecution: input.stageExecution,
+        ...promptDigests,
+        projectId: input.stageExecution.projectId,
+        pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH,
+        request: { messages: promptArtifact.messages },
+        reason: blocked
+          ? "narrative-event-preflight-blocked"
+          : "narrative-event-preflight-empty",
+        onReceipt: input.onStageReceipt,
+      });
+    }
+    return [];
   }
 
   const promptArtifact = buildSynthesisPromptArtifact(input);

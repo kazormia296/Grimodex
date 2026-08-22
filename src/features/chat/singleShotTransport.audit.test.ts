@@ -238,6 +238,248 @@ describe("single-shot AI audit contracts", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("closes a dispatched audit when response blocks are malformed", async () => {
+    const responseError = {
+      blocks: [{ type: "text", content: 42 }],
+      stopReason: "end_turn",
+    };
+    const onAuditCompleted = vi.fn(async () => undefined);
+    invokeMock.mockResolvedValueOnce(responseError as never);
+
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "malformed response" }] },
+        {
+          projectId: "project-1",
+          pathId: "synopsis",
+          onAuditCompleted,
+        },
+      ),
+    ).rejects.toThrow(/text block/i);
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(onAuditCompleted).not.toHaveBeenCalled();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.not.objectContaining({
+          chronicleStage: expect.anything(),
+        }),
+      }),
+    );
+  });
+
+  it("closes malformed Chronicle responses with one canonical no-response receipt", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-malformed-chronicle-response",
+      taskId: "task-malformed-chronicle-response",
+      attemptId: "attempt-malformed-chronicle-response",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-malformed-chronicle-response",
+    });
+    const digests = {
+      contextSetDigest: testDigest("1"),
+      componentContractDigest: testDigest("2"),
+      finalRequestDigest: testDigest("3"),
+    };
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      digests,
+    );
+    const responseError = {
+      blocks: [{ type: "text", content: 42 }],
+      stopReason: "end_turn",
+    };
+    invokeMock.mockResolvedValueOnce(responseError as never);
+    let capturedReceipt: unknown;
+    const publishedReceipts: unknown[] = [];
+    const onNoResponseTerminalMetadata = vi.fn(
+      async (terminalStatus: "failed" | "cancelled" | "skipped") => {
+        const terminal = await buildChronicleStageAuditNoResponseTerminal({
+          stageExecution,
+          ...digests,
+          terminalStatus,
+          onReceipt: (receipt) => {
+            capturedReceipt = receipt;
+          },
+        });
+        return { chronicleStage: terminal as unknown as AiAuditJsonObject };
+      },
+    );
+    const onAuditCompleted = vi.fn(async () => {
+      publishedReceipts.push(capturedReceipt);
+    });
+
+    await expect(
+      invokeSingleShotChat(
+        {
+          messages: [{ role: "user", content: "malformed Chronicle response" }],
+        },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onNoResponseTerminalMetadata,
+          onAuditCompleted,
+        },
+      ),
+    ).rejects.toThrow(/text block/i);
+    expect(onNoResponseTerminalMetadata).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            terminalStatus: "failed",
+            parseStatus: "not-attempted",
+            responseDigest: null,
+          }),
+        }),
+      }),
+    );
+    expect(onAuditCompleted).toHaveBeenCalledOnce();
+    expect(publishedReceipts).toHaveLength(1);
+    expect(publishedReceipts[0]).toEqual(expect.anything());
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the same route snapshot for Chronicle binding and IPC after settings change", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-route-toctou",
+      taskId: "task-route-toctou",
+      attemptId: "attempt-route-toctou",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-route-toctou",
+    });
+    const digests = {
+      contextSetDigest: testDigest("1"),
+      componentContractDigest: testDigest("2"),
+      finalRequestDigest: testDigest("3"),
+    };
+    let sealedBinding: StageModelExecutionBindingV1 | undefined;
+    const boundContext = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      digests,
+      (binding) => {
+        sealedBinding = binding;
+      },
+    );
+    const terminalContext = {
+      ...boundContext,
+      onTerminalMetadata: async (responseText: string) => {
+        if (sealedBinding === undefined) throw new Error("binding not sealed");
+        const terminal = await buildChronicleStageAuditTerminal({
+          stageExecution,
+          ...digests,
+          responseText,
+          parseStatus: "parsed",
+          terminalStatus: "succeeded",
+          modelExecutionBinding: sealedBinding,
+        });
+        return { chronicleStage: terminal as unknown as AiAuditJsonObject };
+      },
+    };
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "anthropic",
+        model: "claude-4.6-sonnet",
+      },
+    });
+    let releaseBegin!: () => void;
+    let markBeginEntered!: () => void;
+    const beginEntered = new Promise<void>((resolve) => {
+      markBeginEntered = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseBegin = resolve;
+    });
+    beginMock.mockImplementationOnce(async (input: Record<string, unknown>) => {
+      markBeginEntered();
+      await release;
+      return {
+        ...input,
+        expectedWorkspacePath: "/workspace",
+        operationId: input.operationId ?? "operation-toctou",
+        executionId: input.executionId ?? "execution-toctou",
+        parentExecutionId: input.parentExecutionId ?? null,
+        startedAt: 1,
+      };
+    });
+
+    const invocation = invokeSingleShotChat(
+      {
+        messages: [{ role: "user", content: "route snapshot" }],
+        provider: null,
+        model: null,
+        apiVariant: null,
+        endpointId: null,
+      },
+      terminalContext,
+    );
+    await beginEntered;
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openrouter",
+        model: "gpt-5.6",
+      },
+    });
+    releaseBegin();
+    await invocation;
+
+    expect(sealedBinding).toMatchObject({
+      provider: "anthropic",
+      requestedModel: "claude-4.6-sonnet",
+    });
+    expect(beginMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          auditMetadata: expect.objectContaining({
+            routeObservation: expect.objectContaining({
+              rendererProviderSnapshot: "anthropic",
+              rendererModelSnapshot: "claude-4.6-sonnet",
+            }),
+          }),
+        }),
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            modelExecutionBinding: expect.objectContaining({
+              provider: "anthropic",
+              requestedModel: "claude-4.6-sonnet",
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({
+        provider: "anthropic",
+        model: "claude-4.6-sonnet",
+        apiVariant: null,
+        endpointId: null,
+      }),
+    );
+    expect(completeMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            modelExecutionBinding: expect.objectContaining({
+              provider: "anthropic",
+              requestedModel: "claude-4.6-sonnet",
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("rejects Chronicle v2 begin metadata when protected fields are missing", async () => {
     await expect(
       invokeSingleShotChat(
@@ -1189,6 +1431,154 @@ describe("single-shot AI audit contracts", () => {
         ]),
       }),
     );
+  });
+
+  it.each([
+    {
+      label: "explicit endpoint was deleted",
+      args: { endpointId: "endpoint-a" },
+      activeOpenaiCompatibleEndpointId: "endpoint-b",
+    },
+  ])(
+    "rejects $label before audit begin or provider dispatch",
+    async ({ args, activeOpenaiCompatibleEndpointId }) => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai-compatible",
+          model: "local-model",
+          openaiCompatible: { baseUrl: "" },
+          openaiCompatibleEndpoints: [
+            { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+          ],
+          activeOpenaiCompatibleEndpointId,
+        },
+      });
+
+      await expect(
+        invokeSingleShotChat(
+          {
+            messages: [{ role: "user", content: "stale endpoint" }],
+            provider: "openai-compatible",
+            model: "local-model",
+            ...args,
+          },
+          { projectId: "project-1", pathId: "synopsis" },
+        ),
+      ).rejects.toThrow(/endpoint.*configured|endpoint.*available/i);
+      expect(beginMock).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([null, "deleted-endpoint"] as const)(
+    "materializes the first configured endpoint when the active id is %s",
+    async (activeOpenaiCompatibleEndpointId) => {
+      useAiSettingsStore.setState({
+        settings: {
+          ...DEFAULT_AI_SETTINGS,
+          provider: "openai-compatible",
+          model: "local-model",
+          openaiCompatible: { baseUrl: "" },
+          openaiCompatibleEndpoints: [
+            { id: "endpoint-a", label: "A", baseUrl: "http://a/v1" },
+            { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+          ],
+          activeOpenaiCompatibleEndpointId,
+        },
+      });
+
+      await invokeSingleShotChat(
+        {
+          messages: [{ role: "user", content: "fallback endpoint" }],
+          provider: "openai-compatible",
+          model: "local-model",
+        },
+        { projectId: "project-1", pathId: "synopsis" },
+      );
+      expect(invokeMock).toHaveBeenCalledWith(
+        "send_chat_message",
+        expect.objectContaining({ endpointId: "endpoint-a" }),
+      );
+    },
+  );
+
+  it("seals and dispatches a known explicit endpoint without re-resolving it", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "openai-compatible",
+        model: "local-model",
+        openaiCompatible: { baseUrl: "" },
+        openaiCompatibleEndpoints: [
+          { id: "endpoint-a", label: "A", baseUrl: "http://a/v1" },
+          { id: "endpoint-b", label: "B", baseUrl: "http://b/v1" },
+        ],
+        activeOpenaiCompatibleEndpointId: "endpoint-b",
+      },
+    });
+    const onResolvedRouteMetadata = vi.fn(async (route) => {
+      expect(route.endpointId).toBe("endpoint-a");
+      return {};
+    });
+
+    await invokeSingleShotChat(
+      {
+        messages: [{ role: "user", content: "known endpoint" }],
+        provider: "openai-compatible",
+        model: "local-model",
+        endpointId: "endpoint-a",
+      },
+      {
+        projectId: "project-1",
+        pathId: "synopsis",
+        onResolvedRouteMetadata,
+      },
+    );
+    expect(onResolvedRouteMetadata).toHaveBeenCalledOnce();
+    expect(beginMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          auditMetadata: expect.objectContaining({
+            routeObservation: expect.objectContaining({
+              rendererEndpointIdSnapshot: "endpoint-a",
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "send_chat_message",
+      expect.objectContaining({ endpointId: "endpoint-a" }),
+    );
+  });
+
+  it("rejects an explicit endpoint when the provider does not own it", async () => {
+    useAiSettingsStore.setState({
+      settings: {
+        ...DEFAULT_AI_SETTINGS,
+        provider: "anthropic",
+        model: "claude-4.6-sonnet",
+        openaiCompatible: { baseUrl: "" },
+        openaiCompatibleEndpoints: [
+          { id: "endpoint-a", label: "A", baseUrl: "http://a/v1" },
+        ],
+      },
+    });
+
+    await expect(
+      invokeSingleShotChat(
+        {
+          messages: [{ role: "user", content: "mismatched endpoint" }],
+          provider: "anthropic",
+          model: "claude-4.6-sonnet",
+          endpointId: "endpoint-a",
+        },
+        { projectId: "project-1", pathId: "synopsis" },
+      ),
+    ).rejects.toThrow(/endpoint.*provider|provider.*endpoint/i);
+    expect(beginMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it.each(["anthropic", "ollama"])(
