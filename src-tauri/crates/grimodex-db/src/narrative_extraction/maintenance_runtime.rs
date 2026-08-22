@@ -360,6 +360,7 @@ struct DurableMaintenanceRun {
     semantic_epoch_id: Option<String>,
     work_key: Option<String>,
     outcome_summary_json: Option<String>,
+    terminal_reason_code: Option<String>,
     completed_at: Option<String>,
     created_at_raw: String,
     started_at_raw: Option<String>,
@@ -371,7 +372,8 @@ fn load_durable_maintenance_runs(
 ) -> anyhow::Result<Vec<DurableMaintenanceRun>> {
     let mut statement = conn.prepare(
         "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
-                outcome_summary_json, created_at, started_at, completed_at
+                outcome_summary_json, created_at, started_at, completed_at,
+                terminal_reason_code
            FROM narrative_extraction_runs
           WHERE project_id = ?1
             AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')",
@@ -388,6 +390,7 @@ fn load_durable_maintenance_runs(
             row.get::<_, String>(7)?,
             row.get::<_, Option<String>>(8)?,
             row.get::<_, Option<String>>(9)?,
+            row.get::<_, Option<String>>(10)?,
         ))
     })?;
     let mut runs = Vec::new();
@@ -403,6 +406,7 @@ fn load_durable_maintenance_runs(
             created_at_raw,
             started_at,
             completed_at,
+            terminal_reason_code,
         ) = row?;
         let run = DurableMaintenanceRun {
             run_id,
@@ -412,6 +416,7 @@ fn load_durable_maintenance_runs(
             semantic_epoch_id,
             work_key,
             outcome_summary_json,
+            terminal_reason_code,
             completed_at,
             created_at_raw,
             started_at_raw: started_at,
@@ -499,6 +504,17 @@ fn validate_relevant_run_timestamp(
     Ok(())
 }
 
+fn is_retryable_failed_backfill_without_terminal(run: &DurableMaintenanceRun) -> bool {
+    run.run_kind == "backfill"
+        && run.status == "failed"
+        && run.started_at_raw.is_none()
+        && run.completed_at.is_none()
+        && run
+            .terminal_reason_code
+            .as_deref()
+            .is_some_and(|reason| classify_failure(reason).retryable)
+}
+
 /// Validate lifecycle shape only after project, coordinate, and status
 /// relevance has selected the discovery window. This keeps malformed rows
 /// from an unrelated epoch from poisoning a current candidate while making
@@ -537,8 +553,13 @@ fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> a
             // shared validator. A malformed/missing terminal timestamp must
             // remain rerunnable so discovery can compare its valid
             // created_at/started_at against a fresh retry and fail closed
-            // only if the malformed marker is still maximal.
-            if !(run.run_kind == "backfill" && run.status == "completed") {
+            // only if the malformed marker is still maximal. A failed
+            // Backfill with the recognized retryable lock disposition is the
+            // other permitted NULL-terminal shape; it is a retry candidate,
+            // not reusable terminal evidence.
+            let allows_missing_terminal = (run.run_kind == "backfill" && run.status == "completed")
+                || is_retryable_failed_backfill_without_terminal(run);
+            if !allows_missing_terminal {
                 validate_relevant_run_timestamp(
                     run,
                     "completed_at",

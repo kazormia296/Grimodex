@@ -2,8 +2,8 @@
 
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
-    run_system_work_cycle, MaintenanceCycleRequest, MaintenanceCycleResult, RecoveryMode,
-    LEGACY_BACKFILL_WORK_KEY,
+    discover_durable_maintenance_work, run_system_work_cycle, AutomaticRunKind,
+    MaintenanceCycleRequest, MaintenanceCycleResult, RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -44,6 +44,25 @@ fn backfill_request() -> MaintenanceCycleRequest {
         "wakeProjectIds": []
     }))
     .expect("valid cycle request")
+}
+
+fn seed_completed_backfill_marker(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('completed-backfill-marker', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-reacceptance","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, ?3)"#,
+            params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
+        )?;
+        Ok(())
+    })
+    .expect("seed completed Backfill marker");
 }
 
 #[test]
@@ -120,6 +139,58 @@ fn durable_transient_failure_is_retried_and_succeeds_after_lock_release() {
         })
         .expect("read retry ledger");
     assert_eq!(statuses, vec!["failed", "completed"]);
+}
+
+#[test]
+fn retryable_failed_null_terminal_is_accepted_but_nonretryable_is_rejected() {
+    let retryable_db = fixture_db();
+    seed_completed_backfill_marker(&retryable_db);
+    retryable_db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key, terminal_reason_code)
+                 VALUES ('retryable-failed-without-terminal', ?1, 'maintenance', '{}', '{}', 'digest',
+                         'failed', '{}', '2026-08-23T10:00:00.000Z', NULL, NULL,
+                         'backfill', ?2, ?3, 'NEX_MAINTENANCE_SQLITE_LOCKED')",
+                params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
+            )?;
+            Ok(())
+        })
+        .expect("seed retryable failed Backfill without completed_at");
+
+    let discovered =
+        discover_durable_maintenance_work(&retryable_db, PROJECT_ID, "reacceptance-test")
+            .expect("retryable failed Backfill must remain selectable")
+            .expect("retryable failed Backfill must request retry");
+    assert_eq!(discovered.run_kind, AutomaticRunKind::Backfill);
+
+    let nonretryable_db = fixture_db();
+    seed_completed_backfill_marker(&nonretryable_db);
+    nonretryable_db
+        .with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key, terminal_reason_code)
+                 VALUES ('nonretryable-failed-without-terminal', ?1, 'maintenance', '{}', '{}', 'digest',
+                         'failed', '{}', '2026-08-23T10:00:00.000Z', NULL, NULL,
+                         'backfill', ?2, ?3, 'NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION')",
+                params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
+            )?;
+            Ok(())
+        })
+        .expect("seed nonretryable failed Backfill without completed_at");
+
+    let error =
+        discover_durable_maintenance_work(&nonretryable_db, PROJECT_ID, "reacceptance-test")
+            .expect_err("nonretryable failed Backfill without completed_at must fail closed");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
 }
 
 #[test]
