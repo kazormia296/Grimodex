@@ -25,6 +25,14 @@ mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
 pub mod maintenance_runtime;
+pub mod maintenance_skip_evidence;
+pub use maintenance_skip_evidence::{
+    evaluate_completed_run_skip, persist_completed_run_skip_evidence,
+    persist_completed_run_skip_evidence_in_tx, read_completed_run_skip_evidence,
+    CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
+    CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    VERIFY_RUN_KIND_CONTRACT_VERSION,
+};
 mod models;
 mod phase_operations;
 mod phase_snapshots;

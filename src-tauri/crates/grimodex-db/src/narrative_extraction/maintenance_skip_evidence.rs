@@ -1,0 +1,608 @@
+//! Durable, contract-aware evidence for skipping a completed maintenance Run.
+//!
+//! C2-5A owns Run creation and recovery. This module owns the separate
+//! decision that a completed Verify or Rebuild-Derived Run may be omitted on
+//! a later trigger. The evidence is kept inside the existing
+//! `outcome_summary_json` column, so this slice does not add a schema, key, or
+//! production scheduler migration.
+//!
+//! The decision is deliberately fail-closed: a missing, malformed, partial,
+//! stale, or terminally unsuccessful Run is a re-run, never a skip. A caller
+//! supplies the current contract coordinates; no database value is promoted
+//! to a current contract merely because it was previously stored.
+
+use anyhow::{bail, ensure, Context, Result};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use super::commit::digest_plan;
+use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
+use super::restore_rebuild::{REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION};
+use super::task_leases::with_immediate_transaction;
+use crate::Database;
+
+/// The nested outcome key used for this evidence.
+pub const COMPLETED_RUN_SKIP_EVIDENCE_FIELD: &str = "skipEvidence";
+
+/// Current contract version for Verify's completed-run evidence coordinate.
+pub const VERIFY_RUN_KIND_CONTRACT_VERSION: &str = VERIFY_CONTRACT_VERSION;
+
+/// Current contract version for Rebuild-Derived's completed-run evidence
+/// coordinate.
+pub const REBUILD_RUN_KIND_CONTRACT_VERSION: &str = REBUILD_CONTRACT_VERSION;
+
+const VERIFY_RUN_KIND: &str = "dependency-verify";
+const REBUILD_RUN_KIND: &str = "semantic-index-rebuild";
+
+/// The complete durable coordinate sealed after a successful terminal Run.
+///
+/// `report_digest` is the digest of Verify's `report` or Rebuild-Derived's
+/// `summary`, depending on `run_kind`. It is not a digest of this evidence
+/// object; keeping those domains separate prevents an evidence rewrite from
+/// making a tampered report look valid.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedRunSkipEvidence {
+    pub project_id: String,
+    pub run_kind: String,
+    pub semantic_epoch_id: String,
+    pub graph_contract_digest: String,
+    pub rule_registry_digest: String,
+    pub producer_generation_set_digest: String,
+    pub run_kind_contract_version: String,
+    #[serde(alias = "successfulTerminalDigest", alias = "terminalDigest")]
+    pub report_digest: String,
+}
+
+/// Current coordinates used to decide whether a completed Run can be
+/// skipped. The report digest is optional because a trigger can decide from
+/// the current input contracts before it has a newly computed report. When a
+/// caller has an expected digest, it is compared as an additional condition.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompletedRunSkipExpectation {
+    pub project_id: String,
+    pub run_kind: String,
+    pub semantic_epoch_id: String,
+    pub graph_contract_digest: String,
+    pub rule_registry_digest: String,
+    pub producer_generation_set_digest: String,
+    pub run_kind_contract_version: String,
+    pub report_digest: Option<String>,
+}
+
+/// Why a completed Run was not eligible for reuse.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CompletedRunSkipReason {
+    NoRun,
+    LatestRunNotSuccessful,
+    WorkKeyMismatch,
+    OutcomeMissing,
+    OutcomeMalformed,
+    EvidenceMissing,
+    EvidenceMalformed,
+    ProjectMismatch,
+    RunKindMismatch,
+    EpochMismatch,
+    GraphContractMismatch,
+    RuleRegistryMismatch,
+    ProducerGenerationMismatch,
+    RunKindContractMismatch,
+    ReportDigestMismatch,
+    UnsupportedRunKind,
+}
+
+/// The only successful decision is `Skip`; every other branch is an explicit
+/// request to execute Verify/Rebuild again.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "kebab-case")]
+pub enum CompletedRunSkipDecision {
+    Skip {
+        run_id: String,
+        report_digest: String,
+    },
+    Rerun {
+        reason: CompletedRunSkipReason,
+    },
+}
+
+#[derive(Debug)]
+struct LatestRun {
+    id: String,
+    project_id: String,
+    run_kind: String,
+    status: String,
+    semantic_epoch_id: Option<String>,
+    work_key: Option<String>,
+    completed_at: Option<String>,
+    outcome_summary_json: Option<String>,
+}
+
+type PersistRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+/// Decide whether the latest Run for the requested project/Run Kind carries
+/// complete, current, successful skip evidence.
+pub fn evaluate_completed_run_skip(
+    conn: &Connection,
+    expected: &CompletedRunSkipExpectation,
+) -> Result<CompletedRunSkipDecision> {
+    validate_expectation_shape(expected)?;
+    if !is_supported_run_kind(&expected.run_kind) {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::UnsupportedRunKind,
+        });
+    }
+
+    let latest = conn
+        .query_row(
+            "SELECT id, project_id, run_kind, status, semantic_epoch_id, work_key,
+                    completed_at, outcome_summary_json
+              FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = ?2
+              ORDER BY rowid DESC LIMIT 1",
+            params![expected.project_id, expected.run_kind],
+            |row| {
+                Ok(LatestRun {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    run_kind: row.get(2)?,
+                    status: row.get(3)?,
+                    semantic_epoch_id: row.get(4)?,
+                    work_key: row.get(5)?,
+                    completed_at: row.get(6)?,
+                    outcome_summary_json: row.get(7)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(latest) = latest else {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::NoRun,
+        });
+    };
+
+    // A newer failed/running/cancelled Run must not be bypassed by an older
+    // successful Run. `completed_at` is checked as well as status because a
+    // malformed terminal row is not durable success evidence.
+    if latest.status != "completed"
+        || latest
+            .completed_at
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::LatestRunNotSuccessful,
+        });
+    }
+    if latest.project_id != expected.project_id {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::ProjectMismatch,
+        });
+    }
+    if latest.run_kind != expected.run_kind {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RunKindMismatch,
+        });
+    }
+    if latest.semantic_epoch_id.as_deref() != Some(expected.semantic_epoch_id.as_str()) {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EpochMismatch,
+        });
+    }
+    if !canonical_work_key_matches(
+        &latest.run_kind,
+        expected.semantic_epoch_id.as_str(),
+        latest.work_key.as_deref(),
+    ) {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::WorkKeyMismatch,
+        });
+    }
+
+    let Some(outcome_json) = latest.outcome_summary_json.as_deref() else {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::OutcomeMissing,
+        });
+    };
+    let outcome: Value = match serde_json::from_str(outcome_json) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::OutcomeMalformed,
+            })
+        }
+    };
+    let Some(evidence_value) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) else {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EvidenceMissing,
+        });
+    };
+    let evidence: CompletedRunSkipEvidence = match serde_json::from_value(evidence_value.clone()) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::EvidenceMalformed,
+            })
+        }
+    };
+    if validate_evidence_shape(&evidence).is_err() {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EvidenceMalformed,
+        });
+    }
+
+    if evidence.project_id != expected.project_id {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::ProjectMismatch,
+        });
+    }
+    if evidence.run_kind != expected.run_kind {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RunKindMismatch,
+        });
+    }
+    if evidence.semantic_epoch_id != expected.semantic_epoch_id {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EpochMismatch,
+        });
+    }
+    if evidence.graph_contract_digest != expected.graph_contract_digest {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::GraphContractMismatch,
+        });
+    }
+    if evidence.rule_registry_digest != expected.rule_registry_digest {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RuleRegistryMismatch,
+        });
+    }
+    if evidence.producer_generation_set_digest != expected.producer_generation_set_digest {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::ProducerGenerationMismatch,
+        });
+    }
+    if evidence.run_kind_contract_version != expected.run_kind_contract_version
+        || expected.run_kind_contract_version
+            != supported_run_kind_contract_version(&expected.run_kind)
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RunKindContractMismatch,
+        });
+    }
+    if outcome_contract_version(&expected.run_kind, &outcome)
+        != Some(supported_run_kind_contract_version(&expected.run_kind))
+        || evidence.run_kind_contract_version
+            != outcome_contract_version(&expected.run_kind, &outcome).unwrap_or_default()
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RunKindContractMismatch,
+        });
+    }
+
+    let outcome_digest = match successful_outcome_digest(&expected.run_kind, &outcome) {
+        Ok(digest) => digest,
+        Err(_) => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::ReportDigestMismatch,
+            })
+        }
+    };
+    if evidence.report_digest != outcome_digest
+        || expected
+            .report_digest
+            .as_deref()
+            .is_some_and(|digest| digest != evidence.report_digest)
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::ReportDigestMismatch,
+        });
+    }
+
+    Ok(CompletedRunSkipDecision::Skip {
+        run_id: latest.id,
+        report_digest: evidence.report_digest,
+    })
+}
+
+/// Read the nested evidence from the latest Run without making a skip
+/// decision. Invalid or incomplete evidence is represented as `None`; the
+/// decision API above returns the typed re-run reason for diagnostics.
+pub fn read_completed_run_skip_evidence(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+) -> Result<Option<CompletedRunSkipEvidence>> {
+    let row: Option<(String, Option<String>, Option<String>)> = conn
+        .query_row(
+            "SELECT status, completed_at, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = ?2
+              ORDER BY rowid DESC LIMIT 1",
+            params![project_id, run_kind],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((status, completed_at, outcome_json)) = row else {
+        return Ok(None);
+    };
+    if status != "completed"
+        || completed_at
+            .as_deref()
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return Ok(None);
+    }
+    let Some(outcome_json) = outcome_json else {
+        return Ok(None);
+    };
+    let outcome: Value = serde_json::from_str(&outcome_json)
+        .ok()
+        .unwrap_or(Value::Null);
+    let Some(evidence) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) else {
+        return Ok(None);
+    };
+    let parsed: CompletedRunSkipEvidence = match serde_json::from_value(evidence.clone()) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
+    if validate_evidence_shape(&parsed).is_err()
+        || parsed.run_kind_contract_version != supported_run_kind_contract_version(&parsed.run_kind)
+        || successful_outcome_digest(&parsed.run_kind, &outcome)
+            .ok()
+            .as_deref()
+            != Some(parsed.report_digest.as_str())
+    {
+        return Ok(None);
+    }
+    Ok(Some(parsed))
+}
+
+/// Attach skip evidence to an already successful Verify/Rebuild Run in one
+/// transaction. The existing outcome and its report/summary digest are
+/// verified before the nested evidence is sealed, so a caller cannot mark a
+/// failed or partially observed Run as reusable.
+pub fn persist_completed_run_skip_evidence(
+    db: &Database,
+    run_id: &str,
+    evidence: &CompletedRunSkipEvidence,
+) -> Result<()> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            persist_completed_run_skip_evidence_in_tx(conn, run_id, evidence)
+        })
+    })
+}
+
+/// Transaction-composing form of [`persist_completed_run_skip_evidence`].
+pub fn persist_completed_run_skip_evidence_in_tx(
+    conn: &Connection,
+    run_id: &str,
+    evidence: &CompletedRunSkipEvidence,
+) -> Result<()> {
+    ensure!(!run_id.trim().is_empty(), "runId is required");
+    validate_evidence_shape(evidence)?;
+    ensure!(
+        evidence.run_kind_contract_version
+            == supported_run_kind_contract_version(&evidence.run_kind),
+        "NEX_MAINTENANCE_SKIP_CONTRACT_VERSION_UNSUPPORTED: '{}' is not the current contract version for '{}'",
+        evidence.run_kind_contract_version,
+        evidence.run_kind
+    );
+    let row: Option<PersistRunRow> = conn
+        .query_row(
+            "SELECT project_id, run_kind, status, semantic_epoch_id, work_key,
+                    completed_at, outcome_summary_json
+               FROM narrative_extraction_runs WHERE id = ?1",
+            [run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((project_id, run_kind, status, epoch_id, work_key, completed_at, outcome_json)) = row
+    else {
+        bail!("NEX_MAINTENANCE_SKIP_RUN_MISSING: Run '{run_id}' does not exist");
+    };
+    ensure!(
+        status == "completed"
+            && completed_at
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+        "NEX_MAINTENANCE_SKIP_RUN_NOT_SUCCESSFUL: Run '{run_id}' is not a completed terminal Run"
+    );
+    ensure!(
+        project_id == evidence.project_id,
+        "NEX_MAINTENANCE_SKIP_PROJECT_MISMATCH: Run '{run_id}' belongs to project '{project_id}'"
+    );
+    ensure!(
+        run_kind == evidence.run_kind,
+        "NEX_MAINTENANCE_SKIP_RUN_KIND_MISMATCH: Run '{run_id}' has kind '{run_kind}'"
+    );
+    ensure!(
+        epoch_id.as_deref() == Some(evidence.semantic_epoch_id.as_str()),
+        "NEX_MAINTENANCE_SKIP_EPOCH_MISMATCH: Run '{run_id}' is not bound to the evidence epoch"
+    );
+    ensure!(
+        canonical_work_key_matches(&run_kind, &evidence.semantic_epoch_id, work_key.as_deref()),
+        "NEX_MAINTENANCE_SKIP_WORK_KEY_MISMATCH: Run '{run_id}' has a non-canonical work key"
+    );
+    let outcome_json = outcome_json.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_MAINTENANCE_SKIP_OUTCOME_MISSING: Run '{run_id}' has no terminal outcome"
+        )
+    })?;
+    let mut outcome: Value = serde_json::from_str(&outcome_json)
+        .with_context(|| format!("NEX_MAINTENANCE_SKIP_OUTCOME_MALFORMED: Run '{run_id}'"))?;
+    let outcome_digest = successful_outcome_digest(&run_kind, &outcome)?;
+    ensure!(
+        evidence.report_digest == outcome_digest,
+        "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISMATCH: evidence report digest does not match Run '{run_id}'"
+    );
+    ensure!(
+        evidence.run_kind_contract_version
+            == outcome_contract_version(&run_kind, &outcome).unwrap_or_default(),
+        "NEX_MAINTENANCE_SKIP_CONTRACT_MISMATCH: evidence contract version does not match Run '{run_id}'"
+    );
+    let evidence_value = serde_json::to_value(evidence)?;
+    if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
+        ensure!(
+            existing == &evidence_value,
+            "NEX_MAINTENANCE_SKIP_EVIDENCE_CONFLICT: Run '{run_id}' already has different skip evidence"
+        );
+    } else {
+        let object = outcome.as_object_mut().ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_SKIP_OUTCOME_SHAPE_INVALID: Run '{run_id}' outcome is not an object"
+            )
+        })?;
+        object.insert(
+            COMPLETED_RUN_SKIP_EVIDENCE_FIELD.to_string(),
+            evidence_value,
+        );
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET outcome_summary_json = ?1, version = version + 1
+              WHERE id = ?2 AND status = 'completed'",
+            params![serde_json::to_string(&outcome)?, run_id],
+        )?;
+        ensure!(
+            conn.changes() == 1,
+            "NEX_MAINTENANCE_SKIP_EVIDENCE_LOST: Run '{run_id}' changed while sealing evidence"
+        );
+    }
+    Ok(())
+}
+
+fn is_supported_run_kind(run_kind: &str) -> bool {
+    matches!(run_kind, VERIFY_RUN_KIND | REBUILD_RUN_KIND)
+}
+
+fn supported_run_kind_contract_version(run_kind: &str) -> &'static str {
+    match run_kind {
+        VERIFY_RUN_KIND => VERIFY_RUN_KIND_CONTRACT_VERSION,
+        REBUILD_RUN_KIND => REBUILD_RUN_KIND_CONTRACT_VERSION,
+        _ => "",
+    }
+}
+
+fn canonical_work_key_matches(run_kind: &str, epoch_id: &str, work_key: Option<&str>) -> bool {
+    match run_kind {
+        VERIFY_RUN_KIND => work_key == Some(&format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}")),
+        REBUILD_RUN_KIND => work_key == Some(REBUILD_DERIVED_WORK_KEY),
+        _ => false,
+    }
+}
+
+fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<()> {
+    validate_component(&expected.project_id, "projectId")?;
+    validate_component(&expected.run_kind, "runKind")?;
+    validate_component(&expected.semantic_epoch_id, "semanticEpochId")?;
+    validate_component(&expected.graph_contract_digest, "graphContractDigest")?;
+    validate_component(&expected.rule_registry_digest, "ruleRegistryDigest")?;
+    validate_component(
+        &expected.producer_generation_set_digest,
+        "producerGenerationSetDigest",
+    )?;
+    validate_component(
+        &expected.run_kind_contract_version,
+        "runKindContractVersion",
+    )?;
+    if let Some(report_digest) = expected.report_digest.as_deref() {
+        validate_component(report_digest, "reportDigest")?;
+    }
+    Ok(())
+}
+
+fn validate_evidence_shape(evidence: &CompletedRunSkipEvidence) -> Result<()> {
+    let expected = CompletedRunSkipExpectation {
+        project_id: evidence.project_id.clone(),
+        run_kind: evidence.run_kind.clone(),
+        semantic_epoch_id: evidence.semantic_epoch_id.clone(),
+        graph_contract_digest: evidence.graph_contract_digest.clone(),
+        rule_registry_digest: evidence.rule_registry_digest.clone(),
+        producer_generation_set_digest: evidence.producer_generation_set_digest.clone(),
+        run_kind_contract_version: evidence.run_kind_contract_version.clone(),
+        report_digest: Some(evidence.report_digest.clone()),
+    };
+    validate_expectation_shape(&expected)?;
+    ensure!(
+        is_supported_run_kind(&evidence.run_kind),
+        "NEX_MAINTENANCE_SKIP_RUN_KIND_UNSUPPORTED: '{}' cannot carry completed-run skip evidence",
+        evidence.run_kind
+    );
+    Ok(())
+}
+
+fn validate_component(value: &str, name: &str) -> Result<()> {
+    ensure!(!value.trim().is_empty(), "{name} is required");
+    ensure!(
+        value == value.trim(),
+        "{name} must not have surrounding whitespace"
+    );
+    ensure!(
+        !value.chars().any(char::is_whitespace),
+        "{name} must not contain whitespace"
+    );
+    Ok(())
+}
+
+fn outcome_contract_version<'a>(run_kind: &str, outcome: &'a Value) -> Option<&'a str> {
+    let key = match run_kind {
+        VERIFY_RUN_KIND => "verifyContractVersion",
+        REBUILD_RUN_KIND => "rebuildContractVersion",
+        _ => return None,
+    };
+    outcome.get(key).and_then(Value::as_str)
+}
+
+fn successful_outcome_digest(run_kind: &str, outcome: &Value) -> Result<String> {
+    ensure!(
+        is_supported_run_kind(run_kind),
+        "NEX_MAINTENANCE_SKIP_RUN_KIND_UNSUPPORTED: '{run_kind}'"
+    );
+    ensure!(
+        outcome.get("failure").is_none(),
+        "NEX_MAINTENANCE_SKIP_OUTCOME_FAILED: terminal outcome carries failure"
+    );
+    let (payload_key, digest_key) = match run_kind {
+        VERIFY_RUN_KIND => ("report", "reportDigest"),
+        REBUILD_RUN_KIND => ("summary", "summaryDigest"),
+        _ => unreachable!(),
+    };
+    let payload = outcome.get(payload_key).ok_or_else(|| {
+        anyhow::anyhow!("NEX_MAINTENANCE_SKIP_REPORT_MISSING: outcome has no {payload_key}")
+    })?;
+    let recorded_digest = outcome
+        .get(digest_key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISSING: outcome has no report digest ({digest_key})"
+            )
+        })?;
+    validate_component(recorded_digest, digest_key)?;
+    let expected_digest = format!("sha256:{}", digest_plan(payload));
+    ensure!(
+        recorded_digest == expected_digest,
+        "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISMATCH: recorded '{recorded_digest}', expected '{expected_digest}'"
+    );
+    Ok(recorded_digest.to_string())
+}
