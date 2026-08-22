@@ -484,6 +484,31 @@ describe("narrative maintenance scheduler", () => {
     },
   );
 
+  it.each([
+    ["object", { hasMore: false }],
+    ["JSON string", '{"hasMore":false}'],
+  ])(
+    "retries status-less hasMore response (%s) instead of ACKing it",
+    async (_label, malformedResponse) => {
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValueOnce(malformedResponse)
+        .mockResolvedValueOnce(acceptedCycle());
+      const { scheduler, warn } = createScheduler({
+        runNarrativeMaintenanceCycle,
+      });
+
+      scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it("bounds retries for valid JSON with an invalid cycle shape", async () => {
     const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue("{}");
     const { scheduler, warn } = createScheduler({

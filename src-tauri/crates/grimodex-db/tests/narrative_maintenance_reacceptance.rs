@@ -67,6 +67,24 @@ fn ordinary_work_and_durable_wake_are_rejected_as_one_ack_scope() {
 }
 
 #[test]
+fn durable_wake_batch_is_bounded_to_the_native_cycle_limit() {
+    let db = fixture_db();
+    let request = MaintenanceCycleRequest {
+        work: Vec::new(),
+        wake_project_ids: (0..33)
+            .map(|index| format!("wake-project-{index}"))
+            .collect(),
+        workspace_binding: None,
+    };
+
+    let error = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+        .expect_err("native wake scope must be bounded before durable lookup");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_BATCH_TOO_LARGE"));
+}
+
+#[test]
 fn durable_transient_failure_is_retried_and_succeeds_after_lock_release() {
     let db = fixture_db();
     db.with_conn(|conn| {
