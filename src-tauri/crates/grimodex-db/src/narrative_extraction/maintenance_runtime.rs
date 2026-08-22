@@ -1,16 +1,30 @@
-//! Schema-less coordinator primitives for Narrative Maintenance (C2-5A).
+//! Durable coordinator and phase owner for Narrative Maintenance (C2-5B).
 //!
-//! This module is intentionally a planning/recovery boundary.  It does not
-//! create Runs, Tasks, or Attempts and it does not execute Verify or derived
-//! Rebuild work.  The existing named operations remain the only mutation
-//! adapters; a future live-workspace cycle can use this module to choose one
-//! of those adapters after the relevant phase join.
+//! Rust owns discovery, recovery, and bounded dispatch of the automatic
+//! Backfill -> Verify -> conditional Rebuild -> confirmation Verify state
+//! machine. Electron only wakes this owner and supplies the pinned live
+//! `Database`; Repair remains a human/manual path.
 
-use rusqlite::{params, OptionalExtension};
+use chrono::{DateTime, NaiveDateTime, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+use super::legacy_backfill::{
+    LEGACY_BACKFILL_ALGORITHM_VERSION, LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
+};
+use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_skip_evidence::{
+    evaluate_completed_run_skip, CompletedRunSkipDecision, CompletedRunSkipExpectation,
+};
+use super::restore_rebuild::{
+    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
+    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, VERIFY_CONTRACT_VERSION,
+    VERIFY_RUN_KIND,
+};
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -190,7 +204,7 @@ fn validate_epoch_contract(
     }
 }
 
-pub const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
+pub const LEGACY_BACKFILL_WORK_KEY: &str = WRITER_BACKFILL_WORK_KEY;
 pub const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
 pub const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 
@@ -246,10 +260,9 @@ pub struct MaintenanceWorkRequest {
 pub enum MaintenanceCycleStatus {
     Accepted,
     Coalesced,
-    /// The request is valid but its adapter is not enabled in this lane.  A
-    /// deferred result is deliberately not an ACK: the main scheduler keeps
-    /// the exact work identity queued without hot-looping until a later
-    /// phase owner explicitly re-enqueues it.
+    /// Retained for the shadow/planning API. Execute-mode maintenance no
+    /// longer returns Deferred for Verify or Rebuild; the Rust phase owner
+    /// dispatches them on the same live Database.
     Deferred,
 }
 
@@ -272,10 +285,10 @@ impl MaintenanceCycleResult {
         }
     }
 
-    pub const fn coalesced() -> Self {
+    pub const fn coalesced(has_more: bool) -> Self {
         Self {
             status: MaintenanceCycleStatus::Coalesced,
-            has_more: false,
+            has_more,
         }
     }
 
@@ -338,6 +351,402 @@ impl MaintenanceCycleRequest {
     }
 }
 
+#[derive(Debug, Clone)]
+struct DurableMaintenanceRun {
+    run_id: String,
+    run_kind: String,
+    status: String,
+    spec_json: Option<String>,
+    semantic_epoch_id: Option<String>,
+    work_key: Option<String>,
+    outcome_summary_json: Option<String>,
+    lifecycle_at: DateTime<Utc>,
+}
+
+fn parse_maintenance_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+            )
+        })
+}
+
+fn load_durable_maintenance_runs(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<DurableMaintenanceRun>> {
+    let mut statement = conn.prepare(
+        "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
+                outcome_summary_json, created_at, started_at, completed_at
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1
+            AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')",
+    )?;
+    let rows = statement.query_map(params![project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, String>(7)?,
+            row.get::<_, Option<String>>(8)?,
+            row.get::<_, Option<String>>(9)?,
+        ))
+    })?;
+    let mut runs = Vec::new();
+    for row in rows {
+        let (
+            run_id,
+            run_kind,
+            status,
+            spec_json,
+            semantic_epoch_id,
+            work_key,
+            outcome_summary_json,
+            created_at,
+            started_at,
+            completed_at,
+        ) = row?;
+        let lifecycle_raw = completed_at
+            .as_deref()
+            .or(started_at.as_deref())
+            .unwrap_or(created_at.as_str());
+        runs.push(DurableMaintenanceRun {
+            run_id,
+            run_kind,
+            status,
+            spec_json,
+            semantic_epoch_id,
+            work_key,
+            outcome_summary_json,
+            lifecycle_at: parse_maintenance_instant(lifecycle_raw)?,
+        });
+    }
+    runs.sort_by_key(|run| Reverse(run.lifecycle_at));
+    for pair in runs.windows(2) {
+        let [first, second] = pair else {
+            continue;
+        };
+        anyhow::ensure!(
+            first.lifecycle_at != second.lifecycle_at,
+            "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: runs '{}' and '{}' share lifecycle instant {}",
+            first.run_id,
+            second.run_id,
+            first.lifecycle_at.to_rfc3339()
+        );
+    }
+    Ok(runs)
+}
+
+fn is_completed_backfill_marker(
+    conn: &Connection,
+    project_id: &str,
+    run: &DurableMaintenanceRun,
+) -> anyhow::Result<bool> {
+    if run.run_kind != "backfill"
+        || run.status != "completed"
+        || run.work_key.as_deref() != Some(LEGACY_BACKFILL_WORK_KEY)
+    {
+        return Ok(false);
+    }
+    let Some(epoch_id) = run
+        .semantic_epoch_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    let epoch_belongs_to_project: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM narrative_semantic_epochs
+              WHERE id = ?1 AND project_id = ?2
+         )",
+        params![epoch_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !epoch_belongs_to_project {
+        return Ok(false);
+    }
+
+    let Some(spec_json) = run.spec_json.as_deref() else {
+        return Ok(false);
+    };
+    let Ok(spec) = serde_json::from_str::<Value>(spec_json) else {
+        return Ok(false);
+    };
+    if spec.get("backfillAlgorithmVersion").and_then(Value::as_str)
+        != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+    {
+        return Ok(false);
+    }
+
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
+        return Ok(false);
+    };
+    let Ok(outcome) = serde_json::from_str::<Value>(outcome_json) else {
+        return Ok(false);
+    };
+    if outcome.get("maintenancePhase").and_then(Value::as_str) != Some("backfill-complete")
+        || outcome
+            .get("backfillAlgorithmVersion")
+            .and_then(Value::as_str)
+            != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+        || outcome.get("semanticEpochId").and_then(Value::as_str) != Some(epoch_id)
+    {
+        return Ok(false);
+    }
+    let Some(summary) = outcome.get("summary").and_then(Value::as_object) else {
+        return Ok(false);
+    };
+    Ok(summary
+        .get("epoch_created")
+        .and_then(Value::as_bool)
+        .is_some()
+        && summary
+            .get("contributions_created")
+            .and_then(Value::as_u64)
+            .is_some()
+        && summary
+            .get("edges_created")
+            .and_then(Value::as_u64)
+            .is_some()
+        && summary
+            .get("applications_without_run_id")
+            .and_then(Value::as_u64)
+            .is_some())
+}
+
+/// Rediscover the next durable phase from the Run ledger. Callers must use
+/// this instead of replaying a trigger as a phase instruction: the trigger is
+/// only a wake reason, while the completed outcome and current Semantic Epoch
+/// are the Rust-owned state machine.
+pub fn discover_durable_maintenance_work(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let project_id = require_component(project_id.to_string(), "projectId")?;
+    let reason = require_component(reason.to_string(), "reason")?;
+    let (current_epoch_id, latest, active, completed_backfill) = db.with_conn(|conn| {
+        let current_epoch_id =
+            super::semantic_epoch::get_current_epoch(conn, &project_id)?.map(|epoch| epoch.id);
+        let runs = load_durable_maintenance_runs(conn, &project_id)?;
+        let active = runs
+            .iter()
+            .find(|run| matches!(run.status.as_str(), "pending" | "running"))
+            .cloned();
+        let latest = runs.first().cloned();
+        let mut completed_backfill = None;
+        for run in &runs {
+            if is_completed_backfill_marker(conn, &project_id, run)? {
+                completed_backfill = Some(run.clone());
+                break;
+            }
+        }
+        Ok((current_epoch_id, latest, active, completed_backfill))
+    })?;
+
+    if let Some(active) = active {
+        return durable_run_work(&project_id, &active, reason.as_str());
+    }
+
+    let Some(current_epoch_id) = current_epoch_id else {
+        // Backfill is the only phase allowed to create the initial Epoch.
+        // Restore/Epoch wakes fail closed until the restore installer has
+        // durably minted its restore Epoch.
+        return if is_backfill_wake(reason.as_str()) {
+            Ok(Some(DesiredWork::new(
+                project_id,
+                AutomaticRunKind::Backfill,
+                LEGACY_BACKFILL_WORK_KEY,
+                reason,
+            )?))
+        } else {
+            Ok(None)
+        };
+    };
+
+    // A restored image may already contain a current Epoch while carrying no
+    // completed Backfill marker at all (for example a pre-C2 backup). Epoch
+    // existence alone therefore cannot prove that the legacy declarations
+    // crossed the Backfill boundary. Run the current-epoch Backfill once;
+    // any historical completed Backfill, even one from an older Epoch, is the
+    // durable evidence that the boundary was already crossed and leads to
+    // Verify-first handling below.
+    if completed_backfill.is_none() {
+        return Ok(Some(DesiredWork::new_with_epoch(
+            project_id,
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            Some(current_epoch_id),
+            reason,
+        )?));
+    }
+
+    let Some(latest) = latest else {
+        // An existing current Epoch means the initial Backfill boundary has
+        // already been crossed. Even a workspace-opened wake must therefore
+        // begin with Verify; replaying Backfill here would loop forever after
+        // a restore or restart.
+        return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+    };
+
+    let latest_epoch_matches =
+        latest.semantic_epoch_id.as_deref() == Some(current_epoch_id.as_str());
+    match latest.run_kind.as_str() {
+        "backfill" => {
+            if !latest_epoch_matches || latest.status == "completed" {
+                Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
+            } else {
+                Ok(Some(DesiredWork::new_with_epoch(
+                    project_id,
+                    AutomaticRunKind::Backfill,
+                    LEGACY_BACKFILL_WORK_KEY,
+                    latest.semantic_epoch_id,
+                    reason,
+                )?))
+            }
+        }
+        VERIFY_RUN_KIND => {
+            if !latest_epoch_matches || latest.status != "completed" {
+                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+            }
+            let Some(outcome_json) = latest.outcome_summary_json.as_deref() else {
+                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+            };
+            let outcome: Value = match serde_json::from_str(outcome_json) {
+                Ok(value) => value,
+                Err(_) => return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?)),
+            };
+            let Some(report_value) = outcome.get("report") else {
+                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+            };
+            let report: DependencyGraphVerifyReport =
+                match serde_json::from_value(report_value.clone()) {
+                    Ok(report) => report,
+                    Err(_) => {
+                        return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
+                    }
+                };
+            if report.requires_rebuild() {
+                return Ok(Some(DesiredWork::new_with_epoch(
+                    project_id,
+                    AutomaticRunKind::RebuildDerived,
+                    REBUILD_DERIVED_WORK_KEY,
+                    Some(current_epoch_id),
+                    reason,
+                )?));
+            }
+            // A graph defect is terminal/manual evidence, not an automatic
+            // Repair route. A clean report is reusable only when its CAS
+            // evidence is present and current; old reports are re-run once
+            // to seal the current coordinates.
+            if report.is_clean() {
+                let expected = verify_skip_expectation(&project_id, &current_epoch_id)?;
+                let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
+                if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
+                    return Ok(None);
+                }
+                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+            }
+            Ok(None)
+        }
+        "semantic-index-rebuild" => {
+            if !latest_epoch_matches || latest.status == "completed" {
+                Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
+            } else {
+                Ok(Some(DesiredWork::new_with_epoch(
+                    project_id,
+                    AutomaticRunKind::RebuildDerived,
+                    REBUILD_DERIVED_WORK_KEY,
+                    Some(current_epoch_id),
+                    reason,
+                )?))
+            }
+        }
+        _ => Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?)),
+    }
+}
+
+fn durable_run_work(
+    project_id: &str,
+    run: &DurableMaintenanceRun,
+    reason: &str,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let work_key = run.work_key.as_deref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: '{}' Run has no workKey",
+            run.run_kind
+        )
+    })?;
+    let kind = match run.run_kind.as_str() {
+        "backfill" => AutomaticRunKind::Backfill,
+        VERIFY_RUN_KIND => AutomaticRunKind::Verify,
+        "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: unsupported active Run kind '{other}'"
+        ),
+    };
+    anyhow::ensure!(
+        match kind {
+            AutomaticRunKind::Backfill => work_key == LEGACY_BACKFILL_WORK_KEY,
+            AutomaticRunKind::Verify => run
+                .semantic_epoch_id
+                .as_deref()
+                .is_some_and(|epoch| { work_key == format!("{VERIFY_WORK_KEY_PREFIX}{epoch}") }),
+            AutomaticRunKind::RebuildDerived => work_key == REBUILD_DERIVED_WORK_KEY,
+        },
+        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Run workKey does not match its phase"
+    );
+    if !matches!(kind, AutomaticRunKind::Backfill) {
+        anyhow::ensure!(
+            run.semantic_epoch_id.is_some(),
+            "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: epoch-bound Run has no semantic epoch"
+        );
+    }
+    Ok(Some(DesiredWork::new_with_epoch(
+        project_id,
+        kind,
+        work_key,
+        run.semantic_epoch_id.clone(),
+        reason,
+    )?))
+}
+
+fn is_backfill_wake(reason: &str) -> bool {
+    matches!(
+        reason,
+        "workspace-opened" | "legacy-backfill-required" | "durable-wake"
+    )
+}
+
+fn verify_skip_expectation(
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<CompletedRunSkipExpectation> {
+    let coordinates = current_maintenance_coordinates()?;
+    Ok(CompletedRunSkipExpectation {
+        project_id: project_id.to_string(),
+        run_kind: VERIFY_RUN_KIND.to_string(),
+        work_key: format!("{VERIFY_RUN_KIND}:{semantic_epoch_id}"),
+        semantic_epoch_id: semantic_epoch_id.to_string(),
+        graph_contract_digest: coordinates.graph_contract_digest,
+        rule_registry_digest: coordinates.rule_registry_digest,
+        producer_generation_set_digest: coordinates.producer_generation_set_digest,
+        run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
+        report_digest: None,
+    })
+}
+
 /// Execute one coalesced request on the caller's live `Database` authority.
 ///
 /// The function deliberately accepts `&Database`, not a filesystem path.  A
@@ -346,11 +755,8 @@ impl MaintenanceCycleRequest {
 /// guard against the detached second-writer/`SQLITE_BUSY_SNAPSHOT` failure
 /// that removed the old post-open Backfill worker.
 ///
-/// C2-5B-A enables only the already-safe Backfill adapter in execute mode.
-/// Verify and Rebuild-Derived are validated and acknowledged as an explicit
-/// deferred seam; their production trigger symbols remain unwired until the
-/// C2-3 contract-aware skip/Finding join. Repair is not representable in the
-/// request enum at all.
+/// Execute mode dispatches every automatic phase on this same live Database.
+/// Repair is not representable in the request enum at all.
 pub fn run_system_work_cycle(
     db: &Database,
     request: &MaintenanceCycleRequest,
@@ -370,53 +776,87 @@ pub fn run_system_work_cycle_with_modes(
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
 ) -> anyhow::Result<MaintenanceCycleResult> {
-    let work = request.normalized_work()?;
+    let mut work = request.normalized_work()?;
     anyhow::ensure!(
         work.is_empty() || request.wake_project_ids.is_empty(),
         "NEX_MAINTENANCE_WAKE_MIXED_ACK_SCOPE: ordinary work and durable wake must use separate cycles"
     );
     if work.is_empty() {
-        // An empty request is meaningful only as the scheduler's durable
-        // project-scoped wake. There is no detached poll or speculative write
-        // to perform here. If a prior cycle left an active automatic Run, the
-        // wake cannot reconstruct its adapter payload safely, so it reports a
-        // typed deferred continuation rather than ACKing and dropping it.
-        let wake_project_ids = request
-            .wake_project_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>();
-        let has_more = has_durable_active_work(db, &wake_project_ids)?;
-        return Ok(if has_more {
-            MaintenanceCycleResult::deferred(true)
-        } else {
-            MaintenanceCycleResult::accepted(false)
-        });
+        for project_id in &request.wake_project_ids {
+            if let Some(next) = discover_durable_maintenance_work(db, project_id, "durable-wake")? {
+                work.push(next);
+            }
+        }
     }
 
-    // Validate the entire batch before recovering or dispatching any item.
-    // Verify/Rebuild are intentionally not enabled in C2-5B-A; returning a
-    // typed deferred result keeps their durable identities visible to the
-    // scheduler and prevents a mixed batch from partially ACKing them.
+    // Validate the entire initial batch before recovering or dispatching any
+    // item. Follow-up phases are generated only from durable outcomes below.
     for item in &work {
         validate_dispatch_contract(item)?;
     }
-    if work
-        .iter()
-        .any(|item| !matches!(item.run_kind, AutomaticRunKind::Backfill))
-    {
-        return Ok(MaintenanceCycleResult::deferred(true));
-    }
 
-    let mut all_coalesced = true;
-    for item in &work {
-        let action = recover_cycle_work(db, item, mode_for(item))?;
+    let mut queue = std::collections::VecDeque::from(work.clone());
+    let mut dispatch_count = 0usize;
+    let mut dispatched_any = false;
+    let mut coalesced_active = false;
+    let mut has_more = false;
+    let mut project_ids = BTreeSet::new();
+    while let Some(item) = queue.pop_front() {
+        project_ids.insert(item.project_id.clone());
+        if dispatch_count >= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE {
+            has_more = true;
+            break;
+        }
+
+        // Verify-only completed-run skip is checked before recovery. Rebuild
+        // completed rows are intentionally never reused.
+        if item.run_kind == AutomaticRunKind::Verify {
+            let expected = verify_skip_expectation(
+                &item.project_id,
+                item.semantic_epoch_id.as_deref().unwrap_or_default(),
+            )?;
+            let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
+            if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
+                if let Some(next) = discover_durable_maintenance_work(
+                    db,
+                    &item.project_id,
+                    item.reasons
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("durable-wake"),
+                )? {
+                    if next.run_kind != AutomaticRunKind::Verify
+                        || next.semantic_epoch_id != item.semantic_epoch_id
+                    {
+                        queue.push_back(next);
+                    }
+                }
+                continue;
+            }
+        }
+
+        let action = recover_cycle_work(db, &item, mode_for(&item))?;
         match action {
             RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
-                continue
+                coalesced_active = true;
+                has_more = true;
+                continue;
             }
             RecoveryAction::SkipCompleted { .. } => {
-                all_coalesced = false;
+                // Backfill's completed row is only the durable marker for the
+                // next Verify phase. No completed Rebuild can enter this arm.
+                if item.run_kind == AutomaticRunKind::Backfill {
+                    if let Some(next) = discover_durable_maintenance_work(
+                        db,
+                        &item.project_id,
+                        item.reasons
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("durable-wake"),
+                    )? {
+                        queue.push_back(next);
+                    }
+                }
                 continue;
             }
             RecoveryAction::ManualIntervention { code } => {
@@ -431,24 +871,63 @@ pub fn run_system_work_cycle_with_modes(
                 )
             }
             RecoveryAction::StartFresh | RecoveryAction::Retry { .. } => {
-                all_coalesced = false;
-                dispatch_enabled_work(db, item)?;
+                let current_epoch = db
+                    .with_conn(|conn| {
+                        super::semantic_epoch::get_current_epoch(conn, &item.project_id)
+                    })?
+                    .map(|epoch| epoch.id);
+                // Backfill is only dispatched before the first Epoch exists.
+                // Once an Epoch is present, a stale/epoch-less Backfill item
+                // is recovery provenance; rediscover the current Verify
+                // phase instead of dispatching it under an old Epoch.
+                let backfill_requires_rediscovery = item.run_kind == AutomaticRunKind::Backfill
+                    && current_epoch.is_some()
+                    && current_epoch.as_deref() != item.semantic_epoch_id.as_deref();
+                if backfill_requires_rediscovery
+                    || current_epoch.as_deref() != item.semantic_epoch_id.as_deref()
+                {
+                    if let Some(next) = discover_durable_maintenance_work(
+                        db,
+                        &item.project_id,
+                        item.reasons
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("durable-wake"),
+                    )? {
+                        queue.push_back(next);
+                    }
+                    continue;
+                }
+                dispatch_enabled_work(db, &item)?;
+                dispatch_count += 1;
+                dispatched_any = true;
+                if let Some(next) = discover_durable_maintenance_work(
+                    db,
+                    &item.project_id,
+                    item.reasons
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("durable-wake"),
+                )? {
+                    queue.push_back(next);
+                }
             }
         }
     }
 
-    Ok(if all_coalesced {
-        MaintenanceCycleResult::coalesced()
+    has_more |= !queue.is_empty();
+    if !has_more {
+        for project_id in project_ids {
+            if discover_durable_maintenance_work(db, &project_id, "durable-wake")?.is_some() {
+                has_more = true;
+                break;
+            }
+        }
+    }
+    Ok(if !dispatched_any && coalesced_active {
+        MaintenanceCycleResult::coalesced(has_more)
     } else {
-        // Backfill is a complete per-project transform today.  A pending or
-        // running automatic Run from another durable work identity is the one
-        // remaining-work signal this seam can establish without a schema
-        // change; the scheduler converts it to a project-scoped empty wake.
-        let project_ids = work
-            .iter()
-            .map(|item| item.project_id.as_str())
-            .collect::<Vec<_>>();
-        MaintenanceCycleResult::accepted(has_durable_active_work(db, &project_ids)?)
+        MaintenanceCycleResult::accepted(has_more)
     })
 }
 
@@ -457,8 +936,19 @@ fn recover_cycle_work(
     item: &DesiredWork,
     mode: RecoveryMode,
 ) -> anyhow::Result<RecoveryAction> {
-    let work_key = item.work_key_identity();
-    let expected_epoch = work_key.semantic_epoch_id.as_deref();
+    let current_epoch = db
+        .with_conn(|conn| super::semantic_epoch::get_current_epoch(conn, &item.project_id))?
+        .map(|epoch| epoch.id);
+    let expected_epoch = current_epoch
+        .as_deref()
+        .filter(|current| item.semantic_epoch_id.as_deref() != Some(*current))
+        .or(item.semantic_epoch_id.as_deref());
+    let work_key = WorkKey::new_with_epoch(
+        item.project_id.clone(),
+        item.run_kind,
+        item.work_key.clone(),
+        expected_epoch.map(str::to_string),
+    )?;
     let decision = decide_run_recovery_for_epoch(db, &work_key, expected_epoch, mode, None)?;
     match decision.action {
         RecoveryAction::RecoverInterrupted { run_ids } => {
@@ -522,47 +1012,26 @@ fn validate_dispatch_contract(item: &DesiredWork) -> anyhow::Result<()> {
 }
 
 fn dispatch_enabled_work(db: &Database, item: &DesiredWork) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        matches!(item.run_kind, AutomaticRunKind::Backfill),
-        "NEX_MAINTENANCE_ADAPTER_NOT_ENABLED: '{}' is deferred in C2-5B-A",
-        item.run_kind.as_str()
-    );
     validate_dispatch_contract(item)?;
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
-    super::bootstrap_legacy_dependency_backfill_for_project(db, &item.project_id)?;
-    Ok(())
-}
-
-/// Return whether the supplied project scope still owns an active automatic
-/// Run.  This is deliberately a read-only query over the live authority: no
-/// new queue table, migration, or detached connection is introduced by the
-/// wake contract.
-fn has_durable_active_work(db: &Database, project_ids: &[&str]) -> anyhow::Result<bool> {
-    if project_ids.is_empty() {
-        return Ok(false);
-    }
-    db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT 1
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1
-                AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
-                AND status IN ('pending', 'running')
-              LIMIT 1",
-        )?;
-        for project_id in project_ids {
-            if statement
-                .query_row(params![project_id], |_| Ok(()))
-                .optional()?
-                .is_some()
-            {
-                return Ok(true);
+    match item.run_kind {
+        AutomaticRunKind::Backfill => {
+            super::bootstrap_legacy_dependency_backfill_for_project(db, &item.project_id)?;
+            Ok(())
+        }
+        AutomaticRunKind::Verify => {
+            run_dependency_verify_for_project(db, &item.project_id)?;
+            Ok(())
+        }
+        AutomaticRunKind::RebuildDerived => {
+            match rebuild_narrative_derived_state_for_project(db, &item.project_id)? {
+                RebuildDerivedStateOutcome::AlreadyRunning { .. }
+                | RebuildDerivedStateOutcome::Ran { .. } => Ok(()),
             }
         }
-        Ok(false)
-    })
+    }
 }
 
 /// Trigger vocabulary consumed by the pure desired-work planner.
@@ -716,13 +1185,6 @@ pub fn plan_maintenance_trigger(trigger: &MaintenanceTrigger) -> anyhow::Result<
             project_id,
             semantic_epoch_id,
         } => {
-            planned.push(DesiredWork::new_with_epoch(
-                project_id,
-                AutomaticRunKind::RebuildDerived,
-                REBUILD_DERIVED_WORK_KEY,
-                Some(semantic_epoch_id.clone()),
-                trigger_reason(trigger),
-            )?);
             planned.push(verify_work(
                 project_id,
                 semantic_epoch_id,
@@ -733,15 +1195,9 @@ pub fn plan_maintenance_trigger(trigger: &MaintenanceTrigger) -> anyhow::Result<
             project_id,
             semantic_epoch_id,
         } => {
-            // Both requirements remain visible to the cutover planner.  The
-            // execution decision below keeps both deferred in C2-5A.
-            planned.push(DesiredWork::new_with_epoch(
-                project_id,
-                AutomaticRunKind::RebuildDerived,
-                REBUILD_DERIVED_WORK_KEY,
-                Some(semantic_epoch_id.clone()),
-                "before-cutover",
-            )?);
+            // Verify owns the conditional Rebuild decision. Rust discovers
+            // that follow-up from the durable report; callers never enqueue
+            // Rebuild speculatively before the first Verify.
             planned.push(verify_work(
                 project_id,
                 semantic_epoch_id,
@@ -813,11 +1269,13 @@ pub enum MaintenanceExecutionMode {
 pub enum MaintenanceExecutionDecision {
     PlanOnly,
     ExecuteBackfill,
+    ExecuteVerify,
+    ExecuteRebuildDerived,
     Deferred { reason: String },
 }
 
-/// C2-5A allows only Legacy Backfill to pass the ExecuteSafe gate.  Verify
-/// and derived Rebuild stay explicitly planned/deferred until the C2-3 join.
+/// Shadow mode remains plan-only. Execute mode accepts every automatic phase;
+/// Repair is not representable by [`AutomaticRunKind`].
 pub fn decide_execution(
     work: &DesiredWork,
     mode: MaintenanceExecutionMode,
@@ -827,12 +1285,8 @@ pub fn decide_execution(
     }
     match work.run_kind {
         AutomaticRunKind::Backfill => MaintenanceExecutionDecision::ExecuteBackfill,
-        AutomaticRunKind::Verify => MaintenanceExecutionDecision::Deferred {
-            reason: "dependency Verify automation waits for the C2-3 identity join".to_string(),
-        },
-        AutomaticRunKind::RebuildDerived => MaintenanceExecutionDecision::Deferred {
-            reason: "derived Rebuild automation is not enabled in C2-5A".to_string(),
-        },
+        AutomaticRunKind::Verify => MaintenanceExecutionDecision::ExecuteVerify,
+        AutomaticRunKind::RebuildDerived => MaintenanceExecutionDecision::ExecuteRebuildDerived,
     }
 }
 
@@ -1025,32 +1479,50 @@ pub fn read_run_ledger_for_epoch(
     }
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT rowid, id, status, semantic_epoch_id, terminal_reason_code
+            "SELECT id, status, semantic_epoch_id, terminal_reason_code,
+                    created_at, started_at, completed_at
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
-              ORDER BY rowid ASC",
+              ORDER BY (julianday(COALESCE(completed_at, started_at, created_at)) IS NULL) ASC,
+                       julianday(COALESCE(completed_at, started_at, created_at)) ASC,
+                       COALESCE(completed_at, started_at, created_at) ASC, id ASC",
         )?;
         let rows = statement.query_map(
             params![work.project_id, work.run_kind.as_str(), work.work_key],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(2)?,
                     row.get::<_, Option<String>>(3)?,
-                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )?;
         let mut current_rows = Vec::new();
         let mut stale_active_runs = Vec::new();
         for row in rows {
-            let (rowid, id, status, row_epoch_id, terminal_reason_code) = row?;
+            let (
+                id,
+                status,
+                row_epoch_id,
+                terminal_reason_code,
+                created_at,
+                started_at,
+                completed_at,
+            ) = row?;
+            let lifecycle_raw = completed_at
+                .as_deref()
+                .or(started_at.as_deref())
+                .unwrap_or(created_at.as_str());
+            let lifecycle_at = parse_maintenance_instant(lifecycle_raw)?;
             let epoch_matches = expected_semantic_epoch_id
                 .map(|expected| row_epoch_id.as_deref() == Some(expected))
                 .unwrap_or(true);
             if epoch_matches {
-                current_rows.push((rowid, id, status, terminal_reason_code));
+                current_rows.push((lifecycle_at, id, status, terminal_reason_code));
             } else if matches!(status.as_str(), "pending" | "running") {
                 stale_active_runs.push(StaleActiveRun {
                     run_id: id,
@@ -1059,23 +1531,26 @@ pub fn read_run_ledger_for_epoch(
             }
         }
 
-        let latest_completed_rowid = current_rows
+        let latest_completed_key = current_rows
             .iter()
             .filter(|(_, _, status, _)| status == "completed")
-            .map(|(rowid, _, _, _)| *rowid)
-            .max();
+            .map(|(lifecycle_at, id, _, _)| (*lifecycle_at, id.as_str()))
+            .max_by(|left, right| left.cmp(right));
         let mut pending_run_ids = Vec::new();
         let mut running_run_ids = Vec::new();
         let mut failed_runs = 0_u32;
         let mut completed_runs = 0_u32;
         let mut latest_failed_terminal_reason_code = None;
-        for (rowid, id, status, terminal_reason_code) in &current_rows {
+        for (lifecycle_at, id, status, terminal_reason_code) in &current_rows {
             match status.as_str() {
                 "pending" => pending_run_ids.push(id.clone()),
                 "running" => running_run_ids.push(id.clone()),
                 "failed"
-                    if latest_completed_rowid
-                        .map(|completed_rowid| *rowid > completed_rowid)
+                    if latest_completed_key
+                        .as_ref()
+                        .map(|(completed_at, completed_id)| {
+                            (*lifecycle_at, id.as_str()) > (*completed_at, *completed_id)
+                        })
                         .unwrap_or(true) =>
                 {
                     failed_runs = failed_runs.saturating_add(1);

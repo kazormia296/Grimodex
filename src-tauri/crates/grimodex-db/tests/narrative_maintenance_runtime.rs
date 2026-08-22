@@ -1,4 +1,4 @@
-//! C2-5A schema-less maintenance planning and recovery contract tests.
+//! C2-5B durable maintenance planning, recovery, and dispatch contract tests.
 //!
 //! These tests deliberately exercise only the typed planner and the existing
 //! Run ledger.  They must not create Tasks/Attempts or invoke Verify/Rebuild
@@ -7,8 +7,8 @@
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, decide_execution,
-    decide_run_recovery, decide_run_recovery_for_epoch, plan_maintenance_trigger,
-    terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
+    decide_run_recovery, decide_run_recovery_for_epoch, discover_durable_maintenance_work,
+    plan_maintenance_trigger, terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
     terminalize_stale_interrupted_runs, AutomaticRunKind, FailureClass,
     MaintenanceExecutionDecision, MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction,
     RecoveryMode, StaleActiveRun, WorkKey, MAX_AUTOMATIC_RETRIES,
@@ -78,7 +78,7 @@ fn canonical_key_namespaces_project_kind_and_work_key() {
 }
 
 #[test]
-fn planner_maps_safe_open_to_backfill_and_c2_join_work_to_deferred_kinds() {
+fn planner_maps_safe_open_to_backfill_and_verify_owned_followup() {
     let backfill = plan_maintenance_trigger(&MaintenanceTrigger::WorkspaceOpened {
         project_id: PROJECT_ID.to_string(),
     })
@@ -92,17 +92,9 @@ fn planner_maps_safe_open_to_backfill_and_c2_join_work_to_deferred_kinds() {
         semantic_epoch_id: EPOCH_ID.to_string(),
     })
     .expect("cutover plan");
-    assert_eq!(cutover.len(), 2);
-    assert_eq!(cutover[0].run_kind, AutomaticRunKind::RebuildDerived);
-    assert_eq!(cutover[1].run_kind, AutomaticRunKind::Verify);
+    assert_eq!(cutover.len(), 1);
+    assert_eq!(cutover[0].run_kind, AutomaticRunKind::Verify);
     assert_eq!(cutover[0].semantic_epoch_id.as_deref(), Some(EPOCH_ID));
-    assert_eq!(cutover[1].semantic_epoch_id.as_deref(), Some(EPOCH_ID));
-    assert!(cutover
-        .iter()
-        .any(|work| work.run_kind == AutomaticRunKind::Verify));
-    assert!(cutover
-        .iter()
-        .any(|work| work.run_kind == AutomaticRunKind::RebuildDerived));
 
     assert_eq!(
         decide_execution(&backfill[0], MaintenanceExecutionMode::Shadow),
@@ -112,12 +104,10 @@ fn planner_maps_safe_open_to_backfill_and_c2_join_work_to_deferred_kinds() {
         decide_execution(&backfill[0], MaintenanceExecutionMode::ExecuteSafe),
         MaintenanceExecutionDecision::ExecuteBackfill
     );
-    for work in &cutover {
-        assert!(matches!(
-            decide_execution(work, MaintenanceExecutionMode::ExecuteSafe),
-            MaintenanceExecutionDecision::Deferred { .. }
-        ));
-    }
+    assert_eq!(
+        decide_execution(&cutover[0], MaintenanceExecutionMode::ExecuteSafe),
+        MaintenanceExecutionDecision::ExecuteVerify
+    );
 
     let next_epoch = plan_maintenance_trigger(&MaintenanceTrigger::EpochRotated {
         project_id: PROJECT_ID.to_string(),
@@ -127,7 +117,7 @@ fn planner_maps_safe_open_to_backfill_and_c2_join_work_to_deferred_kinds() {
     let coalesced = grimodex_db::narrative_extraction::maintenance_runtime::coalesce_desired_work(
         cutover.into_iter().chain(next_epoch),
     );
-    assert_eq!(coalesced.len(), 4);
+    assert_eq!(coalesced.len(), 2);
 }
 
 #[test]
@@ -453,6 +443,22 @@ fn failures_before_a_completed_run_do_not_exhaust_the_next_cycle() {
         Ok(())
     })
     .expect("seed completed cycle");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET created_at = CASE id
+                    WHEN 'run-before-0' THEN '2026-08-23T08:00:00.000Z'
+                    WHEN 'run-before-1' THEN '2026-08-23T08:01:00.000Z'
+                    WHEN 'run-before-2' THEN '2026-08-23T08:02:00.000Z'
+                    WHEN 'run-completed' THEN '2026-08-23T09:00:00.000Z'
+                    WHEN 'run-after' THEN '2026-08-23T10:00:00.000Z'
+                    ELSE created_at END
+              WHERE project_id = ?1 AND work_key = ?2",
+            params![PROJECT_ID, work.work_key],
+        )?;
+        Ok(())
+    })
+    .expect("make the intended lifecycle ordering explicit");
 
     let decision = decide_run_recovery_for_epoch(
         &db,
@@ -467,6 +473,79 @@ fn failures_before_a_completed_run_do_not_exhaust_the_next_cycle() {
         decision.action,
         RecoveryAction::Retry { attempt: 2, .. }
     ));
+}
+
+#[test]
+fn recovery_uses_lifecycle_instants_not_rowid_after_successful_retry() {
+    let db = fixture_db();
+    let work = WorkKey::new(PROJECT_ID, AutomaticRunKind::Verify, "verify:chronology")
+        .expect("valid verify work key");
+    db.with_conn(|conn| {
+        // Insert the successful retry first, then import an older failed row.
+        // A rowid-based ledger would mistake the latter for the current
+        // failure and either demand missing failure detail or consume retry
+        // budget again.
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, run_kind,
+                 semantic_epoch_id, work_key)
+             VALUES ('verify-success', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'completed', '{}', '2026-08-23T10:00:00.000Z',
+                     '2026-08-23T10:01:00.000Z', ?2, ?3, ?4)",
+            params![PROJECT_ID, work.run_kind.as_str(), EPOCH_ID, work.work_key],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, run_kind,
+                 semantic_epoch_id, work_key)
+             VALUES ('verify-old-failure', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'failed', '{}', '2026-08-23T09:00:00.000Z',
+                     '2026-08-23T09:01:00.000Z', ?2, ?3, ?4)",
+            params![PROJECT_ID, work.run_kind.as_str(), EPOCH_ID, work.work_key],
+        )?;
+        Ok(())
+    })
+    .expect("seed reverse rowid/lifecycle chronology");
+
+    let decision = decide_run_recovery_for_epoch(
+        &db,
+        &work,
+        Some(EPOCH_ID),
+        RecoveryMode::SameProcessLive,
+        None,
+    )
+    .expect("successful retry must reset the current failure cycle");
+    assert_eq!(decision.failed_runs, 0);
+    assert!(matches!(decision.action, RecoveryAction::StartFresh));
+}
+
+#[test]
+fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        for id in ["verify-random-id-a", "verify-random-id-b"] {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', 'completed', '{}',
+                         '2026-08-23T11:00:00.000Z', '2026-08-23T11:00:00.000Z',
+                         '2026-08-23T11:00:00.000Z', 'dependency-verify', ?3, ?4)",
+                params![id, PROJECT_ID, EPOCH_ID, "dependency-verify:epoch-c2-5a"],
+            )?;
+        }
+        Ok(())
+    })
+    .expect("seed same-instant imported Runs");
+
+    let error = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect_err("same lifecycle instant must not be ordered by UUID");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"));
 }
 
 #[test]

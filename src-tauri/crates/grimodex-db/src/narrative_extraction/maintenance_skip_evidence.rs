@@ -1,8 +1,8 @@
 //! Durable, contract-aware evidence for skipping a completed maintenance Run.
 //!
-//! C2-5A owns Run creation and recovery. This module owns the separate
-//! decision that a completed Verify or Rebuild-Derived Run may be omitted on
-//! a later trigger. The evidence is kept inside the existing
+//! C2-5B owns Run creation, recovery, and phase dispatch. This module owns the separate
+//! decision that a completed Verify Run may be omitted on a later trigger.
+//! Rebuild-Derived Runs are deliberately never reusable. The evidence is kept inside the existing
 //! `outcome_summary_json` column, so this slice does not add a schema, key, or
 //! production scheduler migration.
 //!
@@ -19,8 +19,8 @@ use serde_json::Value;
 use super::commit::digest_plan;
 use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
 use super::restore_rebuild::{
-    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
-    VERIFY_CONTRACT_VERSION,
+    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
+    RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -31,8 +31,9 @@ pub const COMPLETED_RUN_SKIP_EVIDENCE_FIELD: &str = "skipEvidence";
 /// Current contract version for Verify's completed-run evidence coordinate.
 pub const VERIFY_RUN_KIND_CONTRACT_VERSION: &str = VERIFY_CONTRACT_VERSION;
 
-/// Current contract version for Rebuild-Derived's completed-run evidence
-/// coordinate.
+/// Rebuild's serialized coordinate is retained for diagnostics and
+/// fail-closed shape validation; Rebuild completed Runs are never accepted as
+/// reusable skip evidence.
 pub const REBUILD_RUN_KIND_CONTRACT_VERSION: &str = REBUILD_CONTRACT_VERSION;
 
 const VERIFY_RUN_KIND: &str = "dependency-verify";
@@ -40,15 +41,15 @@ const REBUILD_RUN_KIND: &str = "semantic-index-rebuild";
 
 /// The complete durable coordinate sealed after a successful terminal Run.
 ///
-/// `report_digest` is the digest of Verify's `report` or Rebuild-Derived's
-/// `summary`, depending on `run_kind`. It is not a digest of this evidence
-/// object; keeping those domains separate prevents an evidence rewrite from
-/// making a tampered report look valid.
+/// `report_digest` is the digest of Verify's `report`. It is not a digest of
+/// this evidence object; keeping those domains separate prevents an evidence
+/// rewrite from making a tampered report look valid.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompletedRunSkipEvidence {
     pub project_id: String,
     pub run_kind: String,
+    pub work_key: String,
     pub semantic_epoch_id: String,
     pub graph_contract_digest: String,
     pub rule_registry_digest: String,
@@ -67,6 +68,7 @@ pub struct CompletedRunSkipEvidence {
 pub struct CompletedRunSkipExpectation {
     pub project_id: String,
     pub run_kind: String,
+    pub work_key: String,
     pub semantic_epoch_id: String,
     pub graph_contract_digest: String,
     pub rule_registry_digest: String,
@@ -94,11 +96,12 @@ pub enum CompletedRunSkipReason {
     ProducerGenerationMismatch,
     RunKindContractMismatch,
     ReportDigestMismatch,
+    DerivedStateInvalid,
     UnsupportedRunKind,
 }
 
 /// The only successful decision is `Skip`; every other branch is an explicit
-/// request to execute Verify/Rebuild again.
+/// request to execute Verify again. Rebuild is always a re-run by policy.
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "kebab-case")]
 pub enum CompletedRunSkipDecision {
@@ -167,7 +170,9 @@ pub fn evaluate_completed_run_skip(
                     completed_at, outcome_summary_json
               FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY created_at DESC, id DESC LIMIT 1",
+              ORDER BY (julianday(created_at) IS NULL) DESC,
+                       julianday(created_at) DESC, created_at DESC, id DESC
+              LIMIT 1",
             params![expected.project_id, expected.run_kind],
             |row| {
                 Ok(LatestRun {
@@ -217,11 +222,13 @@ pub fn evaluate_completed_run_skip(
             reason: CompletedRunSkipReason::EpochMismatch,
         });
     }
-    if !canonical_work_key_matches(
-        &latest.run_kind,
-        expected.semantic_epoch_id.as_str(),
-        latest.work_key.as_deref(),
-    ) {
+    if latest.work_key.as_deref() != Some(expected.work_key.as_str())
+        || !canonical_work_key_matches(
+            &latest.run_kind,
+            expected.semantic_epoch_id.as_str(),
+            latest.work_key.as_deref(),
+        )
+    {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::WorkKeyMismatch,
         });
@@ -280,6 +287,11 @@ pub fn evaluate_completed_run_skip(
             reason: CompletedRunSkipReason::RunKindMismatch,
         });
     }
+    if evidence.work_key != expected.work_key {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::WorkKeyMismatch,
+        });
+    }
     if evidence.semantic_epoch_id != expected.semantic_epoch_id {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::EpochMismatch,
@@ -330,6 +342,22 @@ pub fn evaluate_completed_run_skip(
             })
         }
     };
+    if expected.run_kind == VERIFY_RUN_KIND {
+        let report = outcome.get("report").and_then(|value| {
+            serde_json::from_value::<DependencyGraphVerifyReport>(value.clone()).ok()
+        });
+        if report.is_none_or(|report| !report.is_clean()) {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::DerivedStateInvalid,
+            });
+        }
+        if !live_verify_report_matches_sealed(conn, &expected.project_id, &evidence.report_digest)?
+        {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::DerivedStateInvalid,
+            });
+        }
+    }
     if evidence.report_digest != outcome_digest
         || expected
             .report_digest
@@ -361,7 +389,9 @@ pub fn read_completed_run_skip_evidence(
                     completed_at, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY created_at DESC, id DESC LIMIT 1",
+              ORDER BY (julianday(created_at) IS NULL) DESC,
+                       julianday(created_at) DESC, created_at DESC, id DESC
+              LIMIT 1",
             params![project_id, run_kind],
             |row| {
                 Ok((
@@ -422,6 +452,7 @@ pub fn read_completed_run_skip_evidence(
         || parsed.project_id != row_project_id
         || parsed.run_kind != row_run_kind
         || parsed.semantic_epoch_id != row_epoch_id
+        || parsed.work_key != work_key.clone().unwrap_or_default()
         || parsed.run_kind_contract_version
             != supported_run_kind_contract_version(row_run_kind.as_str())
     {
@@ -431,16 +462,44 @@ pub fn read_completed_run_skip_evidence(
         Ok(digest) => digest,
         Err(_) => return Ok(None),
     };
+    if run_kind == VERIFY_RUN_KIND {
+        let report = outcome.get("report").and_then(|value| {
+            serde_json::from_value::<DependencyGraphVerifyReport>(value.clone()).ok()
+        });
+        if report.is_none_or(|report| !report.is_clean()) {
+            return Ok(None);
+        }
+        if !live_verify_report_matches_sealed(conn, project_id, &parsed.report_digest)? {
+            return Ok(None);
+        }
+    }
     if outcome_digest != parsed.report_digest {
         return Ok(None);
     }
     Ok(Some(parsed))
 }
 
-/// Attach skip evidence to an already successful Verify/Rebuild Run in one
-/// transaction. The existing outcome and its report/summary digest are
-/// verified before the nested evidence is sealed, so a caller cannot mark a
-/// failed or partially observed Run as reusable.
+/// Recompute the read-only Verify report against live derived state before a
+/// completed Run is reused. Stored clean evidence alone is insufficient: an
+/// Edge State or Consumer Freshness row may have been deleted or become stale
+/// after the owner committed its report.
+fn live_verify_report_matches_sealed(
+    conn: &Connection,
+    project_id: &str,
+    sealed_report_digest: &str,
+) -> Result<bool> {
+    let report = verify_narrative_dependency_graph_for_project(conn, project_id)?;
+    if !report.is_clean() {
+        return Ok(false);
+    }
+    let value = serde_json::to_value(report)?;
+    Ok(format!("sha256:{}", digest_plan(&value)) == sealed_report_digest)
+}
+
+/// Attach skip evidence to an already successful Verify Run in one transaction.
+/// The existing outcome and report digest are verified before the nested
+/// evidence is sealed, so a caller cannot mark a failed, Rebuild, or partially
+/// observed Run as reusable.
 pub fn persist_completed_run_skip_evidence(
     db: &Database,
     run_id: &str,
@@ -525,6 +584,10 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         "NEX_MAINTENANCE_SKIP_EPOCH_MISMATCH: Run '{run_id}' is not bound to the evidence epoch"
     );
     ensure!(
+        work_key.as_deref() == Some(evidence.work_key.as_str()),
+        "NEX_MAINTENANCE_SKIP_WORK_KEY_MISMATCH: Run '{run_id}' is not bound to the evidence work key"
+    );
+    ensure!(
         canonical_work_key_matches(&run_kind, &evidence.semantic_epoch_id, work_key.as_deref()),
         "NEX_MAINTENANCE_SKIP_WORK_KEY_MISMATCH: Run '{run_id}' has a non-canonical work key"
     );
@@ -586,7 +649,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
 }
 
 fn is_supported_run_kind(run_kind: &str) -> bool {
-    matches!(run_kind, VERIFY_RUN_KIND | REBUILD_RUN_KIND)
+    run_kind == VERIFY_RUN_KIND
 }
 
 fn supported_run_kind_contract_version(run_kind: &str) -> &'static str {
@@ -608,6 +671,7 @@ fn canonical_work_key_matches(run_kind: &str, epoch_id: &str, work_key: Option<&
 fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<()> {
     validate_component(&expected.project_id, "projectId")?;
     validate_component(&expected.run_kind, "runKind")?;
+    validate_component(&expected.work_key, "workKey")?;
     validate_component(&expected.semantic_epoch_id, "semanticEpochId")?;
     validate_digest(&expected.graph_contract_digest, "graphContractDigest")?;
     validate_digest(&expected.rule_registry_digest, "ruleRegistryDigest")?;
@@ -619,6 +683,14 @@ fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<
         &expected.run_kind_contract_version,
         "runKindContractVersion",
     )?;
+    ensure!(
+        canonical_work_key_matches(
+            &expected.run_kind,
+            &expected.semantic_epoch_id,
+            Some(&expected.work_key),
+        ),
+        "workKey is not canonical for run kind and epoch"
+    );
     if let Some(report_digest) = expected.report_digest.as_deref() {
         validate_digest(report_digest, "reportDigest")?;
     }
@@ -629,6 +701,7 @@ fn validate_evidence_shape(evidence: &CompletedRunSkipEvidence) -> Result<()> {
     let expected = CompletedRunSkipExpectation {
         project_id: evidence.project_id.clone(),
         run_kind: evidence.run_kind.clone(),
+        work_key: evidence.work_key.clone(),
         semantic_epoch_id: evidence.semantic_epoch_id.clone(),
         graph_contract_digest: evidence.graph_contract_digest.clone(),
         rule_registry_digest: evidence.rule_registry_digest.clone(),
@@ -726,9 +799,14 @@ fn successful_outcome_digest(
     })?;
     match run_kind {
         VERIFY_RUN_KIND => {
-            serde_json::from_value::<DependencyGraphVerifyReport>(payload.clone()).with_context(
-                || "NEX_MAINTENANCE_SKIP_REPORT_SHAPE_INVALID: Verify report shape is not current",
-            )?;
+            let report = serde_json::from_value::<DependencyGraphVerifyReport>(payload.clone())
+                .with_context(|| {
+                    "NEX_MAINTENANCE_SKIP_REPORT_SHAPE_INVALID: Verify report shape is not current"
+                })?;
+            ensure!(
+                report.is_clean(),
+                "NEX_MAINTENANCE_SKIP_DERIVED_STATE_INVALID: Verify report is not clean"
+            );
         }
         REBUILD_RUN_KIND => {
             serde_json::from_value::<RebuildDerivedStateSummary>(payload.clone()).with_context(

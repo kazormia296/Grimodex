@@ -1,7 +1,7 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use anyhow::Context;
-use chrono::Utc;
+use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -14,8 +14,7 @@ use super::dependency_edges::{
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
 /// writer's declaration semantics change.
-pub(crate) const PROPOSAL_REVISION_DEPENDENCY_GENERATION: &str =
-    "proposal-revision-dependency/v1";
+pub(crate) const PROPOSAL_REVISION_DEPENDENCY_GENERATION: &str = "proposal-revision-dependency/v1";
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
@@ -254,8 +253,8 @@ pub(crate) enum SystemRunWorkKeyReuse {
     RunningOnly,
     /// `dependency-repair`: `sameWorkKeyReuse: "no-automatic-reuse-decision"`
     /// — exclusivity is the Repair lease's job, not work-key dedup here.
-    /// No production caller yet -- `create_system_run` below has none
-    /// (repair.rs's `seal_repair_plan` claims the lease directly instead).
+    /// The automatic phase owner cannot request this variant; the manual
+    /// Repair planner claims its lease directly.
     #[allow(dead_code)]
     None,
 }
@@ -276,11 +275,9 @@ pub(crate) enum SystemRunWorkKeyReuse {
 /// trigger (e.g. the post-open Backfill bootstrap) can fire repeatedly
 /// without racing itself.
 ///
-/// No production caller yet -- every current system Run Kind trigger
-/// (Backfill's post-open bootstrap, Verify/Rebuild-Derived's manual
-/// triggers, Repair's plan sealing) already runs inside its own
-/// transaction and calls [`create_system_run_in_tx`] directly; this
-/// standalone wrapper is for a future caller starting outside one.
+/// The standalone wrapper is retained for callers that start outside an
+/// ambient transaction. The Rust phase owner uses the `_in_tx` helper so Run
+/// creation can share the same live Database transaction as the phase writes.
 #[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn create_system_run(
@@ -360,7 +357,11 @@ pub(crate) fn create_system_run_in_tx(
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
     let run_id = Uuid::new_v4().to_string();
-    let run_timestamp = grimodex_core::now_rfc3339_millis();
+    // Run authority is a lifecycle instant, not UUID insertion order. Keep
+    // automatic/system rows strictly monotonic at the persisted millisecond
+    // precision so a Verify -> Rebuild -> confirmation Verify chain created
+    // in one transaction window remains unambiguous after restart/import.
+    let run_timestamp = next_system_run_timestamp(conn, project_id)?;
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -393,6 +394,56 @@ pub(crate) fn create_system_run_in_tx(
         "reused": false,
         "replayed": false,
     }))
+}
+
+fn next_system_run_timestamp(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
+    let now = Utc::now();
+    let now_millis = DateTime::<Utc>::from_timestamp_millis(now.timestamp_millis())
+        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: current clock"))?;
+    let mut statement = conn.prepare(
+        "SELECT COALESCE(completed_at, started_at, created_at)
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1
+            AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')",
+    )?;
+    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+    let mut latest = None;
+    for row in rows {
+        let value = row?;
+        let parsed = DateTime::parse_from_rfc3339(&value)
+            .map(|instant| instant.with_timezone(&Utc))
+            .or_else(|_| {
+                NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
+                    .or_else(|_| NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S"))
+                    .map(|instant| DateTime::<Utc>::from_naive_utc_and_offset(instant, Utc))
+            })
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+                )
+            })?;
+        latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
+    }
+    let next = latest
+        .map(|latest| {
+            let next = latest
+                .checked_add_signed(Duration::milliseconds(1))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot advance lifecycle instant '{}'",
+                        latest.to_rfc3339()
+                    )
+                })?;
+            anyhow::ensure!(
+                next.year() <= 9999,
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot persist lifecycle instant '{}'",
+                next.to_rfc3339()
+            );
+            Ok(next)
+        })
+        .transpose()?
+        .map_or(now_millis, |latest| now_millis.max(latest));
+    Ok(next.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 /// Who asked for a system Run, and which request it was.
@@ -1225,6 +1276,7 @@ fn insert_source_basis_rows(
 /// fully-qualified identity `source_object_identity_for` would build --
 /// re-deriving it here would prepend the prefix a second time and produce
 /// an Edge no later resolver could ever match back to its real Source.
+// NARRATIVE_DEPENDENCY_PRODUCER: proposal-revision-source-basis
 fn record_revision_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,

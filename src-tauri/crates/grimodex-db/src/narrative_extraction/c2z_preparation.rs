@@ -206,6 +206,15 @@ type IncrementalCursorRow = (
     Option<i64>,
     Option<String>,
 );
+type IncrementalLatestRunRow = (
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -662,8 +671,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
 /// only when every Project is ready; missing Projects are reported as
 /// incomplete rather than vacuously passing.
 pub fn inspect_workspace_cutover_readiness(conn: &Connection) -> Result<WorkspaceCutoverReadiness> {
-    let mut statement =
-        conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+    let mut statement = conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
     let project_ids = statement
         .query_map([], |row| row.get::<_, String>(0))?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1381,7 +1389,7 @@ fn inspect_incremental_runtime_gate(
             },
         )
         .optional()?;
-    let Some((acknowledged, last_error, cursor_epoch, active_run_id, reserved, _lease_expires_at)) =
+    let Some((acknowledged, last_error, cursor_epoch, active_run_id, reserved, lease_expires_at)) =
         cursor
     else {
         return Ok(ReadinessGate::incomplete(
@@ -1391,20 +1399,46 @@ fn inspect_incremental_runtime_gate(
     if acknowledged > feed_head {
         return Ok(ReadinessGate::blocked("cursor-acknowledges-past-feed-head"));
     }
+    if acknowledged < feed_head {
+        return Ok(ReadinessGate::incomplete(
+            "cursor-acknowledges-before-feed-head",
+        ));
+    }
     if last_error
         .as_deref()
         .is_some_and(|error| !error.trim().is_empty())
     {
         return Ok(ReadinessGate::blocked("incremental-freshness-cursor-error"));
     }
-    match (active_run_id.as_deref(), reserved, cursor_epoch.as_deref()) {
-        (None, None, None) => {}
-        (Some(run_id), Some(reserved), Some(cursor_epoch)) => {
+    match (
+        active_run_id.as_deref(),
+        reserved,
+        cursor_epoch.as_deref(),
+        lease_expires_at.as_deref(),
+    ) {
+        // A cursor's epoch and lease belong to the reservation owner.  A
+        // cursor with no owner must have all reservation columns cleared;
+        // accepting a current epoch without a run would let a stale lease
+        // masquerade as durable quiescence.
+        (None, None, None, None) => {}
+        (Some(run_id), Some(reserved), Some(cursor_epoch), Some(lease_expires_at)) => {
             if reserved < acknowledged || reserved > feed_head {
                 return Ok(ReadinessGate::blocked("cursor-reservation-range-invalid"));
             }
             if cursor_epoch != epoch_id {
                 return Ok(ReadinessGate::blocked("cursor-reservation-epoch-mismatch"));
+            }
+            if lease_expires_at.trim().is_empty() {
+                return Ok(ReadinessGate::blocked("cursor-reservation-lease-invalid"));
+            }
+            let lease_valid: bool = conn.query_row(
+                "SELECT julianday(?1) IS NOT NULL
+                   AND julianday(?1) > julianday('now')",
+                [lease_expires_at],
+                |row| row.get(0),
+            )?;
+            if !lease_valid {
+                return Ok(ReadinessGate::blocked("cursor-reservation-lease-invalid"));
             }
             let active: Option<(String, String)> = conn
                 .query_row(
@@ -1419,18 +1453,130 @@ fn inspect_incremental_runtime_gate(
             if run_project_id != project_id || !matches!(status.as_str(), "pending" | "running") {
                 return Ok(ReadinessGate::blocked("cursor-active-run-invalid"));
             }
+            // A reservation, even a well-formed one with a future lease, is
+            // active work rather than completed liveness evidence.  Do not
+            // let an older completed Run below satisfy the gate while this
+            // reservation still owns the cursor.
+            return Ok(ReadinessGate::incomplete(
+                "incremental-freshness-reservation-active",
+            ));
         }
         _ => return Ok(ReadinessGate::blocked("cursor-reservation-shape-invalid")),
     }
-    // The scheduler runs in Electron main and has no durable liveness bit.
-    // Structural cursor consistency is useful evidence, but cannot be
-    // promoted to a cutover PASS from this read-only DB view.
-    Ok(ReadinessGate {
-        state: ReadinessState::Incomplete,
-        completed: true,
-        passed: false,
-        reasons: vec!["scheduler-liveness-not-provable-from-db".to_string()],
-    })
+    let latest: Option<IncrementalLatestRunRow> = conn
+        .query_row(
+            "SELECT id, project_id, semantic_epoch_id, status, completed_at,
+                    work_key, outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND run_kind = 'freshness-evaluation'
+                AND consumer_id = ?2
+              ORDER BY (julianday(created_at) IS NULL) DESC,
+                       julianday(created_at) DESC, created_at DESC, id DESC
+              LIMIT 1",
+            params![project_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((run_id, run_project_id, run_epoch, status, completed_at, work_key, outcome_json)) =
+        latest
+    else {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-run-missing",
+        ));
+    };
+    if run_project_id != project_id
+        || run_epoch.as_deref() != Some(epoch_id)
+        || status != "completed"
+        || !completed_at.as_deref().is_some_and(is_canonical_instant)
+        || work_key
+            .as_deref()
+            .is_none_or(|key| incremental_work_key_range(key, epoch_id).is_none())
+    {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-run-not-current",
+        ));
+    }
+    let Some(outcome_json) = outcome_json else {
+        return Ok(ReadinessGate::incomplete(
+            "incremental-freshness-completed-outcome-missing",
+        ));
+    };
+    let outcome: Value = match serde_json::from_str(&outcome_json) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(ReadinessGate::blocked(
+                "incremental-freshness-completed-outcome-malformed",
+            ))
+        }
+    };
+    let outcome_run_id = outcome.get("runId").and_then(Value::as_str);
+    let outcome_project_id = outcome.get("projectId").and_then(Value::as_str);
+    let through_sequence = outcome
+        .get("throughSequenceInclusive")
+        .and_then(Value::as_i64);
+    let from_sequence = outcome.get("fromSequenceExclusive").and_then(Value::as_i64);
+    let has_more = outcome.get("hasMore").and_then(Value::as_bool);
+    let Some(from_sequence) = from_sequence else {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-sequence-invalid",
+        ));
+    };
+    if from_sequence < 0 || from_sequence > feed_head {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-sequence-invalid",
+        ));
+    }
+    let Some((work_key_from, work_key_through)) = work_key
+        .as_deref()
+        .and_then(|key| incremental_work_key_range(key, epoch_id))
+    else {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-work-key-invalid",
+        ));
+    };
+    if outcome_run_id != Some(run_id.as_str())
+        || outcome_project_id != Some(project_id)
+        || work_key_from != from_sequence
+        || work_key_through != feed_head
+        || through_sequence != Some(feed_head)
+        || has_more != Some(false)
+    {
+        return Ok(ReadinessGate::blocked(
+            "incremental-freshness-completed-outcome-not-at-feed-head",
+        ));
+    }
+    Ok(ReadinessGate::passed())
+}
+
+fn is_canonical_instant(value: &str) -> bool {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|parsed| parsed.to_rfc3339_opts(chrono::SecondsFormat::Millis, true) == value)
+        .unwrap_or(false)
+}
+
+fn incremental_work_key_range(key: &str, epoch_id: &str) -> Option<(i64, i64)> {
+    let mut parts = key.split(':');
+    if parts.next()? != "incremental-freshness" || parts.next()? != epoch_id {
+        return None;
+    }
+    let from = parts.next()?.parse::<i64>().ok()?;
+    let through = parts.next()?.parse::<i64>().ok()?;
+    let digest = parts.next()?;
+    if parts.next().is_some() || digest.trim().is_empty() {
+        return None;
+    }
+    Some((from, through))
 }
 
 #[cfg(test)]

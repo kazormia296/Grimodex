@@ -7,6 +7,7 @@
 use grimodex_db::narrative_extraction::maintenance_contracts::{
     bundled_dependency_producer_registry, current_maintenance_coordinates,
 };
+use serde_json::Value;
 
 #[test]
 fn current_coordinates_are_domain_separated_and_canonical() {
@@ -36,12 +37,82 @@ fn current_coordinates_are_domain_separated_and_canonical() {
 fn bundled_producer_registry_is_traceable_to_current_writer_paths() {
     let registry = bundled_dependency_producer_registry().expect("bundled producer registry");
     assert_eq!(registry.schema_version(), 1);
+    let writers = registry
+        .entries()
+        .iter()
+        .map(|entry| (entry.writer.module.as_str(), entry.writer.symbol.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        writers,
+        vec![
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+                "record_legacy_dependency_edges_in_tx"
+            ),
+            (
+                "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+                "record_revision_dependency_edges_in_tx"
+            )
+        ]
+    );
     assert!(registry
         .entries()
         .iter()
-        .any(|entry| entry.writer.symbol == "record_revision_dependency_edges_in_tx"));
-    assert!(registry
-        .entries()
-        .iter()
-        .any(|entry| entry.writer.symbol == "record_legacy_dependency_edges_in_tx"));
+        .all(|entry| !entry.generation.is_empty() && !entry.declaration.is_empty()));
+}
+
+#[test]
+fn producer_registry_policy_satisfies_its_bundled_schema_shape() {
+    let policy: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../policies/narrative/narrative-dependency-producer-registry.json"
+    )))
+    .expect("producer policy JSON");
+    let schema: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../policies/narrative/schemas/narrative-dependency-producer-registry.schema.json"
+    )))
+    .expect("producer policy schema JSON");
+
+    assert_eq!(
+        policy.get("schemaVersion"),
+        schema
+            .get("properties")
+            .and_then(|properties| properties.get("schemaVersion"))
+            .and_then(|property| property.get("const"))
+    );
+    assert_eq!(
+        policy.get("contract"),
+        schema
+            .get("properties")
+            .and_then(|properties| properties.get("contract"))
+            .and_then(|property| property.get("const"))
+    );
+    let entries = policy
+        .get("entries")
+        .and_then(Value::as_array)
+        .expect("policy entries array");
+    let entry_schema = schema
+        .get("$defs")
+        .and_then(|defs| defs.get("entry"))
+        .expect("entry schema");
+    let required = entry_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .expect("entry required fields");
+    for entry in entries {
+        for field in ["id", "writer", "generation", "consumerKind", "declaration"] {
+            assert!(
+                required
+                    .iter()
+                    .any(|required| required.as_str() == Some(field)),
+                "schema must require entry.{field}"
+            );
+            assert!(entry.get(field).is_some(), "policy entry lacks {field}");
+        }
+        assert!(entry
+            .get("writer")
+            .and_then(Value::as_object)
+            .is_some_and(|writer| writer.contains_key("module") && writer.contains_key("symbol")));
+    }
 }

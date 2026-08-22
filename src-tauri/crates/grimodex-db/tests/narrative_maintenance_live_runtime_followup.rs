@@ -1,4 +1,4 @@
-//! Follow-up acceptance contracts for the C2-5B-A live maintenance seam.
+//! Follow-up acceptance contracts for the C2-5B live maintenance seam.
 //!
 //! These tests are intentionally separate from the first red-first contract
 //! commit: they pin the review fixes before the runtime implementation moves
@@ -50,9 +50,31 @@ fn backfill_request() -> MaintenanceCycleRequest {
     .expect("valid cycle request")
 }
 
+fn seed_completed_backfill(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('followup-backfill-completed', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'completed', '{}', '2026-08-22T00:00:00.000Z',
+                     '2026-08-22T00:00:01.000Z',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2,
+                     'legacy-dependency-backfill:v2')"#,
+            params![PROJECT_ID, EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed completed Backfill boundary");
+}
+
 #[test]
-fn deferred_kinds_return_typed_non_ack_without_creating_runs() {
+fn verify_kind_dispatches_on_the_live_authority_instead_of_deferred_ack() {
     let db = fixture_db();
+    seed_completed_backfill(&db);
     let request: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
         "work": [{
             "projectId": PROJECT_ID,
@@ -63,26 +85,26 @@ fn deferred_kinds_return_typed_non_ack_without_creating_runs() {
         }],
         "wakeProjectIds": []
     }))
-    .expect("valid deferred request");
+    .expect("valid Verify request");
 
     let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
-        .expect("deferred maintenance cycle");
-    assert_eq!(result.status, MaintenanceCycleStatus::Deferred);
-    assert!(result.has_more);
+        .expect("live Verify maintenance cycle");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
     let run_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'dependency-verify'",
                 [PROJECT_ID],
                 |row| row.get(0),
             )?)
         })
-        .expect("read deferred ledger");
-    assert_eq!(run_count, 0, "deferred kinds must not reach an adapter");
+        .expect("read live Verify ledger");
+    assert_eq!(run_count, 1, "Verify must reach its Rust-owned adapter");
 }
 
 #[test]
-fn empty_wake_reports_durable_active_work_as_safe_deferred_continuation() {
+fn empty_wake_reports_durable_active_work_as_coalesced_continuation() {
     let db = fixture_db();
     db.with_conn(|conn| {
         conn.execute(
@@ -105,7 +127,7 @@ fn empty_wake_reports_durable_active_work_as_safe_deferred_continuation() {
     let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
         .expect("durable wake cycle");
 
-    assert_eq!(result, MaintenanceCycleResult::deferred(true));
+    assert_eq!(result, MaintenanceCycleResult::coalesced(true));
 }
 
 #[test]

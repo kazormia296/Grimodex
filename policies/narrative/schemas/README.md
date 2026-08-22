@@ -11,3 +11,7 @@ Dependency Role V2 contracts into production.
 - The corresponding golden corpus lives at
   `../fixtures/narrative-ir/chronicle-scene-event-v2.json`; it is contract
   data and does not create persistence or runtime behavior.
+- `narrative-dependency-producer-registry.schema.json` validates the bundled
+  Rust Dependency Edge producer-generation registry. Its writer module and
+  symbol fields are additionally checked against the compiled producer paths
+  by the shared `grimodex-db` validator.

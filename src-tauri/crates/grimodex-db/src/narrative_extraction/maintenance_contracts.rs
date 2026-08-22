@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use super::consumer_identity::{PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND};
 use super::dependency_edges::SOURCE_IDENTITY_PREFIXES;
 use super::finding_identity::bundled_finding_rule_registry;
+use super::legacy_backfill::LEGACY_DEPENDENCY_PRODUCER_GENERATION;
 use super::repository::PROPOSAL_REVISION_DEPENDENCY_GENERATION;
 
 const BUNDLED_PRODUCER_REGISTRY: &str = include_str!(concat!(
@@ -35,10 +36,21 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str)] = &[
         "legacy-application-projection-dependency",
         "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
         "record_legacy_dependency_edges_in_tx",
-        "legacy-dependency-backfill:v2",
+        LEGACY_DEPENDENCY_PRODUCER_GENERATION,
         RUN_CONSUMER_KIND,
     ),
 ];
+
+const REPOSITORY_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/narrative_extraction/repository.rs"
+));
+const LEGACY_BACKFILL_SOURCE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/src/narrative_extraction/legacy_backfill.rs"
+));
+
+const PRODUCER_MARKER_PREFIX: &str = "// NARRATIVE_DEPENDENCY_PRODUCER: ";
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,7 +172,22 @@ pub fn bundled_dependency_producer_registry() -> Result<DependencyProducerRegist
                 && entry.consumer_kind == *consumer_kind,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' does not match its Rust source contract"
         );
+        let source = match *module {
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs" => {
+                REPOSITORY_SOURCE
+            }
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs" => {
+                LEGACY_BACKFILL_SOURCE
+            }
+            _ => "",
+        };
+        ensure!(
+            source.contains(&format!("fn {symbol}(")),
+            "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' symbol is not present at '{}'",
+            module
+        );
     }
+    validate_dependency_producer_traceability(&document.entries)?;
 
     let mut entries = document.entries;
     entries.sort_by(|left, right| left.id.cmp(&right.id));
@@ -169,6 +196,163 @@ pub fn bundled_dependency_producer_registry() -> Result<DependencyProducerRegist
         registry_version: document.registry_version,
         entries,
     })
+}
+
+/// Check the registry against the actual functions that call the typed
+/// Dependency Edge writer in each producer module. The policy entry list is
+/// deliberately not the source of truth for this set: adding, removing, or
+/// renaming a producer function without changing the registry must fail
+/// closed. Other direct calls to the low-level helper (fixtures, Repair, and
+/// Derived-State rebuild code) are not declaration producers and are kept out
+/// of the two modules scanned here.
+fn validate_dependency_producer_traceability(entries: &[DependencyProducerEntry]) -> Result<()> {
+    let sources = [
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+            REPOSITORY_SOURCE,
+        ),
+        (
+            "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+            LEGACY_BACKFILL_SOURCE,
+        ),
+    ];
+    let mut discovered = Vec::new();
+    for (module, source) in sources {
+        for (symbol, id) in source_dependency_producer_writers(source)? {
+            discovered.push((module, symbol, id));
+        }
+    }
+    ensure!(
+        discovered.len() == entries.len(),
+        "NEX_PRODUCER_REGISTRY_INVALID: discovered {} declaration writers but registry has {}",
+        discovered.len(),
+        entries.len()
+    );
+    for (module, symbol, id) in discovered {
+        let matches = entries.iter().filter(|entry| {
+            entry.id == id && entry.writer.module == module && entry.writer.symbol == symbol
+        });
+        ensure!(
+            matches.count() == 1,
+            "NEX_PRODUCER_REGISTRY_INVALID: source writer '{module}:{symbol}' marker '{id}' is missing or duplicated in registry"
+        );
+    }
+    for entry in entries {
+        ensure!(
+            sources
+                .iter()
+                .any(|(module, _)| *module == entry.writer.module),
+            "NEX_PRODUCER_REGISTRY_INVALID: writer '{}' points outside scanned producer modules",
+            entry.id
+        );
+    }
+    Ok(())
+}
+
+/// Discover declaration producers from source text. This intentionally uses
+/// a small Rust-aware brace walk rather than a substring-only symbol check so
+/// a documentation mention or a test fixture cannot satisfy traceability.
+fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, String)>> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut marked = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let Some(id) = trimmed.strip_prefix(PRODUCER_MARKER_PREFIX) else {
+            continue;
+        };
+        ensure!(
+            !id.trim().is_empty(),
+            "NEX_PRODUCER_REGISTRY_INVALID: empty producer traceability marker"
+        );
+        let next_index = index + 1;
+        let symbol = lines
+            .get(next_index)
+            .copied()
+            .and_then(rust_function_name)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_PRODUCER_REGISTRY_INVALID: producer marker '{id}' is not attached to a function"
+                )
+            })?;
+        ensure!(
+            function_contains_edge_writer_call(&lines, next_index),
+            "NEX_PRODUCER_REGISTRY_INVALID: producer marker '{id}' does not guard a typed Edge writer"
+        );
+        marked.push((symbol.to_string(), id.trim().to_string()));
+    }
+
+    let mut discovered = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        let Some(symbol) = rust_function_name(line) else {
+            continue;
+        };
+        if !function_contains_edge_writer_call(&lines, index) {
+            continue;
+        }
+        let marker = index
+            .checked_sub(1)
+            .and_then(|previous| lines.get(previous).copied())
+            .and_then(|previous| previous.trim().strip_prefix(PRODUCER_MARKER_PREFIX));
+        let Some(id) = marker else {
+            return Err(anyhow::anyhow!(
+                "NEX_PRODUCER_REGISTRY_INVALID: typed Edge writer '{symbol}' has no traceability marker"
+            ));
+        };
+        discovered.push((symbol.to_string(), id.trim().to_string()));
+    }
+    ensure!(
+        marked.len() == discovered.len(),
+        "NEX_PRODUCER_REGISTRY_INVALID: producer markers and typed Edge writers differ"
+    );
+    for writer in &marked {
+        ensure!(
+            discovered.iter().filter(|candidate| *candidate == writer).count() == 1,
+            "NEX_PRODUCER_REGISTRY_INVALID: producer marker does not uniquely identify a typed Edge writer"
+        );
+    }
+    Ok(discovered)
+}
+
+fn rust_function_name(line: &str) -> Option<&str> {
+    let mut remaining = line.trim_start();
+    for visibility in ["pub(crate) ", "pub ", "const ", "async ", "unsafe "] {
+        if let Some(stripped) = remaining.strip_prefix(visibility) {
+            remaining = stripped;
+        }
+    }
+    let remaining = remaining.strip_prefix("fn ")?;
+    let end = remaining
+        .find(|character: char| !(character == '_' || character.is_ascii_alphanumeric()))?;
+    let name = &remaining[..end];
+    (!name.is_empty()).then_some(name)
+}
+
+fn function_contains_edge_writer_call(lines: &[&str], start: usize) -> bool {
+    let mut depth = 0usize;
+    let mut opened = false;
+    let mut body = String::new();
+    for line in lines.iter().skip(start) {
+        for character in line.chars() {
+            match character {
+                '{' => {
+                    opened = true;
+                    depth += 1;
+                }
+                '}' if opened => {
+                    depth = depth.saturating_sub(1);
+                }
+                _ => {}
+            }
+        }
+        if opened {
+            body.push_str(line);
+            body.push('\n');
+            if depth == 0 {
+                return body.contains("record_dependency_edge_in_tx(");
+            }
+        }
+    }
+    false
 }
 
 /// Compute all current coordinates in one call so a caller cannot mix values
@@ -188,10 +372,8 @@ pub fn current_maintenance_coordinates() -> Result<MaintenanceContractCoordinate
     let graph_contract_digest = domain_digest(GRAPH_CONTRACT_DOMAIN, &graph_contract)?;
 
     let finding_registry = bundled_finding_rule_registry()?;
-    let rule_registry_digest = domain_digest(
-        FINDING_RULE_DOMAIN,
-        &finding_registry.canonical_value()?,
-    )?;
+    let rule_registry_digest =
+        domain_digest(FINDING_RULE_DOMAIN, &finding_registry.canonical_value()?)?;
 
     let producer_registry = bundled_dependency_producer_registry()?;
     let producer_generation_set_digest = producer_generation_set_digest(&producer_registry)?;
@@ -204,18 +386,14 @@ pub fn current_maintenance_coordinates() -> Result<MaintenanceContractCoordinate
 }
 
 fn producer_generation_set_digest(registry: &DependencyProducerRegistry) -> Result<String> {
-    domain_digest(
-        PRODUCER_GENERATION_DOMAIN,
-        &serde_json::to_value(registry.entries())?,
-    )
+    let mut entries = registry.entries().to_vec();
+    entries.sort_by(|left, right| left.id.cmp(&right.id));
+    domain_digest(PRODUCER_GENERATION_DOMAIN, &serde_json::to_value(entries)?)
 }
 
 fn domain_digest(domain: &str, value: &serde_json::Value) -> Result<String> {
     let canonical = serde_json::to_vec(&(domain, value))?;
-    Ok(format!(
-        "sha256:{}",
-        hex::encode(Sha256::digest(canonical))
-    ))
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(canonical))))
 }
 
 #[cfg(test)]
@@ -242,7 +420,6 @@ mod tests {
         let registry = bundled_dependency_producer_registry().expect("registry");
         let mut reversed = registry.entries().to_vec();
         reversed.reverse();
-        reversed.sort_by(|left, right| left.id.cmp(&right.id));
         let reordered = DependencyProducerRegistry {
             schema_version: registry.schema_version,
             registry_version: registry.registry_version.clone(),
