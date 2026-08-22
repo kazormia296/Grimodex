@@ -1,7 +1,8 @@
 import i18next from "@/lib/i18n";
-import { invoke } from "@/lib/tauri";
+import { invoke, isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
   beginAiAuditExecution,
+  cancelAiAuditExecution,
   completeAiAuditExecution,
   failAiAuditExecution,
   markAiAuditDispatched,
@@ -18,6 +19,7 @@ import {
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import { stableJsonStringify } from "@/features/narrative-extraction/source/digest";
 import {
+  assertChronicleStageTerminalReceiptV1,
   assertStageModelExecutionBindingV1,
   digestStageModelExecutionBinding,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
@@ -28,6 +30,43 @@ import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
 
 export const AI_SINGLE_SHOT_CLI_UNSUPPORTED =
   "AI_SINGLE_SHOT_CLI_UNSUPPORTED" as const;
+
+const SINGLE_SHOT_CANCELLATION_CODES = new Set([
+  "ABORT_ERR",
+  "CANCELED",
+  "CANCELLED",
+  "ECANCELED",
+  "ERR_ABORTED",
+  "ERR_CANCELED",
+  "ERR_CANCELLED",
+  "IPC_READ_CANCELLED",
+  "IPC_DERIVED_CANCELLED",
+  "IPC_MUTATION_CANCELLED",
+]);
+
+function isSingleShotCancellationError(error: unknown): boolean {
+  if (isIpcLifecycleCancellation(error)) return true;
+  const seen = new Set<object>();
+  let current = error;
+  while (current !== null && typeof current === "object") {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    const record = current as {
+      readonly name?: unknown;
+      readonly code?: unknown;
+      readonly cause?: unknown;
+    };
+    if (
+      record.name === "AbortError" ||
+      (typeof record.code === "string" &&
+        SINGLE_SHOT_CANCELLATION_CODES.has(record.code.toUpperCase()))
+    ) {
+      return true;
+    }
+    current = record.cause;
+  }
+  return false;
+}
 
 export interface ChatResponsePayload {
   blocks: Array<
@@ -110,6 +149,13 @@ const CHRONICLE_BEGIN_PROTECTED_FIELDS = [
   "modelExecutionBinding",
   "modelBindingDigest",
 ] as const;
+const CHRONICLE_TERMINAL_ALLOWED_FIELDS = [
+  ...CHRONICLE_BEGIN_PROTECTED_FIELDS,
+  "responseDigest",
+  "parseStatus",
+  "terminalStatus",
+  "stageExecutionReceiptDigest",
+] as const;
 
 function chronicleStageFromMetadata(
   metadata: AiAuditJsonObject | undefined,
@@ -125,8 +171,19 @@ function hasChronicleBindingSeal(stage: Record<string, unknown>): boolean {
 async function assertChronicleBindingCoherence(
   stage: Record<string, unknown>,
   label: string,
+  shape: "begin" | "terminal" = "begin",
 ): Promise<void> {
   if (!hasChronicleBindingSeal(stage)) return;
+  const allowedFields =
+    shape === "terminal"
+      ? CHRONICLE_TERMINAL_ALLOWED_FIELDS
+      : CHRONICLE_BEGIN_PROTECTED_FIELDS;
+  const unknownField = Object.keys(stage).find(
+    (field) => !allowedFields.includes(field as never),
+  );
+  if (unknownField !== undefined) {
+    throw new TypeError(`${label} has unknown field '${unknownField}'`);
+  }
   for (const field of CHRONICLE_BEGIN_PROTECTED_FIELDS) {
     if (!Object.hasOwn(stage, field)) {
       throw new TypeError(`${label} ${field} is required`);
@@ -175,6 +232,7 @@ async function assertChronicleTerminalSeal(
   await assertChronicleBindingCoherence(
     terminalStage,
     "Chronicle Stage terminal",
+    "terminal",
   );
   if (
     expectedResponseDigest !== undefined &&
@@ -197,6 +255,23 @@ async function assertChronicleTerminalSeal(
       "Chronicle Stage terminal receipt fields are incomplete",
     );
   }
+  if (fullChronicleStage) {
+    await assertChronicleStageTerminalReceiptV1({
+      kind: "chronicle-stage-terminal-receipt",
+      version: 1,
+      stageExecution: terminalStage.stageExecution,
+      contextSetVersion: terminalStage.contextSetVersion,
+      contextSetDigest: terminalStage.contextSetDigest,
+      componentContractDigest: terminalStage.componentContractDigest,
+      finalRequestDigest: terminalStage.finalRequestDigest,
+      modelExecutionBinding: terminalStage.modelExecutionBinding,
+      modelBindingDigest: terminalStage.modelBindingDigest,
+      responseDigest: terminalStage.responseDigest,
+      parseStatus: terminalStage.parseStatus,
+      terminalStatus: terminalStage.terminalStatus,
+      stageExecutionReceiptDigest: terminalStage.stageExecutionReceiptDigest,
+    });
+  }
 }
 
 async function buildNoResponseTerminalMetadata(
@@ -212,6 +287,18 @@ async function buildNoResponseTerminalMetadata(
     withChronicleTerminalStatus(durableMetadata, terminalStatus),
     terminalMetadata,
   );
+  const canonicalStage = chronicleStageFromMetadata(completionMetadata);
+  if (
+    canonicalStage !== undefined &&
+    hasChronicleBindingSeal(canonicalStage) &&
+    canonicalStage.terminalStatus !== terminalStatus
+  ) {
+    throw new TypeError(
+      `Chronicle Stage terminalStatus '${String(
+        canonicalStage.terminalStatus,
+      )}' does not match transport terminalStatus '${terminalStatus}'`,
+    );
+  }
   await assertChronicleTerminalSeal(durableMetadata, completionMetadata, null);
   return completionMetadata;
 }
@@ -252,6 +339,15 @@ function mergeAuditMetadata(
         }
       : {}),
   };
+}
+
+/** Remove unsealed Chronicle data before a generic audit terminal fallback. */
+function stripChronicleStageMetadata(
+  metadata: AiAuditJsonObject | undefined,
+): AiAuditJsonObject | undefined {
+  if (metadata === undefined) return undefined;
+  const { chronicleStage: _chronicleStage, ...safeMetadata } = metadata;
+  return safeMetadata;
 }
 
 function withChronicleTerminalStatus(
@@ -488,12 +584,15 @@ export async function invokeSingleShotChat(
   } catch (error) {
     if (!(error instanceof SingleShotCliUnsupportedError)) throw error;
     let terminalized = false;
+    let terminalMetadataPrepared = false;
+    let terminalizationError: unknown;
     try {
       const completionMetadata = await buildNoResponseTerminalMetadata(
         auditContext,
         "skipped",
         durableMetadata,
       );
+      terminalMetadataPrepared = true;
       await skipAiAuditExecution(audit, {
         reason: error.code,
         metadata: mergeAuditMetadata(completionMetadata, {
@@ -503,22 +602,30 @@ export async function invokeSingleShotChat(
       });
       terminalized = true;
       await auditContext.onAuditCompleted?.(completionMetadata);
-    } catch {
+    } catch (terminalError) {
+      terminalizationError = terminalError;
       // Preserve the actionable unsupported-provider error. If the Chronicle
       // hook or terminal append failed, no receipt is published.
-      if (!terminalized) {
+      if (!terminalized && !terminalMetadataPrepared) {
         try {
           await skipAiAuditExecution(audit, {
             reason: error.code,
-            metadata: {
-              transport: "single-shot-http",
-              unsupportedProvider: "cli",
-            },
+            metadata: mergeAuditMetadata(
+              stripChronicleStageMetadata(durableMetadata),
+              {
+                transport: "single-shot-http",
+                unsupportedProvider: "cli",
+              },
+            ),
           });
+          terminalized = true;
         } catch {
           // The audit API already records the persistence failure boundary.
         }
       }
+    }
+    if (!terminalMetadataPrepared && terminalizationError !== undefined) {
+      throw terminalizationError;
     }
     throw error;
   }
@@ -531,32 +638,57 @@ export async function invokeSingleShotChat(
   try {
     response = await invoke<ChatResponsePayload>("send_chat_message", args);
   } catch (error) {
+    const cancellation = isSingleShotCancellationError(error);
+    const terminalStatus = cancellation ? "cancelled" : "failed";
     let terminalized = false;
+    let terminalMetadataPrepared = false;
+    let terminalizationError: unknown;
     try {
       const completionMetadata = await buildNoResponseTerminalMetadata(
         auditContext,
-        "failed",
+        terminalStatus,
         durableMetadata,
       );
-      await failAiAuditExecution(audit, {
-        error: auditErrorSnapshot(error),
-        metadata: completionMetadata,
-      });
+      terminalMetadataPrepared = true;
+      if (cancellation) {
+        await cancelAiAuditExecution(audit, {
+          reason: auditErrorSnapshot(error).message,
+          metadata: completionMetadata,
+        });
+      } else {
+        await failAiAuditExecution(audit, {
+          error: auditErrorSnapshot(error),
+          metadata: completionMetadata,
+        });
+      }
       terminalized = true;
       await auditContext.onAuditCompleted?.(completionMetadata);
-    } catch {
+    } catch (terminalError) {
+      terminalizationError = terminalError;
       // Preserve the provider error. A failed terminal append never emits a
       // Chronicle receipt and remains visible through the audit failure path.
-      if (!terminalized) {
+      if (!terminalized && !terminalMetadataPrepared) {
         try {
-          await failAiAuditExecution(audit, {
-            error: auditErrorSnapshot(error),
-            metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
-          });
+          const fallbackMetadata = stripChronicleStageMetadata(durableMetadata);
+          if (cancellation) {
+            await cancelAiAuditExecution(audit, {
+              reason: auditErrorSnapshot(error).message,
+              metadata: fallbackMetadata,
+            });
+          } else {
+            await failAiAuditExecution(audit, {
+              error: auditErrorSnapshot(error),
+              metadata: fallbackMetadata,
+            });
+          }
+          terminalized = true;
         } catch {
           // The audit API already records the persistence failure boundary.
         }
       }
+    }
+    if (!terminalMetadataPrepared && terminalizationError !== undefined) {
+      throw terminalizationError;
     }
     throw error;
   }
@@ -582,7 +714,7 @@ export async function invokeSingleShotChat(
       // has no sealed terminal receipt.
       await failAiAuditExecution(audit, {
         error: auditErrorSnapshot(error),
-        metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
+        metadata: stripChronicleStageMetadata(durableMetadata),
       });
       throw error;
     }
@@ -611,7 +743,7 @@ export async function invokeSingleShotChat(
     ) {
       await failAiAuditExecution(audit, {
         error: auditErrorSnapshot(error),
-        metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
+        metadata: stripChronicleStageMetadata(durableMetadata),
       });
     }
     throw error;

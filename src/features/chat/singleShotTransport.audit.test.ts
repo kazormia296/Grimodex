@@ -2,7 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_AI_SETTINGS } from "./types";
 
 const callOrder: string[] = [];
+
+function testDigest(character: string): `sha256:${string}` {
+  return `sha256:${character.repeat(64)}`;
+}
+
 const runtimeTargetMock = vi.hoisted(() => vi.fn((): "web" | null => null));
+const isIpcLifecycleCancellationMock = vi.hoisted(() =>
+  vi.fn((error: unknown): boolean => {
+    if (error === null || typeof error !== "object") return false;
+    const code = (error as { readonly code?: unknown }).code;
+    return (
+      code === "IPC_READ_CANCELLED" ||
+      code === "IPC_DERIVED_CANCELLED" ||
+      code === "IPC_MUTATION_CANCELLED"
+    );
+  }),
+);
 const invokeMock = vi.hoisted(() =>
   vi.fn(async () => {
     callOrder.push("provider");
@@ -41,13 +57,21 @@ const completeMock = vi.hoisted(() =>
   }),
 );
 const failMock = vi.hoisted(() => vi.fn(async () => undefined));
+const cancelMock = vi.hoisted(() =>
+  vi.fn(async () => {
+    callOrder.push("audit-cancelled");
+  }),
+);
 const skipMock = vi.hoisted(() =>
   vi.fn(async () => {
     callOrder.push("audit-skipped");
   }),
 );
 
-vi.mock("@/lib/tauri", () => ({ invoke: invokeMock }));
+vi.mock("@/lib/tauri", () => ({
+  invoke: invokeMock,
+  isIpcLifecycleCancellation: isIpcLifecycleCancellationMock,
+}));
 vi.mock("@/runtime/runtimeDocumentTarget", () => ({
   readDocumentRuntimeTarget: runtimeTargetMock,
 }));
@@ -56,13 +80,21 @@ vi.mock("@/features/ai-audit/api", () => ({
   markAiAuditDispatched: dispatchedMock,
   completeAiAuditExecution: completeMock,
   failAiAuditExecution: failMock,
+  cancelAiAuditExecution: cancelMock,
   skipAiAuditExecution: skipMock,
 }));
 
 import { testAiConnection } from "./api";
-import { digestStageModelExecutionBinding } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import {
+  digestStageModelExecutionBinding,
+  type StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
-import { bindChronicleStageAuditContext } from "@/application/narrative-extraction/aiTasks/chronicleStageAudit";
+import {
+  bindChronicleStageAuditContext,
+  buildChronicleStageAuditTerminal,
+  buildChronicleStageAuditNoResponseTerminal,
+} from "@/application/narrative-extraction/aiTasks/chronicleStageAudit";
 import {
   createStageExecutionContext,
   NARRATIVE_STAGE_IDS,
@@ -117,6 +149,9 @@ describe("single-shot AI audit contracts", () => {
   beforeEach(() => {
     callOrder.length = 0;
     vi.clearAllMocks();
+    cancelMock.mockImplementation(async () => {
+      callOrder.push("audit-cancelled");
+    });
     runtimeTargetMock.mockReturnValue(null);
     useAiSettingsStore.setState({
       settings: {
@@ -300,6 +335,51 @@ describe("single-shot AI audit contracts", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it.each(["rawResponse", "credential", "unratified"] as const)(
+    "rejects Chronicle v2 begin metadata with unratified field %s",
+    async (field) => {
+      const stageExecution = createStageExecutionContext({
+        projectId: "project-1",
+        runId: `run-begin-unknown-${field}`,
+        taskId: "task-begin-unknown",
+        attemptId: "attempt-begin-unknown",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: `stage-begin-unknown-${field}`,
+      });
+      const base = bindChronicleStageAuditContext(
+        { projectId: "project-1", pathId: "narrative_observation_extract" },
+        stageExecution,
+        {
+          contextSetDigest: testDigest("1"),
+          componentContractDigest: testDigest("2"),
+          finalRequestDigest: testDigest("3"),
+        },
+      );
+      const beginStage = base.metadata?.chronicleStage as Record<
+        string,
+        unknown
+      >;
+
+      await expect(
+        invokeSingleShotChat(
+          { messages: [{ role: "user", content: "reject unknown begin" }] },
+          {
+            ...base,
+            onResolvedRouteMetadata: undefined,
+            metadata: {
+              chronicleStage: {
+                ...beginStage,
+                [field]: field === "unratified" ? true : "must not persist",
+              },
+            } as unknown as AiAuditJsonObject,
+          },
+        ),
+      ).rejects.toThrow(new RegExp(`unknown field '${field}'`, "i"));
+      expect(beginMock).not.toHaveBeenCalled();
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("awaits route metadata before begin and carries the sealed metadata to terminal", async () => {
     const order: string[] = [];
     const stageExecution = createStageExecutionContext({
@@ -324,6 +404,7 @@ describe("single-shot AI audit contracts", () => {
       unknown
     >;
     let resolvedStage: Record<string, unknown> = initialStage;
+    let resolvedBinding: StageModelExecutionBindingV1 | undefined;
     const onResolvedRouteMetadata = vi.fn(async () => {
       order.push("route-metadata");
       const modelExecutionBinding = {
@@ -339,6 +420,7 @@ describe("single-shot AI audit contracts", () => {
         generationMode: "explicit" as const,
         resolutionStatus: "requested-only" as const,
       };
+      resolvedBinding = modelExecutionBinding;
       resolvedStage = {
         ...initialStage,
         modelExecutionBinding,
@@ -352,13 +434,21 @@ describe("single-shot AI audit contracts", () => {
     });
     const onTerminalMetadata = vi.fn(async () => {
       order.push("terminal-hook");
+      if (resolvedBinding === undefined) {
+        throw new Error("route binding was not resolved");
+      }
+      const terminal = await buildChronicleStageAuditTerminal({
+        stageExecution,
+        contextSetDigest: testDigest("1"),
+        componentContractDigest: testDigest("2"),
+        finalRequestDigest: testDigest("3"),
+        responseText: "result",
+        parseStatus: "parsed",
+        terminalStatus: "succeeded",
+        modelExecutionBinding: resolvedBinding,
+      });
       return {
-        chronicleStage: {
-          ...resolvedStage,
-          parseStatus: "parsed",
-          terminalStatus: "succeeded",
-          stageExecutionReceiptDigest: `sha256:${"4".repeat(64)}`,
-        } as unknown as AiAuditJsonObject,
+        chronicleStage: terminal as unknown as AiAuditJsonObject,
         chronicleTerminal: true,
       };
     });
@@ -440,6 +530,9 @@ describe("single-shot AI audit contracts", () => {
       expect.anything(),
       expect.objectContaining({
         error: expect.objectContaining({ message: hookError.message }),
+        metadata: expect.not.objectContaining({
+          chronicleStage: expect.anything(),
+        }),
       }),
     );
     expect(completeMock).not.toHaveBeenCalled();
@@ -540,6 +633,190 @@ describe("single-shot AI audit contracts", () => {
     );
   });
 
+  it("classifies AbortError dispatch rejection as cancelled and emits one Chronicle receipt", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-cancelled",
+      taskId: "task-cancelled",
+      attemptId: "attempt-cancelled",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-cancelled",
+    });
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: testDigest("b"),
+        componentContractDigest: testDigest("c"),
+        finalRequestDigest: testDigest("d"),
+      },
+    );
+    const abortError = new Error("aborted by caller");
+    abortError.name = "AbortError";
+    invokeMock.mockRejectedValueOnce(abortError);
+    const receipts: unknown[] = [];
+    const noResponseHook = vi.fn(
+      async (terminalStatus: "failed" | "cancelled" | "skipped") => {
+        callOrder.push("no-response-hook");
+        const terminal = await buildChronicleStageAuditNoResponseTerminal({
+          stageExecution,
+          contextSetDigest: testDigest("b"),
+          componentContractDigest: testDigest("c"),
+          finalRequestDigest: testDigest("d"),
+          terminalStatus,
+        });
+        return {
+          chronicleStage: terminal as unknown as AiAuditJsonObject,
+        };
+      },
+    );
+    const onAuditCompleted = vi.fn(async () => {
+      callOrder.push("audit-completed-hook");
+      receipts.push("receipt");
+    });
+
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "cancel me" }] },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onNoResponseTerminalMetadata: noResponseHook,
+          onAuditCompleted,
+        },
+      ),
+    ).rejects.toBe(abortError);
+    expect(callOrder).toEqual([
+      "audit-begin",
+      "audit-dispatched",
+      "no-response-hook",
+      "audit-cancelled",
+      "audit-completed-hook",
+    ]);
+    expect(noResponseHook).toHaveBeenCalledWith("cancelled", expect.anything());
+    expect(cancelMock).toHaveBeenCalledOnce();
+    expect(failMock).not.toHaveBeenCalled();
+    expect(receipts).toHaveLength(1);
+  });
+
+  it("does not publish a cancellation receipt when durable cancellation fails", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-cancel-persist-failure",
+      taskId: "task-cancel-persist-failure",
+      attemptId: "attempt-cancel-persist-failure",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-cancel-persist-failure",
+    });
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: testDigest("e"),
+        componentContractDigest: testDigest("f"),
+        finalRequestDigest: testDigest("0"),
+      },
+    );
+    const abortError = new Error("cancel persistence failure");
+    abortError.name = "AbortError";
+    invokeMock.mockRejectedValueOnce(abortError);
+    cancelMock.mockRejectedValue(new Error("cancel append failed"));
+    const noResponseHook = vi.fn(async () => {
+      const terminal = await buildChronicleStageAuditNoResponseTerminal({
+        stageExecution,
+        contextSetDigest: testDigest("e"),
+        componentContractDigest: testDigest("f"),
+        finalRequestDigest: testDigest("0"),
+        terminalStatus: "cancelled",
+      });
+      return { chronicleStage: terminal as unknown as AiAuditJsonObject };
+    });
+    const onAuditCompleted = vi.fn(async () => undefined);
+
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "cancel no orphan" }] },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onNoResponseTerminalMetadata: noResponseHook,
+          onAuditCompleted,
+        },
+      ),
+    ).rejects.toBe(abortError);
+    expect(noResponseHook).toHaveBeenCalledOnce();
+    expect(cancelMock).toHaveBeenCalledOnce();
+    expect(onAuditCompleted).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    "ERR_CANCELED",
+    "ABORT_ERR",
+    "ECANCELED",
+    "IPC_READ_CANCELLED",
+    "IPC_DERIVED_CANCELLED",
+    "IPC_MUTATION_CANCELLED",
+  ] as const)(
+    "classifies explicit cancellation code %s without changing provider failures",
+    async (code) => {
+      const cancellationError = { name: "Error", code, message: "cancelled" };
+      invokeMock.mockRejectedValueOnce(cancellationError);
+      const onNoResponseTerminalMetadata = vi.fn(
+        async (status: "failed" | "cancelled" | "skipped") => {
+          expect(status).toBe("cancelled");
+          return { chronicleTerminal: { responseDigest: null } };
+        },
+      );
+      const onAuditCompleted = vi.fn(async () => undefined);
+
+      await expect(
+        invokeSingleShotChat(
+          { messages: [{ role: "user", content: "cancel by code" }] },
+          {
+            projectId: "project-1",
+            pathId: "narrative_observation_extract",
+            onNoResponseTerminalMetadata,
+            onAuditCompleted,
+          },
+        ),
+      ).rejects.toBe(cancellationError);
+      expect(cancelMock).toHaveBeenCalledOnce();
+      expect(failMock).not.toHaveBeenCalled();
+      expect(onNoResponseTerminalMetadata).toHaveBeenCalledOnce();
+      expect(onAuditCompleted).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    {
+      label: "wrapped ERR_CANCELED",
+      error: { name: "Wrapper", cause: { code: "ERR_CANCELED" } },
+    },
+    {
+      label: "wrapped AbortError",
+      error: { name: "Wrapper", cause: { name: "AbortError" } },
+    },
+  ])("classifies $label as cancellation", async ({ error }) => {
+    invokeMock.mockRejectedValueOnce(error);
+    const onAuditCompleted = vi.fn(async () => undefined);
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "wrapped cancellation" }] },
+        {
+          projectId: "project-1",
+          pathId: "narrative_observation_extract",
+          onNoResponseTerminalMetadata: async () => ({
+            chronicleTerminal: { responseDigest: null },
+          }),
+          onAuditCompleted,
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(cancelMock).toHaveBeenCalledOnce();
+    expect(failMock).not.toHaveBeenCalled();
+    expect(onAuditCompleted).toHaveBeenCalledOnce();
+  });
+
   it("rejects a Chronicle terminal Context Set digest swap before completion", async () => {
     const stageExecution = createStageExecutionContext({
       projectId: "project-1",
@@ -579,8 +856,269 @@ describe("single-shot AI audit contracts", () => {
       ),
     ).rejects.toThrow(/protected field.*contextSetDigest/i);
     expect(completeMock).not.toHaveBeenCalled();
-    expect(failMock).toHaveBeenCalled();
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.not.objectContaining({
+          chronicleStage: expect.anything(),
+        }),
+      }),
+    );
   });
+
+  it.each(["rawResponse", "credential", "unratified"] as const)(
+    "rejects Chronicle v2 terminal metadata with unknown field %s",
+    async (field) => {
+      const stageExecution = createStageExecutionContext({
+        projectId: "project-1",
+        runId: `run-terminal-unknown-${field}`,
+        taskId: "task-terminal-unknown",
+        attemptId: "attempt-terminal-unknown",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: `stage-terminal-unknown-${field}`,
+      });
+      const base = bindChronicleStageAuditContext(
+        { projectId: "project-1", pathId: "narrative_observation_extract" },
+        stageExecution,
+        {
+          contextSetDigest: testDigest("6"),
+          componentContractDigest: testDigest("7"),
+          finalRequestDigest: testDigest("8"),
+        },
+      );
+      const validTerminal = await buildChronicleStageAuditTerminal({
+        stageExecution,
+        contextSetDigest: testDigest("6"),
+        componentContractDigest: testDigest("7"),
+        finalRequestDigest: testDigest("8"),
+        responseText: "result",
+        parseStatus: "parsed",
+        terminalStatus: "succeeded",
+      });
+
+      await expect(
+        invokeSingleShotChat(
+          { messages: [{ role: "user", content: "reject unknown terminal" }] },
+          {
+            ...base,
+            onResolvedRouteMetadata: undefined,
+            onTerminalMetadata: async () => ({
+              chronicleStage: {
+                ...(validTerminal as unknown as Record<string, unknown>),
+                [field]: field === "unratified" ? true : "must not persist",
+              } as unknown as AiAuditJsonObject,
+            }),
+          },
+        ),
+      ).rejects.toThrow(new RegExp(`unknown field '${field}'`, "i"));
+      expect(completeMock).not.toHaveBeenCalled();
+      expect(failMock).toHaveBeenCalledOnce();
+      expect(failMock).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          metadata: expect.not.objectContaining({
+            chronicleStage: expect.anything(),
+          }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    { transportStatus: "cancelled", hookStatus: "failed" },
+    { transportStatus: "failed", hookStatus: "cancelled" },
+    { transportStatus: "skipped", hookStatus: "failed" },
+  ] as const)(
+    "rejects no-response terminal status relabeling ($transportStatus -> $hookStatus) before durable close",
+    async ({ transportStatus, hookStatus }) => {
+      const stageExecution = createStageExecutionContext({
+        projectId: "project-1",
+        runId: `run-status-mismatch-${transportStatus}`,
+        taskId: "task-status-mismatch",
+        attemptId: "attempt-status-mismatch",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: `stage-status-mismatch-${transportStatus}`,
+      });
+      const base = bindChronicleStageAuditContext(
+        { projectId: "project-1", pathId: "narrative_observation_extract" },
+        stageExecution,
+        {
+          contextSetDigest: testDigest("9"),
+          componentContractDigest: testDigest("a"),
+          finalRequestDigest: testDigest("b"),
+        },
+      );
+      const providerError = new Error(`transport ${transportStatus}`);
+      if (transportStatus === "cancelled") {
+        providerError.name = "AbortError";
+        invokeMock.mockRejectedValueOnce(providerError);
+      } else if (transportStatus === "failed") {
+        invokeMock.mockRejectedValueOnce(providerError);
+      }
+      const onNoResponseTerminalMetadata = vi.fn(async () => {
+        const terminal = await buildChronicleStageAuditNoResponseTerminal({
+          stageExecution,
+          contextSetDigest: testDigest("9"),
+          componentContractDigest: testDigest("a"),
+          finalRequestDigest: testDigest("b"),
+          terminalStatus: hookStatus,
+        });
+        return { chronicleStage: terminal as unknown as AiAuditJsonObject };
+      });
+      const invocation = invokeSingleShotChat(
+        {
+          messages: [{ role: "user", content: "reject relabel" }],
+          ...(transportStatus === "skipped" ? { provider: "cli" } : {}),
+        },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onNoResponseTerminalMetadata,
+        },
+      );
+
+      await expect(invocation).rejects.toThrow(/terminalStatus.*transport/i);
+      expect(onNoResponseTerminalMetadata).toHaveBeenCalledWith(
+        transportStatus,
+        expect.anything(),
+      );
+      const safeTerminalInput = expect.objectContaining({
+        metadata: expect.not.objectContaining({
+          chronicleStage: expect.anything(),
+        }),
+      });
+      if (transportStatus === "cancelled") {
+        expect(cancelMock).toHaveBeenCalledOnce();
+        expect(cancelMock).toHaveBeenCalledWith(
+          expect.anything(),
+          safeTerminalInput,
+        );
+      } else if (transportStatus === "failed") {
+        expect(failMock).toHaveBeenCalledOnce();
+        expect(failMock).toHaveBeenCalledWith(
+          expect.anything(),
+          safeTerminalInput,
+        );
+      } else {
+        expect(skipMock).toHaveBeenCalledOnce();
+        expect(skipMock).toHaveBeenCalledWith(
+          expect.anything(),
+          safeTerminalInput,
+        );
+      }
+    },
+  );
+
+  it("closes no-response audit generically when the hook returns invalid Chronicle metadata", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-no-response-invalid-hook",
+      taskId: "task-no-response-invalid-hook",
+      attemptId: "attempt-no-response-invalid-hook",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-no-response-invalid-hook",
+    });
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: testDigest("c"),
+        componentContractDigest: testDigest("d"),
+        finalRequestDigest: testDigest("e"),
+      },
+    );
+    const beginStage = base.metadata?.chronicleStage as Record<string, unknown>;
+    const providerError = new Error("provider did not respond");
+    invokeMock.mockRejectedValueOnce(providerError);
+
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "invalid no-response" }] },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onNoResponseTerminalMetadata: async () => ({
+            chronicleStage: {
+              ...beginStage,
+              rawResponse: "must not persist",
+              responseDigest: null,
+              parseStatus: "not-attempted",
+              terminalStatus: "failed",
+              stageExecutionReceiptDigest: testDigest("f"),
+            } as unknown as AiAuditJsonObject,
+          }),
+          onAuditCompleted: async () => {
+            throw new Error("receipt must not publish");
+          },
+        },
+      ),
+    ).rejects.toThrow(/unknown field 'rawResponse'/i);
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.not.objectContaining({
+          chronicleStage: expect.anything(),
+        }),
+      }),
+    );
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["tampered receipt digest", "invalid status pair"] as const)(
+    "rejects a Chronicle terminal %s before durable completion",
+    async (mutation) => {
+      const stageExecution = createStageExecutionContext({
+        projectId: "project-1",
+        runId: `run-terminal-${mutation.replace(/\s+/gu, "-")}`,
+        taskId: "task-terminal-seal",
+        attemptId: "attempt-terminal-seal",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: `stage-terminal-${mutation.replace(/\s+/gu, "-")}`,
+      });
+      const base = bindChronicleStageAuditContext(
+        { projectId: "project-1", pathId: "narrative_observation_extract" },
+        stageExecution,
+        {
+          contextSetDigest: testDigest("2"),
+          componentContractDigest: testDigest("3"),
+          finalRequestDigest: testDigest("4"),
+        },
+      );
+      const validTerminal = await buildChronicleStageAuditTerminal({
+        stageExecution,
+        contextSetDigest: testDigest("2"),
+        componentContractDigest: testDigest("3"),
+        finalRequestDigest: testDigest("4"),
+        responseText: "result",
+        parseStatus: "parsed",
+        terminalStatus: "succeeded",
+      });
+      const terminalStage = validTerminal as unknown as Record<string, unknown>;
+      const mutatedStage = {
+        ...terminalStage,
+        ...(mutation === "tampered receipt digest"
+          ? { stageExecutionReceiptDigest: testDigest("5") }
+          : { parseStatus: "invalid", terminalStatus: "succeeded" }),
+      } as unknown as AiAuditJsonObject;
+
+      await expect(
+        invokeSingleShotChat(
+          { messages: [{ role: "user", content: "reject terminal" }] },
+          {
+            ...base,
+            onResolvedRouteMetadata: undefined,
+            onTerminalMetadata: async () => ({
+              chronicleStage: mutatedStage,
+            }),
+          },
+        ),
+      ).rejects.toThrow(/receipt digest|parseStatus|terminalStatus/i);
+      expect(completeMock).not.toHaveBeenCalled();
+      expect(failMock).toHaveBeenCalled();
+    },
+  );
 
   it("AI audit path: ai_connection_test", async () => {
     invokeMock.mockResolvedValueOnce("Connection OK" as never);

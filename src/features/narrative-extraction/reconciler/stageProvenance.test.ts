@@ -121,13 +121,33 @@ describe("Chronicle stage provenance/model binding contract", () => {
       "sk-12345678",
       "ghp_012345678901234567890123456789012345",
       "AIzaSy01234567890123456789012345678901234",
+      "//evil.example/v1",
+      "evil.example/v1",
+      "evil.example:443",
+      "user:secret@evil.example/v1",
+      "http:",
+      "javascript:alert(1)",
+      "ssh:evil.example",
+      "prefix:https://user:supersecret@evil.example/v1",
+      "https://evil.example/v1",
+      "ws://evil.example",
+      "wss://evil.example",
+      "ftp://evil.example",
+      "file://etc/passwd",
+      "data:text/plain,secret",
+      "urn:isbn:9780000000000",
+      "custom:",
+      "127.0.0.1:8080",
+      "localhost:11434",
+      "[::1]",
+      "[2001:db8::1]:443",
     ]) {
       expect(() =>
         createStageModelExecutionBindingV1({
           ...requestedOnlyBinding,
           endpointBindingId,
         }),
-      ).toThrow(/credential|safe/i);
+      ).toThrow(/credential|safe|URL|origin/i);
     }
     expect(JSON.stringify(requestedOnlyBinding)).not.toContain("http");
   });
@@ -156,13 +176,35 @@ describe("Chronicle stage provenance/model binding contract", () => {
         "xoxb-012345678901234567890123456789012345",
         "AKIA0123456789ABCDEF",
         "hf_012345678901234567890123456789012345",
+        "//evil.example/v1",
+        "evil.example/v1",
+        "evil.example:443",
+        "user:secret@evil.example/v1",
+        "http:",
+        "javascript:alert(1)",
+        "ssh:evil.example",
+        "prefix:https://user:supersecret@evil.example/v1",
+        "https://evil.example/v1",
+        "ws://evil.example",
+        "wss://evil.example",
+        "ftp://evil.example",
+        "file://etc/passwd",
+        "data:text/plain,secret",
+        "urn:isbn:9780000000000",
+        "custom:",
+        "127.0.0.1:8080",
+        "localhost:11434",
+        "[::1]",
+        "[2001:db8::1]:443",
+        "  anthropic",
+        "anthropic ",
       ]) {
         expect(() =>
           createStageModelExecutionBindingV1({
             ...requestedOnlyBinding,
             [field]: value,
           }),
-        ).toThrow(/safe non-empty token|credential/i);
+        ).toThrow(/safe non-empty token|credential|whitespace/i);
       }
     },
   );
@@ -184,6 +226,25 @@ describe("Chronicle stage provenance/model binding contract", () => {
         requestedModel: "qwen3:8b",
       }),
     ).toMatchObject({ requestedModel: "qwen3:8b" });
+    expect(
+      createStageModelExecutionBindingV1({
+        ...requestedOnlyBinding,
+        requestedModel: "namespace/model:tag@revision",
+      }),
+    ).toMatchObject({ requestedModel: "namespace/model:tag@revision" });
+    for (const requestedModel of [
+      "openrouter/anthropic/claude-sonnet-4-6",
+      "amazon-bedrock/anthropic.claude-sonnet",
+      "gemma4:latest",
+      "shared:latest",
+    ]) {
+      expect(
+        createStageModelExecutionBindingV1({
+          ...requestedOnlyBinding,
+          requestedModel,
+        }),
+      ).toMatchObject({ requestedModel });
+    }
   });
 
   it("fails closed for resolution status contradictions and keeps fingerprints meaningful", async () => {

@@ -97,6 +97,22 @@ function assertSafeString(
   options: { readonly digestAllowed?: boolean } = {},
 ): asserts value is string {
   assertNonEmpty(value, label);
+  if (value !== value.trim()) {
+    throw new TypeError(
+      `${label} must not contain leading or trailing whitespace`,
+    );
+  }
+  if (URL_ORIGIN_SHAPED_PATTERN.test(value)) {
+    throw new TypeError(`${label} must not contain a URL or origin`);
+  }
+  if (
+    value.includes("://") ||
+    NESTED_URI_SCHEME_PATTERN.test(value) ||
+    HOST_LIKE_ORIGIN_PATTERN.test(value) ||
+    USERINFO_HOST_ORIGIN_PATTERN.test(value)
+  ) {
+    throw new TypeError(`${label} must not contain a URL or origin`);
+  }
   if (CREDENTIAL_SHAPED_TOKEN_PATTERN.test(value)) {
     throw new TypeError(`${label} must not contain a credential-shaped value`);
   }
@@ -136,10 +152,19 @@ function assertTokenString(
   label: string,
 ): asserts value is string {
   assertNonEmpty(value, label);
+  if (value !== value.trim()) {
+    throw new TypeError(
+      `${label} must not contain leading or trailing whitespace`,
+    );
+  }
   if (
     value.length > 512 ||
     /[\u0000-\u001f\u007f]/u.test(value) ||
+    URL_ORIGIN_SHAPED_PATTERN.test(value) ||
     value.includes("://") ||
+    NESTED_URI_SCHEME_PATTERN.test(value) ||
+    HOST_LIKE_ORIGIN_PATTERN.test(value) ||
+    USERINFO_HOST_ORIGIN_PATTERN.test(value) ||
     CREDENTIAL_SHAPED_TOKEN_PATTERN.test(value)
   ) {
     throw new TypeError(`${label} must be a safe non-empty token`);
@@ -155,6 +180,18 @@ function assertTokenString(
  */
 const CREDENTIAL_SHAPED_TOKEN_PATTERN =
   /(?:\bbearer\s+[A-Za-z0-9._~+/=-]+|\bsk-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bghp_[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bgithub_pat_[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bglpat-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bhf_[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bxox[a-z]*-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])|\bAKIA[0-9A-Z]{12,}(?![0-9A-Z])|\bAIza[A-Za-z0-9_-]{16,}(?![A-Za-z0-9_-])|(?:^|[^A-Za-z0-9])(?:x[_-])?(?:api[_-]?key|api[_-]?secret|authorization|access[_-]?token|auth[_-]?token|token|credential|secret|password|passwd|private[_-]?key|client[_-]?secret)\s*[:=])/iu;
+
+/** Reject URL/origin-shaped identity values without banning model namespaces or revisions. */
+const URL_ORIGIN_SHAPED_PATTERN =
+  /^(?:(?:https?|wss?|ftp|file|data|urn):|[A-Za-z][A-Za-z0-9+.-]*:$|\/\/|[A-Za-z][A-Za-z0-9+.-]*:\/\/|(?:[^/\s:@]+:[^/\s@]+@)(?:(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})?(?:[/?#]|$)|\[[0-9A-F:.]+\](?::\d{1,5})?(?:[/?#]|$))|(?:(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})(?:[/?#]|$))|(?:\[[0-9A-F:.]+\])(?::\d{1,5})?(?:[/?#]|$))/iu;
+
+/** URI schemes and host-like targets are forbidden even when nested in a token. */
+const NESTED_URI_SCHEME_PATTERN =
+  /(?:^|[^A-Za-z0-9])(?:https?|wss?|ftp|file|data|urn|javascript|ssh|mailto|blob|about):/iu;
+const HOST_LIKE_ORIGIN_PATTERN =
+  /(?:^|:)(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})?(?:[/?#]|$)/iu;
+const USERINFO_HOST_ORIGIN_PATTERN =
+  /(?:^|[^A-Za-z0-9])[^/\s:@]+:[^/\s@]+@(?:localhost|(?:\d{1,3}\.){3}\d{1,3}|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})(?::\d{1,5})?(?:[/?#]|$)/iu;
 
 function assertNullableTokenString(
   value: unknown,
