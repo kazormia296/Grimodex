@@ -131,6 +131,7 @@ type PersistRunRow = (
     Option<String>,
     Option<String>,
     Option<String>,
+    i64,
 );
 
 type ReadRunRow = (
@@ -458,6 +459,10 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     run_id: &str,
     evidence: &CompletedRunSkipEvidence,
 ) -> Result<()> {
+    ensure!(
+        !conn.is_autocommit(),
+        "NEX_MAINTENANCE_SKIP_TRANSACTION_REQUIRED: completed-run skip evidence must run inside a caller-owned transaction"
+    );
     ensure!(!run_id.trim().is_empty(), "runId is required");
     validate_evidence_shape(evidence)?;
     ensure!(
@@ -470,7 +475,7 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     let row: Option<PersistRunRow> = conn
         .query_row(
             "SELECT project_id, run_kind, status, semantic_epoch_id, work_key,
-                    completed_at, outcome_summary_json
+                    completed_at, outcome_summary_json, version
                FROM narrative_extraction_runs WHERE id = ?1",
             [run_id],
             |row| {
@@ -482,11 +487,21 @@ pub fn persist_completed_run_skip_evidence_in_tx(
                     row.get(4)?,
                     row.get(5)?,
                     row.get(6)?,
+                    row.get(7)?,
                 ))
             },
         )
         .optional()?;
-    let Some((project_id, run_kind, status, epoch_id, work_key, completed_at, outcome_json)) = row
+    let Some((
+        project_id,
+        run_kind,
+        status,
+        epoch_id,
+        work_key,
+        completed_at,
+        outcome_json,
+        version,
+    )) = row
     else {
         bail!("NEX_MAINTENANCE_SKIP_RUN_MISSING: Run '{run_id}' does not exist");
     };
@@ -528,8 +543,12 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     );
     let evidence_value = serde_json::to_value(evidence)?;
     if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
+        let existing_semantics =
+            serde_json::from_value::<CompletedRunSkipEvidence>(existing.clone())
+                .ok()
+                .filter(|parsed| validate_evidence_shape(parsed).is_ok());
         ensure!(
-            existing == &evidence_value,
+            existing_semantics.as_ref() == Some(evidence),
             "NEX_MAINTENANCE_SKIP_EVIDENCE_CONFLICT: Run '{run_id}' already has different skip evidence"
         );
     } else {
@@ -542,14 +561,24 @@ pub fn persist_completed_run_skip_evidence_in_tx(
             COMPLETED_RUN_SKIP_EVIDENCE_FIELD.to_string(),
             evidence_value,
         );
-        conn.execute(
-            "UPDATE narrative_extraction_runs
+        let serialized_outcome = serde_json::to_string(&outcome)?;
+        let changed = conn
+            .execute(
+                "UPDATE narrative_extraction_runs
                 SET outcome_summary_json = ?1, version = version + 1
-              WHERE id = ?2 AND status = 'completed'",
-            params![serde_json::to_string(&outcome)?, run_id],
-        )?;
+              WHERE id = ?2
+                AND status = 'completed'
+                AND version = ?3
+                AND outcome_summary_json = ?4",
+                params![serialized_outcome, run_id, version, outcome_json],
+            )
+            .with_context(|| {
+                format!(
+                "NEX_MAINTENANCE_SKIP_EVIDENCE_LOST: Run '{run_id}' changed while sealing evidence"
+            )
+            })?;
         ensure!(
-            conn.changes() == 1,
+            changed == 1,
             "NEX_MAINTENANCE_SKIP_EVIDENCE_LOST: Run '{run_id}' changed while sealing evidence"
         );
     }
