@@ -640,6 +640,78 @@ fn discovery_ignores_old_epoch_ties_when_the_current_work_candidate_is_unique() 
 }
 
 #[test]
+fn current_running_verify_with_invalid_started_at_fails_closed() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('current-running-invalid-started', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'running', '{}', '2026-08-23T12:00:00.000Z', 'not-an-instant', NULL,
+                     'dependency-verify', ?2, ?3)",
+            params![
+                PROJECT_ID,
+                OLD_EPOCH_ID,
+                format!("dependency-verify:{OLD_EPOCH_ID}")
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed current running Verify with malformed started_at");
+
+    let error = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect_err("current running Verify with malformed started_at must fail closed");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+}
+
+#[test]
+fn unrelated_old_running_verify_with_invalid_started_at_is_ignored() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('current-running-valid', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'running', '{}', '2026-08-23T12:00:00.000Z', '2026-08-23T12:00:01.000Z', NULL,
+                     'dependency-verify', ?2, ?3)",
+            params![
+                PROJECT_ID,
+                OLD_EPOCH_ID,
+                format!("dependency-verify:{OLD_EPOCH_ID}")
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('old-running-invalid-started', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'running', '{}', '2026-08-23T13:00:00.000Z', 'not-an-instant', NULL,
+                     'dependency-verify', ?2, ?3)",
+            params![
+                PROJECT_ID,
+                EPOCH_ID,
+                format!("dependency-verify:{EPOCH_ID}")
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed current valid and unrelated old malformed Verify Runs");
+
+    let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect("unrelated old malformed lifecycle must not block current recovery")
+        .expect("current running Verify must remain discoverable");
+    assert_eq!(discovered.run_kind, AutomaticRunKind::Verify);
+    assert_eq!(discovered.semantic_epoch_id.as_deref(), Some(OLD_EPOCH_ID));
+}
+
+#[test]
 fn discovery_starts_current_verify_when_only_old_marker_and_old_verify_ties_exist() {
     let db = fixture_db();
     db.with_conn(|conn| {

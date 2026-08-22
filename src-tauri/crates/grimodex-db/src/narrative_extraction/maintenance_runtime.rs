@@ -476,6 +476,88 @@ fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
     }
 }
 
+fn validate_relevant_run_timestamp(
+    run: &DurableMaintenanceRun,
+    field: &str,
+    value: Option<&str>,
+    required: bool,
+) -> anyhow::Result<()> {
+    let Some(value) = value else {
+        anyhow::ensure!(
+            !required,
+            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' is missing {field}",
+            run.run_id
+        );
+        return Ok(());
+    };
+    if parse_maintenance_instant(value).is_err() {
+        anyhow::bail!(
+            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' has an unsupported {field}",
+            run.run_id
+        );
+    }
+    Ok(())
+}
+
+/// Validate lifecycle shape only after project, coordinate, and status
+/// relevance has selected the discovery window. This keeps malformed rows
+/// from an unrelated epoch from poisoning a current candidate while making
+/// malformed current active/terminal state fail closed.
+fn validate_relevant_maintenance_run_lifecycle(run: &DurableMaintenanceRun) -> anyhow::Result<()> {
+    validate_relevant_run_timestamp(run, "created_at", Some(&run.created_at_raw), true)?;
+
+    match run.status.as_str() {
+        "pending" => {
+            anyhow::ensure!(
+                run.started_at_raw.is_none(),
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: pending Run '{}' has a started_at",
+                run.run_id
+            );
+            anyhow::ensure!(
+                run.completed_at.is_none(),
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: pending Run '{}' has a terminal completed_at",
+                run.run_id
+            );
+        }
+        "running" => {
+            validate_relevant_run_timestamp(
+                run,
+                "started_at",
+                run.started_at_raw.as_deref(),
+                true,
+            )?;
+            anyhow::ensure!(
+                run.completed_at.is_none(),
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: running Run '{}' has a terminal completed_at",
+                run.run_id
+            );
+        }
+        "completed" | "failed" | "cancelled" => {
+            // Backfill's completion marker has an intentionally stricter
+            // shared validator. A malformed/missing terminal timestamp must
+            // remain rerunnable so discovery can compare its valid
+            // created_at/started_at against a fresh retry and fail closed
+            // only if the malformed marker is still maximal.
+            if !(run.run_kind == "backfill" && run.status == "completed") {
+                validate_relevant_run_timestamp(
+                    run,
+                    "completed_at",
+                    run.completed_at.as_deref(),
+                    true,
+                )?;
+            }
+            validate_relevant_run_timestamp(
+                run,
+                "started_at",
+                run.started_at_raw.as_deref(),
+                false,
+            )?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Select a unique maximal lifecycle candidate from one discovery window.
 /// When current-epoch rows exist, older epochs are outside that window; they
 /// may still be terminal evidence (for example a historical Backfill marker)
@@ -512,6 +594,9 @@ fn select_latest_relevant_run(
     };
     if relevant.is_empty() {
         return Ok(None);
+    }
+    for run in &relevant {
+        validate_relevant_maintenance_run_lifecycle(run)?;
     }
     // Terminal recovery can finish an interrupted row and create its fresh
     // replacement within one millisecond. Use the row's creation instant as
