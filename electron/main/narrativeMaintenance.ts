@@ -128,6 +128,9 @@ export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
  * and is never exposed through preload or the renderer IPC contract.
  */
 interface NarrativeMaintenanceForegroundReleaseBackend {
+  claimNarrativeMaintenanceForegroundBarrier?(
+    projectId: string,
+  ): Promise<unknown> | unknown;
   releaseNarrativeMaintenanceForegroundBarrier?(
     projectId: string,
   ): Promise<unknown> | unknown;
@@ -146,6 +149,86 @@ const isNonEmptyTrimmedString = (value: unknown): value is string =>
   typeof value === "string" &&
   value.trim().length > 0 &&
   value === value.trim();
+
+type ForegroundBarrierClaimStatus =
+  | { status: "claimed"; runId: string }
+  | { status: "not-held" }
+  | { status: "ignored" }
+  | { status: "workspace-unavailable"; reason?: string };
+
+function parseForegroundBarrierClaim(raw: unknown): ForegroundBarrierClaimStatus {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native foreground barrier claim returned malformed JSON");
+    }
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    typeof (value as Record<string, unknown>).status !== "string"
+  ) {
+    throw new Error("native foreground barrier claim returned invalid status");
+  }
+  const record = value as Record<string, unknown>;
+  switch (record.status) {
+    case "claimed":
+      if (
+        Object.keys(record).some((key) => key !== "status" && key !== "runId") ||
+        !isNonEmptyTrimmedString(record.runId)
+      ) {
+        throw new Error("native foreground barrier claim returned invalid claimed status");
+      }
+      return { status: "claimed", runId: record.runId };
+    case "not-held":
+    case "ignored":
+      if (Object.keys(record).some((key) => key !== "status")) {
+        throw new Error("native foreground barrier claim returned invalid status");
+      }
+      return { status: record.status };
+    case "workspace-unavailable":
+      if (
+        Object.keys(record).some((key) => key !== "status" && key !== "reason") ||
+        (record.reason !== undefined && typeof record.reason !== "string")
+      ) {
+        throw new Error("native foreground barrier claim returned invalid status");
+      }
+      return {
+        status: "workspace-unavailable",
+        ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+      };
+    default:
+      throw new Error("native foreground barrier claim returned unknown status");
+  }
+}
+
+/**
+ * Main-only exact claim gate. The native response is parsed strictly before
+ * the caller is allowed to arm the delayed release timer; false, malformed,
+ * unavailable, and rejected claims all fail closed.
+ */
+export async function claimNarrativeMaintenanceForegroundRelease(
+  backend: unknown,
+  projectId: string,
+): Promise<boolean> {
+  if (!isNonEmptyTrimmedString(projectId)) return false;
+  const claim = (
+    backend as NarrativeMaintenanceForegroundReleaseBackend | null
+  )?.claimNarrativeMaintenanceForegroundBarrier;
+  if (typeof claim !== "function") return false;
+  try {
+    const result = parseForegroundBarrierClaim(
+      await claim.call(backend, projectId),
+    );
+    return result.status === "claimed";
+  } catch (error) {
+    console.warn("[grim:invoke] foreground barrier claim failed", error);
+    return false;
+  }
+}
 
 /**
  * Schedule the native foreground barrier only after a successful ordinary

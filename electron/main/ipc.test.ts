@@ -1612,9 +1612,14 @@ describe("registerIpcRouter fail-soft logging", () => {
     vi.useFakeTimers();
     try {
       const release = vi.fn(async () => '{"status":"completed"}');
+      const claim = vi.fn(async () => '{"status":"claimed","runId":"run-1"}');
       const treeNodePatch = vi.fn(async () => '{"patched":true}');
       registerIpcRouter(
-        { treeNodePatch, releaseNarrativeMaintenanceForegroundBarrier: release } as unknown as NapiBackendLike,
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
         {},
         undefined,
         undefined,
@@ -1734,7 +1739,9 @@ describe("registerIpcRouter fail-soft logging", () => {
     try {
       const claim = vi
         .fn()
-        .mockResolvedValueOnce("malformed")
+        .mockResolvedValueOnce(
+          '{"status":"claimed","runId":"run-1","projectId":"p1"}',
+        )
         .mockRejectedValueOnce(new Error("workspace swapped"));
       const release = vi.fn();
       const treeNodePatch = vi.fn(async () => '{"patched":true}');

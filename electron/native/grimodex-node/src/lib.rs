@@ -65,10 +65,10 @@ use grimodex_db::narrative_extraction::{
     ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
     MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
     NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
-    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    NarrativeMaintenanceCiTrigger, NarrativeMaintenanceInboxListPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -1948,6 +1948,167 @@ impl Backend {
         .await
     }
 
+    /// Main-owned pre-response claim for one exact foreground product-journey
+    /// Run. This only proves that the current authority owns a matching
+    /// running marker and remembers it for the delayed release; it never
+    /// changes the durable Run status. A false/malformed/error result at the
+    /// Electron boundary must therefore arm no timer.
+    #[napi]
+    pub async fn claim_narrative_maintenance_foreground_barrier(
+        &self,
+        project_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            if project_id.trim().is_empty() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_REQUIRED: projectId is required"
+                )));
+            }
+            let Some(config) = state.narrative_maintenance_ci_seam.config() else {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            };
+            if config.trigger != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+                || config.product_journey_barrier_id.is_none()
+                || config.correlation.is_none()
+            {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            }
+            // Serialize the exact claim/release boundary with open/restore.
+            // `open_workspace` takes this lock before publishing a replacement
+            // authority, so a swap cannot occur between the final pin check
+            // and the durable barrier operation.
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let current_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            if !Arc::ptr_eq(&authority, &current_snapshot.authority) {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let durable = narrative_extraction::find_running_foreground_system_work_run(
+                authority.db(),
+                &config,
+                &binding,
+            )?
+            .filter(|barrier| barrier.project_id == project_id);
+            let Some(durable) = durable else {
+                return Ok(serde_json::json!({ "status": "not-held" }).to_string());
+            };
+            let pending = state
+                .narrative_maintenance_foreground_barrier
+                .pending_for_project_and_binding(
+                    &project_id,
+                    &binding.authority_id,
+                    binding.generation,
+                    config
+                        .product_journey_barrier_id
+                        .as_deref()
+                        .ok_or_else(|| {
+                            AppError::Anyhow(anyhow::anyhow!("foreground barrier id is required"))
+                        })?,
+                    config.correlation.as_deref().ok_or_else(|| {
+                        AppError::Anyhow(anyhow::anyhow!("foreground correlation is required"))
+                    })?,
+                );
+            let barrier = match pending {
+                Some(pending) if pending == durable => pending,
+                Some(_) => {
+                    return Ok(serde_json::json!({
+                        "status": "not-held",
+                    })
+                    .to_string());
+                }
+                None => durable,
+            };
+            if barrier.project_id != project_id
+                || barrier.marker.authority_id != binding.authority_id
+                || barrier.marker.generation != binding.generation
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            if barrier.marker.product_journey_barrier_id
+                != config
+                    .product_journey_barrier_id
+                    .as_deref()
+                    .unwrap_or_default()
+                || barrier.marker.correlation != config.correlation.as_deref().unwrap_or_default()
+            {
+                return Ok(serde_json::json!({
+                    "status": "not-held",
+                })
+                .to_string());
+            }
+            // Re-pin immediately before storing the claim. The release path
+            // repeats this check, so a swap between claim and timer remains
+            // fail-closed and cannot complete an old authority's Run.
+            let latest_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let latest_binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&latest_snapshot.authority));
+            if !Arc::ptr_eq(&authority, &latest_snapshot.authority) || latest_binding != binding {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            state
+                .narrative_maintenance_foreground_barrier
+                .remember(barrier.clone())?;
+            Ok(serde_json::json!({
+                "status": "claimed",
+                "runId": barrier.run_id,
+            })
+            .to_string())
+        })
+        .await
+    }
+
     /// Main-owned post-response release for one exact foreground product
     /// journey Run. The ordinary tree_node_patch has already committed before
     /// main schedules this call. A failed transaction leaves the process-local
@@ -1968,9 +2129,17 @@ impl Backend {
             let Some(config) = state.narrative_maintenance_ci_seam.config() else {
                 return Ok(serde_json::json!({ "status": "ignored" }).to_string());
             };
-            if config.product_journey_barrier_id.is_none() || config.correlation.is_none() {
+            if config.trigger != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+                || config.product_journey_barrier_id.is_none()
+                || config.correlation.is_none()
+            {
                 return Ok(serde_json::json!({ "status": "ignored" }).to_string());
             }
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
             let Some(product_journey_barrier_id) = config.product_journey_barrier_id.as_deref()
             else {
                 return Ok(serde_json::json!({ "status": "ignored" }).to_string());
@@ -2010,6 +2179,15 @@ impl Backend {
                 .to_string());
             }
             let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let durable = narrative_extraction::find_running_foreground_system_work_run(
+                authority.db(),
+                &config,
+                &binding,
+            )?
+            .filter(|barrier| barrier.project_id == project_id);
+            let Some(durable) = durable else {
+                return Ok(serde_json::json!({ "status": "not-held" }).to_string());
+            };
             let pending = state
                 .narrative_maintenance_foreground_barrier
                 .pending_for_project_and_binding(
@@ -2020,16 +2198,14 @@ impl Backend {
                     correlation,
                 );
             let barrier = match pending {
-                Some(barrier) => Some(barrier),
-                None => narrative_extraction::find_running_foreground_system_work_run(
-                    authority.db(),
-                    &config,
-                    &binding,
-                )?
-                .filter(|barrier| barrier.project_id == project_id),
-            };
-            let Some(barrier) = barrier else {
-                return Ok(serde_json::json!({ "status": "not-held" }).to_string());
+                Some(pending) if pending == durable => pending,
+                Some(_) => {
+                    return Ok(serde_json::json!({
+                        "status": "not-held",
+                    })
+                    .to_string());
+                }
+                None => durable,
             };
             if barrier.marker.authority_id != binding.authority_id
                 || barrier.marker.generation != binding.generation

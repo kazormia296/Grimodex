@@ -42,7 +42,10 @@ import {
   hasPanelWindow,
   openPanelWindow,
 } from "./windows.js";
-import { scheduleNarrativeMaintenanceForegroundRelease } from "./narrativeMaintenance.js";
+import {
+  claimNarrativeMaintenanceForegroundRelease,
+  scheduleNarrativeMaintenanceForegroundRelease,
+} from "./narrativeMaintenance.js";
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
@@ -1971,10 +1974,16 @@ export function registerIpcRouter(
             ? boundArgs.payload
             : boundArgs;
           if (isNonEmptyTrimmedString(payload.projectId)) {
-            scheduleNarrativeMaintenanceForegroundRelease(
+            const claimed = await claimNarrativeMaintenanceForegroundRelease(
               backend,
               payload.projectId,
             );
+            if (claimed) {
+              scheduleNarrativeMaintenanceForegroundRelease(
+                backend,
+                payload.projectId,
+              );
+            }
           }
         }
         if (

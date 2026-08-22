@@ -157,8 +157,8 @@ pub use maintenance_runtime::{
     MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction, RecoveryDecision, RecoveryMode,
     NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault, NarrativeMaintenanceCiSetup,
     NarrativeMaintenanceCiTrigger, NarrativeSystemWorkMarker, RunLedgerCounts, StaleActiveRun,
-    WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES, REBUILD_DERIVED_WORK_KEY,
-    VERIFY_WORK_KEY_PREFIX,
+    WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,

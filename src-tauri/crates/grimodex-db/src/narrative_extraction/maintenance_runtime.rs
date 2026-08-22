@@ -222,6 +222,7 @@ pub const MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE: usize = 32;
 /// boundary so a forged N-API caller cannot enable the seam accidentally.
 pub const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN: &str =
     "c2-5b-product-journey-owner-v1";
+pub const NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -302,6 +303,7 @@ impl NarrativeMaintenanceCiConfig {
         if self.trigger != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake) {
             return None;
         }
+        binding.validate().ok()?;
         Some(NarrativeSystemWorkMarker {
             trigger: "workspace-opened".to_string(),
             canonical_work_key: work.canonical_key(),
@@ -332,6 +334,27 @@ pub struct NarrativeSystemWorkMarker {
     pub generation: u64,
     pub product_journey_barrier_id: String,
     pub correlation: String,
+}
+
+impl NarrativeSystemWorkMarker {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.trigger.trim().is_empty(), "systemWork.trigger is required");
+        anyhow::ensure!(
+            !self.canonical_work_key.trim().is_empty(),
+            "systemWork.canonicalWorkKey is required"
+        );
+        anyhow::ensure!(!self.authority_id.trim().is_empty(), "systemWork.authorityId is required");
+        anyhow::ensure!(
+            self.generation > 0 && self.generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+            "systemWork.generation must be a safe non-zero integer"
+        );
+        anyhow::ensure!(
+            !self.product_journey_barrier_id.trim().is_empty(),
+            "systemWork.productJourneyBarrierId is required"
+        );
+        anyhow::ensure!(!self.correlation.trim().is_empty(), "systemWork.correlation is required");
+        Ok(())
+    }
 }
 
 /// The durable Run selected by the foreground product-journey barrier.  The
@@ -386,6 +409,7 @@ pub(crate) fn spec_with_active_system_work_marker(spec_json: &Value) -> anyhow::
     let Some(marker) = active_system_work_marker() else {
         return Ok(spec_json.clone());
     };
+    marker.validate()?;
     let mut spec = spec_json.as_object().cloned().ok_or_else(|| {
         anyhow::anyhow!(
             "NEX_MAINTENANCE_SYSTEM_WORK_SPEC_INVALID: system-work Run spec must be a JSON object"
@@ -413,6 +437,7 @@ pub fn find_running_foreground_system_work_run(
     binding: &MaintenanceWorkspaceBinding,
 ) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
     config.validate()?;
+    binding.validate()?;
     let barrier_id = config
         .product_journey_barrier_id
         .as_deref()
@@ -459,6 +484,7 @@ pub fn find_running_foreground_system_work_run(
                         "NEX_MAINTENANCE_SYSTEM_WORK_MARKER_MALFORMED: Run '{run_id}' has an invalid systemWork marker: {error}"
                     )
                 })?;
+            marker.validate()?;
             if marker.product_journey_barrier_id != barrier_id
                 || marker.correlation != correlation
                 || marker.authority_id != binding.authority_id
@@ -504,6 +530,7 @@ pub fn complete_foreground_system_work_run(
     db: &Database,
     barrier: &ForegroundSystemWorkRun,
 ) -> anyhow::Result<()> {
+    barrier.marker.validate()?;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             let row: Option<(String, String, String, Option<String>, String)> = conn
@@ -560,6 +587,7 @@ pub fn complete_foreground_system_work_run(
                         .cloned()
                         .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
                 )?;
+                persisted_marker.validate()?;
                 anyhow::ensure!(
                     persisted_marker == barrier.marker,
                     "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
@@ -591,6 +619,7 @@ pub fn complete_foreground_system_work_run(
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
             )?;
+            persisted_marker.validate()?;
             anyhow::ensure!(
                 persisted_marker == barrier.marker,
                 "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
@@ -731,6 +760,17 @@ pub struct MaintenanceCycleRequest {
 pub struct MaintenanceWorkspaceBinding {
     pub authority_id: String,
     pub generation: u64,
+}
+
+impl MaintenanceWorkspaceBinding {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(!self.authority_id.trim().is_empty(), "authorityId is required");
+        anyhow::ensure!(
+            self.generation > 0 && self.generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+            "generation must be a safe non-zero integer"
+        );
+        Ok(())
+    }
 }
 
 /// One project-scoped automatic work item delivered by the main scheduler.
@@ -1462,6 +1502,9 @@ pub fn run_system_work_cycle_with_modes_and_config(
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
+    if let Some(binding) = request.workspace_binding.as_ref() {
+        binding.validate()?;
+    }
     let mut work = request.normalized_work()?;
     anyhow::ensure!(
         work.is_empty() || request.wake_project_ids.is_empty(),

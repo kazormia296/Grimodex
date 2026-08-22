@@ -62,6 +62,8 @@ export declare class Backend {
    * authority connection.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /** Main-only exact pre-response claim for the foreground maintenance Run. */
+  claimNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
   /** Main-only post-response release of the exact foreground maintenance Run. */
   releaseNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
   /**

@@ -7,15 +7,15 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
 use grimodex_db::narrative_extraction::{
     ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
-    RecoveryMode,
+    RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
 };
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -123,11 +123,72 @@ pub struct NarrativeMaintenanceRecoveryGate {
 // after a fresh Backend is created.  A durable foreground marker from an old
 // process therefore cannot be released merely because the workspace metadata
 // (and hence authority ID) is unchanged; StartupRecovery gets the first say.
-fn fresh_narrative_maintenance_generation() -> u64 {
-    // UUID v4 keeps the process-local generation distinct across an actual
-    // process restart too; a monotonically-reset counter would let a new
-    // process accidentally match an old durable foreground marker.
-    uuid::Uuid::new_v4().as_u128() as u64
+fn checked_next_narrative_maintenance_generation(current: u64) -> u64 {
+    if current == 0 || current >= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION {
+        1
+    } else {
+        current + 1
+    }
+}
+
+static NARRATIVE_MAINTENANCE_GENERATION_SEED: OnceLock<u64> = OnceLock::new();
+static NARRATIVE_MAINTENANCE_GENERATION_CURSOR: AtomicU64 = AtomicU64::new(0);
+static NARRATIVE_MAINTENANCE_GENERATION_USED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+
+fn process_narrative_maintenance_generation_seed() -> u64 {
+    *NARRATIVE_MAINTENANCE_GENERATION_SEED.get_or_init(|| {
+        let random_bits = uuid::Uuid::new_v4().as_u128();
+        let masked = random_bits & u128::from(NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION);
+        match u64::try_from(masked) {
+            Ok(seed) if seed > 0 => seed,
+            _ => 1,
+        }
+    })
+}
+
+fn cursor_narrative_maintenance_generation() -> u64 {
+    let seed = process_narrative_maintenance_generation_seed();
+    let previous = match NARRATIVE_MAINTENANCE_GENERATION_CURSOR.fetch_update(
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current| {
+            Some(if current == 0 {
+                seed
+            } else {
+                checked_next_narrative_maintenance_generation(current)
+            })
+        },
+    ) {
+        Ok(previous) => previous,
+        Err(_) => 0,
+    };
+    if previous == 0 {
+        seed
+    } else {
+        checked_next_narrative_maintenance_generation(previous)
+    }
+}
+
+/// Allocate a generation that is safe to serialize through JavaScript's
+/// Number representation. The registry closes the small race where a
+/// workspace-swap rollover and a fresh Backend allocation would otherwise
+/// choose the same value; it also makes every same-process allocation unique
+/// until the complete 53-bit space is exhausted.
+fn allocate_narrative_maintenance_generation(preferred: Option<u64>) -> u64 {
+    let used = NARRATIVE_MAINTENANCE_GENERATION_USED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut candidate = preferred
+        .filter(|value| *value > 0 && *value <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION)
+        .unwrap_or_else(cursor_narrative_maintenance_generation);
+    loop {
+        let inserted = used
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(candidate);
+        if inserted {
+            return candidate;
+        }
+        candidate = cursor_narrative_maintenance_generation();
+    }
 }
 
 /// One-shot native storage for the authorized product-journey configuration.
@@ -239,7 +300,7 @@ impl Default for NarrativeMaintenanceRecoveryGate {
     fn default() -> Self {
         Self {
             state: Mutex::new(NarrativeMaintenanceRecoveryState {
-                workspace_generation: fresh_narrative_maintenance_generation(),
+                workspace_generation: allocate_narrative_maintenance_generation(None),
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
             }),
@@ -259,7 +320,9 @@ impl NarrativeMaintenanceRecoveryGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.authority_id.as_deref() != Some(authority_id) {
             if state.authority_id.is_some() {
-                state.workspace_generation = state.workspace_generation.wrapping_add(1);
+                state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+                    checked_next_narrative_maintenance_generation(state.workspace_generation),
+                ));
             }
             state.authority_id = Some(authority_id.to_string());
             state.recovered_work_keys.clear();
@@ -322,7 +385,9 @@ impl NarrativeMaintenanceRecoveryGate {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.workspace_generation = state.workspace_generation.wrapping_add(1);
+        state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+            checked_next_narrative_maintenance_generation(state.workspace_generation),
+        ));
         state.authority_id = None;
         state.recovered_work_keys.clear();
         state.workspace_generation
@@ -859,6 +924,10 @@ mod tests {
         let generation = gate.current_generation();
         assert!(generation > 0);
         assert!(generation <= MAX_SAFE_GENERATION);
+        let mut allocations = HashSet::new();
+        for _ in 0..8 {
+            assert!(allocations.insert(allocate_narrative_maintenance_generation(None)));
+        }
         assert_eq!(checked_next_narrative_maintenance_generation(0), 1);
         assert_eq!(
             checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION - 1),
@@ -880,6 +949,7 @@ mod tests {
         assert!(first_rollover > 0 && first_rollover <= MAX_SAFE_GENERATION);
         let second_rollover = near_max.mark_workspace_swapped();
         assert!(second_rollover > 0 && second_rollover <= MAX_SAFE_GENERATION);
+        assert_ne!(first_rollover, second_rollover);
         assert!(near_max.current_generation() <= MAX_SAFE_GENERATION);
 
         let at_max = NarrativeMaintenanceRecoveryGate {
