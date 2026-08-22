@@ -32,9 +32,7 @@
     "semanticIndex": "rebuildable-acceleration-only"
   },
   "vocabularies": {
-    "assertionKinds": [
-      "scene-event@1"
-    ],
+    "assertionKinds": ["scene-event@1"],
     "assertionModalities": [
       "modality-explicit-text",
       "modality-narrator-claim",
@@ -45,11 +43,7 @@
       "modality-author-declaration",
       "modality-imported-assertion"
     ],
-    "assertionPolarities": [
-      "affirmative",
-      "negative",
-      "uncertain"
-    ],
+    "assertionPolarities": ["affirmative", "negative", "uncertain"],
     "producerKinds": [
       "ai-inference",
       "reconciler-proposal",
@@ -66,13 +60,7 @@
       "imported-assertion",
       "unresolved"
     ],
-    "changeKinds": [
-      "add",
-      "revise",
-      "retract",
-      "merge",
-      "split"
-    ],
+    "changeKinds": ["add", "revise", "retract", "merge", "split"],
     "contextExposures": [
       "deterministic-stage",
       "author-supplied",
@@ -105,13 +93,8 @@
         "producer",
         "producerConfidence"
       ],
-      "scopeDigest": [
-        "canonicalNarrativeScopeV2"
-      ],
-      "assertionDigest": [
-        "assertionCoreDigest",
-        "scopeDigest"
-      ],
+      "scopeDigest": ["canonicalNarrativeScopeV2"],
+      "assertionDigest": ["assertionCoreDigest", "scopeDigest"],
       "disclosureFieldsExcludedFromAssertionCore": [
         "secret",
         "revealDocumentRef"
@@ -129,6 +112,271 @@
     },
     "producerActorSeparation": true,
     "reviewFreshnessProjectionOutsideRevision": true
+  },
+  "stageProvenance": {
+    "auditVersion": 2,
+    "modelBindingDigestDomain": "chronicle-stage-model-binding/1",
+    "terminalReceiptDigestDomain": "chronicle-stage-terminal-receipt/1",
+    "closureDigestDomain": "chronicle-stage-provenance-closure/1",
+    "requestDigestExcludesModel": true,
+    "bindingContract": {
+      "fields": [
+        "provider",
+        "endpointBindingId",
+        "requestedModel",
+        "effectiveModel",
+        "modelFingerprint",
+        "apiVariant",
+        "reasoningMode",
+        "generationMode",
+        "resolutionStatus"
+      ],
+      "endpointBinding": "stable-id-or-sha256-digest-only",
+      "credentialShape": "reject-credential-shaped-values-before-digest",
+      "statusMatrix": {
+        "fingerprinted": {
+          "required": [
+            "provider",
+            "modelFingerprint",
+            "requestedOrEffectiveModel"
+          ],
+          "forbidden": []
+        },
+        "provider-reported": {
+          "required": ["provider", "effectiveModel"],
+          "forbidden": ["modelFingerprint"]
+        },
+        "requested-only": {
+          "required": ["provider", "requestedModel"],
+          "forbidden": ["effectiveModel", "modelFingerprint"]
+        },
+        "unresolved": {
+          "required": [
+            "all-route-model-fields-null",
+            "generationMode=provider-default"
+          ],
+          "forbidden": [
+            "provider",
+            "endpointBindingId",
+            "requestedModel",
+            "effectiveModel",
+            "modelFingerprint",
+            "apiVariant",
+            "reasoningMode"
+          ]
+        }
+      }
+    },
+    "terminalReceiptContract": {
+      "statusMatrix": [
+        {
+          "terminalStatus": "succeeded",
+          "parseStatus": "parsed",
+          "responseDigest": "required"
+        },
+        {
+          "terminalStatus": "failed",
+          "parseStatus": "invalid",
+          "responseDigest": "required"
+        },
+        {
+          "terminalStatus": "failed",
+          "parseStatus": "not-attempted",
+          "responseDigest": "null"
+        },
+        {
+          "terminalStatus": "cancelled",
+          "parseStatus": "not-attempted",
+          "responseDigest": "null"
+        },
+        {
+          "terminalStatus": "skipped",
+          "parseStatus": "not-attempted",
+          "responseDigest": "null"
+        }
+      ],
+      "beginTerminalSeal": "protected-identity-and-digests-structurally-equal",
+      "modelBindingDigestCoherence": "digest-binding-before-begin-and-terminal",
+      "exactlyOnce": "one-full-terminal-receipt-per-stage-execution",
+      "fullTerminalPaths": [
+        "success",
+        "response-parse-failure",
+        "provider-dispatch-failure",
+        "cli-skip",
+        "cancelled"
+      ]
+    },
+    "c1Completeness": {
+      "requiredStages": [
+        "narrative_observation_extract",
+        "narrative_event_synthesize"
+      ],
+      "ownerStage": "narrative_event_synthesize",
+      "successfulPath": "parsed-success-root-or-parsed-successful-repair-child",
+      "ownerDigestFields": [
+        "contextSetDigest",
+        "componentContractDigest",
+        "finalRequestDigest"
+      ],
+      "ownerDigestsMatchExecution": true,
+      "repairLineage": {
+        "childStage": "narrative_structured_repair",
+        "parentMustBe": "failed-invalid-observation-or-synthesis",
+        "sameTaskAndAttempt": true,
+        "parentPointer": "immutable-parentStageExecutionId"
+      }
+    },
+    "closureContract": {
+      "receiptOrder": "stageExecutionId-then-stageExecutionReceiptDigest",
+      "receiptRefs": "exact-recomputed-from-canonical-receipts",
+      "selfDigest": "digest-excludes-stageProvenanceClosureDigest-and-must-recompute",
+      "membership": "caller-supplied-request-scoped-receipt-set",
+      "lifecycle": "ephemeral",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "application-memory-pure-sidecar",
+      "retention": "not-retained",
+      "scope": "request-scoped"
+    },
+    "sourceLiteralPins": {
+      "auditVersion": {
+        "path": "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts",
+        "literal": "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;"
+      },
+      "digestDomains": [
+        {
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literal": "chronicle-stage-model-binding/1"
+        },
+        {
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literal": "chronicle-stage-terminal-receipt/1"
+        },
+        {
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literal": "chronicle-stage-provenance-closure/1"
+        }
+      ],
+      "implementationPins": [
+        {
+          "id": "binding-status-matrix",
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literals": [
+            "case \"fingerprinted\":",
+            "case \"provider-reported\":",
+            "case \"requested-only\":",
+            "case \"unresolved\":"
+          ]
+        },
+        {
+          "id": "begin-terminal-seal",
+          "path": "src/features/chat/singleShotTransport.ts",
+          "literals": [
+            "CHRONICLE_BEGIN_PROTECTED_FIELDS",
+            "Chronicle Stage terminal changed protected field",
+            "assertChronicleBindingCoherence"
+          ]
+        },
+        {
+          "id": "exactly-once-observation-emitter",
+          "path": "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+          "literals": [
+            "onNoResponseTerminalMetadata",
+            "onAuditCompleted",
+            "emitStageReceipt(capturedStageReceipt)"
+          ]
+        },
+        {
+          "id": "exactly-once-event-emitter",
+          "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+          "literals": [
+            "onNoResponseTerminalMetadata",
+            "onAuditCompleted",
+            "emitStageReceipt(capturedStageReceipt)"
+          ]
+        },
+        {
+          "id": "exactly-once-repair-emitter",
+          "path": "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+          "literals": [
+            "onNoResponseTerminalMetadata",
+            "onAuditCompleted",
+            "emitStageReceipt(capturedStageReceipt)"
+          ]
+        },
+        {
+          "id": "c1-completeness",
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literals": [
+            "assertChronicleStageC1ClosureCompleteness",
+            "C1 owner synthesis receipt digests or terminal path",
+            "C1 stage provenance closure requires a successful"
+          ]
+        },
+        {
+          "id": "repair-lineage",
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literals": [
+            "Structured repair receipt requires a parent receipt",
+            "Stage provenance repair parent must be failed invalid observation or synthesis",
+            "parentStageExecutionId"
+          ]
+        },
+        {
+          "id": "owner-digest-reachability",
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literals": [
+            "assertChronicleStageProvenanceReachability",
+            "Stage provenance closure does not reach stage execution owner",
+            "stageProvenanceClosureDigest"
+          ]
+        },
+        {
+          "id": "canonical-closure-self-digest",
+          "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+          "literals": [
+            "closureDigestPayload",
+            "Stage provenance closure receipt refs mismatch",
+            "Stage provenance closure digest mismatch"
+          ]
+        }
+      ]
+    },
+    "generationMode": {
+      "providerDefault": "provider/model-selection-only",
+      "explicitWhen": [
+        "reasoningMode",
+        "thinking",
+        "effort",
+        "reasoningEnabled",
+        "reasoningEffort",
+        "requestMaxOutputTokens"
+      ]
+    },
+    "taskCoordinateReachability": {
+      "revisionBasisOwner": "revisionBasis.runId+taskId",
+      "sidecarKey": "projectId+runId+taskId+stageProvenanceClosureDigest",
+      "upstreamReceipts": "same-project-and-run-allowed",
+      "repairParentChild": "same-task-and-attempt"
+    },
+    "envelopeChange": "stageProvenanceClosureDigest-forbidden",
+    "persistence": {
+      "owner": "C2A atomic task output/artifact persistence",
+      "status": "deferred",
+      "lifecycle": "ephemeral",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "application-memory-pure-sidecar",
+      "retention": "not-retained",
+      "scope": "request-scoped",
+      "membership": "caller-supplied-receipt-set"
+    },
+    "forbidden": [
+      "credentials",
+      "raw-url-or-origin",
+      "profile-dependent-prompt-or-significance",
+      "evaluation-contract-v2"
+    ]
   },
   "monotonicity": {
     "currentRevisionRule": "once-v2-always-v2",
@@ -160,15 +408,8 @@
   },
   "chroniclePilot": {
     "assertionKind": "scene-event@1",
-    "productWiredChangeKinds": [
-      "add"
-    ],
-    "declaredOrReservedChangeKinds": [
-      "revise",
-      "retract",
-      "merge",
-      "split"
-    ],
+    "productWiredChangeKinds": ["add"],
+    "declaredOrReservedChangeKinds": ["revise", "retract", "merge", "split"],
     "existingProjectionRevisionStatus": "requires-separately-ratified-proposal-kind-and-apply-path"
   },
   "humanDerived": {
@@ -212,38 +453,21 @@
       "derivationContextSet",
       "derivationContextSetDigest"
     ],
-    "contextExposureAllowed": [
-      "deterministic-stage",
-      "author-supplied"
-    ],
-    "contextExposureForbidden": [
-      "model-visible"
-    ],
+    "contextExposureAllowed": ["deterministic-stage", "author-supplied"],
+    "contextExposureForbidden": ["model-visible"],
     "classification": {
       "pathClasses": {
-        "projectionOnly": [
-          "/title",
-          "/note"
-        ],
+        "projectionOnly": ["/title", "/note"],
         "scopeAffecting": [
           "/disclosure/secret",
           "/disclosure/revealDocumentRef"
         ],
         "assertionAffecting": []
       },
-      "precedence": [
-        "assertion-override",
-        "scope-override",
-        "projection-only"
-      ],
+      "precedence": ["assertion-override", "scope-override", "projection-only"],
       "cumulativeAllowedPathClasses": {
-        "projectionOnly": [
-          "projection-only"
-        ],
-        "scopeOverride": [
-          "projection-only",
-          "scope-affecting"
-        ],
+        "projectionOnly": ["projection-only"],
+        "scopeOverride": ["projection-only", "scope-affecting"],
         "assertionOverride": []
       },
       "unknownPathPolicy": "reject",
@@ -252,68 +476,42 @@
       "fixtures": [
         {
           "id": "title-only-edit",
-          "changedPaths": [
-            "/title"
-          ],
+          "changedPaths": ["/title"],
           "expectedDerivationKind": "projection-only",
           "expectedDisposition": "accept",
-          "changedPathClasses": [
-            "projection-only"
-          ]
+          "changedPathClasses": ["projection-only"]
         },
         {
           "id": "secret-only-edit",
-          "changedPaths": [
-            "/disclosure/secret"
-          ],
+          "changedPaths": ["/disclosure/secret"],
           "expectedDerivationKind": "scope-override",
           "expectedDisposition": "accept",
-          "changedPathClasses": [
-            "scope-affecting"
-          ]
+          "changedPathClasses": ["scope-affecting"]
         },
         {
           "id": "reveal-document-only-edit",
-          "changedPaths": [
-            "/disclosure/revealDocumentRef"
-          ],
+          "changedPaths": ["/disclosure/revealDocumentRef"],
           "expectedDerivationKind": "scope-override",
           "expectedDisposition": "accept",
-          "changedPathClasses": [
-            "scope-affecting"
-          ]
+          "changedPathClasses": ["scope-affecting"]
         },
         {
           "id": "mixed-title-secret-uses-scope-override",
-          "changedPaths": [
-            "/title",
-            "/disclosure/secret"
-          ],
+          "changedPaths": ["/title", "/disclosure/secret"],
           "expectedDerivationKind": "scope-override",
           "expectedDisposition": "accept",
-          "changedPathClasses": [
-            "projection-only",
-            "scope-affecting"
-          ]
+          "changedPathClasses": ["projection-only", "scope-affecting"]
         },
         {
           "id": "mixed-note-reveal-document-uses-scope-override",
-          "changedPaths": [
-            "/note",
-            "/disclosure/revealDocumentRef"
-          ],
+          "changedPaths": ["/note", "/disclosure/revealDocumentRef"],
           "expectedDerivationKind": "scope-override",
           "expectedDisposition": "accept",
-          "changedPathClasses": [
-            "projection-only",
-            "scope-affecting"
-          ]
+          "changedPathClasses": ["projection-only", "scope-affecting"]
         },
         {
           "id": "unsupported-path-refused",
-          "changedPaths": [
-            "/actuality"
-          ],
+          "changedPaths": ["/actuality"],
           "expectedDisposition": "reject"
         }
       ]
@@ -431,11 +629,7 @@
   "activation": {
     "state": "disabled",
     "productionEntryPoints": [],
-    "scanRoots": [
-      "src",
-      "electron",
-      "src-tauri"
-    ],
+    "scanRoots": ["src", "electron", "src-tauri"],
     "productionMarkers": [
       "NARRATIVE_IR_V2_PRODUCTION_ENABLED",
       "createHumanDerivedNarrativeRevisionV2",
@@ -458,11 +652,7 @@
   "scopeAdoption": {
     "owner": "adr-009-scope-contract",
     "independentFrom": "narrative-ir-contract",
-    "lifecycleStates": [
-      "declared",
-      "shadow",
-      "wired"
-    ],
+    "lifecycleStates": ["declared", "shadow", "wired"],
     "capabilities": {
       "structuralValidation": "declared",
       "relationComparison": "declared",

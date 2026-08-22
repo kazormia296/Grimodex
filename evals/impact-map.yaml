@@ -55,6 +55,9 @@ rules:
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/**
       - src/features/chat/types.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
     requirements:
       - GDX-ROUTE-001
       - GDX-AI-AUDIT-001
@@ -67,6 +70,8 @@ rules:
     reason: AI audit event ownership, pre-dispatch durability, and terminal capture must remain complete across every transport.
     paths:
       - src/features/ai-audit/**
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/chat/singleShotTransport.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
@@ -180,18 +185,50 @@ rules:
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/**
+      - policies/narrative/fixtures/canonical-json-number-parity.json
       - src/features/narrative-semantic-core/**
+      - src/features/narrative-extraction/source/digest.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
+      - GDX-ARTIFACT-001
     suites:
       - narrative-semantic-contract
   - id: narrative-extraction
     reason: Narrative source, Evidence, semantic scoring, Detail and Temporal projection contracts, Gold corpus, and Chronicle extraction changes share one release gate.
     paths:
       - src/features/narrative-extraction/**
+      - src/application/narrative-extraction/aiTasks/**
+      - src/application/narrative-extraction/extractionCoordinator.ts
       - src/application/narrative-extraction/temporal/**
       - src/features/chronicle/extractEventsApi.ts
       - src/features/chronicle/extractEventsApi.test.ts

@@ -1,0 +1,218 @@
+import { describe, expect, it } from "vitest";
+
+import dependencyFixture from "../../../../policies/narrative/fixtures/dependency-role-contract.json";
+import {
+  DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+  aggregateDependencyBuildActions,
+  canonicalizeDependencySelector,
+  canonicalizeDependencySet,
+  computeDependencyKey,
+  computeDependencySetDigestSync,
+  evaluateDependencyEffect,
+  validateDependencyEffectRegistry,
+  validateDependencySelector,
+} from "./dependencyRole";
+
+type FixtureCase = (typeof dependencyFixture.cases)[number];
+
+describe("narrative dependency role contract", () => {
+  it("evaluates representative Role × Consumer × Source Change effects", () => {
+    const cases = dependencyFixture.cases.filter(
+      (
+        fixtureCase,
+      ): fixtureCase is FixtureCase & {
+        input: { role: string; consumerKind: string; changeClass: string };
+        expected: {
+          freshness: string;
+          reasonCode: string | null;
+          buildAction: string;
+          actionRequirement: string;
+        };
+      } =>
+        fixtureCase.kind === "effect-evaluation" &&
+        fixtureCase.expected !== "reject",
+    );
+
+    for (const fixtureCase of cases) {
+      const result = evaluateDependencyEffect(
+        DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+        fixtureCase.input,
+      );
+      expect(result, fixtureCase.id).toEqual({
+        ok: true,
+        effect: fixtureCase.expected,
+      });
+    }
+  });
+
+  it("fails closed for unknown roles, selectors, and undefined combinations", () => {
+    const unknownRole = dependencyFixture.cases.find(
+      (fixtureCase) => fixtureCase.id === "unknown-role-fails-closed",
+    );
+    const unknownCombination = dependencyFixture.cases.find(
+      (fixtureCase) =>
+        fixtureCase.id === "unknown-effect-combination-fails-closed",
+    );
+    const unknownSelector = dependencyFixture.cases.find(
+      (fixtureCase) => fixtureCase.id === "unknown-selector-fails-closed",
+    );
+
+    expect(
+      evaluateDependencyEffect(
+        DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+        unknownRole!.input,
+      ),
+    ).toMatchObject({ ok: false, error: { code: "unknown-role" } });
+    expect(
+      evaluateDependencyEffect(
+        DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+        unknownCombination!.input,
+      ),
+    ).toMatchObject({ ok: false, error: { code: "missing-effect-rule" } });
+    expect(validateDependencySelector(unknownSelector!.selector)).toEqual({
+      valid: false,
+      error: { code: "unknown-selector" },
+    });
+  });
+
+  it("canonicalizes selectors and computes a stable Role + Selector key", async () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "whole-source-dependency-key-golden",
+    )!;
+
+    expect(canonicalizeDependencySelector(fixtureCase.selector)).toBe(
+      fixtureCase.canonicalSelector,
+    );
+    await expect(
+      computeDependencyKey(fixtureCase.role, fixtureCase.selector),
+    ).resolves.toBe(fixtureCase.dependencyKey);
+  });
+
+  it("keeps UTF-16 object identity and dependency-set tuple parity", async () => {
+    const selectorCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-object-identity-order-golden",
+    )!;
+    expect(canonicalizeDependencySelector(selectorCase.selector)).toBe(
+      selectorCase.canonicalSelector,
+    );
+    await expect(
+      computeDependencyKey(selectorCase.role, selectorCase.selector),
+    ).resolves.toBe(selectorCase.dependencyKey);
+
+    const setCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-dependency-set-tuple-order-golden",
+    )!;
+    expect(canonicalizeDependencySet(setCase.entries!)).toBe(
+      setCase.canonicalDependencySet,
+    );
+    expect(computeDependencySetDigestSync(setCase.entries!)).toBe(
+      setCase.dependencySetDigest,
+    );
+  });
+
+  it("rejects a UTF-16 range beyond JavaScript's safe integer boundary", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-range-rejects-unsafe-integer",
+    )!;
+    expect(validateDependencySelector(fixtureCase.selector)).toEqual({
+      valid: false,
+      error: { code: "invalid-range" },
+    });
+  });
+
+  it("accepts integer-valued raw JSON spellings for UTF-16 bounds", () => {
+    for (const [from, to] of [
+      ["0.0", "1.0"],
+      ["-0", "1"],
+      ["0e0", "1e0"],
+    ] as const) {
+      const selector = JSON.parse(
+        `{"kind":"text-range","unit":"utf16","from":${from},"to":${to},"normalizerVersion":"gdx-canonical-text/1"}`,
+      );
+      expect(validateDependencySelector(selector)).toMatchObject({
+        valid: true,
+      });
+      expect(canonicalizeDependencySelector(selector)).toBe(
+        '{"from":0,"kind":"text-range","normalizerVersion":"gdx-canonical-text/1","to":1,"unit":"utf16"}',
+      );
+    }
+  });
+
+  it("rejects a text range whose normalizer version is not trimmed", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) =>
+        candidate.id === "utf16-range-rejects-whitespace-normalizer",
+    )!;
+    expect(validateDependencySelector(fixtureCase.selector)).toEqual({
+      valid: false,
+      error: { code: "invalid-range" },
+    });
+  });
+
+  it("uses one ASCII token grammar for Unicode normalizer whitespace", () => {
+    for (const id of [
+      "utf16-range-rejects-feff-normalizer",
+      "utf16-range-rejects-next-line-normalizer",
+    ]) {
+      const fixtureCase = dependencyFixture.cases.find(
+        (candidate) => candidate.id === id,
+      )!;
+      expect(validateDependencySelector(fixtureCase.selector), id).toEqual({
+        valid: false,
+        error: { code: "invalid-range" },
+      });
+    }
+
+    const validCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-range-accepts-ascii-normalizer",
+    )!;
+    expect(validateDependencySelector(validCase.selector), validCase.id).toEqual({
+      valid: true,
+      selector: validCase.selector,
+    });
+  });
+
+  it("fails closed when the registry omits a consumer kind", () => {
+    const incomplete = {
+      ...DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+      consumerKinds: DEFAULT_DEPENDENCY_EFFECT_REGISTRY.consumerKinds.slice(1),
+    };
+    expect(validateDependencyEffectRegistry(incomplete)).toContain(
+      "registry consumer kinds are incomplete or contain unknown or duplicate values",
+    );
+  });
+
+  it("rejects a text range that begins inside a UTF-16 surrogate pair", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "utf16-range-rejects-surrogate-interior",
+    )!;
+    expect(
+      validateDependencySelector(fixtureCase.selector, fixtureCase.source),
+    ).toEqual({
+      valid: false,
+      error: { code: "surrogate-boundary" },
+    });
+  });
+
+  it("keeps required Build Actions independent from advisory Freshness", () => {
+    const fixtureCase = dependencyFixture.cases.find(
+      (candidate) => candidate.id === "mixed-actions-stay-independent",
+    )!;
+    expect(aggregateDependencyBuildActions(fixtureCase.effects)).toEqual(
+      fixtureCase.expected,
+    );
+  });
+
+  it("fails closed for a required refresh-available action", () => {
+    expect(() =>
+      aggregateDependencyBuildActions([
+        {
+          freshness: "stale",
+          reasonCode: "source-revision-changed",
+          buildAction: "refresh-available",
+          actionRequirement: "required",
+        },
+      ]),
+    ).toThrow(/action channel is inconsistent/i);
+  });
+});

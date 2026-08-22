@@ -13,6 +13,7 @@ import type {
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
+import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
 import {
   matchExistingChronicleEvent,
@@ -51,6 +52,10 @@ import {
 import { cancelRun, createRun } from "./runRepository";
 import { runObservationExtractionTask } from "./aiTasks/runObservationExtractionTask";
 import { runEventSynthesisTask } from "./aiTasks/runEventSynthesisTask";
+import {
+  createStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
 
 /** Run surface path id (not a stage AI attempt path). */
 export const CHRONICLE_EXTRACT_SURFACE_PATH = "chronicle.extract" as const;
@@ -280,7 +285,7 @@ export async function observeChronicleEventsFromSnapshot(
 }
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
-  return `${sourceRef}\0${quote}`;
+  return chronicleEvidenceTupleKey(sourceRef, quote);
 }
 
 async function resolveObservationEvidence(
@@ -358,6 +363,11 @@ function documentSourceKeyForRef(
 async function executeTask(
   taskKind: string,
   runId: string,
+  taskExecution: {
+    readonly projectId: string;
+    readonly taskId: string;
+    readonly attemptId: string;
+  },
   request: ChronicleExtractionRequest,
   deps: ExtractionCoordinatorDeps,
   createId: () => string,
@@ -419,6 +429,15 @@ async function executeTask(
             windows: [{ sourceRef: window.sourceRef, text: view.text }],
             projectId: request.projectId,
             createId,
+            stageExecution: createStageExecutionContext({
+              projectId: taskExecution.projectId,
+              runId,
+              taskId: taskExecution.taskId,
+              attemptId: taskExecution.attemptId,
+              stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+              stageExecutionId: createId(),
+            }),
+            createStageExecutionId: createId,
           });
           collected.push(...rekeyObservationsForWindow(window.windowId, batch));
         }
@@ -545,6 +564,15 @@ async function executeTask(
             observations: clusterObservations,
             projectId: request.projectId,
             createId,
+            stageExecution: createStageExecutionContext({
+              projectId: taskExecution.projectId,
+              runId,
+              taskId: taskExecution.taskId,
+              attemptId: taskExecution.attemptId,
+              stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+              stageExecutionId: createId(),
+            }),
+            createStageExecutionId: createId,
           });
           collected.push(...batch);
         }
@@ -601,11 +629,24 @@ async function executeTask(
           (observation) => [observation.localId, observation] as const,
         ),
       );
-      const anchorsByQuote = new Map(
-        evidencePayload.anchors.map(
-          (anchor) => [`${anchor.sourceRef}\0${anchor.quote}`, anchor] as const,
-        ),
-      );
+      const anchorsByQuote = new Map<
+        string,
+        Map<string, ResolvedEvidenceAnchor | null>
+      >();
+      for (const anchor of evidencePayload.anchors) {
+        const anchorsBySource =
+          anchorsByQuote.get(anchor.sourceRef) ?? new Map();
+        const existing = anchorsBySource.get(anchor.quote);
+        if (!anchorsBySource.has(anchor.quote)) {
+          anchorsBySource.set(anchor.quote, anchor);
+        } else if (
+          existing === null ||
+          existing?.documentRef !== anchor.documentRef
+        ) {
+          anchorsBySource.set(anchor.quote, null);
+        }
+        anchorsByQuote.set(anchor.sourceRef, anchorsBySource);
+      }
 
       const matches = hypothesisPayload.hypotheses.map((hypothesis) => {
         const provenanceKeys: string[] = [];
@@ -614,13 +655,13 @@ async function executeTask(
           const observation = observationById.get(observationRef);
           if (!observation) continue;
           for (const evidence of observation.evidence) {
+            const anchor = anchorsByQuote
+              .get(evidence.sourceRef)
+              ?.get(evidence.quote);
+            if (!anchor) continue;
             provenanceKeys.push(
               evidenceFingerprint(evidence.sourceRef, evidence.quote),
             );
-            const anchor = anchorsByQuote.get(
-              `${evidence.sourceRef}\0${evidence.quote}`,
-            );
-            if (!anchor) continue;
             const sourceKey = documentSourceKeyForRef(
               snapshotPayload.snapshot,
               anchor.documentRef,
@@ -857,6 +898,11 @@ export async function runChronicleExtractionCoordinator(
       const executed = await executeTask(
         taskKind,
         runId,
+        {
+          projectId: request.projectId,
+          taskId: claim.task.taskId,
+          attemptId: claim.task.attemptId,
+        },
         request,
         deps,
         createId,

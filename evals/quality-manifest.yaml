@@ -69,6 +69,13 @@ requirements:
       - src-tauri/crates/grimodex-semantic/src/reranker.rs
       - src-tauri/crates/grimodex-semantic/src/runtime.rs
       - src/features/chat/singleShotTransport.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
       - src/features/editor/inlineAi/inlineAiStreaming.ts
@@ -88,6 +95,9 @@ requirements:
       - src/features/ai-audit/legacyEvidence.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/chat/singleShotTransport.audit.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/chat/chatApi.audit.test.ts
       - src/features/editor/inlineAi/inlineAiStreaming.audit.test.ts
       - src/features/ab-test/abHarness.test.ts
@@ -283,6 +293,10 @@ requirements:
     title: Structured and generated outputs pass schema and provenance validation.
     definedIn: policies/quality/iron-laws.md#GDX-ARTIFACT-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - .agents/skills/adversarial-review/SKILL.md
       - src/features/chat/agent/toolExecutors.ts
       - src/features/chat/agent/chronicleWriteTools.ts
@@ -300,6 +314,7 @@ requirements:
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE4_DECISION.json
       - experiments/lfm25-encoder-phase0/data/public/gate4/test-consumption/d61d6d2724432fa54b667e2eb05199e1a9862090dc633a3a9331a1bfe0f7c1e7.json
     lightTests:
+      - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/agent/toolExecutors.test.ts
       - src/features/chat/agent/chronicleWriteTools.test.ts
@@ -381,29 +396,59 @@ requirements:
     evaluatedBy:
       - eval-narrative-semantic-frame
   - id: GDX-NARR-SEMANTIC-CONTRACT-001
-    title: Narrative authority, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
+    title: Narrative authority, artifact lifecycle, Interpreter boundaries, Scope relation, Dependency role, state axes, and disclosure contracts remain ratified.
     definedIn: policies/quality/iron-laws.md#GDX-NARR-SEMANTIC-CONTRACT-001
     implementedBy:
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
       - docs/adr/010-narrative-dependency-role-granularity-contract.md
+      - docs/adr/011-narrative-ir-revision-semantics-contract.md
       - policies/narrative/mutation-authority-routes.json
       - policies/narrative/semantic-state-vocabulary.json
       - policies/narrative/semantic-core-authorities.json
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-ir-contract.json
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
+      - policies/narrative/fixtures/canonical-json-number-parity.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
+      - policies/narrative/schemas/narrative-artifact-authority.schema.json
+      - policies/narrative/schemas/narrative-ir-contract.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src/features/narrative-extraction/source/digest.ts
+      - src-tauri/crates/grimodex-core/src/canonical_json.rs
+      - src-tauri/crates/grimodex-core/src/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-narrative-ir-contract.mjs
+      - docs/plans/narrative-ir-nir0-implementation-plan.md
+      - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/types.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.ts
+      - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
+      - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
+      - src/application/narrative-extraction/extractionCoordinator.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-narrative-ir-contract.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
       - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
       - src/features/narrative-semantic-core/contracts/assertionState.test.ts
@@ -411,6 +456,22 @@ requirements:
       - src/features/narrative-semantic-core/contracts/evidencePolicy.test.ts
       - src/features/narrative-semantic-core/contracts/scope.test.ts
       - src/features/narrative-semantic-core/contracts/disclosure.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeV2.test.ts
+      - src/features/narrative-semantic-core/contracts/narrativeIr.test.ts
+      - src/features/narrative-semantic-core/contracts/scopeRelation.test.ts
+      - src/features/narrative-semantic-core/contracts/dependencyRole.test.ts
+      - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
+      - src-tauri/crates/grimodex-core/tests/canonical_json.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
+      - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
+      - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
+      - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
+      - scripts/quality/impact-map.test.mjs
+      - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts
     heavyTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     evaluatedBy:
@@ -553,6 +614,13 @@ requirements:
     title: Requirements, changes, suites, results, failures, and deferred work remain linked.
     definedIn: policies/quality/iron-laws.md#GDX-TRACE-001
     implementedBy:
+      - policies/narrative/narrative-artifact-authority.json
+      - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/fixtures/dependency-role-contract.json
+      - src/features/narrative-semantic-core/contracts/dependencyRole.ts
+      - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
+      - scripts/quality/validate-semantic-core-boundary.mjs
       - AGENTS.md
       - .agents/skills/adversarial-review/SKILL.md
       - .agents/skills/grimodex-impact-gate/SKILL.md

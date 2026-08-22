@@ -62,6 +62,79 @@ const REQUIRED_V2_DOWNGRADE_TRANSITIONS = Object.freeze([
   "v2-to-legacy-inherit-reconciliation-envelope",
 ]);
 
+const REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS = Object.freeze([
+  Object.freeze({
+    id: "binding-status-matrix",
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literals: [
+      'case "fingerprinted":',
+      'case "provider-reported":',
+      'case "requested-only":',
+      'case "unresolved":',
+    ],
+  }),
+  Object.freeze({
+    id: "begin-terminal-seal",
+    path: "src/features/chat/singleShotTransport.ts",
+    literals: [
+      "CHRONICLE_BEGIN_PROTECTED_FIELDS",
+      "Chronicle Stage terminal changed protected field",
+      "assertChronicleBindingCoherence",
+    ],
+  }),
+  ...[
+    ["observation", "runObservationExtractionTask.ts"],
+    ["event", "runEventSynthesisTask.ts"],
+    ["repair", "runStructuredRepairTask.ts"],
+  ].map(([stage, filename]) =>
+    Object.freeze({
+      id: `exactly-once-${stage}-emitter`,
+      path: `src/application/narrative-extraction/aiTasks/${filename}`,
+      literals: [
+        "onNoResponseTerminalMetadata",
+        "onAuditCompleted",
+        "emitStageReceipt(capturedStageReceipt)",
+      ],
+    }),
+  ),
+  Object.freeze({
+    id: "c1-completeness",
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literals: [
+      "assertChronicleStageC1ClosureCompleteness",
+      "C1 owner synthesis receipt digests or terminal path",
+      "C1 stage provenance closure requires a successful",
+    ],
+  }),
+  Object.freeze({
+    id: "repair-lineage",
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literals: [
+      "Structured repair receipt requires a parent receipt",
+      "Stage provenance repair parent must be failed invalid observation or synthesis",
+      "parentStageExecutionId",
+    ],
+  }),
+  Object.freeze({
+    id: "owner-digest-reachability",
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literals: [
+      "assertChronicleStageProvenanceReachability",
+      "Stage provenance closure does not reach stage execution owner",
+      "stageProvenanceClosureDigest",
+    ],
+  }),
+  Object.freeze({
+    id: "canonical-closure-self-digest",
+    path: "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    literals: [
+      "closureDigestPayload",
+      "Stage provenance closure receipt refs mismatch",
+      "Stage provenance closure digest mismatch",
+    ],
+  }),
+]);
+
 const REQUIRED_TYPED_WRITER_VALIDATION = Object.freeze([
   "parent-current-revision-cas",
   "v2-lineage-monotonicity",
@@ -149,10 +222,7 @@ const IGNORED_PRODUCTION_DIRECTORIES = new Set([
 
 const HUMAN_PATH_CLASSES = Object.freeze({
   projectionOnly: ["/title", "/note"],
-  scopeAffecting: [
-    "/disclosure/secret",
-    "/disclosure/revealDocumentRef",
-  ],
+  scopeAffecting: ["/disclosure/secret", "/disclosure/revealDocumentRef"],
   assertionAffecting: [],
 });
 
@@ -169,13 +239,17 @@ function readJson(repoRoot, relativePath, errors, label) {
   try {
     return JSON.parse(readFileSync(absolute, "utf8"));
   } catch (error) {
-    errors.push(`${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
+    errors.push(
+      `${label} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
     return null;
   }
 }
 
 function hasPaths(paths, expected) {
-  return Array.isArray(paths) && expected.every((value) => paths.includes(value));
+  return (
+    Array.isArray(paths) && expected.every((value) => paths.includes(value))
+  );
 }
 
 function pushIf(errors, condition, message) {
@@ -192,14 +266,12 @@ function sameStringSet(actual, expected) {
 }
 
 function sameStringArray(actual, expected) {
-  return Array.isArray(actual) && JSON.stringify(actual) === JSON.stringify(expected);
+  return (
+    Array.isArray(actual) && JSON.stringify(actual) === JSON.stringify(expected)
+  );
 }
 
-export function scanNarrativeIrProductionMarkers(
-  repoRoot,
-  scanRoots,
-  markers,
-) {
+export function scanNarrativeIrProductionMarkers(repoRoot, scanRoots, markers) {
   if (!Array.isArray(scanRoots) || !Array.isArray(markers)) return [];
 
   const absoluteRepoRoot = path.resolve(repoRoot);
@@ -328,7 +400,13 @@ function validateBoundary(boundary, label, errors) {
   );
 }
 
-function validateScopeConstraint(axis, constraint, scopeContract, label, errors) {
+function validateScopeConstraint(
+  axis,
+  constraint,
+  scopeContract,
+  label,
+  errors,
+) {
   if (!isObject(constraint)) {
     errors.push(`${label} must be an object`);
     return;
@@ -422,7 +500,7 @@ function createProposalPayloadValidator(proposalSchema, errors) {
     return null;
   }
   try {
-    const ajv = new Ajv2020({allErrors: true, strict: false});
+    const ajv = new Ajv2020({ allErrors: true, strict: false });
     return ajv.compile(proposalSchema);
   } catch (error) {
     errors.push(
@@ -450,11 +528,12 @@ function deriveScopeFromInput(entry, scopeContract, proposalValidator, errors) {
     errors.push(`Narrative IR golden fixture ${entry.id} input is required`);
     return null;
   }
-  const expectedOperation = entry.kind === "human-derivation"
-    ? "human-derived-scope-derivation"
-    : entry.kind === "cross-runtime-parity"
-      ? "cross-runtime-scope-parity"
-      : "initial-scope-derivation";
+  const expectedOperation =
+    entry.kind === "human-derivation"
+      ? "human-derived-scope-derivation"
+      : entry.kind === "cross-runtime-parity"
+        ? "cross-runtime-scope-parity"
+        : "initial-scope-derivation";
   pushIf(
     errors,
     input.operation === expectedOperation,
@@ -494,9 +573,10 @@ function deriveScopeFromInput(entry, scopeContract, proposalValidator, errors) {
     );
   }
 
-  const proposalPayload = entry.kind === "human-derivation"
-    ? input.editedPayload
-    : input.proposalPayload;
+  const proposalPayload =
+    entry.kind === "human-derivation"
+      ? input.editedPayload
+      : input.proposalPayload;
   if (!isObject(proposalPayload) || !isObject(proposalPayload.disclosure)) {
     errors.push(
       `Narrative IR golden fixture ${entry.id} input Proposal disclosure is required`,
@@ -507,8 +587,8 @@ function deriveScopeFromInput(entry, scopeContract, proposalValidator, errors) {
     schemaVersion: scopeContract.scopeSchemaVersion,
     registryVersion: scopeContract.registryVersion,
   };
-  for (const axis of scopeContract.axes) scope[axis.id] = {kind: "any"};
-  scope.scene = {kind: "exact", ref: input.sceneRef};
+  for (const axis of scopeContract.axes) scope[axis.id] = { kind: "any" };
+  scope.scene = { kind: "exact", ref: input.sceneRef };
 
   const revealBasis = input.revealBasis;
   if (!isObject(revealBasis)) {
@@ -532,11 +612,11 @@ function deriveScopeFromInput(entry, scopeContract, proposalValidator, errors) {
     `Narrative IR golden fixture ${entry.id} reveal basis documentRef must match the Proposal`,
   );
   if (revealBasis.status === "resolved") {
-    scope.audience = {kind: "exact", ref: revealBasis.audienceRef};
-    scope.readingOrder = {kind: "interval", ...revealBasis.readingOrder};
-    scope.storyTime = {kind: "interval", ...revealBasis.storyTime};
+    scope.audience = { kind: "exact", ref: revealBasis.audienceRef };
+    scope.readingOrder = { kind: "interval", ...revealBasis.readingOrder };
+    scope.storyTime = { kind: "interval", ...revealBasis.storyTime };
   } else if (revealBasis.status === "unresolved") {
-    scope.audience = {kind: "unresolved", ...revealBasis.audience};
+    scope.audience = { kind: "unresolved", ...revealBasis.audience };
     scope.readingOrder = {
       kind: "unresolved",
       ...revealBasis.readingOrder,
@@ -556,7 +636,9 @@ export function validateNarrativeIrGoldenFixture(
   proposalSchema = null,
 ) {
   if (!isObject(fixture) || !isObject(scopeContract)) {
-    errors.push("Narrative IR golden fixture and ADR 009 Scope contract are required");
+    errors.push(
+      "Narrative IR golden fixture and ADR 009 Scope contract are required",
+    );
     return errors;
   }
   pushIf(
@@ -570,7 +652,10 @@ export function validateNarrativeIrGoldenFixture(
     fixture.canonicalization === "sorted-object-keys-json",
     "Narrative IR golden fixture canonicalization must sort object keys",
   );
-  const proposalValidator = createProposalPayloadValidator(proposalSchema, errors);
+  const proposalValidator = createProposalPayloadValidator(
+    proposalSchema,
+    errors,
+  );
 
   const entries = Array.isArray(fixture.cases) ? fixture.cases : [];
   const ids = entries.map((entry) => entry?.id);
@@ -582,7 +667,9 @@ export function validateNarrativeIrGoldenFixture(
   const families = new Set(entries.map((entry) => entry?.kind));
   for (const family of REQUIRED_CASE_FAMILIES) {
     if (!families.has(family)) {
-      errors.push(`Narrative IR golden fixture is missing case family: ${family}`);
+      errors.push(
+        `Narrative IR golden fixture is missing case family: ${family}`,
+      );
     }
   }
 
@@ -620,7 +707,8 @@ export function validateNarrativeIrGoldenFixture(
     );
     if (entry.kind === "human-derivation") {
       const changedPaths =
-        isObject(entry.input?.parentPayload) && isObject(entry.input?.editedPayload)
+        isObject(entry.input?.parentPayload) &&
+        isObject(entry.input?.editedPayload)
           ? collectChangedPaths(
               entry.input.parentPayload,
               entry.input.editedPayload,
@@ -724,79 +812,617 @@ export function resolveRepoRootFromModuleUrl(
   const windows = platform === "win32";
   const pathApi = windows ? path.win32 : path;
   return pathApi.resolve(
-    pathApi.dirname(fileURLToPath(moduleUrl, {windows})),
+    pathApi.dirname(fileURLToPath(moduleUrl, { windows })),
     "../..",
   );
 }
 
-export function validateNarrativeIrContract(repoRoot, contract, scopeContract, consumerContract, errors = []) {
+export function validateNarrativeIrContract(
+  repoRoot,
+  contract,
+  scopeContract,
+  consumerContract,
+  errors = [],
+) {
   if (!isObject(contract)) {
     errors.push("narrative IR contract must be an object");
     return errors;
   }
-  pushIf(errors, contract.schemaVersion === 1 && contract.contract === "narrative-ir-contract", "narrative IR contract identity/version is invalid");
-  pushIf(errors, contract.adr === "docs/adr/011-narrative-ir-revision-semantics-contract.md", "narrative IR contract must be bound to ADR 011");
-  pushIf(errors, contract.contractVersion === "narrative-ir/2", "narrative IR contract version must be narrative-ir/2");
+  pushIf(
+    errors,
+    contract.schemaVersion === 1 &&
+      contract.contract === "narrative-ir-contract",
+    "narrative IR contract identity/version is invalid",
+  );
+  pushIf(
+    errors,
+    contract.adr === "docs/adr/011-narrative-ir-revision-semantics-contract.md",
+    "narrative IR contract must be bound to ADR 011",
+  );
+  pushIf(
+    errors,
+    contract.contractVersion === "narrative-ir/2",
+    "narrative IR contract version must be narrative-ir/2",
+  );
 
   const identity = contract.identity;
-  pushIf(errors, identity?.revisionTable === "narrative_proposal_revisions" && identity?.revisionIdColumn === "id", "Narrative IR revision identity must be narrative_proposal_revisions.id");
-  pushIf(errors, identity?.consumerKind === "proposal-revision", "proposal-revision Consumer must remain the Narrative IR revision identity");
-  pushIf(errors, identity?.projectScoped === true && identity?.durability === "while-project-exists", "Narrative IR revision durability must be project-scoped while the Project exists");
-  pushIf(errors, JSON.stringify(identity?.portableReference) === JSON.stringify(["projectId","revisionId","envelopeDigest","contractVersion"]), "portable Narrative IR references must include projectId, revisionId, envelopeDigest, and contractVersion");
-  pushIf(errors, identity?.portableExport?.requiredClosure === "referenced-closure" && identity?.portableExport?.originalProjectAvailability === "must-not-be-assumed", "portable Narrative IR export must include the referenced closure and must not assume the original Project remains available");
-  pushIf(errors, identity?.independentRevisionConsumer === "narrative-ir-revision" && identity?.independentRevisionConsumerStatus === "not-yet-modelled" && identity?.heuristicIdentity === "forbid", "narrative-ir-revision must remain not-yet-modelled and heuristic identity must be forbidden");
+  pushIf(
+    errors,
+    identity?.revisionTable === "narrative_proposal_revisions" &&
+      identity?.revisionIdColumn === "id",
+    "Narrative IR revision identity must be narrative_proposal_revisions.id",
+  );
+  pushIf(
+    errors,
+    identity?.consumerKind === "proposal-revision",
+    "proposal-revision Consumer must remain the Narrative IR revision identity",
+  );
+  pushIf(
+    errors,
+    identity?.projectScoped === true &&
+      identity?.durability === "while-project-exists",
+    "Narrative IR revision durability must be project-scoped while the Project exists",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(identity?.portableReference) ===
+      JSON.stringify([
+        "projectId",
+        "revisionId",
+        "envelopeDigest",
+        "contractVersion",
+      ]),
+    "portable Narrative IR references must include projectId, revisionId, envelopeDigest, and contractVersion",
+  );
+  pushIf(
+    errors,
+    identity?.portableExport?.requiredClosure === "referenced-closure" &&
+      identity?.portableExport?.originalProjectAvailability ===
+        "must-not-be-assumed",
+    "portable Narrative IR export must include the referenced closure and must not assume the original Project remains available",
+  );
+  pushIf(
+    errors,
+    identity?.independentRevisionConsumer === "narrative-ir-revision" &&
+      identity?.independentRevisionConsumerStatus === "not-yet-modelled" &&
+      identity?.heuristicIdentity === "forbid",
+    "narrative-ir-revision must remain not-yet-modelled and heuristic identity must be forbidden",
+  );
 
   const vocab = contract.vocabularies;
-  pushIf(errors, JSON.stringify(vocab?.assertionKinds) === JSON.stringify(["scene-event@1"]), "NIR-0 must wire only scene-event@1");
-  pushIf(errors, JSON.stringify(vocab?.assertionModalities) === JSON.stringify(REQUIRED_ASSERTION_MODALITIES), "AssertionModality must match the exact ADR 005 vocabulary");
-  pushIf(errors, JSON.stringify(vocab?.assertionPolarities) === JSON.stringify(REQUIRED_ASSERTION_POLARITIES), "AssertionPolarity must contain exactly affirmative, negative, and uncertain");
-  pushIf(errors, JSON.stringify(vocab?.changeKinds) === JSON.stringify(["add","revise","retract","merge","split"]), "changeKind vocabulary must retain add/revise/retract/merge/split");
-  pushIf(errors, JSON.stringify(vocab?.producerKinds) === JSON.stringify(["ai-inference","reconciler-proposal","author-declaration","import-metadata","legacy-migration"]), "Producer Kind vocabulary must reuse the ratified values");
-  pushIf(errors, JSON.stringify(vocab?.supportClasses) === JSON.stringify(["author-declared","direct-source","reported-source","single-source-inference","multi-source-inference","imported-assertion","unresolved"]), "Support Class vocabulary must reuse the ratified values");
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.assertionKinds) === JSON.stringify(["scene-event@1"]),
+    "NIR-0 must wire only scene-event@1",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.assertionModalities) ===
+      JSON.stringify(REQUIRED_ASSERTION_MODALITIES),
+    "AssertionModality must match the exact ADR 005 vocabulary",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.assertionPolarities) ===
+      JSON.stringify(REQUIRED_ASSERTION_POLARITIES),
+    "AssertionPolarity must contain exactly affirmative, negative, and uncertain",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.changeKinds) ===
+      JSON.stringify(["add", "revise", "retract", "merge", "split"]),
+    "changeKind vocabulary must retain add/revise/retract/merge/split",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.producerKinds) ===
+      JSON.stringify([
+        "ai-inference",
+        "reconciler-proposal",
+        "author-declaration",
+        "import-metadata",
+        "legacy-migration",
+      ]),
+    "Producer Kind vocabulary must reuse the ratified values",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(vocab?.supportClasses) ===
+      JSON.stringify([
+        "author-declared",
+        "direct-source",
+        "reported-source",
+        "single-source-inference",
+        "multi-source-inference",
+        "imported-assertion",
+        "unresolved",
+      ]),
+    "Support Class vocabulary must reuse the ratified values",
+  );
   const importedVocabularyIds = new Set([
     ...(vocab?.producerKinds ?? []),
     ...(vocab?.supportClasses ?? []),
   ]);
-  pushIf(errors, REQUIRED_ASSERTION_MODALITIES.every((id) => !importedVocabularyIds.has(id)), "AssertionModality machine IDs must not collide with imported Producer Kind or Support Class IDs");
-  pushIf(errors, contract.v1ProducerMapping?.producerKind === "reconciler-proposal" && contract.v1ProducerMapping?.producerIdSource === "reconcilerId" && contract.v1ProducerMapping?.producerVersionSource === "reconcilerVersion", "V1 reconciler mapping must bind producer.kind to reconciler-proposal, producer.id to reconcilerId, and producer.version to reconcilerVersion");
+  pushIf(
+    errors,
+    REQUIRED_ASSERTION_MODALITIES.every((id) => !importedVocabularyIds.has(id)),
+    "AssertionModality machine IDs must not collide with imported Producer Kind or Support Class IDs",
+  );
+  pushIf(
+    errors,
+    contract.v1ProducerMapping?.producerKind === "reconciler-proposal" &&
+      contract.v1ProducerMapping?.producerIdSource === "reconcilerId" &&
+      contract.v1ProducerMapping?.producerVersionSource === "reconcilerVersion",
+    "V1 reconciler mapping must bind producer.kind to reconciler-proposal, producer.id to reconcilerId, and producer.version to reconcilerVersion",
+  );
 
-  pushIf(errors, contract.envelope?.schemaVersion === 2, "Narrative Revision Envelope must be V2");
-  pushIf(errors, sameStringArray(contract.envelope?.requiredFields, REQUIRED_ENVELOPE_FIELDS), "Narrative Revision Envelope V2 requiredFields must match the exact frozen six-field shape");
-  pushIf(errors, contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("secret") && contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes("revealDocumentRef"), "Disclosure fields must remain outside Assertion Core");
-  pushIf(errors, contract.envelope?.changeIntent?.humanDerivedMustPreserve === "exact", "Human-derived Revision must preserve root-level Change Intent exactly");
-  pushIf(errors, contract.envelope?.projectionBinding?.recomputePayloadDigestInNative === true && contract.envelope?.projectionBinding?.proposalKindAndSchemaDistinct === true, "Native must own payload digest and Proposal kind/schema binding");
+  pushIf(
+    errors,
+    contract.envelope?.schemaVersion === 2,
+    "Narrative Revision Envelope must be V2",
+  );
+  pushIf(
+    errors,
+    sameStringArray(
+      contract.envelope?.requiredFields,
+      REQUIRED_ENVELOPE_FIELDS,
+    ),
+    "Narrative Revision Envelope V2 requiredFields must match the exact frozen six-field shape",
+  );
+  pushIf(
+    errors,
+    contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes(
+      "secret",
+    ) &&
+      contract.envelope?.assertionDigestDomains?.disclosureFieldsExcludedFromAssertionCore?.includes(
+        "revealDocumentRef",
+      ),
+    "Disclosure fields must remain outside Assertion Core",
+  );
+  pushIf(
+    errors,
+    contract.envelope?.changeIntent?.humanDerivedMustPreserve === "exact",
+    "Human-derived Revision must preserve root-level Change Intent exactly",
+  );
+  pushIf(
+    errors,
+    contract.envelope?.projectionBinding?.recomputePayloadDigestInNative ===
+      true &&
+      contract.envelope?.projectionBinding?.proposalKindAndSchemaDistinct ===
+        true,
+    "Native must own payload digest and Proposal kind/schema binding",
+  );
+
+  const stageProvenance = contract.stageProvenance;
+  pushIf(
+    errors,
+    stageProvenance?.auditVersion === 2 &&
+      stageProvenance?.modelBindingDigestDomain ===
+        "chronicle-stage-model-binding/1" &&
+      stageProvenance?.terminalReceiptDigestDomain ===
+        "chronicle-stage-terminal-receipt/1" &&
+      stageProvenance?.closureDigestDomain ===
+        "chronicle-stage-provenance-closure/1" &&
+      stageProvenance?.requestDigestExcludesModel === true,
+    "Stage provenance must ratify audit v2, binding/receipt/closure domains, and request-only digest identity",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(stageProvenance?.bindingContract?.fields) ===
+      JSON.stringify([
+        "provider",
+        "endpointBindingId",
+        "requestedModel",
+        "effectiveModel",
+        "modelFingerprint",
+        "apiVariant",
+        "reasoningMode",
+        "generationMode",
+        "resolutionStatus",
+      ]) &&
+      stageProvenance?.bindingContract?.endpointBinding ===
+        "stable-id-or-sha256-digest-only" &&
+      stageProvenance?.bindingContract?.credentialShape ===
+        "reject-credential-shaped-values-before-digest" &&
+      JSON.stringify(stageProvenance?.bindingContract?.statusMatrix) ===
+        JSON.stringify({
+          fingerprinted: {
+            required: [
+              "provider",
+              "modelFingerprint",
+              "requestedOrEffectiveModel",
+            ],
+            forbidden: [],
+          },
+          "provider-reported": {
+            required: ["provider", "effectiveModel"],
+            forbidden: ["modelFingerprint"],
+          },
+          "requested-only": {
+            required: ["provider", "requestedModel"],
+            forbidden: ["effectiveModel", "modelFingerprint"],
+          },
+          unresolved: {
+            required: [
+              "all-route-model-fields-null",
+              "generationMode=provider-default",
+            ],
+            forbidden: [
+              "provider",
+              "endpointBindingId",
+              "requestedModel",
+              "effectiveModel",
+              "modelFingerprint",
+              "apiVariant",
+              "reasoningMode",
+            ],
+          },
+        }),
+    "Stage provenance model binding fields and resolution status matrix are incomplete",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(stageProvenance?.terminalReceiptContract?.statusMatrix) ===
+      JSON.stringify([
+        {
+          terminalStatus: "succeeded",
+          parseStatus: "parsed",
+          responseDigest: "required",
+        },
+        {
+          terminalStatus: "failed",
+          parseStatus: "invalid",
+          responseDigest: "required",
+        },
+        {
+          terminalStatus: "failed",
+          parseStatus: "not-attempted",
+          responseDigest: "null",
+        },
+        {
+          terminalStatus: "cancelled",
+          parseStatus: "not-attempted",
+          responseDigest: "null",
+        },
+        {
+          terminalStatus: "skipped",
+          parseStatus: "not-attempted",
+          responseDigest: "null",
+        },
+      ]) &&
+      stageProvenance?.terminalReceiptContract?.beginTerminalSeal ===
+        "protected-identity-and-digests-structurally-equal" &&
+      stageProvenance?.terminalReceiptContract?.modelBindingDigestCoherence ===
+        "digest-binding-before-begin-and-terminal" &&
+      stageProvenance?.terminalReceiptContract?.exactlyOnce ===
+        "one-full-terminal-receipt-per-stage-execution" &&
+      JSON.stringify(
+        stageProvenance?.terminalReceiptContract?.fullTerminalPaths,
+      ) ===
+        JSON.stringify([
+          "success",
+          "response-parse-failure",
+          "provider-dispatch-failure",
+          "cli-skip",
+          "cancelled",
+        ]),
+    "Stage provenance terminal receipt status matrix, begin-terminal seal, and exactly-once paths are incomplete",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(stageProvenance?.c1Completeness?.requiredStages) ===
+      JSON.stringify([
+        "narrative_observation_extract",
+        "narrative_event_synthesize",
+      ]) &&
+      stageProvenance?.c1Completeness?.ownerStage ===
+        "narrative_event_synthesize" &&
+      stageProvenance?.c1Completeness?.successfulPath ===
+        "parsed-success-root-or-parsed-successful-repair-child" &&
+      JSON.stringify(stageProvenance?.c1Completeness?.ownerDigestFields) ===
+        JSON.stringify([
+          "contextSetDigest",
+          "componentContractDigest",
+          "finalRequestDigest",
+        ]) &&
+      stageProvenance?.c1Completeness?.ownerDigestsMatchExecution === true &&
+      stageProvenance?.c1Completeness?.repairLineage?.childStage ===
+        "narrative_structured_repair" &&
+      stageProvenance?.c1Completeness?.repairLineage?.parentMustBe ===
+        "failed-invalid-observation-or-synthesis" &&
+      stageProvenance?.c1Completeness?.repairLineage?.sameTaskAndAttempt ===
+        true &&
+      stageProvenance?.c1Completeness?.repairLineage?.parentPointer ===
+        "immutable-parentStageExecutionId",
+    "Stage provenance C1 completeness, owner digest matching, or repair lineage is incomplete",
+  );
+  pushIf(
+    errors,
+    stageProvenance?.closureContract?.receiptOrder ===
+      "stageExecutionId-then-stageExecutionReceiptDigest" &&
+      stageProvenance?.closureContract?.receiptRefs ===
+        "exact-recomputed-from-canonical-receipts" &&
+      stageProvenance?.closureContract?.selfDigest ===
+        "digest-excludes-stageProvenanceClosureDigest-and-must-recompute" &&
+      stageProvenance?.closureContract?.membership ===
+        "caller-supplied-request-scoped-receipt-set" &&
+      stageProvenance?.closureContract?.lifecycle === "ephemeral" &&
+      stageProvenance?.closureContract?.authority === "none" &&
+      stageProvenance?.closureContract?.authoritative === false &&
+      stageProvenance?.closureContract?.storage ===
+        "application-memory-pure-sidecar" &&
+      stageProvenance?.closureContract?.retention === "not-retained" &&
+      stageProvenance?.closureContract?.scope === "request-scoped",
+    "Stage provenance closure must remain canonical, self-digesting, ephemeral, request-scoped, and non-authoritative",
+  );
+  const sourceLiteralPins = stageProvenance?.sourceLiteralPins;
+  const sourcePinsValid =
+    sourceLiteralPins?.auditVersion?.path ===
+      "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts" &&
+    sourceLiteralPins?.auditVersion?.literal ===
+      "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;" &&
+    Array.isArray(sourceLiteralPins?.digestDomains) &&
+    sourceLiteralPins.digestDomains.length === 3 &&
+    sourceLiteralPins.digestDomains.every(
+      (pin) =>
+        pin?.path ===
+          "src/features/narrative-extraction/reconciler/stageProvenance.ts" &&
+        typeof pin?.literal === "string" &&
+        [
+          "chronicle-stage-model-binding/1",
+          "chronicle-stage-terminal-receipt/1",
+          "chronicle-stage-provenance-closure/1",
+        ].includes(pin.literal),
+    );
+  const implementationPinsValid =
+    JSON.stringify(sourceLiteralPins?.implementationPins) ===
+    JSON.stringify(REQUIRED_STAGE_PROVENANCE_IMPLEMENTATION_PINS);
+  pushIf(
+    errors,
+    sourcePinsValid &&
+      sourceLiteralPins.digestDomains.every((pin) => {
+        try {
+          return readFileSync(path.join(repoRoot, pin.path), "utf8").includes(
+            pin.literal,
+          );
+        } catch {
+          return false;
+        }
+      }) &&
+      readFileSync(
+        path.join(repoRoot, sourceLiteralPins.auditVersion.path),
+        "utf8",
+      ).includes(sourceLiteralPins.auditVersion.literal),
+    "Stage provenance source literal pins must cover audit v2 and all three digest domains",
+  );
+  pushIf(
+    errors,
+    implementationPinsValid,
+    "Stage provenance implementation pins must cover status, seal, emitter, C1, repair, reachability, and closure semantics",
+  );
+  pushIf(
+    errors,
+    implementationPinsValid &&
+      sourceLiteralPins.implementationPins.every((pin) => {
+        try {
+          const source = readFileSync(path.join(repoRoot, pin.path), "utf8");
+          return pin.literals.every((literal) => source.includes(literal));
+        } catch {
+          return false;
+        }
+      }),
+    "Stage provenance implementation pins must reference existing required source literals",
+  );
+  pushIf(
+    errors,
+    stageProvenance?.generationMode?.providerDefault ===
+      "provider/model-selection-only" &&
+      JSON.stringify(stageProvenance?.generationMode?.explicitWhen) ===
+        JSON.stringify([
+          "reasoningMode",
+          "thinking",
+          "effort",
+          "reasoningEnabled",
+          "reasoningEffort",
+          "requestMaxOutputTokens",
+        ]),
+    "Stage provenance generationMode must distinguish provider defaults from explicit generation controls",
+  );
+  pushIf(
+    errors,
+    stageProvenance?.taskCoordinateReachability?.revisionBasisOwner ===
+      "revisionBasis.runId+taskId" &&
+      stageProvenance?.taskCoordinateReachability?.sidecarKey ===
+        "projectId+runId+taskId+stageProvenanceClosureDigest" &&
+      stageProvenance?.taskCoordinateReachability?.upstreamReceipts ===
+        "same-project-and-run-allowed" &&
+      stageProvenance?.taskCoordinateReachability?.repairParentChild ===
+        "same-task-and-attempt",
+    "Stage provenance task-coordinate reachability must bind the revision owner, upstream run, and repair lineage",
+  );
+  pushIf(
+    errors,
+    stageProvenance?.envelopeChange ===
+      "stageProvenanceClosureDigest-forbidden" &&
+      stageProvenance?.persistence?.owner ===
+        "C2A atomic task output/artifact persistence" &&
+      stageProvenance?.persistence?.status === "deferred" &&
+      stageProvenance?.persistence?.lifecycle === "ephemeral" &&
+      stageProvenance?.persistence?.authority === "none" &&
+      stageProvenance?.persistence?.authoritative === false &&
+      stageProvenance?.persistence?.storage ===
+        "application-memory-pure-sidecar" &&
+      stageProvenance?.persistence?.retention === "not-retained" &&
+      stageProvenance?.persistence?.scope === "request-scoped" &&
+      stageProvenance?.persistence?.membership ===
+        "caller-supplied-receipt-set",
+    "Stage provenance must remain an ephemeral non-authoritative sidecar with C2A persistence deferred",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(stageProvenance?.forbidden) ===
+      JSON.stringify([
+        "credentials",
+        "raw-url-or-origin",
+        "profile-dependent-prompt-or-significance",
+        "evaluation-contract-v2",
+      ]),
+    "Stage provenance forbidden scope must exclude credentials, raw URLs/origins, profile semantics, and Evaluation Contract v2",
+  );
 
   const monotonicity = contract.monotonicity;
-  pushIf(errors, monotonicity?.currentRevisionRule === "once-v2-always-v2" && JSON.stringify(monotonicity?.forbiddenTransitions) === JSON.stringify(REQUIRED_V2_DOWNGRADE_TRANSITIONS), "Narrative IR V2 monotonicity must forbid every downgrade from V2 to V1, no envelope, legacy-unbound, or legacy inheritReconciliationEnvelope");
-  pushIf(errors, monotonicity?.semanticAuthority === "typed-writer" && JSON.stringify(monotonicity?.typedWriterValidation) === JSON.stringify(REQUIRED_TYPED_WRITER_VALIDATION), "Narrative IR V2 monotonicity semantic authority must remain the complete typed writer");
-  pushIf(errors, monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" && monotonicity?.structuralDefense?.role === "structural-defense-only" && monotonicity?.structuralDefense?.state === "deferred-until-after-c2-zb" && Array.isArray(monotonicity?.structuralDefense?.productionEntryPoints) && monotonicity.structuralDefense.productionEntryPoints.length === 0 && monotonicity?.structuralDefense?.errorCode === "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" && monotonicity?.contractFreezeOnly === true, "V2 downgrade trigger must remain contract-only structural defense deferred until after C2-ZB with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN");
+  pushIf(
+    errors,
+    monotonicity?.currentRevisionRule === "once-v2-always-v2" &&
+      JSON.stringify(monotonicity?.forbiddenTransitions) ===
+        JSON.stringify(REQUIRED_V2_DOWNGRADE_TRANSITIONS),
+    "Narrative IR V2 monotonicity must forbid every downgrade from V2 to V1, no envelope, legacy-unbound, or legacy inheritReconciliationEnvelope",
+  );
+  pushIf(
+    errors,
+    monotonicity?.semanticAuthority === "typed-writer" &&
+      JSON.stringify(monotonicity?.typedWriterValidation) ===
+        JSON.stringify(REQUIRED_TYPED_WRITER_VALIDATION),
+    "Narrative IR V2 monotonicity semantic authority must remain the complete typed writer",
+  );
+  pushIf(
+    errors,
+    monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" &&
+      monotonicity?.structuralDefense?.role === "structural-defense-only" &&
+      monotonicity?.structuralDefense?.state === "deferred-until-after-c2-zb" &&
+      Array.isArray(monotonicity?.structuralDefense?.productionEntryPoints) &&
+      monotonicity.structuralDefense.productionEntryPoints.length === 0 &&
+      monotonicity?.structuralDefense?.errorCode ===
+        "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" &&
+      monotonicity?.contractFreezeOnly === true,
+    "V2 downgrade trigger must remain contract-only structural defense deferred until after C2-ZB with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+  );
 
   const chroniclePilot = contract.chroniclePilot;
-  pushIf(errors, chroniclePilot?.assertionKind === "scene-event@1" && JSON.stringify(chroniclePilot?.productWiredChangeKinds) === JSON.stringify(["add"]) && JSON.stringify(chroniclePilot?.declaredOrReservedChangeKinds) === JSON.stringify(["revise","retract","merge","split"]), "Chronicle pilot product-wired changeKinds must contain only add; revise, retract, merge, and split remain declared or reserved");
-  pushIf(errors, chroniclePilot?.existingProjectionRevisionStatus === "requires-separately-ratified-proposal-kind-and-apply-path", "Chronicle existing-Projection revision requires a separately ratified Proposal kind and Apply path");
+  pushIf(
+    errors,
+    chroniclePilot?.assertionKind === "scene-event@1" &&
+      JSON.stringify(chroniclePilot?.productWiredChangeKinds) ===
+        JSON.stringify(["add"]) &&
+      JSON.stringify(chroniclePilot?.declaredOrReservedChangeKinds) ===
+        JSON.stringify(["revise", "retract", "merge", "split"]),
+    "Chronicle pilot product-wired changeKinds must contain only add; revise, retract, merge, and split remain declared or reserved",
+  );
+  pushIf(
+    errors,
+    chroniclePilot?.existingProjectionRevisionStatus ===
+      "requires-separately-ratified-proposal-kind-and-apply-path",
+    "Chronicle existing-Projection revision requires a separately ratified Proposal kind and Apply path",
+  );
 
   const human = contract.humanDerived;
-  pushIf(errors, hasPaths(human?.contextExposureAllowed, ["deterministic-stage","author-supplied"]) && human?.contextExposureForbidden?.includes("model-visible"), "Human-derived Context Set must exclude model-visible exposure");
-  pushIf(errors, sameStringArray(human?.requestFields, REQUIRED_HUMAN_REQUEST_FIELDS), "Human-derived requestFields must match the exact frozen request boundary");
-  pushIf(errors, sameStringArray(human?.clientSubmittedFields, REQUIRED_HUMAN_REQUEST_FIELDS), "Human-derived clientSubmittedFields must match the exact frozen client boundary");
-  pushIf(errors, sameStringArray(human?.requestFields, human?.clientSubmittedFields), "Human-derived requestFields and clientSubmittedFields must be identical");
-  pushIf(errors, sameStringArray(human?.nativeOwnedFields, REQUIRED_NATIVE_OWNED_FIELDS), "Human-derived nativeOwnedFields must match the exact frozen Native ownership boundary");
-  pushIf(errors, sameStringArray(human?.persistedBasis, REQUIRED_PERSISTED_BASIS_FIELDS), "Human-derived persistedBasis must match the exact frozen persistence basis");
-  pushIf(errors, !human?.clientSubmittedFields?.some((field) => ["derivationKind","changedPaths","scope","childAssertion","childDigests"].includes(field)), "Clients must not submit derivation metadata, child Scope, Assertion, or digests");
+  pushIf(
+    errors,
+    hasPaths(human?.contextExposureAllowed, [
+      "deterministic-stage",
+      "author-supplied",
+    ]) && human?.contextExposureForbidden?.includes("model-visible"),
+    "Human-derived Context Set must exclude model-visible exposure",
+  );
+  pushIf(
+    errors,
+    sameStringArray(human?.requestFields, REQUIRED_HUMAN_REQUEST_FIELDS),
+    "Human-derived requestFields must match the exact frozen request boundary",
+  );
+  pushIf(
+    errors,
+    sameStringArray(
+      human?.clientSubmittedFields,
+      REQUIRED_HUMAN_REQUEST_FIELDS,
+    ),
+    "Human-derived clientSubmittedFields must match the exact frozen client boundary",
+  );
+  pushIf(
+    errors,
+    sameStringArray(human?.requestFields, human?.clientSubmittedFields),
+    "Human-derived requestFields and clientSubmittedFields must be identical",
+  );
+  pushIf(
+    errors,
+    sameStringArray(human?.nativeOwnedFields, REQUIRED_NATIVE_OWNED_FIELDS),
+    "Human-derived nativeOwnedFields must match the exact frozen Native ownership boundary",
+  );
+  pushIf(
+    errors,
+    sameStringArray(human?.persistedBasis, REQUIRED_PERSISTED_BASIS_FIELDS),
+    "Human-derived persistedBasis must match the exact frozen persistence basis",
+  );
+  pushIf(
+    errors,
+    !human?.clientSubmittedFields?.some((field) =>
+      [
+        "derivationKind",
+        "changedPaths",
+        "scope",
+        "childAssertion",
+        "childDigests",
+      ].includes(field),
+    ),
+    "Clients must not submit derivation metadata, child Scope, Assertion, or digests",
+  );
   const classes = human?.classification;
-  pushIf(errors, JSON.stringify(classes?.precedence) === JSON.stringify(["assertion-override","scope-override","projection-only"]), "Human-derived classification precedence must be assertion-override > scope-override > projection-only");
-  pushIf(errors, JSON.stringify(classes?.pathClasses?.projectionOnly) === JSON.stringify(["/title","/note"]) && JSON.stringify(classes?.pathClasses?.scopeAffecting) === JSON.stringify(["/disclosure/secret","/disclosure/revealDocumentRef"]) && Array.isArray(classes?.pathClasses?.assertionAffecting) && classes.pathClasses.assertionAffecting.length === 0, "Chronicle Human-derived path classes are invalid");
-  pushIf(errors, classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes("projection-only") && classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes("scope-affecting"), "scope-override must allow the cumulative projection-only and scope-affecting path union");
-  pushIf(errors, classes?.unknownPathPolicy === "reject" && classes?.clientMetadataAuthority === "forbid" && classes?.assertionOverrideStatus === "reserved-rejected", "unknown paths, client metadata, and assertion override must fail closed");
+  pushIf(
+    errors,
+    JSON.stringify(classes?.precedence) ===
+      JSON.stringify([
+        "assertion-override",
+        "scope-override",
+        "projection-only",
+      ]),
+    "Human-derived classification precedence must be assertion-override > scope-override > projection-only",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(classes?.pathClasses?.projectionOnly) ===
+      JSON.stringify(["/title", "/note"]) &&
+      JSON.stringify(classes?.pathClasses?.scopeAffecting) ===
+        JSON.stringify([
+          "/disclosure/secret",
+          "/disclosure/revealDocumentRef",
+        ]) &&
+      Array.isArray(classes?.pathClasses?.assertionAffecting) &&
+      classes.pathClasses.assertionAffecting.length === 0,
+    "Chronicle Human-derived path classes are invalid",
+  );
+  pushIf(
+    errors,
+    classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes(
+      "projection-only",
+    ) &&
+      classes?.cumulativeAllowedPathClasses?.scopeOverride?.includes(
+        "scope-affecting",
+      ),
+    "scope-override must allow the cumulative projection-only and scope-affecting path union",
+  );
+  pushIf(
+    errors,
+    classes?.unknownPathPolicy === "reject" &&
+      classes?.clientMetadataAuthority === "forbid" &&
+      classes?.assertionOverrideStatus === "reserved-rejected",
+    "unknown paths, client metadata, and assertion override must fail closed",
+  );
 
   const classificationFixtures = classes?.fixtures ?? [];
-  const classFixtures = new Map(classificationFixtures.map((fixture) => [fixture?.id, fixture]));
+  const classFixtures = new Map(
+    classificationFixtures.map((fixture) => [fixture?.id, fixture]),
+  );
   for (const fixture of classificationFixtures) {
     if (Object.hasOwn(fixture, "allowedPathClasses")) {
-      errors.push(`${String(fixture.id)} allowedPathClasses is ambiguous; changedPathClasses must record observed classes`);
+      errors.push(
+        `${String(fixture.id)} allowedPathClasses is ambiguous; changedPathClasses must record observed classes`,
+      );
     }
     const observed = classifyChangedPaths(fixture?.changedPaths ?? []);
-    pushIf(errors, fixture?.expectedDisposition === observed.disposition, `${String(fixture?.id)} disposition differs from its changed paths`);
+    pushIf(
+      errors,
+      fixture?.expectedDisposition === observed.disposition,
+      `${String(fixture?.id)} disposition differs from its changed paths`,
+    );
     if (observed.disposition === "accept") {
       pushIf(
         errors,
@@ -806,65 +1432,279 @@ export function validateNarrativeIrContract(repoRoot, contract, scopeContract, c
       );
     }
   }
-  pushIf(errors, classFixtures.get("mixed-title-secret-uses-scope-override")?.expectedDerivationKind === "scope-override" && hasPaths(classFixtures.get("mixed-title-secret-uses-scope-override")?.changedPathClasses, ["projection-only","scope-affecting"]), "mixed-title-secret-uses-scope-override must be scope-override with both observed path classes");
-  pushIf(errors, classFixtures.get("mixed-note-reveal-document-uses-scope-override")?.expectedDerivationKind === "scope-override", "mixed-note-reveal-document edit must be scope-override");
+  pushIf(
+    errors,
+    classFixtures.get("mixed-title-secret-uses-scope-override")
+      ?.expectedDerivationKind === "scope-override" &&
+      hasPaths(
+        classFixtures.get("mixed-title-secret-uses-scope-override")
+          ?.changedPathClasses,
+        ["projection-only", "scope-affecting"],
+      ),
+    "mixed-title-secret-uses-scope-override must be scope-override with both observed path classes",
+  );
+  pushIf(
+    errors,
+    classFixtures.get("mixed-note-reveal-document-uses-scope-override")
+      ?.expectedDerivationKind === "scope-override",
+    "mixed-note-reveal-document edit must be scope-override",
+  );
 
-  pushIf(errors, contract.materialBasis?.humanDerivedOwnsDeclarations === true && contract.materialBasis?.noLineageFreshnessAuthority === true && contract.materialBasis?.zeroEdgeCurrentRevision === "forbidden" && contract.materialBasis?.currentEpochEvaluation === "atomic-before-current-revision-promotion", "Human-derived material basis must own child declarations and atomic current-Epoch Freshness");
-  pushIf(errors, contract.consumerBinding?.consumerKind === "proposal-revision" && contract.consumerBinding?.childHumanDerivedRevisionIsFirstClassConsumer === true && contract.consumerBinding?.hiddenRootLineageLookup === "forbid", "Human-derived Revisions must be first-class proposal-revision Consumers without lineage Freshness lookup");
+  pushIf(
+    errors,
+    contract.materialBasis?.humanDerivedOwnsDeclarations === true &&
+      contract.materialBasis?.noLineageFreshnessAuthority === true &&
+      contract.materialBasis?.zeroEdgeCurrentRevision === "forbidden" &&
+      contract.materialBasis?.currentEpochEvaluation ===
+        "atomic-before-current-revision-promotion",
+    "Human-derived material basis must own child declarations and atomic current-Epoch Freshness",
+  );
+  pushIf(
+    errors,
+    contract.consumerBinding?.consumerKind === "proposal-revision" &&
+      contract.consumerBinding
+        ?.childHumanDerivedRevisionIsFirstClassConsumer === true &&
+      contract.consumerBinding?.hiddenRootLineageLookup === "forbid",
+    "Human-derived Revisions must be first-class proposal-revision Consumers without lineage Freshness lookup",
+  );
 
-  pushIf(errors, contract.staleValidation?.interpretation?.requireLiveSourceTokenEquality === true && contract.staleValidation?.interpretation?.staleRefusal === "NEX_READ_SET_STALE", "Interpretation saves must retain live Source token validation");
-  pushIf(errors, contract.staleValidation?.humanDerived?.requireLiveSourceTokenEquality === false, "Human-derived saves must not require live Source token equality");
-  pushIf(errors, contract.staleValidation?.humanDerived?.preserveObservedTokens === true && contract.staleValidation?.humanDerived?.evaluateAgainstCurrentLiveSource === true && contract.staleValidation?.humanDerived?.doesNotBypassApplyOCC === true, "Human-derived stale validation must preserve observed tokens, publish current state, and retain Apply OCC");
-  const staleFixtures = new Set((contract.staleValidation?.fixtures ?? []).map((fixture) => fixture?.id));
-  pushIf(errors, staleFixtures.has("interpretation-live-token-mismatch-refuses") && staleFixtures.has("human-derived-stale-parent-publishes-state"), "stale validation split fixtures are incomplete");
+  pushIf(
+    errors,
+    contract.staleValidation?.interpretation?.requireLiveSourceTokenEquality ===
+      true &&
+      contract.staleValidation?.interpretation?.staleRefusal ===
+        "NEX_READ_SET_STALE",
+    "Interpretation saves must retain live Source token validation",
+  );
+  pushIf(
+    errors,
+    contract.staleValidation?.humanDerived?.requireLiveSourceTokenEquality ===
+      false,
+    "Human-derived saves must not require live Source token equality",
+  );
+  pushIf(
+    errors,
+    contract.staleValidation?.humanDerived?.preserveObservedTokens === true &&
+      contract.staleValidation?.humanDerived
+        ?.evaluateAgainstCurrentLiveSource === true &&
+      contract.staleValidation?.humanDerived?.doesNotBypassApplyOCC === true,
+    "Human-derived stale validation must preserve observed tokens, publish current state, and retain Apply OCC",
+  );
+  const staleFixtures = new Set(
+    (contract.staleValidation?.fixtures ?? []).map((fixture) => fixture?.id),
+  );
+  pushIf(
+    errors,
+    staleFixtures.has("interpretation-live-token-mismatch-refuses") &&
+      staleFixtures.has("human-derived-stale-parent-publishes-state"),
+    "stale validation split fixtures are incomplete",
+  );
 
   const adapter = contract.crossRuntimeAdapter;
-  pushIf(errors, adapter?.id === "chronicle.scene-event" && adapter?.version === "1" && adapter?.assertionKind === "scene-event@1" && adapter?.goldenFixtureRequired === true && adapter?.initialScopeDerivationRuntime === "typescript" && adapter?.humanDerivedScopeRuntime === "rust", "Chronicle Adapter must be versioned and cross-runtime golden-bound");
-  pushIf(errors, adapter?.canonicalOutput === "byte-identical-canonical-scope-json-and-scope-digest" && adapter?.noIndependentRuntimeInterpretation === true, "TypeScript and Rust Scope derivation must share canonical output and avoid independent interpretation");
-  pushIf(errors, adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF, "Chronicle Adapter must bind the canonical CreateChronicleEventProposalPayloadV1 schema");
-  pushIf(errors, JSON.stringify(adapter?.requiredCaseIds) === JSON.stringify(REQUIRED_CASE_IDS), "cross-runtime Adapter golden case list is incomplete");
+  pushIf(
+    errors,
+    adapter?.id === "chronicle.scene-event" &&
+      adapter?.version === "1" &&
+      adapter?.assertionKind === "scene-event@1" &&
+      adapter?.goldenFixtureRequired === true &&
+      adapter?.initialScopeDerivationRuntime === "typescript" &&
+      adapter?.humanDerivedScopeRuntime === "rust",
+    "Chronicle Adapter must be versioned and cross-runtime golden-bound",
+  );
+  pushIf(
+    errors,
+    adapter?.canonicalOutput ===
+      "byte-identical-canonical-scope-json-and-scope-digest" &&
+      adapter?.noIndependentRuntimeInterpretation === true,
+    "TypeScript and Rust Scope derivation must share canonical output and avoid independent interpretation",
+  );
+  pushIf(
+    errors,
+    adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF,
+    "Chronicle Adapter must bind the canonical CreateChronicleEventProposalPayloadV1 schema",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(adapter?.requiredCaseIds) ===
+      JSON.stringify(REQUIRED_CASE_IDS),
+    "cross-runtime Adapter golden case list is incomplete",
+  );
 
   const fixturePath = adapter?.fixtureFile;
-  const fixture = fixturePath ? readJson(repoRoot, fixturePath, errors, "Narrative IR golden fixture corpus") : null;
-  const proposalSchema = adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF
-    ? readJson(repoRoot, CHRONICLE_PROPOSAL_SCHEMA_REF, errors, "Chronicle Proposal payload schema")
+  const fixture = fixturePath
+    ? readJson(
+        repoRoot,
+        fixturePath,
+        errors,
+        "Narrative IR golden fixture corpus",
+      )
     : null;
+  const proposalSchema =
+    adapter?.proposalSchemaRef === CHRONICLE_PROPOSAL_SCHEMA_REF
+      ? readJson(
+          repoRoot,
+          CHRONICLE_PROPOSAL_SCHEMA_REF,
+          errors,
+          "Chronicle Proposal payload schema",
+        )
+      : null;
   if (fixture) {
-    pushIf(errors, fixture.adapter?.id === adapter.id && fixture.adapter?.version === adapter.version, "golden fixture corpus Adapter binding is invalid");
-    validateNarrativeIrGoldenFixture(fixture, scopeContract, errors, proposalSchema);
+    pushIf(
+      errors,
+      fixture.adapter?.id === adapter.id &&
+        fixture.adapter?.version === adapter.version,
+      "golden fixture corpus Adapter binding is invalid",
+    );
+    validateNarrativeIrGoldenFixture(
+      fixture,
+      scopeContract,
+      errors,
+      proposalSchema,
+    );
   }
 
   const activation = contract.activation;
-  pushIf(errors, activation?.state === "disabled" && Array.isArray(activation?.productionEntryPoints) && activation.productionEntryPoints.length === 0, "NIR-0 activation must have no production entry point");
-  pushIf(errors, JSON.stringify(activation?.scanRoots) === JSON.stringify(REQUIRED_ACTIVATION_SCAN_ROOTS), "NIR-0 activation scanRoots must match the exact production-root vocabulary");
-  pushIf(errors, JSON.stringify(activation?.productionMarkers) === JSON.stringify(REQUIRED_ACTIVATION_MARKERS), "NIR-0 activation productionMarkers must match the exact reserved vocabulary");
-  pushIf(errors, activation?.v2Emission === "blocked-until-c2b" && activation?.humanDerivedV2Ui === "blocked-until-c2b" && activation?.currentRevisionPromotion === "blocked-until-c2b", "Chronicle V2 production and Human-derived UI must remain disabled until C2B");
-  pushIf(errors, hasPaths(activation?.prerequisites, ["C2A","D1","D2","C2B","focused-persistence-freshness-journeys","implementation-status-atomic"]), "NIR-0 activation prerequisites are incomplete");
+  pushIf(
+    errors,
+    activation?.state === "disabled" &&
+      Array.isArray(activation?.productionEntryPoints) &&
+      activation.productionEntryPoints.length === 0,
+    "NIR-0 activation must have no production entry point",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(activation?.scanRoots) ===
+      JSON.stringify(REQUIRED_ACTIVATION_SCAN_ROOTS),
+    "NIR-0 activation scanRoots must match the exact production-root vocabulary",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(activation?.productionMarkers) ===
+      JSON.stringify(REQUIRED_ACTIVATION_MARKERS),
+    "NIR-0 activation productionMarkers must match the exact reserved vocabulary",
+  );
+  pushIf(
+    errors,
+    activation?.v2Emission === "blocked-until-c2b" &&
+      activation?.humanDerivedV2Ui === "blocked-until-c2b" &&
+      activation?.currentRevisionPromotion === "blocked-until-c2b",
+    "Chronicle V2 production and Human-derived UI must remain disabled until C2B",
+  );
+  pushIf(
+    errors,
+    hasPaths(activation?.prerequisites, [
+      "C2A",
+      "D1",
+      "D2",
+      "C2B",
+      "focused-persistence-freshness-journeys",
+      "implementation-status-atomic",
+    ]),
+    "NIR-0 activation prerequisites are incomplete",
+  );
 
-  pushIf(errors, scopeContract?.adoptionTrack?.owner === "adr-009-scope-contract" && scopeContract?.adoptionTrack?.independentFrom === "narrative-ir-contract" && scopeContract?.adoptionTrack?.lifecycleAuthority === "adr-009-scope-contract", "Scope Disclosure adoption must remain an independent ADR 009-owned track");
-  pushIf(errors, scopeContract?.implementationStatus?.capabilities && ["structuralValidation","relationComparison","disclosureAdmission"].every((key) => scopeContract.implementationStatus.capabilities[key]?.state === "declared"), "ADR 009 capability status must distinguish structural validation, relation comparison, and disclosure admission");
-  pushIf(errors, scopeContract?.adoptionTrack?.states?.join(",") === "declared,shadow,wired", "ADR 009 Scope Disclosure adoption states must be declared, shadow, wired");
+  pushIf(
+    errors,
+    scopeContract?.adoptionTrack?.owner === "adr-009-scope-contract" &&
+      scopeContract?.adoptionTrack?.independentFrom ===
+        "narrative-ir-contract" &&
+      scopeContract?.adoptionTrack?.lifecycleAuthority ===
+        "adr-009-scope-contract",
+    "Scope Disclosure adoption must remain an independent ADR 009-owned track",
+  );
+  pushIf(
+    errors,
+    scopeContract?.implementationStatus?.capabilities &&
+      [
+        "structuralValidation",
+        "relationComparison",
+        "disclosureAdmission",
+      ].every(
+        (key) =>
+          scopeContract.implementationStatus.capabilities[key]?.state ===
+          "declared",
+      ),
+    "ADR 009 capability status must distinguish structural validation, relation comparison, and disclosure admission",
+  );
+  pushIf(
+    errors,
+    scopeContract?.adoptionTrack?.states?.join(",") === "declared,shadow,wired",
+    "ADR 009 Scope Disclosure adoption states must be declared, shadow, wired",
+  );
 
-  const consumer = (consumerContract?.consumerKinds ?? []).find((entry) => entry?.kind === "proposal-revision");
-  const irConsumer = (consumerContract?.consumerKinds ?? []).find((entry) => entry?.kind === "narrative-ir-revision");
-  pushIf(errors, consumer?.status === "declared" && consumer?.durableIdentitySource === "narrative_proposal_revisions.id", "proposal-revision Consumer must remain the Narrative IR durable identity");
-  pushIf(errors, irConsumer?.status === "not-yet-modelled", "narrative-ir-revision Consumer must remain not-yet-modelled");
+  const consumer = (consumerContract?.consumerKinds ?? []).find(
+    (entry) => entry?.kind === "proposal-revision",
+  );
+  const irConsumer = (consumerContract?.consumerKinds ?? []).find(
+    (entry) => entry?.kind === "narrative-ir-revision",
+  );
+  pushIf(
+    errors,
+    consumer?.status === "declared" &&
+      consumer?.durableIdentitySource === "narrative_proposal_revisions.id",
+    "proposal-revision Consumer must remain the Narrative IR durable identity",
+  );
+  pushIf(
+    errors,
+    irConsumer?.status === "not-yet-modelled",
+    "narrative-ir-revision Consumer must remain not-yet-modelled",
+  );
   const binding = consumerContract?.revisionIdentityBinding;
-  pushIf(errors, binding?.consumerKind === "proposal-revision" && binding?.revisionTable === "narrative_proposal_revisions" && binding?.revisionIdColumn === "id" && binding?.projectScoped === true && binding?.independentConsumerStatus === "not-yet-modelled", "Consumer contract revision identity binding is incomplete");
+  pushIf(
+    errors,
+    binding?.consumerKind === "proposal-revision" &&
+      binding?.revisionTable === "narrative_proposal_revisions" &&
+      binding?.revisionIdColumn === "id" &&
+      binding?.projectScoped === true &&
+      binding?.independentConsumerStatus === "not-yet-modelled",
+    "Consumer contract revision identity binding is incomplete",
+  );
 
-  pushIf(errors, contract.fixtures?.corpusFile === adapter?.fixtureFile && JSON.stringify(contract.fixtures?.requiredCaseIds) === JSON.stringify(REQUIRED_CASE_IDS), "Narrative IR fixture manifest is incomplete");
-  pushIf(errors, JSON.stringify(contract.fixtures?.requiredFamilies) === JSON.stringify(REQUIRED_CASE_FAMILIES), "Narrative IR fixture manifest families must match the executable golden corpus");
+  pushIf(
+    errors,
+    contract.fixtures?.corpusFile === adapter?.fixtureFile &&
+      JSON.stringify(contract.fixtures?.requiredCaseIds) ===
+        JSON.stringify(REQUIRED_CASE_IDS),
+    "Narrative IR fixture manifest is incomplete",
+  );
+  pushIf(
+    errors,
+    JSON.stringify(contract.fixtures?.requiredFamilies) ===
+      JSON.stringify(REQUIRED_CASE_FAMILIES),
+    "Narrative IR fixture manifest families must match the executable golden corpus",
+  );
 
   return errors;
 }
 
 export function validateNarrativeIrContractFromRepo(repoRoot) {
   const errors = [];
-  const contract = readJson(repoRoot, "policies/narrative/narrative-ir-contract.json", errors, "narrative IR contract");
-  const scopeContract = readJson(repoRoot, "policies/narrative/narrative-scope-relation-contract.json", errors, "narrative Scope contract");
-  const consumerContract = readJson(repoRoot, "policies/narrative/narrative-consumer-contract.json", errors, "narrative Consumer contract");
+  const contract = readJson(
+    repoRoot,
+    "policies/narrative/narrative-ir-contract.json",
+    errors,
+    "narrative IR contract",
+  );
+  const scopeContract = readJson(
+    repoRoot,
+    "policies/narrative/narrative-scope-relation-contract.json",
+    errors,
+    "narrative Scope contract",
+  );
+  const consumerContract = readJson(
+    repoRoot,
+    "policies/narrative/narrative-consumer-contract.json",
+    errors,
+    "narrative Consumer contract",
+  );
   if (contract && scopeContract && consumerContract) {
-    validateNarrativeIrContract(repoRoot, contract, scopeContract, consumerContract, errors);
+    validateNarrativeIrContract(
+      repoRoot,
+      contract,
+      scopeContract,
+      consumerContract,
+      errors,
+    );
     const activation = contract.activation;
     if (
       activation?.state === "disabled" &&
@@ -888,17 +1728,22 @@ export function validateNarrativeIrContractFromRepo(repoRoot) {
       }
     }
   }
-  return {errors, requiredCaseCount: REQUIRED_CASE_IDS.length};
+  return { errors, requiredCaseCount: REQUIRED_CASE_IDS.length };
 }
 
 function main() {
-  const result = validateNarrativeIrContractFromRepo(resolveRepoRootFromModuleUrl());
+  const result = validateNarrativeIrContractFromRepo(
+    resolveRepoRootFromModuleUrl(),
+  );
   if (result.errors.length > 0) {
     for (const error of result.errors) console.error(`FAIL: ${error}`);
-    process.exitCode=1;
+    process.exitCode = 1;
     return;
   }
-  console.log(`Narrative IR contract PASS: ${result.requiredCaseCount} golden cases`);
+  console.log(
+    `Narrative IR contract PASS: ${result.requiredCaseCount} golden cases`,
+  );
 }
 
-if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) main();
+if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url)
+  main();

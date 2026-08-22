@@ -12,9 +12,11 @@ subordinate to ADR 004's semantic-assessment boundary, ADR 005's Narrative
 Semantic Core boundary, ADR 009's Scope contract, and ADR 010's Context Set /
 Dependency Role contract.
 
-NIR-0 freezes policy, schema, fixtures, and validators only. It does not add a
-database table, persistence migration, runtime writer, production Entry Point,
-or product activation.
+NIR0-00 froze policy, schema, fixtures, and validators only. E2.1 is an
+explicit additive exception: it adds the Chronicle AI-audit stage seam and
+request-scoped pure sidecar needed to prove pre-dispatch and terminal
+coverage. E2.1 still adds no database table, schema migration, V2 persistence
+writer, production Narrative IR activation, or product Entry Point.
 
 ## Context
 
@@ -66,14 +68,14 @@ the actor who requested or accepted a change. ADR 005 remains the semantic
 authority for Assertion Modality and Assertion Polarity; ADR 011 binds those
 categories to the following machine IDs for Narrative IR interchange:
 
-| ADR 005 category | Machine ID |
-| --- | --- |
-| 本文での明示 | `modality-explicit-text` |
-| Narrator claim | `modality-narrator-claim` |
-| 伝聞 | `modality-hearsay` |
-| Character belief | `modality-character-belief` |
-| Inference | `modality-inference` |
-| Hypothesis | `modality-hypothesis` |
+| ADR 005 category   | Machine ID                    |
+| ------------------ | ----------------------------- |
+| 本文での明示       | `modality-explicit-text`      |
+| Narrator claim     | `modality-narrator-claim`     |
+| 伝聞               | `modality-hearsay`            |
+| Character belief   | `modality-character-belief`   |
+| Inference          | `modality-inference`          |
+| Hypothesis         | `modality-hypothesis`         |
 | Author declaration | `modality-author-declaration` |
 | Imported assertion | `modality-imported-assertion` |
 
@@ -94,6 +96,53 @@ The Chronicle `scene-event@1` pilot product-wires only
 and `split` values remain declared or reserved; their presence in the common
 vocabulary does not imply product wiring. Existing-Projection revision requires
 a separately ratified Proposal kind and Apply path.
+
+### 2.1 E2.1 Stage provenance sidecar (additive, Envelope-frozen)
+
+E2.1 freezes `InterpretationRevisionBasisV2` and the Envelope V2 field set.
+Per-Stage model execution is carried by an external
+`StageModelExecutionBindingV1`, terminal Stage receipts, and a pure
+`ChronicleStageProvenanceClosureV1`; C1 returns the closure together with a
+`ChronicleStageProvenanceBindingV1` sidecar. The sidecar key is
+`projectId + runId + taskId + stageProvenanceClosureDigest`, and the existing
+Envelope `revisionBasis.runId + taskId` reaches that key without adding
+`stageProvenanceClosureDigest` to the Envelope.
+
+The binding and receipt digest domains are:
+
+```text
+chronicle-stage-model-binding/1
+chronicle-stage-terminal-receipt/1
+chronicle-stage-provenance-closure/1
+```
+
+Chronicle Stage audit metadata is version 2. `finalRequestDigest` remains a
+request-only digest and deliberately excludes model identity. Provider,
+requested/effective model, endpoint binding ID, API/reasoning mode, generation
+mode, and resolution status are independently bound. Provider/model selection
+alone uses `provider-default`; generation controls such as thinking, effort,
+reasoning, or output-token budget make the generation mode `explicit`.
+Current transport is normally `requested-only` and never infers a
+provider-reported effective model. Endpoint binding accepts only a stable ID
+or digest; credentials, raw URLs, and origins are forbidden.
+
+Observation, Event Synthesis, and Structured Repair each own an independent
+binding and terminal receipt. Repair lineage is the child receipt's immutable
+`parentStageExecutionId`; a mutable parent-child pointer is not closure
+authority. A C1 closure requires successful Observation and Synthesis paths
+(direct parsed success or a parsed successful repair child), permits upstream
+receipts from the same Project/Run with distinct Task/Attempt coordinates, and
+requires a repair parent/child to share Task/Attempt with a failed invalid
+parent. Owner Synthesis receipt digests must match the C1 execution's Context
+Set, Component Contract, and request-only digests.
+
+Model bindings and terminal receipts are durable, non-authoritative AI-audit
+metadata. The pure closure is an ephemeral, request-scoped,
+application-memory pure sidecar with no authority and no retention; its
+caller-supplied receipt membership is not a deterministic rebuild selector.
+C2A owns future atomic durable task-output/closure and extraction-artifact
+persistence. Profile/work-profile semantics and Evaluation Contract v2/scorer
+work remain deferred and are not encoded in this contract.
 
 ### 3. V2 monotonicity and enforcement ownership
 
@@ -212,4 +261,6 @@ fixture maintenance, and explicit future cutover evidence.
   semantic contract tests cover stale validation and activation.
 - ADR 009 capability status and its independent Scope Disclosure track are
   machine-readable and remain declared with empty production entry points.
-- No NIR-0 commit changes runtime code or database schema/migrations.
+- NIR0-00 remains contract-only. E2.1 may change the production Chronicle
+  audit seam additively, but no E2.1 change adds a database schema/migration,
+  V2 persistence writer, Envelope V2 persistence, or product activation.

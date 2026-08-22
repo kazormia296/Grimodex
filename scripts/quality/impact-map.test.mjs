@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import test from "node:test";
+import yaml from "js-yaml";
 
 import {
   LIGHT_SUITE_DEFINITIONS,
@@ -164,6 +165,160 @@ test("Narrative Extraction changes select every Narrative semantic requirement",
     assert.ok(selection.requirementIds.includes(requirementId));
   }
   assert.equal(selection.fallback, false);
+});
+
+test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const requirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-NARR-SEMANTIC-CONTRACT-001",
+  );
+  assert.ok(requirement, "semantic contract requirement must exist");
+  const artifactRequirement = manifest.requirements.find(
+    (candidate) => candidate.id === "GDX-ARTIFACT-001",
+  );
+  assert.ok(artifactRequirement, "artifact requirement must exist");
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    assert.ok(
+      artifactRequirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in artifact requirement implementedBy`,
+    );
+  }
+
+  const implementations = [
+    "policies/narrative/fixtures/canonical-json-number-parity.json",
+    "src/features/narrative-semantic-core/contracts/scopeV2.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.ts",
+    "src/features/narrative-extraction/source/digest.ts",
+    "src-tauri/crates/grimodex-core/src/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/src/narrative_ir.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.ts",
+    "src/features/narrative-extraction/reconciler/types.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts",
+    "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+    "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+    "src/application/narrative-extraction/extractionCoordinator.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+  ];
+  const tests = [
+    "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
+    "src/features/narrative-semantic-core/contracts/narrativeIr.test.ts",
+    "src/features/narrative-semantic-core/contracts/scopeRelation.test.ts",
+    "src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts",
+    "src-tauri/crates/grimodex-core/tests/canonical_json.rs",
+    "src-tauri/crates/grimodex-core/tests/narrative_ir.rs",
+    "src/features/narrative-extraction/reconciler/stageExecution.test.ts",
+    "src/features/narrative-extraction/reconciler/v2Adapter.test.ts",
+    "src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts",
+    "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
+    "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
+    "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "scripts/quality/impact-map.test.mjs",
+  ];
+
+  for (const relativePath of implementations) {
+    assert.ok(
+      requirement.implementedBy.includes(relativePath),
+      `${relativePath} must be listed in semantic contract implementedBy`,
+    );
+  }
+  for (const relativePath of tests) {
+    assert.ok(
+      requirement.lightTests.includes(relativePath),
+      `${relativePath} must be listed in semantic contract lightTests`,
+    );
+  }
+
+  for (const relativePath of [
+    ...implementations,
+    ...tests.filter(
+      (relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs",
+    ),
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must select the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+
+  for (const relativePath of [
+    "policies/narrative/narrative-artifact-authority.json",
+    "policies/narrative/schemas/narrative-artifact-authority.schema.json",
+  ]) {
+    const selection = selectImpact(map, [relativePath]);
+    assert.ok(
+      selection.matchedRuleIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic contract rule`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+      `${relativePath} must retain the semantic contract requirement`,
+    );
+    assert.ok(
+      selection.requirementIds.includes("GDX-ARTIFACT-001"),
+      `${relativePath} must select the artifact requirement`,
+    );
+    assert.ok(
+      selection.suiteIds.includes("narrative-semantic-contract"),
+      `${relativePath} must select the semantic Light suite`,
+    );
+    assert.equal(selection.fallback, false, relativePath);
+  }
+});
+
+test("isolated Chronicle stage provenance changes select semantic and AI audit/routing gates", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    "src/features/narrative-extraction/reconciler/stageProvenance.test.ts",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"));
+    assert.ok(selection.matchedRuleIds.includes("ai-routing"));
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+    );
+    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"));
+    assert.ok(selection.requirementIds.includes("GDX-ROUTE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.suiteIds.includes("ai-routing"));
+    assert.equal(selection.fallback, false);
+  }
+  const transportSelection = selectImpact(map, [
+    "src/features/ai-audit/transportContext.ts",
+  ]);
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-routing"));
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-audit-runtime"));
+  assert.ok(transportSelection.requirementIds.includes("GDX-AI-AUDIT-001"));
 });
 
 test("Temporal IR, adapter, and Calendar changes select the Temporal requirement", async () => {
