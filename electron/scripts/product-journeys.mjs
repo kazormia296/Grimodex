@@ -11,6 +11,7 @@ import { PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
 import { createProductJourneyHarness } from "./product-journey-harness.mjs";
 import { launchProductJourneyMcpClient } from "./product-journey-mcp-client.mjs";
 import { createNativeRoundTripJourneys } from "./product-journey-native-roundtrips.mjs";
+import { createNarrativeMaintenanceProductJourneys } from "./narrative-maintenance-product-journeys.mjs";
 
 const mainCjs = path.join(rootDir, "dist-electron", "main.cjs");
 const DEFAULT_SCENE_TITLE = "シーン 1";
@@ -256,6 +257,23 @@ export async function configureWorkspace(
   } finally {
     await harness.close(launched.app, launched.page, "configure");
   }
+}
+
+/**
+ * C2-5B's durable maintenance acceptance lane is canonical in the runner.
+ * The `c2-5b` selector is retained for focused acceptance and reporting; the
+ * default canonical run includes these IDs and remains red until the main /
+ * N-API trigger owners are integrated.
+ */
+export const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS =
+  createNarrativeMaintenanceProductJourneys({ configureWorkspace });
+
+export function resolveProductJourneySet(
+  name = process.env.GRIMODEX_PRODUCT_JOURNEY_SET,
+) {
+  if (name === undefined || name === "") return PRODUCT_JOURNEYS;
+  if (name === "c2-5b") return NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS;
+  throw new Error(`unknown GRIMODEX_PRODUCT_JOURNEY_SET: ${name}`);
 }
 
 async function queryRows(harness, page, sql, params = []) {
@@ -1975,6 +1993,7 @@ export const PRODUCT_JOURNEYS = [
     run: runMcpExternalWriteConflictJourney,
   },
   ...NATIVE_ROUND_TRIP_JOURNEYS,
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
 ];
 
 export function resolveSelectedProductJourneys(journeys, serializedIds) {
@@ -2179,8 +2198,9 @@ export async function runProductJourneys({
 }
 
 if (process.argv[1] === new URL(import.meta.url).pathname) {
+  const journeySet = resolveProductJourneySet();
   const selectedJourneys = resolveSelectedProductJourneys(
-    PRODUCT_JOURNEYS,
+    journeySet,
     process.env.GRIMODEX_PRODUCT_JOURNEY_IDS,
   );
   runProductJourneys({ journeys: selectedJourneys }).then(
