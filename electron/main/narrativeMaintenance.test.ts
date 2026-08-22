@@ -277,7 +277,7 @@ describe("narrative maintenance scheduler", () => {
   it("retains a project-scoped durable wake when its workspace is unavailable", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(acceptedCycle());
     const { scheduler } = createScheduler({
@@ -305,7 +305,7 @@ describe("narrative maintenance scheduler", () => {
   it("hasMore keeps a durable backlog wake and invokes the next cycle with an empty batch", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
       .mockResolvedValueOnce(acceptedCycle());
     const { scheduler } = createScheduler({
       runNarrativeMaintenanceCycle,
@@ -328,7 +328,7 @@ describe("narrative maintenance scheduler", () => {
     const p1Wake = deferred<NarrativeMaintenanceCycleResult>();
     const runNarrativeMaintenanceCycle = vi
       .fn()
-      .mockResolvedValueOnce('{"hasMore":true}')
+      .mockResolvedValueOnce(acceptedCycle(true))
       .mockReturnValueOnce(p1Wake.promise)
       .mockResolvedValue(acceptedCycle());
     const backend = { runNarrativeMaintenanceCycle };
