@@ -150,6 +150,7 @@ fn insert_completed_verify_run(db: &Database, status: &str, outcome: Option<serd
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_verify_run_with_metadata(
     db: &Database,
     run_id: &str,
@@ -184,6 +185,7 @@ fn insert_verify_run_with_metadata(
     .expect("insert run");
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_rebuild_run_with_metadata(
     db: &Database,
     run_id: &str,
