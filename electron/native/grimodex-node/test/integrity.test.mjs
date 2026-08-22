@@ -123,6 +123,46 @@ test("repairIntegrity は空 workspace でもレポート object を返す", asy
   assert.equal(maintenanceEvents.length, eventCountBefore);
 });
 
+test("failed repair emits no epoch wake", async () => {
+  const eventCountBefore = maintenanceEvents.length;
+  await assert.rejects(
+    backend.repairIntegrity({
+      projectId: PROJECT,
+      requestId: "integrity-failed-repair",
+      sessionId: "integrity-failed-repair-session",
+      eventUid: "integrity-failed-repair-event",
+      occurredAt: "not-an-instant",
+      authorityRoute: "restore-or-migration",
+      caller: "integrity-repair",
+      controls: [
+        "exclusive-system-operation",
+        "semantic-epoch-event",
+        "full-rebuild-marker",
+      ],
+      provenance: null,
+      writesAuthorityProtectedField: false,
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, eventCountBefore);
+});
+
+test("failed snapshot restore emits no epoch wake", async () => {
+  const eventCountBefore = maintenanceEvents.length;
+  await assert.rejects(
+    backend.projectSnapshotApplyRestore({
+      requestId: "snapshot-failed-request",
+      sessionId: "snapshot-failed-session",
+      projectId: PROJECT,
+      snapshotId: "missing-snapshot",
+      scopes: ["not-a-restore-scope"],
+      inserts: [],
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, eventCountBefore);
+});
+
 test("non-noop repair emits one observer-only epoch wake and replay emits none", async () => {
   await backend.dbExecute(
     "INSERT INTO projects (id, title) VALUES (?, ?), (?, ?)",
@@ -181,6 +221,9 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     operation: "integrity-repair",
     reason: "semantic-epoch-rotated",
   });
+  assert.equal(typeof firstEvent.authorityId, "string");
+  assert.ok(firstEvent.authorityId.length > 0);
+  assert.equal(Number.isSafeInteger(firstEvent.generation), true);
   const countAfterFirst = maintenanceEvents.length;
 
   const replay = JSON.parse(
@@ -253,6 +296,9 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
     operation: "project-snapshot-restore",
     reason: "semantic-epoch-rotated",
   });
+  assert.equal(typeof firstEvent.authorityId, "string");
+  assert.ok(firstEvent.authorityId.length > 0);
+  assert.equal(Number.isSafeInteger(firstEvent.generation), true);
   const countAfterRestore = maintenanceEvents.length;
 
   const replay = JSON.parse(
