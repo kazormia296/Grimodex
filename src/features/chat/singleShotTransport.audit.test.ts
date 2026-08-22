@@ -86,9 +86,14 @@ vi.mock("@/features/ai-audit/api", () => ({
 
 import { testAiConnection } from "./api";
 import {
+  sha256Digest,
+  stableJsonStringify,
+} from "@/features/narrative-extraction/source/digest";
+import {
   digestStageModelExecutionBinding,
   type StageModelExecutionBindingV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
 import {
   bindChronicleStageAuditContext,
@@ -269,7 +274,7 @@ describe("single-shot AI audit contracts", () => {
     );
   });
 
-  it("closes malformed Chronicle responses with one canonical no-response receipt", async () => {
+  it("closes malformed Chronicle responses with one canonical invalid receipt", async () => {
     const stageExecution = createStageExecutionContext({
       projectId: "project-1",
       runId: "run-malformed-chronicle-response",
@@ -295,12 +300,25 @@ describe("single-shot AI audit contracts", () => {
     invokeMock.mockResolvedValueOnce(responseError as never);
     let capturedReceipt: unknown;
     const publishedReceipts: unknown[] = [];
-    const onNoResponseTerminalMetadata = vi.fn(
-      async (terminalStatus: "failed" | "cancelled" | "skipped") => {
-        const terminal = await buildChronicleStageAuditNoResponseTerminal({
+    const expectedResponseDigest = await sha256Digest(
+      stableJsonStringify(responseError),
+    );
+    const onNoResponseTerminalMetadata = vi.fn();
+    const onTerminalMetadata = vi.fn(
+      async (
+        responseText: string,
+        _metadata,
+        responseDigest?: Sha256Digest,
+      ) => {
+        expect(responseText).toBe(stableJsonStringify(responseError));
+        expect(responseDigest).toBe(expectedResponseDigest);
+        const terminal = await buildChronicleStageAuditTerminal({
           stageExecution,
           ...digests,
-          terminalStatus,
+          responseText,
+          responseDigest,
+          parseStatus: "invalid",
+          terminalStatus: "failed",
           onReceipt: (receipt) => {
             capturedReceipt = receipt;
           },
@@ -320,12 +338,14 @@ describe("single-shot AI audit contracts", () => {
         {
           ...base,
           onResolvedRouteMetadata: undefined,
+          onTerminalMetadata,
           onNoResponseTerminalMetadata,
           onAuditCompleted,
         },
       ),
     ).rejects.toThrow(/text block/i);
-    expect(onNoResponseTerminalMetadata).toHaveBeenCalledOnce();
+    expect(onTerminalMetadata).toHaveBeenCalledOnce();
+    expect(onNoResponseTerminalMetadata).not.toHaveBeenCalled();
     expect(failMock).toHaveBeenCalledOnce();
     expect(failMock).toHaveBeenLastCalledWith(
       expect.anything(),
@@ -333,15 +353,121 @@ describe("single-shot AI audit contracts", () => {
         metadata: expect.objectContaining({
           chronicleStage: expect.objectContaining({
             terminalStatus: "failed",
-            parseStatus: "not-attempted",
-            responseDigest: null,
+            parseStatus: "invalid",
+            responseDigest: expectedResponseDigest,
           }),
         }),
       }),
     );
     expect(onAuditCompleted).toHaveBeenCalledOnce();
     expect(publishedReceipts).toHaveLength(1);
-    expect(publishedReceipts[0]).toEqual(expect.anything());
+    expect(publishedReceipts[0]).toEqual(
+      expect.objectContaining({
+        parseStatus: "invalid",
+        terminalStatus: "failed",
+        responseDigest: expectedResponseDigest,
+      }),
+    );
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it("closes a Chronicle execution when response digest preprocessing fails", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-response-digest-failure",
+      taskId: "task-response-digest-failure",
+      attemptId: "attempt-response-digest-failure",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-response-digest-failure",
+    });
+    const digests = {
+      contextSetDigest: testDigest("4"),
+      componentContractDigest: testDigest("5"),
+      finalRequestDigest: testDigest("6"),
+    };
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      digests,
+    );
+    const response = {
+      blocks: [{ type: "text", content: "result" }],
+      stopReason: "end_turn",
+    };
+    invokeMock.mockResolvedValueOnce(response as never);
+    const expectedResponseDigest = await sha256Digest(
+      stableJsonStringify(response),
+    );
+    const responseText = "result";
+    const onNoResponseTerminalMetadata = vi.fn();
+    const onTerminalMetadata = vi.fn(
+      async (
+        responseText: string,
+        _metadata,
+        responseDigest?: Sha256Digest,
+      ) => {
+        expect(responseDigest).toBe(expectedResponseDigest);
+        const terminal = await buildChronicleStageAuditTerminal({
+          stageExecution,
+          ...digests,
+          responseText,
+          responseDigest,
+          parseStatus: "invalid",
+          terminalStatus: "failed",
+        });
+        return { chronicleStage: terminal as unknown as AiAuditJsonObject };
+      },
+    );
+    const onAuditCompleted = vi.fn(async () => undefined);
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestSpy = vi.spyOn(crypto.subtle, "digest");
+    const rejectedResponseInputs = new Set([
+      responseText,
+      stableJsonStringify(response),
+    ]);
+    digestSpy.mockImplementation((algorithm, data) => {
+      if (
+        data instanceof Uint8Array &&
+        rejectedResponseInputs.has(new TextDecoder().decode(data))
+      ) {
+        return Promise.reject(new Error("forced response digest failure"));
+      }
+      return originalDigest(algorithm, data);
+    });
+
+    try {
+      await expect(
+        invokeSingleShotChat(
+          { messages: [{ role: "user", content: "digest failure" }] },
+          {
+            ...base,
+            onResolvedRouteMetadata: undefined,
+            onTerminalMetadata,
+            onNoResponseTerminalMetadata,
+            onAuditCompleted,
+          },
+        ),
+      ).rejects.toThrow("forced response digest failure");
+    } finally {
+      digestSpy.mockRestore();
+    }
+
+    expect(onTerminalMetadata).toHaveBeenCalledOnce();
+    expect(onNoResponseTerminalMetadata).not.toHaveBeenCalled();
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            terminalStatus: "failed",
+            parseStatus: "invalid",
+            responseDigest: expectedResponseDigest,
+          }),
+        }),
+      }),
+    );
+    expect(onAuditCompleted).toHaveBeenCalledOnce();
     expect(completeMock).not.toHaveBeenCalled();
   });
 

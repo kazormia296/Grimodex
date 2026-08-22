@@ -246,8 +246,10 @@ export function bindChronicleStageAuditContext(
 
 export interface BuildChronicleStageAuditTerminalInput extends ChronicleStageAuditDigests {
   readonly stageExecution: NarrativeStageExecutionContext;
-  /** Hashed immediately; the response body is never included in the result. */
+  /** Response body is never included in the result. */
   readonly responseText: string;
+  /** Trusted transport digest; avoids rehashing when Web Crypto is unavailable. */
+  readonly responseDigest?: Sha256Digest;
   readonly parseStatus: ChronicleParseStatus;
   readonly terminalStatus: ChronicleTerminalStatus;
   /** Exact binding sealed by the route callback, or unresolved when omitted. */
@@ -274,7 +276,9 @@ export interface BuildChronicleStageAuditNoResponseInput extends ChronicleStageA
 export async function buildChronicleStageAuditTerminal(
   input: BuildChronicleStageAuditTerminalInput,
 ): Promise<ChronicleStageAuditMetadata> {
-  const responseDigest = await sha256Digest(input.responseText);
+  const responseDigest =
+    input.responseDigest ?? (await sha256Digest(input.responseText));
+  assertDigest(responseDigest, "Chronicle Stage responseDigest");
   const modelExecutionBinding =
     input.modelExecutionBinding ?? UNRESOLVED_MODEL_BINDING;
   const modelBindingDigest = await digestStageModelExecutionBinding(

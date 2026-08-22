@@ -29,6 +29,7 @@ import type {
   ChronicleStageTerminalReceiptV1,
   StageModelExecutionBindingV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
 export const NARRATIVE_STRUCTURED_REPAIR_PATH =
   "narrative_structured_repair" as const;
@@ -309,6 +310,7 @@ export async function runStructuredRepairTask(
           onTerminalMetadata: async (
             responseText: string,
             metadata?: AiAuditJsonObject,
+            responseDigest?: Sha256Digest,
           ) => {
             const parseStatus = resolveStructuredRepairParseStatus(
               input,
@@ -318,6 +320,7 @@ export async function runStructuredRepairTask(
               stageExecution: input.stageExecution!,
               ...promptDigests,
               responseText,
+              responseDigest,
               parseStatus,
               terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
               modelExecutionBinding:

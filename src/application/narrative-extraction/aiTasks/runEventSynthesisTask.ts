@@ -23,6 +23,7 @@ import {
 import {
   buildChroniclePromptArtifact,
   buildChroniclePromptDigests,
+  CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
   type ChroniclePromptArtifact,
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import {
@@ -38,6 +39,7 @@ import type {
   ChronicleStageTerminalReceiptV1,
   StageModelExecutionBindingV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
 export const NARRATIVE_EVENT_SYNTHESIZE_PATH =
   "narrative_event_synthesize" as const;
@@ -76,12 +78,13 @@ export interface RunEventSynthesisTaskInput {
 }
 
 const EVENT_COMPONENT_CONTRACT = {
-  contractId: "chronicle.event-synthesis.prompt",
+  contractId: CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
   contractVersion: "1",
   instruction: `あなたは小説の出来事統合アシスタントです。同一候補 Cluster 内の Observation を評価し、Event Hypothesis を JSON で返してください。
-本文全量は再送しません。Observation Ref と短い Evidence 表示だけを使います。未知の Observation Ref は出力しないでください。`,
+本文全量は再送しません。Observation Ref と短い Evidence 表示だけを使います。未知の Observation Ref は出力しないでください。
+出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。`,
   outputShape:
-    '{"clusterRef":"cluster-ref","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
+    '{"clusterRef":"<event-cluster-ref-from-context>","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"短いタイトル","summary":"要約","actuality":"actual","significance":"major"}]}',
 } as const;
 
 function buildSynthesisPromptArtifact(
@@ -190,6 +193,7 @@ async function parseSynthesisFromText(
   } catch {
     return null;
   }
+  const schemaResult = parseRawEventSynthesisResult(parsed);
   const allowedObservationRefs = new Set(
     input.observations.map((observation) => observation.localId),
   );
@@ -199,15 +203,22 @@ async function parseSynthesisFromText(
       allowedObservationRefs,
       createId: input.createId,
     }),
-    status: parseRawEventSynthesisResult(parsed).ok ? "parsed" : "invalid",
+    status:
+      schemaResult.ok && schemaResult.value.clusterRef === input.clusterRef
+        ? "parsed"
+        : "invalid",
   };
 }
 
-function synthesisParseStatus(responseText: string): "parsed" | "invalid" {
+function synthesisParseStatus(
+  responseText: string,
+  expectedClusterRef: string,
+): "parsed" | "invalid" {
   const jsonText = extractJsonObject(responseText);
   if (!jsonText) return "invalid";
   try {
-    return parseRawEventSynthesisResult(JSON.parse(jsonText)).ok
+    const result = parseRawEventSynthesisResult(JSON.parse(jsonText));
+    return result.ok && result.value.clusterRef === expectedClusterRef
       ? "parsed"
       : "invalid";
   } catch {
@@ -293,12 +304,17 @@ export async function runEventSynthesisTask(
         onTerminalMetadata: async (
           responseText: string,
           metadata?: AiAuditJsonObject,
+          responseDigest?: Sha256Digest,
         ) => {
-          const parseStatus = synthesisParseStatus(responseText);
+          const parseStatus = synthesisParseStatus(
+            responseText,
+            input.clusterRef,
+          );
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
             ...promptDigests,
             responseText,
+            responseDigest,
             parseStatus,
             terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
             modelExecutionBinding:
@@ -373,7 +389,7 @@ export async function runEventSynthesisTask(
     });
   }
   const first = await parseSynthesisFromText(response.text, input);
-  if (first !== null) {
+  if (first?.status === "parsed") {
     input.onParseStatus?.(first.status);
     if (input.stageExecution) {
       await recordEventStageAudit(
@@ -430,11 +446,14 @@ export async function runEventSynthesisTask(
 
   const repaired = await runStructuredRepairTask({
     brokenText: response.text,
-    expectedShape: `{"clusterRef":"${input.clusterRef}","resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
+    expectedShape: `{"clusterRef":${JSON.stringify(input.clusterRef)},"resolution":"single-event","events":[{"observationRefs":["obs-1"],"titleSuggestion":"t","summary":"s","actuality":"actual","significance":"major"}]}`,
     projectId,
     ...(repairStageExecution ? { stageExecution: repairStageExecution } : {}),
     ...(repairStageExecution
-      ? { responseValidator: synthesisParseStatus }
+      ? {
+          responseValidator: (candidate: string) =>
+            synthesisParseStatus(candidate, input.clusterRef),
+        }
       : {}),
     send: input.repairSend,
     onStageReceipt: input.onStageReceipt,
@@ -483,5 +502,5 @@ export async function runEventSynthesisTask(
       capturedStageReceipt,
     );
   }
-  return parsed?.hypotheses ?? [];
+  return parsed?.status === "parsed" ? parsed.hypotheses : [];
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   bindChronicleStageAuditContext,
@@ -12,6 +12,7 @@ import {
   createStageExecutionContext,
   NARRATIVE_STAGE_IDS,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
+import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 
 const parent = createStageExecutionContext({
   projectId: "project-1",
@@ -155,6 +156,36 @@ describe("Chronicle Stage AI Audit binding", () => {
     });
     expect(terminal).not.toHaveProperty("responseText");
     expect(JSON.stringify(terminal)).not.toContain("observations");
+  });
+
+  it("uses a trusted response digest when response hashing is unavailable", async () => {
+    const responseText = '{"observations":[]}';
+    const responseDigest = await sha256Digest(responseText);
+    const originalDigest = crypto.subtle.digest.bind(crypto.subtle);
+    const digestSpy = vi.spyOn(crypto.subtle, "digest");
+    digestSpy.mockImplementation((algorithm, data) => {
+      if (
+        data instanceof Uint8Array &&
+        new TextDecoder().decode(data) === responseText
+      ) {
+        return Promise.reject(new Error("forced response digest failure"));
+      }
+      return originalDigest(algorithm, data);
+    });
+
+    try {
+      const terminal = await buildChronicleStageAuditTerminal({
+        stageExecution: parent,
+        ...digests,
+        responseText,
+        responseDigest,
+        parseStatus: "invalid",
+        terminalStatus: "failed",
+      });
+      expect(terminal.responseDigest).toBe(responseDigest);
+    } finally {
+      digestSpy.mockRestore();
+    }
   });
 
   it("fails closed when the audit digest seam is not a SHA-256 digest", async () => {

@@ -1,3 +1,4 @@
+import { sha256Hex } from "@grimodex/scan-contract";
 import i18next from "@/lib/i18n";
 import { invoke, isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
@@ -23,6 +24,7 @@ import {
   assertStageModelExecutionBindingV1,
   digestStageModelExecutionBinding,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 import { useAiSettingsStore } from "./store";
 import {
   getOpenaiCompatibleEndpoints,
@@ -217,7 +219,7 @@ function endpointOrigin(value: string | null | undefined): string | null {
   }
 }
 
-async function sha256ResponseDigest(value: string): Promise<string> {
+async function sha256ResponseDigest(value: string): Promise<Sha256Digest> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(value),
@@ -228,8 +230,38 @@ async function sha256ResponseDigest(value: string): Promise<string> {
   return `sha256:${hex}`;
 }
 
+/**
+ * The received payload still needs a canonical digest when Web Crypto rejects
+ * response preprocessing. The dependency-free contract hash is the same
+ * SHA-256 domain and does not expose the failure diagnostic or payload text.
+ */
+async function digestReceivedResponse(value: string): Promise<Sha256Digest> {
+  try {
+    return await sha256ResponseDigest(value);
+  } catch {
+    return `sha256:${sha256Hex(value)}`;
+  }
+}
+
 function isJsonObject(value: unknown): value is AiAuditJsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Keep a deterministic, in-memory representation of the provider value even
+ * when the value is not a valid single-shot response. Provider values normally
+ * cross an IPC JSON boundary; the fixed fallback avoids putting serialization
+ * errors or their (potentially sensitive) messages into any audit metadata.
+ */
+function stableReceivedResponseText(value: unknown): string {
+  try {
+    return stableJsonStringify(value);
+  } catch {
+    return stableJsonStringify({
+      kind: "unserializable-single-shot-response",
+      valueType: typeof value,
+    });
+  }
 }
 
 const CHRONICLE_BEGIN_PROTECTED_FIELDS = [
@@ -757,12 +789,9 @@ export async function invokeSingleShotChat(
     audit,
     beforeIpcDispatchDetails("send_chat_message"),
   );
-  let response: ChatResponsePayload;
+  let response: unknown;
   try {
-    response = await invoke<ChatResponsePayload>(
-      "send_chat_message",
-      dispatchArgs,
-    );
+    response = await invoke<unknown>("send_chat_message", dispatchArgs);
   } catch (error) {
     const cancellation = isSingleShotCancellationError(error);
     const terminalStatus = cancellation ? "cancelled" : "failed";
@@ -824,6 +853,8 @@ export async function invokeSingleShotChat(
   // pending merely because it failed before the old terminal try/catch.
   let responseTerminalAttempted = false;
   let responsePreprocessingComplete = false;
+  const receivedResponseText = stableReceivedResponseText(response);
+  let receivedResponseDigest: Sha256Digest | undefined;
   const failPostResponseAudit = async (error: unknown): Promise<void> => {
     if (responseTerminalAttempted) return;
 
@@ -835,14 +866,38 @@ export async function invokeSingleShotChat(
     ) {
       let completionMetadata: AiAuditJsonObject | undefined;
       try {
-        completionMetadata = await buildNoResponseTerminalMetadata(
-          auditContext,
-          "failed",
+        receivedResponseDigest ??=
+          await digestReceivedResponse(receivedResponseText);
+        const terminalMetadata = await auditContext.onTerminalMetadata?.(
+          receivedResponseText,
           durableMetadata,
+          receivedResponseDigest,
+        );
+        completionMetadata = mergeAuditMetadata(
+          withChronicleResponseDigest(durableMetadata, receivedResponseDigest),
+          terminalMetadata,
+        );
+        const malformedResponseStage =
+          chronicleStageFromMetadata(completionMetadata);
+        if (
+          malformedResponseStage !== undefined &&
+          hasChronicleBindingSeal(malformedResponseStage) &&
+          (malformedResponseStage.parseStatus !== "invalid" ||
+            malformedResponseStage.terminalStatus !== "failed")
+        ) {
+          throw new TypeError(
+            "Chronicle Stage malformed response terminal must be failed/invalid",
+          );
+        }
+        await assertChronicleTerminalSeal(
+          durableMetadata,
+          completionMetadata,
+          receivedResponseDigest,
         );
       } catch {
-        // A no-response hook or seal failure cannot publish an incomplete
-        // Chronicle v2 object. Close the generic audit exactly once instead.
+        // A malformed response hook or seal failure cannot publish an
+        // incomplete Chronicle v2 object. Close the generic audit exactly once
+        // instead. The no-response hook is reserved for dispatch failures.
         responseTerminalAttempted = true;
         try {
           await failAiAuditExecution(audit, {
@@ -894,12 +949,14 @@ export async function invokeSingleShotChat(
       .map((block) => block.content)
       .join("\n");
     const responseDigest = await sha256ResponseDigest(responseText);
+    receivedResponseDigest = responseDigest;
     responsePreprocessingComplete = true;
     let terminalMetadata: AiAuditJsonObject | undefined;
     try {
       terminalMetadata = await auditContext.onTerminalMetadata?.(
         responseText,
         durableMetadata,
+        responseDigest,
       );
     } catch (error) {
       const chronicleStage = durableMetadata?.chronicleStage;

@@ -37,6 +37,7 @@ import type {
   ChronicleStageTerminalReceiptV1,
   StageModelExecutionBindingV1,
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 
 export const NARRATIVE_OBSERVATION_EXTRACT_PATH =
   "narrative_observation_extract" as const;
@@ -286,12 +287,14 @@ export async function runObservationExtractionTask(
         onTerminalMetadata: async (
           responseText: string,
           metadata?: AiAuditJsonObject,
+          responseDigest?: Sha256Digest,
         ) => {
           const parseStatus = observationParseStatus(responseText);
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
             ...promptDigests,
             responseText,
+            responseDigest,
             parseStatus,
             terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
             modelExecutionBinding:

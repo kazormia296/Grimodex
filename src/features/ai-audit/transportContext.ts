@@ -7,6 +7,7 @@ import type {
   AiAuditRequestSnapshot,
 } from "./types";
 import { readDocumentRuntimeTarget } from "@/runtime/runtimeDocumentTarget";
+import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 export { requireAuditProjectId } from "./projectScope";
 
 /**
@@ -38,6 +39,8 @@ export interface AiAuditTransportContext {
     responseText: string,
     /** Durable route metadata selected before dispatch, when available. */
     metadata?: AiAuditJsonObject,
+    /** Trusted response digest computed by the transport before this hook. */
+    responseDigest?: Sha256Digest,
   ) => AiAuditJsonObject | Promise<AiAuditJsonObject>;
   /**
    * Non-persistent Chronicle seam for a durable terminal that received no

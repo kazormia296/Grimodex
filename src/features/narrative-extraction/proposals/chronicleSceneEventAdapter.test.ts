@@ -24,7 +24,10 @@ import {
   createStageExecutionContext,
   NARRATIVE_STAGE_IDS,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
-import { digestChronicleContextSet } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
+  CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
+  digestChronicleContextSet,
+} from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
 import {
   buildChronicleSceneEventV2,
   classifyChronicleSceneEventChanges,
@@ -114,6 +117,8 @@ const contextManifests: readonly ContextSetEntry[] = [
   },
 ];
 
+const COMPONENT_CONTRACT_ID = CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID;
+
 const dependencyDeclarations: readonly DependencySetEntry[] = [
   {
     dependencyId: "dependency:evidence",
@@ -121,6 +126,17 @@ const dependencyDeclarations: readonly DependencySetEntry[] = [
     contextIds: ["context:event-synthesis"],
     role: "direct-evidence",
     selector: { kind: "whole-source" },
+  },
+  {
+    dependencyId: "dependency:component-contract",
+    inputRef: "component:chronicle.event-synthesis.prompt",
+    contextIds: [],
+    role: "component-contract",
+    selector: {
+      kind: "component-contract",
+      contractId: COMPONENT_CONTRACT_ID,
+      contractDigest: DIGEST,
+    },
   },
 ];
 
@@ -135,6 +151,7 @@ const execution = {
   reconcilerVersion: "1",
   contextSetDigest: DIGEST,
   componentContractDigest: DIGEST,
+  componentContractId: COMPONENT_CONTRACT_ID,
   finalRequestDigest: DIGEST,
 };
 
@@ -299,6 +316,139 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
       valid: true,
     });
   });
+
+  it.each([
+    {
+      label: "missing component-contract dependency",
+      dependencies: dependencyDeclarations.filter(
+        (entry) => entry.role !== "component-contract",
+      ),
+      expected: /component.?contract.*dependenc/i,
+    },
+    {
+      label: "wrong component-contract dependency role",
+      dependencies: dependencyDeclarations.map((entry) =>
+        entry.role === "component-contract"
+          ? {
+              ...entry,
+              contextIds: ["context:event-synthesis"],
+              role: "direct-evidence" as const,
+            }
+          : entry,
+      ),
+      expected: /component.?contract.*dependenc/i,
+    },
+    {
+      label: "wrong component-contract selector kind",
+      dependencies: dependencyDeclarations.map((entry) =>
+        entry.role === "component-contract"
+          ? { ...entry, selector: { kind: "whole-source" as const } }
+          : entry,
+      ),
+      expected: /component.?contract.*selector/i,
+    },
+    {
+      label: "wrong component-contract selector id",
+      dependencies: dependencyDeclarations.map((entry) =>
+        entry.role === "component-contract"
+          ? {
+              ...entry,
+              selector: {
+                kind: "component-contract" as const,
+                contractId: "chronicle.other-component",
+                contractDigest: DIGEST,
+              },
+            }
+          : entry,
+      ),
+      expected: /component.?contract.*selector/i,
+    },
+    {
+      label: "wrong component-contract selector digest",
+      dependencies: dependencyDeclarations.map((entry) =>
+        entry.role === "component-contract"
+          ? {
+              ...entry,
+              selector: {
+                kind: "component-contract" as const,
+                contractId: COMPONENT_CONTRACT_ID,
+                contractDigest: `sha256:${"b".repeat(64)}`,
+              },
+            }
+          : entry,
+      ),
+      expected: /component.?contract.*selector/i,
+    },
+  ])("rejects $label", async ({ dependencies, expected }) => {
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        dependencyDeclarations: dependencies,
+      }),
+    ).rejects.toThrow(expected);
+  });
+
+  it("rejects a co-conspiring non-canonical component contract identity", async () => {
+    const otherComponentContractId = "chronicle.other-component";
+    const dependencies = dependencyDeclarations.map((entry) =>
+      entry.role === "component-contract"
+        ? {
+            ...entry,
+            selector: {
+              kind: "component-contract" as const,
+              contractId: otherComponentContractId,
+              contractDigest: DIGEST,
+            },
+          }
+        : entry,
+    );
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        execution: {
+          ...execution,
+          componentContractId: otherComponentContractId,
+        },
+        dependencyDeclarations: dependencies,
+      }),
+    ).rejects.toThrow(/component.?contract/i);
+  });
+
+  it.each([
+    {
+      label: "replace",
+      proposalSemanticType: "arrival",
+      hypothesisSemanticType: "departure",
+    },
+    {
+      label: "add to Proposal",
+      proposalSemanticType: "arrival",
+      hypothesisSemanticType: undefined,
+    },
+    {
+      label: "delete from Proposal",
+      proposalSemanticType: undefined,
+      hypothesisSemanticType: "arrival",
+    },
+  ])(
+    "rejects semanticType $label mismatch between Proposal and Hypothesis",
+    async ({ proposalSemanticType, hypothesisSemanticType }) => {
+      await expect(
+        buildChronicleSceneEventV2({
+          ...adapterInput,
+          proposalPayload: {
+            ...proposal,
+            semanticType: proposalSemanticType,
+          },
+          hypothesis: {
+            ...hypothesis,
+            semanticType: hypothesisSemanticType,
+          },
+        }),
+      ).rejects.toThrow(/semanticType/i);
+    },
+  );
 
   it("requires a sealed C1 provenance sidecar and rejects owner/tampered closure input", async () => {
     await expect(

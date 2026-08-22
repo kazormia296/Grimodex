@@ -9,6 +9,7 @@ import {
   validateNarrativeRevisionEnvelopeV2,
   type NarrativeIrValidationResult,
 } from "@/features/narrative-semantic-core/contracts/narrativeIr";
+import { validateDependencySelector } from "@/features/narrative-semantic-core/contracts/dependencyRole";
 import {
   digestStableJson,
   stableJsonStringify,
@@ -35,6 +36,7 @@ import {
 } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import { NARRATIVE_STAGE_IDS } from "@/features/narrative-extraction/reconciler/stageExecution";
 import {
+  CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID,
   canonicalizeChronicleContextSet,
   digestChronicleContextSet,
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
@@ -100,6 +102,8 @@ export interface ChronicleSceneEventExecutionInput {
   readonly reconcilerVersion: string;
   /** Audited E2 Context Set digest; C1 never derives an independent domain. */
   readonly contextSetDigest: Sha256Digest;
+  /** Exact static component contract identity sealed by the E2 execution. */
+  readonly componentContractId: string;
   readonly componentContractDigest: Sha256Digest;
   readonly finalRequestDigest: Sha256Digest;
 }
@@ -868,29 +872,68 @@ function assertMaterialBasis(input: ChronicleSceneEventAdapterInput): void {
     throw new TypeError("Dependency declarations are required");
   }
   const dependencyIds = new Set<string>();
+  let componentContractDependencyFound = false;
   for (const dependency of input.dependencyDeclarations) {
     assertNonEmpty(
       dependency.dependencyId,
       "Dependency declaration dependencyId",
     );
     assertNonEmpty(dependency.inputRef, "Dependency declaration inputRef");
-    assertStringArray(
-      dependency.contextIds,
-      "Dependency declaration contextIds",
-      1,
-    );
+    assertNonEmpty(dependency.role, "Dependency declaration role");
+    const selectorResult = validateDependencySelector(dependency.selector);
+    if (!selectorResult.valid) {
+      throw new TypeError(
+        `Dependency declaration selector is invalid: ${selectorResult.error.code}`,
+      );
+    }
+    if (dependency.role === "component-contract") {
+      if (componentContractDependencyFound) {
+        throw new TypeError(
+          "Only one component-contract dependency is allowed",
+        );
+      }
+      componentContractDependencyFound = true;
+      const selector = selectorResult.selector;
+      if (
+        selector.kind !== "component-contract" ||
+        selector.contractId !== input.execution.componentContractId ||
+        selector.contractDigest !== input.execution.componentContractDigest
+      ) {
+        throw new TypeError(
+          "component-contract dependency selector must match execution component contract",
+        );
+      }
+      // Static component contracts are not Context Set entries. Keep the
+      // declaration's contextIds optional, while still resolving any IDs a
+      // caller explicitly supplies.
+      assertStringArray(
+        dependency.contextIds,
+        "Dependency declaration contextIds",
+      );
+    } else {
+      if (selectorResult.selector.kind === "component-contract") {
+        throw new TypeError(
+          "component-contract selector requires component-contract dependency role",
+        );
+      }
+      assertStringArray(
+        dependency.contextIds,
+        "Dependency declaration contextIds",
+        1,
+      );
+    }
     if (dependency.contextIds.some((id) => !contextIds.has(id))) {
       throw new TypeError(
         "Dependency declaration contextIds must resolve to Context manifests",
       );
     }
-    assertNonEmpty(dependency.role, "Dependency declaration role");
-    if (!isRecord(dependency.selector))
-      throw new TypeError("Dependency declaration selector is required");
     if (dependencyIds.has(dependency.dependencyId)) {
       throw new TypeError("Dependency declaration IDs must be unique");
     }
     dependencyIds.add(dependency.dependencyId);
+  }
+  if (!componentContractDependencyFound) {
+    throw new TypeError("A component-contract dependency is required");
   }
 }
 
@@ -917,6 +960,18 @@ async function assertAdapterInput(
     "Adapter reconcilerVersion",
   );
   assertDigest(input.execution.contextSetDigest, "Adapter contextSetDigest");
+  assertNonEmpty(
+    input.execution.componentContractId,
+    "Adapter componentContractId",
+  );
+  if (
+    input.execution.componentContractId !==
+    CHRONICLE_EVENT_SYNTHESIS_COMPONENT_CONTRACT_ID
+  ) {
+    throw new TypeError(
+      "Adapter componentContractId must match the canonical Event Synthesis component contract",
+    );
+  }
   assertDigest(
     input.execution.componentContractDigest,
     "Adapter componentContractDigest",
@@ -948,6 +1003,11 @@ async function assertAdapterInput(
   ) {
     throw new TypeError(
       "actuality/significance must preserve the Event Hypothesis and Proposal",
+    );
+  }
+  if (input.hypothesis.semanticType !== input.proposalPayload.semanticType) {
+    throw new TypeError(
+      "semanticType must preserve the Event Hypothesis and Proposal",
     );
   }
   assertNonEmpty(input.attribution, "Adapter attribution");

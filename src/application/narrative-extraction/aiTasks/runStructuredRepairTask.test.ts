@@ -1,6 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { runEventSynthesisTask } from "./runEventSynthesisTask";
+import {
+  runEventSynthesisTask,
+  type EventSynthesisSend,
+} from "./runEventSynthesisTask";
 import {
   runObservationExtractionTask,
   type ObservationExtractionSend,
@@ -135,6 +138,22 @@ const repairedEvents = JSON.stringify({
   ],
 });
 
+function eventSynthesisResponse(clusterRef: string): string {
+  return JSON.stringify({
+    clusterRef,
+    resolution: "single-event",
+    events: [
+      {
+        observationRefs: ["obs-1"],
+        titleSuggestion: "門が開く",
+        summary: "門が開いた",
+        actuality: "actual",
+        significance: "major",
+      },
+    ],
+  });
+}
+
 function createRepairStageExecution(input: {
   readonly projectId: string;
   readonly runId: string;
@@ -152,6 +171,19 @@ function createRepairStageExecution(input: {
     NARRATIVE_STAGE_IDS.structuredRepair,
     input.stageExecutionId,
   );
+}
+
+function createEventStageExecution(input: {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly stageExecutionId: string;
+}) {
+  return createStageExecutionContext({
+    ...input,
+    stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+  });
 }
 
 describe("structured repair root-object contract", () => {
@@ -884,5 +916,127 @@ describe("structured repair root-object contract", () => {
         },
       },
     });
+  });
+
+  it("repairs a valid JSON response whose clusterRef does not echo the input", async () => {
+    const clusterRef = "cluster-42";
+    const repair = captureRepairSend(eventSynthesisResponse("cluster-ref"));
+    const statuses: Array<"parsed" | "invalid"> = [];
+    const send: EventSynthesisSend = async () => ({
+      text: eventSynthesisResponse("cluster-ref"),
+      ...usage,
+    });
+
+    const result = await runEventSynthesisTask({
+      clusterRef,
+      observations: [observation],
+      projectId: "project-test",
+      send,
+      repairSend: repair.send,
+      createId: () => "hypothesis-42",
+      onParseStatus: (status) => {
+        statuses.push(status);
+      },
+    });
+
+    expect(result).toEqual([]);
+    expect(statuses).toEqual(["invalid"]);
+    expect(repair.captured()).not.toBeNull();
+    expect(repair.captured()?.prompt).toContain(
+      `{"clusterRef":"${clusterRef}"`,
+    );
+  });
+
+  it("renders and accepts the exact input clusterRef in the event contract", async () => {
+    const clusterRef = "cluster-42";
+    let prompt = "";
+    const statuses: Array<"parsed" | "invalid"> = [];
+    const send: EventSynthesisSend = async (messages) => {
+      const content = messages[0]?.content;
+      prompt = typeof content === "string" ? content : JSON.stringify(content);
+      return {
+        text: eventSynthesisResponse(clusterRef),
+        ...usage,
+      };
+    };
+
+    const result = await runEventSynthesisTask({
+      clusterRef,
+      observations: [observation],
+      projectId: "project-test",
+      send,
+      repairOnFailure: false,
+      createId: () => "hypothesis-42",
+      onParseStatus: (status) => {
+        statuses.push(status);
+      },
+    });
+
+    expect(result).toMatchObject([
+      {
+        hypothesisId: "hypothesis-42",
+        clusterRef,
+        observationRefs: ["obs-1"],
+      },
+    ]);
+    expect(statuses).toEqual(["parsed"]);
+    expect(prompt).toContain(
+      `--- contextId=event-cluster:${clusterRef} inputRef=cluster:${clusterRef} ---\n${clusterRef}`,
+    );
+    expect(prompt).toContain(
+      "出力の clusterRef は Context Set の event-cluster 値を一字一句そのまま使用し、出力例のプレースホルダーを値としてコピーしないでください。",
+    );
+    expect(prompt).toContain('"clusterRef":"<event-cluster-ref-from-context>"');
+  });
+
+  it("keeps the static event component contract digest across cluster refs", async () => {
+    const componentContractDigests: string[] = [];
+    const contextSetDigests: string[] = [];
+
+    for (const [index, clusterRef] of ["cluster-42", "cluster-43"].entries()) {
+      recordAiUsageMock.mockClear();
+      const stageExecution = createEventStageExecution({
+        projectId: "project-test",
+        runId: `run-event-digest-${index}`,
+        taskId: "task-event-digest",
+        attemptId: "attempt-event-digest",
+        stageExecutionId: `event-stage-digest-${index}`,
+      });
+      const send: EventSynthesisSend = async () => ({
+        text: eventSynthesisResponse(clusterRef),
+        ...usage,
+      });
+
+      await expect(
+        runEventSynthesisTask({
+          clusterRef,
+          observations: [observation],
+          projectId: "project-test",
+          stageExecution,
+          send,
+          repairOnFailure: false,
+        }),
+      ).resolves.toHaveLength(1);
+
+      const audit = recordAiUsageMock.mock.calls
+        .map(([payload]) => payload)
+        .find((payload) => payload.surface === "narrative_event_synthesize");
+      const stageAudit = (
+        audit?.metadata as
+          | {
+              readonly chronicleStageAudit?: {
+                readonly componentContractDigest?: string;
+                readonly contextSetDigest?: string;
+              };
+            }
+          | undefined
+      )?.chronicleStageAudit;
+      expect(stageAudit).toBeDefined();
+      componentContractDigests.push(stageAudit?.componentContractDigest ?? "");
+      contextSetDigests.push(stageAudit?.contextSetDigest ?? "");
+    }
+
+    expect(componentContractDigests[0]).toBe(componentContractDigests[1]);
+    expect(contextSetDigests[0]).not.toBe(contextSetDigests[1]);
   });
 });
