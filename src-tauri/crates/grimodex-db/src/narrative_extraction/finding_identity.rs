@@ -9,12 +9,27 @@ use sha2::{Digest, Sha256};
 
 pub const BUNDLED_FINDING_RULE_ID: &str = "narrative.consumer-freshness";
 pub const BUNDLED_FINDING_RULE_VERSION: u32 = 1;
+pub const MAINTENANCE_FAILURE_FINDING_RULE_ID: &str = "narrative.maintenance-contract-failure";
+pub const MAINTENANCE_FAILURE_FINDING_RULE_VERSION: u32 = 1;
 
-const SUPPORTED_IDENTITY_SCOPE: &str = "edge";
-const REQUIRED_OBSERVATION_FIELDS: &[&str] =
+const EDGE_IDENTITY_SCOPE: &str = "edge";
+const MAINTENANCE_WORK_IDENTITY_SCOPE: &str = "maintenance-work";
+const EDGE_REQUIRED_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
-const REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] =
+const MAINTENANCE_WORK_REQUIRED_FIELDS: &[&str] = &[
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+];
+const EDGE_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
+const MAINTENANCE_WORK_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] = &[
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+];
 
 const BUNDLED_FINDING_CONTRACT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -114,23 +129,39 @@ fn validate_finding_rule(rule: &FindingRule, index: usize) -> anyhow::Result<()>
         "NEX_FINDING_RULE_REGISTRY_INVALID: rule {index} has an invalid version"
     );
     anyhow::ensure!(
-        rule.identity_scope == SUPPORTED_IDENTITY_SCOPE,
-        "NEX_FINDING_RULE_REGISTRY_INVALID: rule '{}@{}' has unsupported identityScope '{}', expected '{}'",
+        matches!(
+            rule.identity_scope.as_str(),
+            EDGE_IDENTITY_SCOPE | MAINTENANCE_WORK_IDENTITY_SCOPE
+        ),
+        "NEX_FINDING_RULE_REGISTRY_INVALID: rule '{}@{}' has unsupported identityScope '{}'",
         rule.rule_id,
         rule.version,
-        rule.identity_scope,
-        SUPPORTED_IDENTITY_SCOPE
+        rule.identity_scope
     );
+    let (required_observation_fields, required_material_basis_fields) = match rule
+        .identity_scope
+        .as_str()
+    {
+        EDGE_IDENTITY_SCOPE => (EDGE_REQUIRED_FIELDS, EDGE_REQUIRED_MATERIAL_BASIS_FIELDS),
+        MAINTENANCE_WORK_IDENTITY_SCOPE => (
+            MAINTENANCE_WORK_REQUIRED_FIELDS,
+            MAINTENANCE_WORK_REQUIRED_MATERIAL_BASIS_FIELDS,
+        ),
+        _ => anyhow::bail!(
+            "NEX_FINDING_RULE_REGISTRY_INVALID: unsupported identityScope '{}', rule validation did not accept it",
+            rule.identity_scope
+        ),
+    };
     validate_declared_fields(
         rule,
         &rule.observation_fields,
-        REQUIRED_OBSERVATION_FIELDS,
+        required_observation_fields,
         "observationFields",
     )?;
     validate_declared_fields(
         rule,
         &rule.material_basis_fields,
-        REQUIRED_MATERIAL_BASIS_FIELDS,
+        required_material_basis_fields,
         "materialBasisFields",
     )?;
     Ok(())
@@ -180,6 +211,7 @@ pub fn bundled_finding_rule_registry() -> anyhow::Result<FindingRuleRegistry> {
 pub struct ObservationDigestInput<'a> {
     pub stable_subject: &'a str,
     pub edge_id: Option<&'a str>,
+    pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
 }
@@ -191,6 +223,7 @@ pub struct ObservationDigestInput<'a> {
 pub struct MaterialBasisInput<'a> {
     pub stable_subject: &'a str,
     pub edge_id: Option<&'a str>,
+    pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
 }
@@ -249,6 +282,7 @@ pub fn observation_digest(
     let declared_values = declared_field_values(&rule.observation_fields, |field| match field {
         "stableSubject" => Some(serde_json::json!(input.stable_subject)),
         "edgeId" => Some(serde_json::json!(input.edge_id)),
+        "failureCode" => Some(serde_json::json!(input.failure_code)),
         "reasonCode" => Some(serde_json::json!(input.reason_code)),
         "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
         _ => None,
@@ -277,6 +311,7 @@ pub fn material_basis_digest(
         declared_field_values(&rule.material_basis_fields, |field| match field {
             "stableSubject" => Some(serde_json::json!(input.stable_subject)),
             "edgeId" => Some(serde_json::json!(input.edge_id)),
+            "failureCode" => Some(serde_json::json!(input.failure_code)),
             "reasonCode" => Some(serde_json::json!(input.reason_code)),
             "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
             _ => None,
@@ -376,6 +411,7 @@ mod tests {
         let input = ObservationDigestInput {
             stable_subject: "edge:edge-1",
             edge_id: Some("edge-1"),
+            failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
         };
@@ -403,6 +439,7 @@ mod tests {
         let first_input = MaterialBasisInput {
             stable_subject,
             edge_id: Some("edge-1"),
+            failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
         };
@@ -451,6 +488,7 @@ mod tests {
             &ObservationDigestInput {
                 stable_subject,
                 edge_id: Some("edge-1"),
+                failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
             },

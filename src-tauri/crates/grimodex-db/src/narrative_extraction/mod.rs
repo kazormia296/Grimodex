@@ -47,6 +47,7 @@ mod temporal_operations;
 mod temporal_projections;
 mod temporal_snapshots;
 mod temporal_undo;
+mod terminal_failure;
 mod undo;
 
 pub(crate) const INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID: &str =
@@ -103,6 +104,7 @@ pub use finding_identity::{
     bundled_finding_rule_registry, material_basis_digest, observation_digest,
     stable_finding_identity, FindingRule, FindingRuleRegistry, MaterialBasisInput,
     ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
 pub use finding_observation::FindingObservationRow;
 // EvidenceFreshness / FindingReasonCode: canonical home is `evaluator`
@@ -150,6 +152,11 @@ pub(crate) use publish_runtime::{
 pub(crate) use restore_rebuild::{
     rebuild_repair_dependency_edges_in_tx, rebuild_verify_dependency_edges,
     rotate_epoch_for_restore_in_tx, RebuildVerifyReport,
+};
+pub use terminal_failure::{
+    project_terminal_failure_for_run, resolve_terminal_failure_for_run,
+    TerminalFailureProjectionOutcome, TerminalFailureResolutionOutcome,
+    TERMINAL_FAILURE_CONSUMER_KIND,
 };
 
 // Gate C2 Run Kind Policy: the five named operations replacing the old

@@ -114,10 +114,11 @@ use super::attention::{
 use super::consumer_identity::consumer_finding_key;
 use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::finding_observation::{
-    latest_finding_lifecycle_for_identity, list_observations_for_epoch, FindingLifecycleState,
-    FindingObservationRow,
+    latest_finding_lifecycle_for_identity, list_observations_for_epoch,
+    list_terminal_failure_finding_keys_for_epoch, FindingLifecycleState, FindingObservationRow,
 };
 use super::semantic_epoch::get_current_epoch;
+use super::terminal_failure::TERMINAL_FAILURE_CONSUMER_KIND;
 
 /// One `narrative_consumer_freshness` row exactly as stored -- the current
 /// Freshness authority (see module docs). A pure read; this function never
@@ -367,6 +368,67 @@ pub fn build_maintenance_inbox(
         });
     }
 
+    // Terminal maintenance failures do not have a Consumer Freshness row.
+    // Read their current-epoch Observation history directly, preserving the
+    // same lifecycle/Attention/snooze semantics as ordinary Findings.
+    let terminal_prefix = format!("{TERMINAL_FAILURE_CONSUMER_KIND}:");
+    for finding_key in
+        list_terminal_failure_finding_keys_for_epoch(conn, project_id, &current_epoch.id)?
+    {
+        let observations =
+            list_observations_for_epoch(conn, project_id, &current_epoch.id, &finding_key)?;
+        let (active_observations, has_unresolved_identity, latest_observation) =
+            active_finding_observations(conn, project_id, &observations)?;
+        let Some(latest_observation) = latest_observation.cloned() else {
+            continue;
+        };
+        let attention = get_attention(conn, project_id, &finding_key)?;
+        let is_snoozed_and_active = match &attention {
+            Some(attention_row) if attention_row.disposition == AttentionDisposition::Snoozed => {
+                !active_observations.is_empty()
+                    && !has_unresolved_identity
+                    && attention_row.identity_resolution_status == "resolved"
+                    && active_observations.iter().all(|observation| {
+                        observation.finding_identity.as_deref()
+                            == attention_row.finding_identity.as_deref()
+                            && is_attention_applicable(
+                                attention_row,
+                                observation.material_basis_digest.as_str(),
+                                now,
+                            )
+                    })
+            }
+            _ => false,
+        };
+        if is_snoozed_and_active {
+            continue;
+        }
+        let consumer_key = finding_key
+            .strip_prefix(terminal_prefix.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_FINDING_KEY_INVALID: terminal failure key '{finding_key}' has an invalid prefix"
+                )
+            })?
+            .to_string();
+        entries.push(InboxEntry {
+            consumer_kind: TERMINAL_FAILURE_CONSUMER_KIND.to_string(),
+            consumer_key,
+            evidence_freshness: EvidenceFreshness::Unknown.as_str().to_string(),
+            build_action: BuildAction::Manual.as_str().to_string(),
+            finding_key,
+            latest_observation: Some(latest_observation),
+            attention,
+            is_snoozed_and_active: false,
+        });
+    }
+
+    entries.sort_by(|left, right| {
+        left.consumer_kind
+            .cmp(&right.consumer_kind)
+            .then_with(|| left.consumer_key.cmp(&right.consumer_key))
+    });
+
     Ok(entries)
 }
 
@@ -456,6 +518,7 @@ mod tests {
             &MaterialBasisInput {
                 stable_subject: edge_id,
                 edge_id: Some(edge_id),
+                failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
             },

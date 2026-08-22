@@ -730,9 +730,9 @@ Run/Task/Attempt stuck `running` after a terminated process is a Lane B
 / execution-state-model concern spanning every Run Kind (no existing
 mechanism for `narrative_extraction_runs` today, unlike
 `post_effect_runs`'s `recover_interrupted_post_effect_runs`), not
-something worth solving narrowly for Backfill alone here. Also not
-implemented: surfacing a persistent contract-violation failure to a human
-via the Maintenance Inbox rather than a per-open background log.
+something worth solving narrowly for Backfill alone here. Terminal
+contract-failure evidence is projected by C2-5B Lane C into the Maintenance
+Inbox; current Freshness and Attention remain separate authorities.
 
 Verified: the full 3-phase reuse/create/finalize sequence replayed
 end-to-end against real SQLite via Python, plus three new Rust

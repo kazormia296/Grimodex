@@ -88,6 +88,9 @@ use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
+use super::terminal_failure::{
+    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+};
 use crate::Database;
 
 /// Work key every project's Legacy Dependency Backfill Run is created
@@ -220,8 +223,8 @@ struct LegacyProjectionDependency {
 /// only fall out of "retry on next open" once that trigger is restored.
 /// A structurally-broken project
 /// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) fails the same way on
-/// every invocation; surfacing that persistently to a human via the
-/// Maintenance Inbox is a follow-on, not implemented here.
+/// every invocation; Lane C projects that terminal evidence into the
+/// Maintenance Inbox without changing current Freshness or Attention.
 ///
 /// Known gap, not addressed here: a crash strictly between phase 1
 /// committing and phase 3 running (the transform itself is a fast,
@@ -284,13 +287,29 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
     };
     let finalize_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            transition_run_status_in_tx(conn, &run_id, finalize_status)
+            transition_run_status_in_tx(conn, &run_id, finalize_status)?;
+            match &transform_result {
+                Ok(_) => {
+                    resolve_terminal_failure_for_run_in_tx(conn, project_id, &run_id, &now)?;
+                }
+                Err(error) => {
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &error.to_string(),
+                        &now,
+                        true,
+                    )?;
+                }
+            }
+            Ok(())
         })
     });
     if let Err(finalize_error) = finalize_result {
-        tracing::error!(
-            "legacy dependency backfill: failed to finalize run '{run_id}' status: {finalize_error}"
-        );
+        return Err(anyhow::anyhow!(
+            "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
+        ));
     }
 
     match transform_result {
@@ -1421,6 +1440,65 @@ mod tests {
         assert_eq!(run_kind, "backfill");
         assert_eq!(status, "completed");
         assert_eq!(work_key.as_deref(), Some(LEGACY_BACKFILL_WORK_KEY));
+    }
+
+    #[test]
+    fn backfill_projection_failure_rolls_back_status_and_terminal_evidence() {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            // This entity kind deliberately has no canonical Contribution
+            // mapping, so the transform reaches the failed finalizer.
+            seed_legacy_application(
+                conn,
+                "project-1",
+                "commit-invalid",
+                "application-invalid",
+                "unsupported-entity-kind",
+                "entity-invalid",
+                "2026-08-22T00:00:00.000Z",
+            );
+            conn.execute_batch(
+                "CREATE TRIGGER reject_backfill_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced backfill lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed failed-backfill fixture");
+
+        let error = match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1") {
+            Ok(_) => panic!("a projection failure must not look like a completed backfill"),
+            Err(error) => error,
+        };
+        assert!(error
+            .to_string()
+            .contains("forced backfill lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1' AND r.run_kind = 'backfill'
+                  ORDER BY r.rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 0);
+            Ok(())
+        })
+        .expect("failed backfill finalization must roll back atomically");
     }
 
     #[test]

@@ -514,6 +514,23 @@ pub fn classify_failure(message: &str) -> FailureClassification {
         .find(|token| token.starts_with("NEX_"))
         .unwrap_or("NEX_MAINTENANCE_UNCLASSIFIED")
         .to_string();
+    if matches!(
+        code.as_str(),
+        "NEX_SEMANTIC_EPOCH_CHANGED"
+            | "NEX_CURSOR_RESERVATION_CONFLICT"
+            | "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
+            | "NEX_INCREMENTAL_FRESHNESS_INTERRUPTED"
+            | "NEX_MAINTENANCE_INTERRUPTED"
+            | "NEX_MAINTENANCE_TRANSIENT"
+            | "NEX_REBUILD_DERIVED_STALE_EPOCH"
+            | "NEX_VERIFY_STALE_EPOCH"
+    ) {
+        return FailureClassification {
+            class: FailureClass::Transient,
+            code,
+            retryable: true,
+        };
+    }
     FailureClassification {
         class: FailureClass::Contract,
         code,

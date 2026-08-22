@@ -31,6 +31,9 @@ use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, Syste
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
+use super::terminal_failure::{
+    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+};
 use crate::Database;
 
 type RebuildRunIdentityRow = (
@@ -417,6 +420,7 @@ fn finalize_rebuild_run(
     semantic_epoch_id: &str,
     work_result: &anyhow::Result<RebuildDerivedStateSummary>,
 ) -> anyhow::Result<()> {
+    let observed_at = grimodex_core::now_rfc3339_millis();
     let stale_epoch_error = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_rebuild_run_identity_in_tx(conn, project_id, run_id, semantic_epoch_id)?;
@@ -433,6 +437,14 @@ fn finalize_rebuild_run(
                 );
                 record_run_outcome_in_tx(conn, run_id, &outcome)?;
                 transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                project_terminal_failure_for_run_in_tx(
+                    conn,
+                    project_id,
+                    run_id,
+                    &error,
+                    &observed_at,
+                    true,
+                )?;
                 return Ok(Some(error));
             }
 
@@ -463,6 +475,26 @@ fn finalize_rebuild_run(
                     NarrativeRunStatus::Failed
                 },
             )?;
+            match work_result {
+                Ok(_) => {
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &observed_at,
+                    )?;
+                }
+                Err(error) => {
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &error.to_string(),
+                        &observed_at,
+                        true,
+                    )?;
+                }
+            }
             Ok(None)
         })
     })?;
@@ -1096,7 +1128,14 @@ pub fn run_dependency_verify_for_project(
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &grimodex_core::now_rfc3339_millis(),
+                    )?;
+                    Ok(())
                 })
             })?;
             Ok(VerifyRunOutcome {
@@ -1107,16 +1146,25 @@ pub fn run_dependency_verify_for_project(
             })
         }
         Err(error) => {
-            let _ = db.with_conn(|conn| {
+            db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(
                         conn,
                         &run_id,
                         &json!({ "failure": error.to_string() }),
                     )?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &error.to_string(),
+                        &grimodex_core::now_rfc3339_millis(),
+                        true,
+                    )?;
+                    Ok(())
                 })
-            });
+            })?;
             Err(error)
         }
     }
@@ -2449,6 +2497,60 @@ mod tests {
             Ok(())
         })
         .expect("failed rebuild evidence should be durable");
+    }
+
+    #[test]
+    fn rebuild_projection_failure_rolls_back_status_and_terminal_evidence() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+        let edge_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET read_set_json = '[123]'
+                  WHERE id = ?1",
+                params![edge_id],
+            )?;
+            conn.execute_batch(
+                "CREATE TRIGGER reject_rebuild_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced rebuild lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed rebuild projection failure fixture");
+
+        let error = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect_err("a rebuild projection failure must not commit status");
+        assert!(error
+            .to_string()
+            .contains("forced rebuild lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1'
+                    AND r.run_kind = 'semantic-index-rebuild'
+                  ORDER BY r.rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 0);
+            Ok(())
+        })
+        .expect("failed rebuild finalization must roll back atomically");
     }
 
     #[test]
@@ -3924,6 +4026,91 @@ mod tests {
             format!("sha256:{}", digest_plan(&stored["report"])),
             outcome.report_digest
         );
+    }
+
+    #[test]
+    fn verify_resolution_failure_rolls_back_status_and_outcome() {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let failure_run_id = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let created = create_system_run_in_tx(
+                        conn,
+                        "project-1",
+                        VERIFY_RUN_KIND,
+                        &epoch_id,
+                        &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                        &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION }),
+                        "digest",
+                        SystemRunWorkKeyReuse::RunningOnly,
+                        None,
+                    )?;
+                    let run_id = created["runId"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("missing Verify failure Run id"))?
+                        .to_string();
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET terminal_reason_code = ?1
+                          WHERE id = ?2",
+                        params![
+                            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+                            run_id
+                        ],
+                    )?;
+                    Ok(run_id)
+                })
+            })
+            .expect("seed a failed Verify Run");
+        crate::narrative_extraction::project_terminal_failure_for_run(
+            &db,
+            "project-1",
+            &failure_run_id,
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: prior verify failure",
+        )
+        .expect("project prior Verify failure");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER reject_verify_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced verify lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("install Verify resolution failure trigger");
+
+        let error = run_dependency_verify_for_project(&db, "project-1")
+            .expect_err("a Verify resolution failure must not commit status");
+        assert!(error
+            .to_string()
+            .contains("forced verify lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1' AND r.run_kind = 'dependency-verify'
+                  ORDER BY r.rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 1);
+            Ok(())
+        })
+        .expect("failed Verify resolution must roll back atomically");
     }
 
     #[test]

@@ -5483,6 +5483,7 @@ impl Database {
             &crate::narrative_extraction::ObservationDigestInput {
                 stable_subject,
                 edge_id,
+                failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
             },
@@ -5501,6 +5502,7 @@ impl Database {
             &crate::narrative_extraction::MaterialBasisInput {
                 stable_subject,
                 edge_id,
+                failure_code: None,
                 reason_code,
                 evidence_freshness: freshness,
             },
@@ -7959,6 +7961,7 @@ mod tests {
             &crate::narrative_extraction::MaterialBasisInput {
                 stable_subject: "edge-finding-identity-1",
                 edge_id: Some("edge-finding-identity-1"),
+                failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
             },
