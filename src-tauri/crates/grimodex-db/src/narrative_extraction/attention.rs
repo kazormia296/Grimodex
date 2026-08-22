@@ -752,6 +752,7 @@ pub(crate) fn rehome_orphaned_attention_in_tx(conn: &Connection) -> anyhow::Resu
             &MaterialBasisInput {
                 stable_subject: &edge_id,
                 edge_id: Some(&edge_id),
+                failure_code: None,
                 reason_code: &reason_code,
                 evidence_freshness: &freshness,
             },

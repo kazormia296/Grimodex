@@ -1,10 +1,13 @@
 //! Finding Observation persistence (Gate C2 Lane C).
 //!
-//! A Finding Observation is a rebuildable diagnostic record of what a Run
-//! observed about a dependency edge / Freshness computation at a specific
-//! Semantic Epoch — it is never the current value.
-//! `policies/narrative/narrative-finding-contract.json` fixes
-//! `observationStorageClass: "rebuildable-derived-state"`,
+//! An edge-scoped Finding Observation is a rebuildable diagnostic record of
+//! what a Run observed about a dependency edge / Freshness computation at a
+//! specific Semantic Epoch — it is never the current value. The terminal
+//! maintenance-failure rule is the explicit per-rule exception: its
+//! `observationStorageClass: "durable-derived-history"` preserves immutable
+//! failure evidence across Run deletion and epoch rotation.
+//! `policies/narrative/narrative-finding-contract.json` fixes the contract-wide
+//! default `observationStorageClass: "rebuildable-derived-state"`,
 //! `epochBinding: "required"`, `freshnessSnapshotPolicy: "diagnostic-only"`,
 //! and `currentFreshnessLookup: "narrative-consumer-freshness"`: the durable
 //! Freshness authority lives in `narrative_consumer_freshness` only, and that
@@ -29,8 +32,11 @@ use super::finding_identity::{
 ///
 /// This is history, not state: it is what a specific Run (`run_id`) observed
 /// about `finding_key` as of a specific Semantic Epoch
-/// (`semantic_epoch_id`). It is safe to delete and rebuild from a fresh Run
-/// at any time — `observationStorageClass: "rebuildable-derived-state"`.
+/// (`semantic_epoch_id`). Edge-scoped rows are safe to delete and rebuild
+/// from a fresh Run at any time (`observationStorageClass:
+/// "rebuildable-derived-state"`). Terminal maintenance-failure rows are the
+/// explicitly declared durable-derived-history exception and retain their
+/// immutable failure code after the source Run is deleted.
 /// Never read this as the current Freshness value: that is
 /// `narrative_consumer_freshness` alone (`currentFreshnessLookup`), which
 /// this module does not read or write.
@@ -53,6 +59,10 @@ pub struct FindingObservationRow {
     pub finding_identity: Option<String>,
     pub rule_id: String,
     pub rule_version: u32,
+    /// Terminal maintenance failure code decoded from the immutable v1
+    /// Observation-id carrier. Edge-scoped observations leave this `None`;
+    /// terminal reads never recover the code from mutable Run evidence.
+    pub failure_code: Option<String>,
     pub reason_code: FindingReasonCode,
     pub evidence_freshness_snapshot: EvidenceFreshness,
     /// Digest of the observed result. It deliberately excludes Run, Epoch,
@@ -145,6 +155,125 @@ pub(crate) struct FindingLifecycleWrite<'a> {
     pub observed_at: &'a str,
 }
 
+/// Terminal maintenance observations have no Dependency Edge subject. Keep
+/// their typed writer here so the observation table remains the sole owner of
+/// Finding Observation persistence; the terminal projection module only
+/// supplies validated work identity and failure evidence.
+///
+/// The schema predates terminal failure projection and cannot be migrated in
+/// this lane. Its existing opaque Observation `id` therefore carries a
+/// versioned failure-code envelope for the terminal rule only:
+/// `terminal-failure:v1:<NEX_CODE>:<UUID>`. Edge-scoped observations continue
+/// to use ordinary UUID ids. Keeping the code in the Observation's opaque
+/// identity carrier makes it immutable evidence while `observation_digest`
+/// remains the canonical `sha256:` digest required by the Finding contract.
+const TERMINAL_FAILURE_OBSERVATION_ID_PREFIX: &str = "terminal-failure:v1:";
+
+pub(crate) fn encode_terminal_failure_observation_id(failure_code: &str) -> anyhow::Result<String> {
+    anyhow::ensure!(
+        failure_code.len() > 4
+            && failure_code.starts_with("NEX_")
+            && failure_code
+                .chars()
+                .all(|character| character.is_ascii_uppercase()
+                    || character.is_ascii_digit()
+                    || character == '_'),
+        "NEX_FINDING_FAILURE_CODE_INVALID: failureCode must be a canonical NEX code"
+    );
+    Ok(format!(
+        "{TERMINAL_FAILURE_OBSERVATION_ID_PREFIX}{failure_code}:{}",
+        Uuid::new_v4()
+    ))
+}
+
+pub(crate) fn decode_terminal_failure_observation_id(id: &str) -> anyhow::Result<String> {
+    let remainder = id
+        .strip_prefix(TERMINAL_FAILURE_OBSERVATION_ID_PREFIX)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_FINDING_OBSERVATION_ID_INVALID: terminal Observation id has no v1 envelope"
+            )
+        })?;
+    let (failure_code, uuid) = remainder.rsplit_once(':').ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_FINDING_OBSERVATION_ID_INVALID: terminal Observation id envelope is malformed"
+        )
+    })?;
+    anyhow::ensure!(
+        failure_code.len() > 4
+            && failure_code.starts_with("NEX_")
+            && failure_code
+                .chars()
+                .all(|character| character.is_ascii_uppercase()
+                    || character.is_ascii_digit()
+                    || character == '_'),
+        "NEX_FINDING_FAILURE_CODE_INVALID: terminal Observation id contains an invalid code"
+    );
+    Uuid::parse_str(uuid).map_err(|error| {
+        anyhow::anyhow!(
+            "NEX_FINDING_OBSERVATION_ID_INVALID: terminal Observation id UUID is invalid: {error}"
+        )
+    })?;
+    Ok(failure_code.to_string())
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TerminalFailureObservationWrite<'a> {
+    pub project_id: &'a str,
+    pub run_id: &'a str,
+    pub semantic_epoch_id: &'a str,
+    pub stable_subject: &'a str,
+    pub finding_key: &'a str,
+    pub finding_identity: &'a str,
+    pub rule_id: &'a str,
+    pub rule_version: u32,
+    pub failure_code: &'a str,
+    pub reason_code: FindingReasonCode,
+    pub evidence_freshness_snapshot: EvidenceFreshness,
+    pub observation_digest: &'a str,
+    pub material_basis_digest: &'a str,
+    pub observed_at: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TerminalFailureObservationOutcome {
+    pub id: String,
+    pub inserted: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TerminalFailureLifecycleWrite<'a> {
+    pub project_id: &'a str,
+    pub run_id: &'a str,
+    pub semantic_epoch_id: &'a str,
+    pub stable_subject: &'a str,
+    pub finding_identity: &'a str,
+    pub finding_key: &'a str,
+    pub rule_id: &'a str,
+    pub rule_version: u32,
+    pub state: FindingLifecycleState,
+    pub failure_code: &'a str,
+    pub reason_code: FindingReasonCode,
+    pub evidence_freshness_snapshot: EvidenceFreshness,
+    pub observation_digest: &'a str,
+    pub material_basis_digest: &'a str,
+    pub observed_at: &'a str,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TerminalFailureResolutionWrite<'a> {
+    pub project_id: &'a str,
+    pub run_id: &'a str,
+    pub semantic_epoch_id: &'a str,
+    pub stable_subject: &'a str,
+    pub finding_identity: &'a str,
+    pub finding_key: &'a str,
+    pub rule_id: &'a str,
+    pub rule_version: u32,
+    pub material_basis_digest: &'a str,
+    pub observed_at: &'a str,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct FindingLifecycleRow {
     pub id: String,
@@ -201,7 +330,7 @@ fn row_to_finding_lifecycle(row: &Row<'_>) -> rusqlite::Result<FindingLifecycleR
 /// Fail closed (mirrors `repository::ensure_run_project`) rather than let a
 /// mismatched or missing Semantic Epoch silently attach an observation to
 /// the wrong project.
-fn ensure_epoch_project(
+pub(crate) fn ensure_epoch_project(
     conn: &Connection,
     project_id: &str,
     semantic_epoch_id: &str,
@@ -258,6 +387,7 @@ pub(crate) fn record_finding_observation_in_tx(
     let digest_input = ObservationDigestInput {
         stable_subject,
         edge_id: Some(edge_id),
+        failure_code: None,
         reason_code: reason_code.as_str(),
         evidence_freshness: evidence_freshness_snapshot.as_str(),
     };
@@ -364,6 +494,7 @@ pub(crate) fn record_finding_observation_with_identity_in_tx(
         &ObservationDigestInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
         },
@@ -378,6 +509,7 @@ pub(crate) fn record_finding_observation_with_identity_in_tx(
         &MaterialBasisInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: write.reason_code.as_str(),
             evidence_freshness: write.evidence_freshness_snapshot.as_str(),
         },
@@ -413,6 +545,546 @@ pub(crate) fn record_finding_observation_with_identity_in_tx(
         ],
     )?;
     Ok(id)
+}
+
+/// Record one terminal maintenance failure observation. Unlike the existing
+/// edge-scoped writer this intentionally stores `edge_id = NULL`; the stable
+/// subject is the project/run-kind/work-key tuple supplied by the terminal
+/// failure projector. Replaying the same Run is idempotent, while reusing a
+/// Run id with different evidence fails closed.
+pub(crate) fn record_terminal_failure_observation_in_tx(
+    conn: &Connection,
+    write: TerminalFailureObservationWrite<'_>,
+) -> anyhow::Result<TerminalFailureObservationOutcome> {
+    anyhow::ensure!(!write.project_id.trim().is_empty(), "projectId is required");
+    anyhow::ensure!(!write.run_id.trim().is_empty(), "runId is required");
+    anyhow::ensure!(
+        !write.semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(
+        !write.stable_subject.trim().is_empty(),
+        "stableSubject is required"
+    );
+    anyhow::ensure!(
+        !write.finding_key.trim().is_empty(),
+        "findingKey is required"
+    );
+    anyhow::ensure!(
+        !write.finding_identity.trim().is_empty(),
+        "findingIdentity is required"
+    );
+    anyhow::ensure!(write.rule_version > 0, "ruleVersion must be positive");
+    anyhow::ensure!(
+        write.failure_code.starts_with("NEX_"),
+        "NEX_FINDING_FAILURE_CODE_INVALID: failureCode must start with NEX_"
+    );
+    anyhow::ensure!(
+        !write.observation_digest.trim().is_empty(),
+        "observationDigest is required"
+    );
+    anyhow::ensure!(
+        !write.material_basis_digest.trim().is_empty(),
+        "materialBasisDigest is required"
+    );
+    anyhow::ensure!(
+        !write.observed_at.trim().is_empty(),
+        "observedAt is required"
+    );
+
+    let registry = super::finding_identity::bundled_finding_rule_registry()?;
+    let rule = registry.resolve(write.rule_id, write.rule_version)?;
+    anyhow::ensure!(
+        rule.identity_scope == "maintenance-work",
+        "NEX_FINDING_RULE_SCOPE_INVALID: terminal failure observations require the maintenance-work rule"
+    );
+    let expected_identity =
+        stable_finding_identity(write.rule_id, write.rule_version, write.stable_subject)?;
+    anyhow::ensure!(
+        write.finding_identity == expected_identity,
+        "NEX_FINDING_IDENTITY_MISMATCH: terminal failure identity is not proven by its work subject"
+    );
+    let expected_observation_digest = observation_digest(
+        write.rule_id,
+        write.rule_version,
+        &ObservationDigestInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(write.failure_code),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        write.observation_digest == expected_observation_digest,
+        "NEX_FINDING_OBSERVATION_DIGEST_MISMATCH: terminal failure digest is not proven by the declared result"
+    );
+    let expected_material_basis_digest = material_basis_digest(
+        write.rule_id,
+        write.rule_version,
+        &MaterialBasisInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(write.failure_code),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        write.material_basis_digest == expected_material_basis_digest,
+        "NEX_FINDING_MATERIAL_BASIS_MISMATCH: terminal failure basis is not proven by the declared result"
+    );
+    ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
+
+    let run: Option<(String, String)> = conn
+        .query_row(
+            "SELECT project_id, COALESCE(terminal_reason_code, '')
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![write.run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((run_project_id, terminal_reason_code)) = run else {
+        anyhow::bail!(
+            "NEX_FINDING_RUN_MISSING: run '{}' was not found",
+            write.run_id
+        );
+    };
+    anyhow::ensure!(
+        run_project_id == write.project_id,
+        "NEX_FINDING_RUN_PROJECT_MISMATCH: run belongs to another project"
+    );
+    anyhow::ensure!(
+        terminal_reason_code == write.failure_code,
+        "NEX_FINDING_FAILURE_CODE_MISMATCH: run terminal reason does not match the projected failure"
+    );
+
+    let existing: Option<(String, Option<String>, String, String)> = conn
+        .query_row(
+            "SELECT id, finding_identity, observation_digest, material_basis_digest
+              FROM narrative_maintenance_finding_observations
+             WHERE project_id = ?1 AND run_id = ?2 AND semantic_epoch_id = ?3
+                AND finding_key = ?4 AND rule_id = ?5 AND rule_version = ?6
+                AND edge_id IS NULL
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.run_id,
+                write.semantic_epoch_id,
+                write.finding_key,
+                write.rule_id,
+                i64::from(write.rule_version),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    if let Some((id, identity, observation, material_basis)) = existing {
+        let stored_failure_code = decode_terminal_failure_observation_id(&id)?;
+        anyhow::ensure!(
+            identity.as_deref() == Some(write.finding_identity)
+                && stored_failure_code == write.failure_code
+                && observation == write.observation_digest
+                && material_basis == write.material_basis_digest,
+            "NEX_FINDING_OBSERVATION_REPLAY_CONFLICT: run already has different terminal failure evidence"
+        );
+        return Ok(TerminalFailureObservationOutcome {
+            id,
+            inserted: false,
+        });
+    }
+
+    let id = encode_terminal_failure_observation_id(write.failure_code)?;
+    conn.execute(
+        "INSERT INTO narrative_maintenance_finding_observations
+            (id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
+             reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at,
+             finding_identity, rule_id, rule_version, observation_digest)
+         VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            id,
+            write.project_id,
+            write.run_id,
+            write.semantic_epoch_id,
+            write.finding_key,
+            write.reason_code.as_str(),
+            write.evidence_freshness_snapshot.as_str(),
+            write.material_basis_digest,
+            write.observed_at,
+            write.finding_identity,
+            write.rule_id,
+            i64::from(write.rule_version),
+            write.observation_digest,
+        ],
+    )?;
+    Ok(TerminalFailureObservationOutcome { id, inserted: true })
+}
+
+/// Append a lifecycle row for a terminal maintenance observation after the
+/// observation writer has proven the exact rule, work identity, and digest.
+pub(crate) fn record_terminal_failure_lifecycle_in_tx(
+    conn: &Connection,
+    write: TerminalFailureLifecycleWrite<'_>,
+) -> anyhow::Result<bool> {
+    anyhow::ensure!(
+        !write.finding_identity.trim().is_empty()
+            && !write.finding_key.trim().is_empty()
+            && !write.failure_code.trim().is_empty(),
+        "NEX_FINDING_LIFECYCLE_INVALID: terminal failure identity, key, and code are required"
+    );
+    anyhow::ensure!(
+        write.state != FindingLifecycleState::Resolved,
+        "NEX_FINDING_LIFECYCLE_INVALID: terminal failure lifecycle cannot be resolved in the active writer"
+    );
+    ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
+    let expected_identity =
+        stable_finding_identity(write.rule_id, write.rule_version, write.stable_subject)?;
+    anyhow::ensure!(
+        expected_identity == write.finding_identity,
+        "NEX_FINDING_LIFECYCLE_IDENTITY_MISMATCH: terminal lifecycle identity is not proven by its work subject"
+    );
+    let expected_observation_digest = observation_digest(
+        write.rule_id,
+        write.rule_version,
+        &ObservationDigestInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(write.failure_code),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    let expected_material_basis_digest = material_basis_digest(
+        write.rule_id,
+        write.rule_version,
+        &MaterialBasisInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(write.failure_code),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        write.observation_digest == expected_observation_digest
+            && write.material_basis_digest == expected_material_basis_digest,
+        "NEX_FINDING_LIFECYCLE_DIGEST_MISMATCH: terminal lifecycle evidence is not proven by the observation"
+    );
+    let observation: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT finding_identity, finding_key, observation_digest,
+                    material_basis_digest, semantic_epoch_id
+               FROM narrative_maintenance_finding_observations
+              WHERE project_id = ?1 AND run_id = ?2 AND semantic_epoch_id = ?3
+                AND finding_key = ?4 AND rule_id = ?5 AND rule_version = ?6
+                AND edge_id IS NULL
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.run_id,
+                write.semantic_epoch_id,
+                write.finding_key,
+                write.rule_id,
+                i64::from(write.rule_version),
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((identity, finding_key, observation_digest, material_basis_digest, epoch_id)) =
+        observation
+    else {
+        anyhow::bail!(
+            "NEX_FINDING_LIFECYCLE_OBSERVATION_MISSING: terminal lifecycle has no matching observation"
+        );
+    };
+    anyhow::ensure!(
+        identity == write.finding_identity
+            && finding_key == write.finding_key
+            && epoch_id == write.semantic_epoch_id
+            && observation_digest == write.observation_digest
+            && material_basis_digest == write.material_basis_digest,
+        "NEX_FINDING_LIFECYCLE_OBSERVATION_MISMATCH: terminal lifecycle does not match observation"
+    );
+
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id
+               FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1 AND finding_identity = ?2 AND run_id = ?3
+                AND semantic_epoch_id = ?4 AND lifecycle_state = ?5
+                AND observation_digest = ?6 AND material_basis_digest = ?7
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.finding_identity,
+                write.run_id,
+                write.semantic_epoch_id,
+                write.state.as_str(),
+                write.observation_digest,
+                write.material_basis_digest,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(false);
+    }
+
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_maintenance_finding_lifecycle
+            (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+             lifecycle_state, observation_digest, material_basis_digest, run_id,
+             semantic_epoch_id, observed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        params![
+            id,
+            write.project_id,
+            write.finding_identity,
+            write.finding_key,
+            write.rule_id,
+            i64::from(write.rule_version),
+            write.state.as_str(),
+            write.observation_digest,
+            write.material_basis_digest,
+            write.run_id,
+            write.semantic_epoch_id,
+            write.observed_at,
+        ],
+    )?;
+    let _ = id;
+    Ok(true)
+}
+
+/// Validate the exact append pair before treating a terminal projection as an
+/// idempotent replay. An Observation without its matching active lifecycle is
+/// an incomplete durable write and must fail closed rather than be repaired by
+/// appending a new transition (which could reopen a resolved Finding).
+pub(crate) fn validate_terminal_failure_replay_in_tx(
+    conn: &Connection,
+    write: TerminalFailureLifecycleWrite<'_>,
+) -> anyhow::Result<FindingLifecycleState> {
+    let observation: Option<(String, String, String, String)> = conn
+        .query_row(
+            "SELECT id, finding_identity, observation_digest, material_basis_digest
+               FROM narrative_maintenance_finding_observations
+              WHERE project_id = ?1 AND run_id = ?2 AND semantic_epoch_id = ?3
+                AND finding_key = ?4 AND rule_id = ?5 AND rule_version = ?6
+                AND edge_id IS NULL
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.run_id,
+                write.semantic_epoch_id,
+                write.finding_key,
+                write.rule_id,
+                i64::from(write.rule_version),
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((observation_id, identity, stored_observation_digest, material_basis_digest)) =
+        observation
+    else {
+        anyhow::bail!(
+            "NEX_FINDING_REPLAY_OBSERVATION_MISSING: exact terminal observation is missing"
+        );
+    };
+    let stored_failure_code = decode_terminal_failure_observation_id(&observation_id)?;
+    let expected_raw_digest = observation_digest(
+        write.rule_id,
+        write.rule_version,
+        &ObservationDigestInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(write.failure_code),
+            reason_code: write.reason_code.as_str(),
+            evidence_freshness: write.evidence_freshness_snapshot.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        identity == write.finding_identity
+            && stored_failure_code == write.failure_code
+            && stored_observation_digest == expected_raw_digest
+            && stored_observation_digest == write.observation_digest
+            && material_basis_digest == write.material_basis_digest,
+        "NEX_FINDING_REPLAY_OBSERVATION_MISMATCH: exact terminal observation evidence does not match replay"
+    );
+
+    let lifecycle_state: Option<String> = conn
+        .query_row(
+            "SELECT lifecycle_state
+               FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1 AND finding_identity = ?2 AND finding_key = ?3
+                AND rule_id = ?4 AND rule_version = ?5 AND run_id = ?6
+                AND semantic_epoch_id = ?7 AND observation_digest = ?8
+                AND material_basis_digest = ?9
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.finding_identity,
+                write.finding_key,
+                write.rule_id,
+                i64::from(write.rule_version),
+                write.run_id,
+                write.semantic_epoch_id,
+                write.observation_digest,
+                write.material_basis_digest,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(lifecycle_state) = lifecycle_state else {
+        anyhow::bail!(
+            "NEX_FINDING_REPLAY_LIFECYCLE_MISSING: exact terminal observation has no matching lifecycle"
+        );
+    };
+    let lifecycle_state = FindingLifecycleState::try_from(lifecycle_state.as_str())?;
+    anyhow::ensure!(
+        lifecycle_state != FindingLifecycleState::Resolved,
+        "NEX_FINDING_REPLAY_LIFECYCLE_INVALID: terminal replay cannot be anchored to a resolved lifecycle"
+    );
+    Ok(lifecycle_state)
+}
+
+/// Append a Resolved lifecycle row for the latest exact terminal failure
+/// observation in the same Semantic Epoch.
+pub(crate) fn resolve_terminal_failure_lifecycle_in_tx(
+    conn: &Connection,
+    write: TerminalFailureResolutionWrite<'_>,
+) -> anyhow::Result<Option<String>> {
+    ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
+    let expected_identity =
+        stable_finding_identity(write.rule_id, write.rule_version, write.stable_subject)?;
+    anyhow::ensure!(
+        expected_identity == write.finding_identity,
+        "NEX_FINDING_LIFECYCLE_RESOLVED_IDENTITY_MISMATCH: terminal identity is not proven by its work subject"
+    );
+    let prior: Option<(String, String, String, String, String)> = conn
+        .query_row(
+            "SELECT o.id, o.observation_digest, o.material_basis_digest,
+                    o.reason_code, o.evidence_freshness_snapshot
+               FROM narrative_maintenance_finding_observations AS o
+              WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
+                AND o.finding_identity = ?3 AND o.finding_key = ?4
+                AND o.rule_id = ?5 AND o.rule_version = ?6
+                AND o.edge_id IS NULL AND o.material_basis_digest = ?7
+              ORDER BY julianday(o.observed_at) DESC
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.semantic_epoch_id,
+                write.finding_identity,
+                write.finding_key,
+                write.rule_id,
+                i64::from(write.rule_version),
+                write.material_basis_digest,
+            ],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((
+        observation_id,
+        stored_observation_digest,
+        prior_material_basis_digest,
+        stored_reason_code,
+        stored_freshness,
+    )) = prior
+    else {
+        return Ok(None);
+    };
+    let failure_code = decode_terminal_failure_observation_id(&observation_id)?;
+    let reason_code = FindingReasonCode::try_from(stored_reason_code.as_str())?;
+    let freshness = EvidenceFreshness::try_from(stored_freshness.as_str())?;
+    let expected_observation_digest = observation_digest(
+        write.rule_id,
+        write.rule_version,
+        &ObservationDigestInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(&failure_code),
+            reason_code: reason_code.as_str(),
+            evidence_freshness: freshness.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        stored_observation_digest == expected_observation_digest,
+        "NEX_FINDING_LIFECYCLE_RESOLVED_DIGEST_MISMATCH: terminal observation digest is not proven by its immutable code"
+    );
+    let expected_material_basis = material_basis_digest(
+        write.rule_id,
+        write.rule_version,
+        &MaterialBasisInput {
+            stable_subject: write.stable_subject,
+            edge_id: None,
+            failure_code: Some(&failure_code),
+            reason_code: reason_code.as_str(),
+            evidence_freshness: freshness.as_str(),
+        },
+    )?;
+    anyhow::ensure!(
+        prior_material_basis_digest == expected_material_basis
+            && prior_material_basis_digest == write.material_basis_digest,
+        "NEX_FINDING_LIFECYCLE_RESOLVED_BASIS_MISMATCH: terminal basis is not proven by prior evidence"
+    );
+    let existing: Option<String> = conn
+        .query_row(
+            "SELECT id
+               FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1 AND finding_identity = ?2 AND run_id = ?3
+                AND semantic_epoch_id = ?4 AND lifecycle_state = 'resolved'
+              LIMIT 1",
+            params![
+                write.project_id,
+                write.finding_identity,
+                write.run_id,
+                write.semantic_epoch_id,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if existing.is_some() {
+        return Ok(existing);
+    }
+    let id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_maintenance_finding_lifecycle
+            (id, project_id, finding_identity, finding_key, rule_id, rule_version,
+             lifecycle_state, observation_digest, material_basis_digest, run_id,
+             semantic_epoch_id, observed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'resolved', NULL, ?7, ?8, ?9, ?10)",
+        params![
+            id,
+            write.project_id,
+            write.finding_identity,
+            write.finding_key,
+            write.rule_id,
+            i64::from(write.rule_version),
+            prior_material_basis_digest,
+            write.run_id,
+            write.semantic_epoch_id,
+            write.observed_at,
+        ],
+    )?;
+    // A resolution proves the prior observation, but does not itself
+    // represent a new observation digest.
+    Ok(Some(id))
 }
 
 pub(crate) fn record_finding_lifecycle_in_tx(
@@ -541,13 +1213,13 @@ pub(crate) fn record_finding_lifecycle_in_tx(
             &ObservationDigestInput {
                 stable_subject: &edge_id,
                 edge_id: Some(&edge_id),
+                failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
             },
         )?;
         anyhow::ensure!(
-            stored_observation_digest == lifecycle_observation_digest
-                && lifecycle_observation_digest == expected_observation_digest,
+            stored_observation_digest == expected_observation_digest,
             "NEX_FINDING_LIFECYCLE_OBSERVATION_DIGEST_MISMATCH: lifecycle digest is not proven by the observation result"
         );
         let active_basis_digest = write.material_basis_digest.ok_or_else(|| {
@@ -561,6 +1233,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
             &MaterialBasisInput {
                 stable_subject: &edge_id,
                 edge_id: Some(&edge_id),
+                failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
             },
@@ -631,6 +1304,7 @@ pub(crate) fn record_finding_lifecycle_in_tx(
             &MaterialBasisInput {
                 stable_subject: &edge_id,
                 edge_id: Some(&edge_id),
+                failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
             },
@@ -713,6 +1387,104 @@ pub(crate) fn latest_finding_lifecycle_for_identity(
     .map_err(Into::into)
 }
 
+/// Read the latest terminal-failure lifecycle transition only when its
+/// durable observed-at coordinate is unambiguous. The generic lifecycle reader
+/// above retains its historical deterministic tie-break for edge-scoped
+/// callers; terminal resolution and the terminal Inbox use this stricter
+/// helper so a same-time UUID cannot masquerade as chronology.
+pub(crate) fn latest_terminal_failure_lifecycle_for_identity(
+    conn: &Connection,
+    project_id: &str,
+    finding_identity: &str,
+    finding_key: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<Option<FindingLifecycleRow>> {
+    let rule_id = super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_ID;
+    let rule_version = i64::from(super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_VERSION);
+    let filters = params![
+        project_id,
+        finding_identity,
+        finding_key,
+        rule_id,
+        rule_version,
+        semantic_epoch_id,
+    ];
+    let invalid_timestamp_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+            AND finding_key = ?3 AND rule_id = ?4 AND rule_version = ?5
+            AND semantic_epoch_id = ?6 AND julianday(observed_at) IS NULL",
+        filters,
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        invalid_timestamp_count == 0,
+        "NEX_FINDING_LIFECYCLE_ORDER_INVALID: terminal observed_at is not a canonical timestamp"
+    );
+    let latest_julian: Option<f64> = conn.query_row(
+        "SELECT MAX(julianday(observed_at))
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+            AND finding_key = ?3 AND rule_id = ?4 AND rule_version = ?5
+            AND semantic_epoch_id = ?6",
+        params![
+            project_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            rule_version,
+            semantic_epoch_id,
+        ],
+        |row| row.get(0),
+    )?;
+    let Some(latest_julian) = latest_julian else {
+        return Ok(None);
+    };
+    let latest_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+            AND finding_key = ?3 AND rule_id = ?4 AND rule_version = ?5
+            AND semantic_epoch_id = ?6 AND julianday(observed_at) = ?7",
+        params![
+            project_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            rule_version,
+            semantic_epoch_id,
+            latest_julian,
+        ],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        latest_count == 1,
+        "NEX_FINDING_LIFECYCLE_ORDER_AMBIGUOUS: multiple terminal lifecycle transitions share the latest observed_at"
+    );
+    conn.query_row(
+        "SELECT id, project_id, finding_identity, finding_key, rule_id, rule_version,
+                lifecycle_state, observation_digest, material_basis_digest, run_id,
+                semantic_epoch_id, observed_at
+           FROM narrative_maintenance_finding_lifecycle
+          WHERE project_id = ?1 AND finding_identity = ?2
+            AND finding_key = ?3 AND rule_id = ?4 AND rule_version = ?5
+            AND semantic_epoch_id = ?6 AND julianday(observed_at) = ?7",
+        params![
+            project_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            rule_version,
+            semantic_epoch_id,
+            latest_julian,
+        ],
+        row_to_finding_lifecycle,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Read the diagnostic observation history for one `finding_key` at one
 /// Semantic Epoch, oldest first. This is a pure read of past Run output —
 /// diagnostic-only, never the current Freshness value. Callers that need the
@@ -725,14 +1497,23 @@ pub(crate) fn list_observations_for_epoch(
     semantic_epoch_id: &str,
     finding_key: &str,
 ) -> anyhow::Result<Vec<FindingObservationRow>> {
-    let mut statement = conn.prepare(
-        "SELECT id, project_id, run_id, semantic_epoch_id, edge_id, finding_key,
-                reason_code, evidence_freshness_snapshot, material_basis_digest, observed_at,
-                finding_identity, rule_id, rule_version, observation_digest
-           FROM narrative_maintenance_finding_observations
-          WHERE project_id = ?1 AND semantic_epoch_id = ?2 AND finding_key = ?3
-          ORDER BY observed_at ASC, rowid ASC",
-    )?;
+    let order_by = if finding_key.starts_with("narrative-maintenance-failure:") {
+        // Terminal Inbox selection performs its own strict timestamp
+        // uniqueness check; no UUID/id tie-break is a chronology surrogate.
+        "ORDER BY o.observed_at ASC"
+    } else {
+        // Preserve the established edge-scoped diagnostic order.
+        "ORDER BY o.observed_at ASC, o.rowid ASC"
+    };
+    let query = format!(
+        "SELECT o.id, o.project_id, o.run_id, o.semantic_epoch_id, o.edge_id, o.finding_key,
+                o.reason_code, o.evidence_freshness_snapshot, o.material_basis_digest, o.observed_at,
+                o.finding_identity, o.rule_id, o.rule_version, o.observation_digest
+           FROM narrative_maintenance_finding_observations AS o
+          WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2 AND o.finding_key = ?3
+          {order_by}"
+    );
+    let mut statement = conn.prepare(&query)?;
     let raw_rows = statement
         .query_map(params![project_id, semantic_epoch_id, finding_key], |row| {
             Ok((
@@ -773,6 +1554,12 @@ pub(crate) fn list_observations_for_epoch(
                 rule_version,
                 observation_digest,
             )| {
+                let failure_code =
+                    if rule_id == super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_ID {
+                        Some(decode_terminal_failure_observation_id(&id)?)
+                    } else {
+                        None
+                    };
                 Ok(FindingObservationRow {
                     id,
                     project_id,
@@ -784,6 +1571,7 @@ pub(crate) fn list_observations_for_epoch(
                     rule_id,
                     rule_version: u32::try_from(rule_version)
                         .map_err(|_| anyhow::anyhow!("finding rule version is outside u32"))?,
+                    failure_code,
                     reason_code: FindingReasonCode::try_from(reason_code.as_str())?,
                     evidence_freshness_snapshot: EvidenceFreshness::try_from(
                         evidence_freshness_snapshot.as_str(),
@@ -795,6 +1583,140 @@ pub(crate) fn list_observations_for_epoch(
             },
         )
         .collect::<anyhow::Result<Vec<_>>>()
+}
+
+/// List terminal maintenance Finding keys for one Semantic Epoch. The Inbox
+/// uses this read-only index to join directly to Observation history instead
+/// of fabricating a Consumer Freshness row.
+pub(crate) fn list_terminal_failure_finding_keys_for_epoch(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT finding_key
+           FROM narrative_maintenance_finding_observations
+          WHERE project_id = ?1 AND semantic_epoch_id = ?2
+            AND rule_id = ?3 AND rule_version = ?4
+          ORDER BY finding_key ASC",
+    )?;
+    let keys = statement
+        .query_map(
+            params![
+                project_id,
+                semantic_epoch_id,
+                super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_ID,
+                i64::from(super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_VERSION),
+            ],
+            |row| row.get(0),
+        )?
+        .collect::<Result<Vec<String>, _>>()?;
+    Ok(keys)
+}
+
+/// Return the terminal Observation's durable observed-at time and material
+/// basis. Resolution compares that immutable time with the successful Run's
+/// durable completion time using strict SQLite `julianday` ordering. The
+/// Observation remains readable after its Run ledger row is deleted or
+/// logically restored; no implicit SQLite rowid participates in this order.
+pub(crate) fn latest_terminal_failure_observation_order(
+    conn: &Connection,
+    project_id: &str,
+    semantic_epoch_id: &str,
+    finding_identity: &str,
+    finding_key: &str,
+    rule_id: &str,
+    rule_version: u32,
+) -> anyhow::Result<Option<(String, String)>> {
+    let invalid_timestamp_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_maintenance_finding_observations AS o
+          WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
+            AND o.finding_identity = ?3 AND o.finding_key = ?4
+            AND o.rule_id = ?5 AND o.rule_version = ?6
+            AND o.edge_id IS NULL
+            AND julianday(o.observed_at) IS NULL",
+        params![
+            project_id,
+            semantic_epoch_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            i64::from(rule_version),
+        ],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        invalid_timestamp_count == 0,
+        "NEX_FINDING_OBSERVATION_ORDER_INVALID: terminal observed_at is not a canonical timestamp"
+    );
+    let latest_julian: Option<f64> = conn
+        .query_row(
+            "SELECT MAX(julianday(o.observed_at))
+               FROM narrative_maintenance_finding_observations AS o
+              WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
+                AND o.finding_identity = ?3 AND o.finding_key = ?4
+                AND o.rule_id = ?5 AND o.rule_version = ?6
+                AND o.edge_id IS NULL",
+            params![
+                project_id,
+                semantic_epoch_id,
+                finding_identity,
+                finding_key,
+                rule_id,
+                i64::from(rule_version),
+            ],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(latest_julian) = latest_julian else {
+        return Ok(None);
+    };
+    let latest_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_maintenance_finding_observations AS o
+          WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
+            AND o.finding_identity = ?3 AND o.finding_key = ?4
+            AND o.rule_id = ?5 AND o.rule_version = ?6
+            AND o.edge_id IS NULL
+            AND julianday(o.observed_at) = ?7",
+        params![
+            project_id,
+            semantic_epoch_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            i64::from(rule_version),
+            latest_julian,
+        ],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(
+        latest_count == 1,
+        "NEX_FINDING_OBSERVATION_ORDER_AMBIGUOUS: multiple terminal observations share the latest observed_at"
+    );
+    conn.query_row(
+        "SELECT o.observed_at, o.material_basis_digest
+           FROM narrative_maintenance_finding_observations AS o
+          WHERE o.project_id = ?1 AND o.semantic_epoch_id = ?2
+            AND o.finding_identity = ?3 AND o.finding_key = ?4
+            AND o.rule_id = ?5 AND o.rule_version = ?6
+            AND o.edge_id IS NULL
+            AND julianday(o.observed_at) = ?7",
+        params![
+            project_id,
+            semantic_epoch_id,
+            finding_identity,
+            finding_key,
+            rule_id,
+            i64::from(rule_version),
+            latest_julian,
+        ],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -866,6 +1788,7 @@ mod tests {
             &MaterialBasisInput {
                 stable_subject: edge_id,
                 edge_id: Some(edge_id),
+                failure_code: None,
                 reason_code: reason_code.as_str(),
                 evidence_freshness: freshness.as_str(),
             },
@@ -1137,6 +2060,7 @@ mod tests {
                 &ObservationDigestInput {
                     stable_subject: "edge-1",
                     edge_id: Some("edge-1"),
+                    failure_code: None,
                     reason_code: FindingReasonCode::SourceMissing.as_str(),
                     evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
                 },
@@ -1210,6 +2134,7 @@ mod tests {
                 &ObservationDigestInput {
                     stable_subject: "edge-1",
                     edge_id: Some("edge-1"),
+                    failure_code: None,
                     reason_code: FindingReasonCode::SourceMissing.as_str(),
                     evidence_freshness: EvidenceFreshness::SourceMissing.as_str(),
                 },

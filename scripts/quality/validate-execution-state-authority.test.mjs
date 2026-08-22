@@ -141,6 +141,29 @@ function baseFindingContract(overrides = {}) {
   };
 }
 
+function terminalFindingRule(overrides = {}) {
+  return {
+    ruleId: "narrative.maintenance-contract-failure",
+    version: 1,
+    identityScope: "maintenance-work",
+    observationStorageClass: "durable-derived-history",
+    writerAuthority: "maintenance-run-finalization-transaction",
+    observationFields: [
+      "stableSubject",
+      "failureCode",
+      "reasonCode",
+      "evidenceFreshness",
+    ],
+    materialBasisFields: [
+      "stableSubject",
+      "failureCode",
+      "reasonCode",
+      "evidenceFreshness",
+    ],
+    ...overrides,
+  };
+}
+
 function baseAttentionContract(overrides = {}) {
   return {
     schemaVersion: 1,
@@ -174,6 +197,12 @@ function baseAuthorityMatrix(overrides = {}) {
         canonicalAuthority: "freshness-run-publish-transaction",
         compatibilityMirror: null,
         writePolicy: "evaluator-publish-only",
+      },
+      {
+        concern: "maintenance-terminal-finding-observation",
+        canonicalAuthority: "maintenance-run-finalization-transaction",
+        compatibilityMirror: null,
+        writePolicy: "maintenance-finalization-only",
       },
       {
         concern: "maintenance-attention",
@@ -256,7 +285,11 @@ describe("validate-execution-state-authority", () => {
   });
 
   it("accepts a minimal well-formed fixture", () => {
-    const root = writeFixtureRoot();
+    const root = writeFixtureRoot({
+      findingContract: baseFindingContract({
+        rules: [...baseFindingContract().rules, terminalFindingRule()],
+      }),
+    });
     const result = validateExecutionStateAuthority({ repoRoot: root });
     assert.deepEqual(result.errors, []);
   });
@@ -306,6 +339,105 @@ describe("validate-execution-state-authority", () => {
       result.errors.some((error) =>
         error.includes(
           "duplicate ruleId/version: narrative.consumer-freshness@1",
+        ),
+      ),
+    );
+  });
+
+  it("accepts the terminal rule's durable diagnostic history override", () => {
+    const findingContract = baseFindingContract({
+      rules: [
+        ...baseFindingContract().rules,
+        terminalFindingRule(),
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a maintenance rule without an explicit durable history override", () => {
+    const findingContract = baseFindingContract({
+      rules: [
+        ...baseFindingContract().rules,
+        terminalFindingRule({
+          observationStorageClass: undefined,
+          writerAuthority: undefined,
+        }),
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("maintenance-work rule must declare observationStorageClass"),
+      ),
+    );
+  });
+
+  it("requires exactly one canonical terminal finding rule", () => {
+    const root = writeFixtureRoot({
+      findingContract: baseFindingContract(),
+    });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "narrative-finding-contract.json must contain exactly one canonical terminal rule",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a renamed or wrong-version terminal rule", () => {
+    for (const rule of [
+      terminalFindingRule({ ruleId: "narrative.maintenance-contract-failure-renamed" }),
+      terminalFindingRule({ version: 2 }),
+    ]) {
+      const root = writeFixtureRoot({
+        findingContract: baseFindingContract({
+          rules: [...baseFindingContract().rules, rule],
+        }),
+      });
+      const result = validateExecutionStateAuthority({ repoRoot: root });
+      assert.ok(
+        result.errors.some((error) =>
+          error.includes(
+            "narrative-finding-contract.json must contain exactly one canonical terminal rule",
+          ),
+        ),
+        `expected canonical rule rejection for ${rule.ruleId}@${rule.version}`,
+      );
+    }
+  });
+
+  it("rejects duplicate or extraneous versions of the canonical terminal rule", () => {
+    const findingContract = baseFindingContract({
+      rules: [
+        ...baseFindingContract().rules,
+        terminalFindingRule(),
+        terminalFindingRule({ version: 2 }),
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "canonical terminal ruleId must not have another version",
+        ),
+      ),
+    );
+
+    findingContract.rules.push(terminalFindingRule());
+    const duplicateRoot = writeFixtureRoot({ findingContract });
+    const duplicateResult = validateExecutionStateAuthority({
+      repoRoot: duplicateRoot,
+    });
+    assert.ok(
+      duplicateResult.errors.some((error) =>
+        error.includes(
+          "narrative-finding-contract.json must contain exactly one canonical terminal rule",
         ),
       ),
     );

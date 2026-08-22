@@ -25,12 +25,16 @@ use super::evaluator::{
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
+use super::terminal_failure::{
+    project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
+};
 use crate::Database;
 
 type RebuildRunIdentityRow = (
@@ -432,7 +436,16 @@ fn finalize_rebuild_run(
                     Some(&error),
                 );
                 record_run_outcome_in_tx(conn, run_id, &outcome)?;
-                transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                let finalized_at =
+                    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                project_terminal_failure_for_run_in_tx(
+                    conn,
+                    project_id,
+                    run_id,
+                    &error,
+                    &finalized_at,
+                    true,
+                )?;
                 return Ok(Some(error));
             }
 
@@ -454,7 +467,7 @@ fn finalize_rebuild_run(
                 ),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
-            transition_run_status_in_tx(
+            let finalized_at = transition_run_status_in_tx(
                 conn,
                 run_id,
                 if work_result.is_ok() {
@@ -463,6 +476,26 @@ fn finalize_rebuild_run(
                     NarrativeRunStatus::Failed
                 },
             )?;
+            match work_result {
+                Ok(_) => {
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &finalized_at,
+                    )?;
+                }
+                Err(error) => {
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &error.to_string(),
+                        &finalized_at,
+                        true,
+                    )?;
+                }
+            }
             Ok(None)
         })
     })?;
@@ -884,10 +917,11 @@ pub struct DependencyGraphVerifyReport {
     /// (restore, migration, integrity repair), which
     /// `dependency-rebuild-derived` should refresh.
     pub edge_state_ids_outside_current_epoch: Vec<String>,
-    /// `narrative_maintenance_finding_observations` row whose
-    /// `semantic_epoch_id` is not the project's current Epoch -- same
-    /// staleness shape as `edge_state_ids_outside_current_epoch`, for the
-    /// Finding Observation history instead of the Edge State snapshot.
+    /// Rebuildable (edge-scoped) `narrative_maintenance_finding_observations`
+    /// row whose `semantic_epoch_id` is not the project's current Epoch.
+    /// Durable terminal-failure history is intentionally excluded: epoch
+    /// rotation does not invalidate the immutable evidence needed to explain
+    /// a terminal Run or resolve it after the Run ledger changes.
     pub finding_observation_ids_outside_current_epoch: Vec<String>,
     /// The concrete `dependency-repair` candidates this Verify found, for
     /// its one implemented repair category (`deactivate-duplicate-edge`):
@@ -1096,7 +1130,15 @@ pub fn run_dependency_verify_for_project(
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)
+                    let finalized_at =
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &finalized_at,
+                    )?;
+                    Ok(())
                 })
             })?;
             Ok(VerifyRunOutcome {
@@ -1107,16 +1149,26 @@ pub fn run_dependency_verify_for_project(
             })
         }
         Err(error) => {
-            let _ = db.with_conn(|conn| {
+            db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(
                         conn,
                         &run_id,
                         &json!({ "failure": error.to_string() }),
                     )?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)
+                    let finalized_at =
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &error.to_string(),
+                        &finalized_at,
+                        true,
+                    )?;
+                    Ok(())
                 })
-            });
+            })?;
             Err(error)
         }
     }
@@ -1756,12 +1808,19 @@ fn finding_observation_ids_outside_epoch(
         "SELECT id
            FROM narrative_maintenance_finding_observations
           WHERE project_id = ?1 AND semantic_epoch_id != ?2
+            AND NOT (rule_id = ?3 AND rule_version = ?4)
           ORDER BY id ASC",
     )?;
     let rows = statement
-        .query_map(params![project_id, current_epoch_id], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map(
+            params![
+                project_id,
+                current_epoch_id,
+                MAINTENANCE_FAILURE_FINDING_RULE_ID,
+                i64::from(MAINTENANCE_FAILURE_FINDING_RULE_VERSION),
+            ],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }
@@ -2452,6 +2511,60 @@ mod tests {
     }
 
     #[test]
+    fn rebuild_projection_failure_rolls_back_status_and_terminal_evidence() {
+        let db = test_db();
+        seed_epoch_for_rebuild(&db, "project-1");
+        let edge_id = seed_run_edge(&db, "project-1", "run-1", "project:scene:scene-live");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_dependency_edges
+                    SET read_set_json = '[123]'
+                  WHERE id = ?1",
+                params![edge_id],
+            )?;
+            conn.execute_batch(
+                "CREATE TRIGGER reject_rebuild_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced rebuild lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("seed rebuild projection failure fixture");
+
+        let error = rebuild_narrative_derived_state_for_project(&db, "project-1")
+            .expect_err("a rebuild projection failure must not commit status");
+        assert!(error
+            .to_string()
+            .contains("forced rebuild lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1'
+                    AND r.run_kind = 'semantic-index-rebuild'
+                  ORDER BY r.rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 0);
+            Ok(())
+        })
+        .expect("failed rebuild finalization must roll back atomically");
+    }
+
+    #[test]
     fn rebuild_success_never_reports_success_when_finalization_fails() {
         let db = test_db();
         seed_epoch_for_rebuild(&db, "project-1");
@@ -2610,6 +2723,15 @@ mod tests {
                 })
             })
             .expect("create an in-flight rebuild run");
+        let generic_error = crate::narrative_extraction::repository::cancel_run(
+            &db,
+            run_id.clone(),
+            "project-1".to_string(),
+        )
+        .expect_err("generic cancellation must not win the Rebuild finalization gap");
+        assert!(generic_error
+            .to_string()
+            .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "restore", None))
             .expect("rotate the semantic epoch");
 
@@ -3927,6 +4049,107 @@ mod tests {
     }
 
     #[test]
+    fn verify_resolution_failure_rolls_back_status_and_outcome() {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let failure_run_id = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let created = create_system_run_in_tx(
+                        conn,
+                        "project-1",
+                        VERIFY_RUN_KIND,
+                        &epoch_id,
+                        &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                        &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION }),
+                        "digest",
+                        SystemRunWorkKeyReuse::RunningOnly,
+                        None,
+                    )?;
+                    let run_id = created["runId"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("missing Verify failure Run id"))?
+                        .to_string();
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET terminal_reason_code = ?1
+                          WHERE id = ?2",
+                        params!["NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION", run_id],
+                    )?;
+                    Ok(run_id)
+                })
+            })
+            .expect("seed a failed Verify Run");
+        crate::narrative_extraction::project_terminal_failure_for_run(
+            &db,
+            "project-1",
+            &failure_run_id,
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: prior verify failure",
+        )
+        .expect("project prior Verify failure");
+        db.with_conn(|conn| {
+            // Resolution is intentionally ordered by the durable timestamps,
+            // not by insertion order.  Move the seeded failure into the past
+            // so this fixture reaches the lifecycle writer; otherwise the
+            // freshly-created Verify Run is correctly a no-op when its
+            // completion time is not strictly newer than a same-millisecond
+            // failure Observation.
+            let prior_observed_at = "2000-01-01T00:00:00.000Z";
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET observed_at = ?1
+                  WHERE run_id = ?2",
+                params![prior_observed_at, failure_run_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_lifecycle
+                    SET observed_at = ?1
+                  WHERE run_id = ?2 AND lifecycle_state = 'new'",
+                params![prior_observed_at, failure_run_id],
+            )?;
+            conn.execute_batch(
+                "CREATE TRIGGER reject_verify_terminal_lifecycle
+                   BEFORE INSERT ON narrative_maintenance_finding_lifecycle
+                   BEGIN
+                     SELECT RAISE(ABORT, 'forced verify lifecycle failure');
+                   END;",
+            )?;
+            Ok(())
+        })
+        .expect("install Verify resolution failure trigger");
+
+        let error = run_dependency_verify_for_project(&db, "project-1")
+            .expect_err("a Verify resolution failure must not commit status");
+        assert!(error
+            .to_string()
+            .contains("forced verify lifecycle failure"));
+
+        db.with_conn(|conn| {
+            let (status, outcome, terminal_code, observations): (
+                String,
+                Option<String>,
+                Option<String>,
+                i64,
+            ) = conn.query_row(
+                "SELECT r.status, r.outcome_summary_json, r.terminal_reason_code,
+                        (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
+                   FROM narrative_extraction_runs r
+                  WHERE r.project_id = 'project-1' AND r.run_kind = 'dependency-verify'
+                  ORDER BY r.rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?;
+            assert_eq!(status, "running");
+            assert_eq!(outcome, None);
+            assert_eq!(terminal_code, None);
+            assert_eq!(observations, 1);
+            Ok(())
+        })
+        .expect("failed Verify resolution must roll back atomically");
+    }
+
+    #[test]
     fn verify_reused_running_run_fails_closed_without_duplicate_execution() {
         let db = test_db();
         let epoch_id = db
@@ -4057,6 +4280,62 @@ mod tests {
             vec![crossing_id]
         );
         assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn project_verify_does_not_dirty_on_durable_terminal_history_from_prior_epoch() {
+        let db = test_db();
+        let old_epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let current_epoch_id = db
+            .with_conn(|conn| {
+                rotate_epoch_for_restore_in_tx(conn, "project-1", "project-restored", None)
+            })
+            .expect("rotate epoch")
+            .expect("restore must mint the current epoch");
+        assert_ne!(old_epoch_id, current_epoch_id);
+
+        let edge_id = "edge-observation-from-prior-epoch";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES (?1, 'project-1', 'run-old', ?2, ?3,
+                         'narrative-extraction-run:run-old', 'source-missing',
+                         'source-missing', 'sha256:edge-basis',
+                         '2026-08-15T00:00:00.000Z', NULL,
+                         'narrative.consumer-freshness', 1, 'sha256:edge-observation')",
+                params![edge_id, old_epoch_id, edge_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('terminal-failure:v1:NEX_MAINTENANCE_UNCLASSIFIED:00000000-0000-4000-8000-000000000001',
+                         'project-1', 'run-terminal-old', ?1, NULL,
+                         'narrative-maintenance-failure:backfill:legacy-dependency-backfill:v2',
+                         'component-incompatible', 'unknown', 'sha256:terminal-basis',
+                         '2026-08-15T00:00:00.000Z', 'terminal-identity',
+                         'narrative.maintenance-contract-failure', 1,
+                         'sha256:terminal-observation')",
+                params![old_epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed edge and durable terminal observations from the prior epoch");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.finding_observation_ids_outside_current_epoch,
+            vec![edge_id.to_string()],
+            "Verify must report rebuildable edge history but ignore durable terminal history"
+        );
     }
 
     // -- regression: rebuild-derived must resolve a snapshot-document Source

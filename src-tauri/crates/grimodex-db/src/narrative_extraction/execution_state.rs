@@ -223,7 +223,7 @@ pub(crate) fn transition_run_status_in_tx(
     conn: &Connection,
     run_id: &str,
     to: NarrativeRunStatus,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let current_raw: Option<String> = conn
         .query_row(
             "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
@@ -242,20 +242,26 @@ pub(crate) fn transition_run_status_in_tx(
         to.as_str()
     );
 
+    // Run timestamps are also terminal Finding ordering evidence. SQLite's
+    // datetime('now') is only second precision, while terminal Observations
+    // use the shared RFC3339-millisecond clock. Keep every status transition
+    // on that same canonical clock so a same-second .500 failure and .900
+    // success remain chronologically distinguishable.
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = ?1,
-                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END,
+                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, ?3) ELSE started_at END,
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END,
                 version = version + 1
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), run_id, from.as_str()],
+          WHERE id = ?4 AND status = ?5",
+        params![to.as_str(), to.is_terminal(), transition_at, run_id, from.as_str()],
     )?;
     anyhow::ensure!(
         updated == 1,
         "NEX_EXECUTION_STATUS_TRANSITION_CONFLICT: run '{run_id}' status changed concurrently"
     );
-    Ok(())
+    Ok(transition_at)
 }
 
 /// Transition a Task's status, fail closed against `task_transition_allowed`.
@@ -285,14 +291,15 @@ pub(crate) fn transition_task_status_in_tx(
         to.as_str()
     );
 
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_tasks
             SET status = ?1,
-                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END,
+                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, ?3) ELSE started_at END,
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END,
                 version = version + 1
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), task_id, from.as_str()],
+          WHERE id = ?4 AND status = ?5",
+        params![to.as_str(), to.is_terminal(), transition_at, task_id, from.as_str()],
     )?;
     anyhow::ensure!(
         updated == 1,
@@ -329,12 +336,19 @@ pub(crate) fn transition_attempt_status_in_tx(
         to.as_str()
     );
 
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = ?1,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), attempt_id, from.as_str()],
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END
+          WHERE id = ?4 AND status = ?5",
+        params![
+            to.as_str(),
+            to.is_terminal(),
+            transition_at,
+            attempt_id,
+            from.as_str()
+        ],
     )?;
     anyhow::ensure!(
         updated == 1,
@@ -365,7 +379,7 @@ pub(crate) fn transition_attempt_status_in_tx(
 /// Runs entirely inside the caller's transaction — callers own the
 /// surrounding `BEGIN`/`COMMIT` (see `with_immediate_transaction`).
 pub(crate) fn supersede_run_in_tx(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
-    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Superseded)?;
+    let transition_at = transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Superseded)?;
 
     conn.execute(
         "UPDATE narrative_extraction_tasks
@@ -373,24 +387,24 @@ pub(crate) fn supersede_run_in_tx(conn: &Connection, run_id: &str) -> anyhow::Re
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 heartbeat_at = NULL,
-                completed_at = datetime('now'),
+                completed_at = ?2,
                 version = version + 1
           WHERE run_id = ?1
             AND status IN ('queued', 'running')",
-        params![run_id],
+        params![run_id, transition_at],
     )?;
 
     conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = 'failed',
-                completed_at = datetime('now'),
+                completed_at = ?2,
                 failure_code = 'NEX_RUN_SUPERSEDED',
                 retry_disposition = 'superseded'
           WHERE status = 'running'
             AND task_id IN (
               SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1
             )",
-        params![run_id],
+        params![run_id, transition_at],
     )?;
 
     Ok(())
@@ -533,6 +547,45 @@ mod tests {
             Ok(())
         })
         .expect("transitions succeed");
+    }
+
+    #[test]
+    fn run_transition_persists_millisecond_rfc3339_timestamps() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            insert_run(conn, "run-millisecond-clock", "pending");
+            transition_run_status_in_tx(
+                conn,
+                "run-millisecond-clock",
+                NarrativeRunStatus::Running,
+            )?;
+            transition_run_status_in_tx(
+                conn,
+                "run-millisecond-clock",
+                NarrativeRunStatus::Completed,
+            )?;
+            let (started_at, completed_at): (String, String) = conn.query_row(
+                "SELECT started_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE id = 'run-millisecond-clock'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            for timestamp in [started_at, completed_at] {
+                assert!(timestamp.ends_with('Z'));
+                let fractional = timestamp
+                    .rsplit_once('.')
+                    .expect("RFC3339 timestamp has fractional seconds")
+                    .1;
+                assert_eq!(
+                    fractional.len(),
+                    4,
+                    "timestamp must retain three millis: {timestamp}"
+                );
+            }
+            Ok(())
+        })
+        .expect("millisecond timestamps are persisted");
     }
 
     #[test]

@@ -9,12 +9,29 @@ use sha2::{Digest, Sha256};
 
 pub const BUNDLED_FINDING_RULE_ID: &str = "narrative.consumer-freshness";
 pub const BUNDLED_FINDING_RULE_VERSION: u32 = 1;
+pub const MAINTENANCE_FAILURE_FINDING_RULE_ID: &str = "narrative.maintenance-contract-failure";
+pub const MAINTENANCE_FAILURE_FINDING_RULE_VERSION: u32 = 1;
 
-const SUPPORTED_IDENTITY_SCOPE: &str = "edge";
-const REQUIRED_OBSERVATION_FIELDS: &[&str] =
+const EDGE_IDENTITY_SCOPE: &str = "edge";
+const MAINTENANCE_WORK_IDENTITY_SCOPE: &str = "maintenance-work";
+const DURABLE_DERIVED_HISTORY_STORAGE_CLASS: &str = "durable-derived-history";
+const MAINTENANCE_RUN_FINALIZATION_AUTHORITY: &str = "maintenance-run-finalization-transaction";
+const EDGE_REQUIRED_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
-const REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] =
+const MAINTENANCE_WORK_REQUIRED_FIELDS: &[&str] = &[
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+];
+const EDGE_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
+const MAINTENANCE_WORK_REQUIRED_MATERIAL_BASIS_FIELDS: &[&str] = &[
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+];
 
 const BUNDLED_FINDING_CONTRACT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -32,6 +49,17 @@ pub struct FindingRule {
     pub observation_fields: Vec<String>,
     #[serde(rename = "materialBasisFields")]
     pub material_basis_fields: Vec<String>,
+    /// Only the terminal maintenance rule may override the contract-wide
+    /// rebuildable observation default.  Keep this parsed at runtime so a
+    /// malformed bundled policy cannot silently fall back to an unsafe
+    /// default when the JSON schema is bypassed.
+    #[serde(rename = "observationStorageClass")]
+    pub observation_storage_class: Option<String>,
+    /// The terminal rule is written by the maintenance Run finalization
+    /// transaction, not by the evaluator publish authority used by edge
+    /// observations.
+    #[serde(rename = "writerAuthority")]
+    pub writer_authority: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -114,25 +142,75 @@ fn validate_finding_rule(rule: &FindingRule, index: usize) -> anyhow::Result<()>
         "NEX_FINDING_RULE_REGISTRY_INVALID: rule {index} has an invalid version"
     );
     anyhow::ensure!(
-        rule.identity_scope == SUPPORTED_IDENTITY_SCOPE,
-        "NEX_FINDING_RULE_REGISTRY_INVALID: rule '{}@{}' has unsupported identityScope '{}', expected '{}'",
+        matches!(
+            rule.identity_scope.as_str(),
+            EDGE_IDENTITY_SCOPE | MAINTENANCE_WORK_IDENTITY_SCOPE
+        ),
+        "NEX_FINDING_RULE_REGISTRY_INVALID: rule '{}@{}' has unsupported identityScope '{}'",
         rule.rule_id,
         rule.version,
-        rule.identity_scope,
-        SUPPORTED_IDENTITY_SCOPE
+        rule.identity_scope
     );
+    let (required_observation_fields, required_material_basis_fields) = match rule
+        .identity_scope
+        .as_str()
+    {
+        EDGE_IDENTITY_SCOPE => (EDGE_REQUIRED_FIELDS, EDGE_REQUIRED_MATERIAL_BASIS_FIELDS),
+        MAINTENANCE_WORK_IDENTITY_SCOPE => (
+            MAINTENANCE_WORK_REQUIRED_FIELDS,
+            MAINTENANCE_WORK_REQUIRED_MATERIAL_BASIS_FIELDS,
+        ),
+        _ => anyhow::bail!(
+            "NEX_FINDING_RULE_REGISTRY_INVALID: unsupported identityScope '{}', rule validation did not accept it",
+            rule.identity_scope
+        ),
+    };
     validate_declared_fields(
         rule,
         &rule.observation_fields,
-        REQUIRED_OBSERVATION_FIELDS,
+        required_observation_fields,
         "observationFields",
     )?;
     validate_declared_fields(
         rule,
         &rule.material_basis_fields,
-        REQUIRED_MATERIAL_BASIS_FIELDS,
+        required_material_basis_fields,
         "materialBasisFields",
     )?;
+    match rule.identity_scope.as_str() {
+        EDGE_IDENTITY_SCOPE => {
+            anyhow::ensure!(
+                rule.observation_storage_class.is_none(),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: edge rule '{}@{}' must not override observationStorageClass",
+                rule.rule_id,
+                rule.version
+            );
+            anyhow::ensure!(
+                rule.writer_authority.is_none(),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: edge rule '{}@{}' must not override writerAuthority",
+                rule.rule_id,
+                rule.version
+            );
+        }
+        MAINTENANCE_WORK_IDENTITY_SCOPE => {
+            anyhow::ensure!(
+                rule.observation_storage_class.as_deref()
+                    == Some(DURABLE_DERIVED_HISTORY_STORAGE_CLASS),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: maintenance-work rule '{}@{}' must declare observationStorageClass '{}'",
+                rule.rule_id,
+                rule.version,
+                DURABLE_DERIVED_HISTORY_STORAGE_CLASS
+            );
+            anyhow::ensure!(
+                rule.writer_authority.as_deref() == Some(MAINTENANCE_RUN_FINALIZATION_AUTHORITY),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: maintenance-work rule '{}@{}' must declare writerAuthority '{}'",
+                rule.rule_id,
+                rule.version,
+                MAINTENANCE_RUN_FINALIZATION_AUTHORITY
+            );
+        }
+        _ => unreachable!("identity scope validated above"),
+    }
     Ok(())
 }
 
@@ -180,6 +258,7 @@ pub fn bundled_finding_rule_registry() -> anyhow::Result<FindingRuleRegistry> {
 pub struct ObservationDigestInput<'a> {
     pub stable_subject: &'a str,
     pub edge_id: Option<&'a str>,
+    pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
 }
@@ -191,6 +270,7 @@ pub struct ObservationDigestInput<'a> {
 pub struct MaterialBasisInput<'a> {
     pub stable_subject: &'a str,
     pub edge_id: Option<&'a str>,
+    pub failure_code: Option<&'a str>,
     pub reason_code: &'a str,
     pub evidence_freshness: &'a str,
 }
@@ -249,6 +329,7 @@ pub fn observation_digest(
     let declared_values = declared_field_values(&rule.observation_fields, |field| match field {
         "stableSubject" => Some(serde_json::json!(input.stable_subject)),
         "edgeId" => Some(serde_json::json!(input.edge_id)),
+        "failureCode" => Some(serde_json::json!(input.failure_code)),
         "reasonCode" => Some(serde_json::json!(input.reason_code)),
         "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
         _ => None,
@@ -277,6 +358,7 @@ pub fn material_basis_digest(
         declared_field_values(&rule.material_basis_fields, |field| match field {
             "stableSubject" => Some(serde_json::json!(input.stable_subject)),
             "edgeId" => Some(serde_json::json!(input.edge_id)),
+            "failureCode" => Some(serde_json::json!(input.failure_code)),
             "reasonCode" => Some(serde_json::json!(input.reason_code)),
             "evidenceFreshness" => Some(serde_json::json!(input.evidence_freshness)),
             _ => None,
@@ -346,6 +428,38 @@ mod tests {
     }
 
     #[test]
+    fn bundled_rule_registry_requires_terminal_storage_and_writer_authority_overrides() {
+        let registry = bundled_finding_rule_registry().expect("bundled registry");
+        let maintenance = registry
+            .resolve(
+                MAINTENANCE_FAILURE_FINDING_RULE_ID,
+                MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+            )
+            .expect("maintenance rule")
+            .clone();
+
+        let mut missing_storage_class = maintenance.clone();
+        missing_storage_class.observation_storage_class = None;
+        assert!(validate_finding_rule(&missing_storage_class, 0).is_err());
+
+        let mut wrong_storage_class = maintenance.clone();
+        wrong_storage_class.observation_storage_class =
+            Some("rebuildable-derived-state".to_string());
+        assert!(validate_finding_rule(&wrong_storage_class, 0).is_err());
+
+        let mut missing_writer_authority = maintenance.clone();
+        missing_writer_authority.writer_authority = None;
+        assert!(validate_finding_rule(&missing_writer_authority, 0).is_err());
+
+        let mut edge = registry
+            .resolve(BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION)
+            .expect("edge rule")
+            .clone();
+        edge.observation_storage_class = Some(DURABLE_DERIVED_HISTORY_STORAGE_CLASS.to_string());
+        assert!(validate_finding_rule(&edge, 0).is_err());
+    }
+
+    #[test]
     fn stable_identity_is_independent_of_run_and_epoch() {
         let first = stable_finding_identity(
             BUNDLED_FINDING_RULE_ID,
@@ -376,6 +490,7 @@ mod tests {
         let input = ObservationDigestInput {
             stable_subject: "edge:edge-1",
             edge_id: Some("edge-1"),
+            failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
         };
@@ -403,6 +518,7 @@ mod tests {
         let first_input = MaterialBasisInput {
             stable_subject,
             edge_id: Some("edge-1"),
+            failure_code: None,
             reason_code: "source-missing",
             evidence_freshness: "source-missing",
         };
@@ -451,6 +567,7 @@ mod tests {
             &ObservationDigestInput {
                 stable_subject,
                 edge_id: Some("edge-1"),
+                failure_code: None,
                 reason_code: "source-missing",
                 evidence_freshness: "source-missing",
             },

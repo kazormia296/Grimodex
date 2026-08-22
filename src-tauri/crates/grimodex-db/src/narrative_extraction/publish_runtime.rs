@@ -397,6 +397,7 @@ fn edge_material_basis_digest(
         &MaterialBasisInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: observation
                 .reason_code
                 .map(FindingReasonCode::as_str)
@@ -421,6 +422,7 @@ fn edge_observation_digest(edge_id: &str, observation: &EdgeObservation) -> anyh
         &ObservationDigestInput {
             stable_subject: edge_id,
             edge_id: Some(edge_id),
+            failure_code: None,
             reason_code: observation
                 .reason_code
                 .map(FindingReasonCode::as_str)

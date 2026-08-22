@@ -147,7 +147,12 @@ fn missing_derived_rows_force_verify_rerun_after_prior_skip_evidence() {
              VALUES ('prior-verify', ?1, 'maintenance', '{}', '{}', 'digest',
                      'completed', '{}', datetime('now'), datetime('now'),
                      'dependency-verify', ?2, ?3, ?4)",
-            params![PROJECT_ID, EPOCH_ID, VERIFY_WORK_KEY, completed_verify_outcome()],
+            params![
+                PROJECT_ID,
+                EPOCH_ID,
+                VERIFY_WORK_KEY,
+                completed_verify_outcome()
+            ],
         )?;
         Ok(())
     })
@@ -177,7 +182,10 @@ fn missing_derived_rows_force_verify_rerun_after_prior_skip_evidence() {
             )?)
         })
         .expect("read Verify completion evidence");
-    assert!(run_count >= 2, "Verify must create a fresh Run after stale derived state");
+    assert!(
+        run_count >= 2,
+        "Verify must create a fresh Run after stale derived state"
+    );
     assert!(
         evidence_present >= 2,
         "Verify completion evidence must be sealed with the terminal Run"
@@ -196,6 +204,9 @@ fn repair_is_not_an_automatic_dispatch_kind() {
         }],
         "wakeProjectIds": []
     }));
-    assert!(repair.is_err(), "Repair must remain unrepresentable in automatic work");
+    assert!(
+        repair.is_err(),
+        "Repair must remain unrepresentable in automatic work"
+    );
     assert_eq!(REBUILD_DERIVED_WORK_KEY, "dependency-rebuild-derived");
 }
