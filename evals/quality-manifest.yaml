@@ -452,6 +452,11 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/inbox_read_model.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/terminal_failure.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
       - scripts/quality/validate-execution-state-authority.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
@@ -477,6 +482,11 @@ requirements:
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
       - scripts/quality/validate-execution-state-authority.test.mjs
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
       - scripts/quality/impact-map.test.mjs

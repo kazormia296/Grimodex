@@ -91,15 +91,22 @@ fn ensure_generic_task_api_allowed(conn: &Connection, run_id: &str) -> anyhow::R
     let system_owned: bool = conn.query_row(
         "SELECT EXISTS(
            SELECT 1 FROM narrative_extraction_runs
-            WHERE id = ?1 AND run_kind = 'freshness-evaluation'
-              AND consumer_id = ?2
+            WHERE id = ?1
+              AND (
+                (run_kind = 'freshness-evaluation' AND consumer_id = ?2)
+                OR run_kind IN (
+                  'backfill',
+                  'dependency-verify',
+                  'semantic-index-rebuild'
+                )
+              )
          )",
         params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
         |row| row.get(0),
     )?;
     anyhow::ensure!(
         !system_owned,
-        "NEX_SYSTEM_RUN_API_FORBIDDEN: incremental Freshness lifecycle is owned by its automatic runtime"
+        "NEX_SYSTEM_RUN_API_FORBIDDEN: automatic maintenance Run lifecycle is owned by its runtime"
     );
     Ok(())
 }
@@ -636,7 +643,8 @@ pub fn list_resumable_runs(
                           WHERE a.proposal_id = p.id
                        )
                   )
-              ORDER BY COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+              ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
+                       COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
                        r.id DESC
               LIMIT ?3",
         )?;
@@ -663,14 +671,15 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
             ensure_generic_task_api_allowed(conn, &run_id)?;
+            let lifecycle_at = grimodex_core::now_rfc3339_millis();
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
                     SET status = 'cancelled',
-                        completed_at = datetime('now'),
+                        completed_at = ?2,
                         version = version + 1
                   WHERE id = ?1
                     AND status IN ('pending', 'running')",
-                params![run_id],
+                params![run_id, lifecycle_at],
             )?;
             anyhow::ensure!(updated == 1, "run is not cancellable");
 
@@ -680,11 +689,11 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = datetime('now'),
+                        completed_at = ?2,
                         version = version + 1
                   WHERE run_id = ?1
                     AND status IN ('queued', 'running')",
-                params![run_id],
+                params![run_id, lifecycle_at],
             )?;
 
             Ok(json!({ "runId": run_id, "status": "cancelled" }))
@@ -731,6 +740,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
+            let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -740,20 +750,25 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = datetime('now'),
+                        completed_at = ?4,
                         version = version + 1
                   WHERE id = ?2 AND run_id = ?3 AND status = 'running'",
-                params![output_json, payload.task_id, payload.run_id],
+                params![output_json, payload.task_id, payload.run_id, lifecycle_at],
             )?;
             anyhow::ensure!(updated == 1, "task is not running");
 
             conn.execute(
                 "UPDATE narrative_extraction_attempts
                     SET status = 'completed',
-                        completed_at = datetime('now'),
+                        completed_at = ?4,
                         output_json = ?1
                   WHERE id = ?2 AND task_id = ?3",
-                params![output_json, payload.attempt_id, payload.task_id],
+                params![
+                    output_json,
+                    payload.attempt_id,
+                    payload.task_id,
+                    lifecycle_at
+                ],
             )?;
 
             persist_task_artifacts(
@@ -764,7 +779,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.artifacts,
             )?;
 
-            maybe_complete_run(conn, &payload.run_id)?;
+            maybe_complete_run(conn, &payload.run_id, &lifecycle_at)?;
 
             Ok(json!({
                 "taskId": payload.task_id,
@@ -795,6 +810,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
+            let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
                 "UPDATE narrative_extraction_tasks
@@ -804,7 +820,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                         lease_owner = NULL,
                         lease_expires_at = NULL,
                         heartbeat_at = NULL,
-                        completed_at = CASE WHEN ?1 = 'failed' THEN datetime('now') ELSE NULL END,
+                        completed_at = CASE WHEN ?1 = 'failed' THEN ?6 ELSE NULL END,
                         version = version + 1
                   WHERE id = ?4 AND run_id = ?5 AND status = 'running'",
                 params![
@@ -813,6 +829,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                     payload.error_message,
                     payload.task_id,
                     payload.run_id,
+                    lifecycle_at,
                 ],
             )?;
             anyhow::ensure!(updated == 1, "task is not running");
@@ -820,30 +837,32 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
             conn.execute(
                 "UPDATE narrative_extraction_attempts
                     SET status = 'failed',
-                        completed_at = datetime('now'),
+                        completed_at = ?3,
                         error_message = ?1,
                         output_json = COALESCE(?2, output_json)
-                  WHERE id = ?3 AND task_id = ?4",
+                  WHERE id = ?4 AND task_id = ?5",
                 params![
                     payload.error_message,
                     output_json,
+                    lifecycle_at,
                     payload.attempt_id,
                     payload.task_id,
                 ],
             )?;
 
             if requeue {
-                maybe_complete_run(conn, &payload.run_id)?;
+                maybe_complete_run(conn, &payload.run_id, &lifecycle_at)?;
             } else {
                 conn.execute(
                     "UPDATE narrative_extraction_runs
                         SET status = 'failed',
-                            completed_at = datetime('now'),
+                            completed_at = ?2,
                             outcome_summary_json = ?1,
                             version = version + 1
-                      WHERE id = ?2 AND status = 'running'",
+                      WHERE id = ?3 AND status = 'running'",
                     params![
                         json!({ "failedTaskId": payload.task_id }).to_string(),
+                        lifecycle_at,
                         payload.run_id,
                     ],
                 )?;
@@ -859,7 +878,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
     })
 }
 
-fn maybe_complete_run(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
+fn maybe_complete_run(conn: &Connection, run_id: &str, lifecycle_at: &str) -> anyhow::Result<()> {
     let remaining: i64 = conn.query_row(
         "SELECT COUNT(*)
            FROM narrative_extraction_tasks
@@ -872,10 +891,10 @@ fn maybe_complete_run(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
         conn.execute(
             "UPDATE narrative_extraction_runs
                 SET status = 'completed',
-                    completed_at = datetime('now'),
+                    completed_at = ?2,
                     version = version + 1
               WHERE id = ?1 AND status = 'running'",
-            params![run_id],
+            params![run_id, lifecycle_at],
         )?;
     }
     Ok(())
@@ -2052,6 +2071,7 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod unit_tests {
+    use super::super::{transition_run_status_in_tx, ClaimTaskPayload, NarrativeRunStatus};
     use super::*;
     use crate::Database;
     use serde_json::json;
@@ -2093,6 +2113,30 @@ mod unit_tests {
         })
         .expect("seed project");
         db
+    }
+
+    fn insert_automatic_run_for_api_test(db: &Database, run_id: &str, run_kind: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, run_kind,
+                     semantic_epoch_id, work_key, version)
+                 VALUES (?1, 'project-1', ?2, '{}', '{}', 'digest', 'running', '{}',
+                         '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z', ?2,
+                         NULL, ?1, 0)",
+                params![run_id, run_kind],
+            )?;
+            if run_kind == "freshness-evaluation" {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET consumer_id = ?2 WHERE id = ?1",
+                    params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("insert automatic Run");
     }
 
     #[test]
@@ -2194,17 +2238,166 @@ mod unit_tests {
                              NULL, ?1, 0)",
                     params![run_id, run_kind],
                 )?;
+                if run_kind == "freshness-evaluation" {
+                    conn.execute(
+                        "UPDATE narrative_extraction_runs
+                            SET consumer_id = ?2 WHERE id = ?1",
+                        params![run_id, INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID],
+                    )?;
+                }
                 let error = ensure_generic_task_api_allowed(conn, &run_id)
                     .expect_err("generic lifecycle APIs must not own automatic Runs");
                 assert!(
-                    error
-                        .to_string()
-                        .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
+                    error.to_string().contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
                     "unexpected error for {run_kind}: {error}"
                 );
                 Ok(())
             })
             .expect("automatic Run authority guard");
+        }
+    }
+
+    #[test]
+    fn every_generic_public_task_api_rejects_runtime_owned_automatic_runs() {
+        let db = full_migrated_db();
+        let assert_forbidden = |result: anyhow::Result<Value>| {
+            let error = result.expect_err("automatic Run must be owned by its runtime");
+            assert!(
+                error.to_string().contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
+                "unexpected generic API error: {error}"
+            );
+        };
+
+        for (index, run_kind) in [
+            "freshness-evaluation",
+            "backfill",
+            "dependency-verify",
+            "semantic-index-rebuild",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run_id = format!("automatic-public-api-{index}");
+            insert_automatic_run_for_api_test(&db, &run_id, run_kind);
+
+            assert_forbidden(cancel_run(&db, run_id.clone(), "project-1".to_string()));
+            assert_forbidden(claim_task(
+                &db,
+                ClaimTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    lease_duration_secs: None,
+                    task_kinds: None,
+                },
+            ));
+            assert_forbidden(finish_task(
+                &db,
+                FinishTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    task_id: "not-owned-task".to_string(),
+                    attempt_id: "not-owned-attempt".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    output_json: None,
+                    artifacts: vec![],
+                },
+            ));
+            assert_forbidden(fail_task(
+                &db,
+                FailTaskPayload {
+                    run_id: run_id.clone(),
+                    project_id: "project-1".to_string(),
+                    task_id: "not-owned-task".to_string(),
+                    attempt_id: "not-owned-attempt".to_string(),
+                    lease_owner: "generic-api-test".to_string(),
+                    error_message: "generic API must not own this Run".to_string(),
+                    output_json: None,
+                    requeue: Some(false),
+                },
+            ));
+
+            let (status, completed_at): (String, Option<String>) = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT status, completed_at
+                           FROM narrative_extraction_runs WHERE id = ?1",
+                        params![run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("read guarded automatic Run");
+            assert_eq!(status, "running");
+            assert_eq!(completed_at, None);
+        }
+    }
+
+    #[test]
+    fn automatic_owner_finalizer_wins_backfill_and_rebuild_interleaving() {
+        let db = full_migrated_db();
+        let epoch_id = seed_epoch(&db, "project-1");
+        for (index, (run_kind, work_key)) in [
+            ("backfill", "backfill-phase-gap"),
+            ("semantic-index-rebuild", "rebuild-phase-gap"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let created = create_system_run(
+                &db,
+                "project-1",
+                run_kind,
+                &epoch_id,
+                work_key,
+                &json!({ "phase": "committed-before-finalize" }),
+                "system-spec-digest",
+                if run_kind == "backfill" {
+                    SystemRunWorkKeyReuse::RunningAndCompleted
+                } else {
+                    SystemRunWorkKeyReuse::RunningOnly
+                },
+                None,
+            )
+            .expect("create owner Run");
+            let run_id = created["runId"].as_str().expect("owner Run id").to_string();
+
+            let generic_error = cancel_run(&db, run_id.clone(), "project-1".to_string())
+                .expect_err("generic cancellation must lose the phase-gap race");
+            assert!(generic_error
+                .to_string()
+                .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
+
+            db.with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    record_run_outcome_in_tx(
+                        conn,
+                        &run_id,
+                        &json!({ "phase": "committed-before-finalize", "owner": true }),
+                    )?;
+                    Ok(())
+                })
+            })
+            .expect("owner finalizer completes atomically");
+
+            let (status, completed_at, outcome): (String, String, String) = db
+                .with_conn(|conn| {
+                    conn.query_row(
+                        "SELECT status, completed_at, outcome_summary_json
+                           FROM narrative_extraction_runs WHERE id = ?1",
+                        params![run_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .map_err(Into::into)
+                })
+                .expect("read owner-finalized Run");
+            assert_eq!(
+                status, "completed",
+                "owner Run {index} must remain authoritative"
+            );
+            assert!(completed_at.ends_with('Z'));
+            assert!(outcome.contains("committed-before-finalize"));
         }
     }
 
@@ -2229,12 +2422,8 @@ mod unit_tests {
         )
         .expect("create pending manual Run");
 
-        cancel_run(
-            &db,
-            "manual-run-1".to_string(),
-            "project-1".to_string(),
-        )
-        .expect("cancel pending manual Run");
+        cancel_run(&db, "manual-run-1".to_string(), "project-1".to_string())
+            .expect("cancel pending manual Run");
 
         let completed_at: String = db
             .with_conn(|conn| {
@@ -2249,6 +2438,82 @@ mod unit_tests {
         assert!(
             completed_at.ends_with('Z') && completed_at.contains('.'),
             "Run lifecycle timestamps must be RFC3339 with milliseconds: {completed_at}"
+        );
+    }
+
+    #[test]
+    fn list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants() {
+        let db = full_migrated_db();
+        db.with_conn(|conn| {
+            for (run_id, status, created_at, started_at, completed_at) in [
+                (
+                    "run-legacy-space",
+                    "running",
+                    "2026-08-23 09:59:00",
+                    Some("2026-08-23 10:00:00"),
+                    None,
+                ),
+                (
+                    "run-rfc3339-millis",
+                    "completed",
+                    "2026-08-23T09:58:00.000Z",
+                    Some("2026-08-23T09:58:00.000Z"),
+                    Some("2026-08-23T09:59:59.900Z"),
+                ),
+            ] {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, completed_at, version)
+                     VALUES (?1, 'project-1', 'chronicle.extract', '{}', '{}', 'digest',
+                             ?2, '{}', ?3, ?4, ?5, 0)",
+                    params![run_id, status, created_at, started_at, completed_at],
+                )?;
+            }
+            Ok(())
+        })
+        .expect("insert mixed timestamp Runs");
+
+        for run_id in ["run-legacy-space", "run-rfc3339-millis"] {
+            save_proposal_set(
+                &db,
+                SaveProposalSetPayload {
+                    run_id: run_id.to_string(),
+                    project_id: "project-1".to_string(),
+                    proposal_set_id: Some(format!("set-{run_id}")),
+                    set_kind: "chronicle.extract.review@1".to_string(),
+                    summary_json: None,
+                    proposals: vec![ProposalSeed {
+                        proposal_id: Some(format!("proposal-{run_id}")),
+                        proposal_key: format!("key-{run_id}"),
+                        kind: "chronicle.event.create@1".to_string(),
+                        payload_json: json!({ "title": run_id }),
+                        reconciliation_envelope: None,
+                    }],
+                },
+            )
+            .expect("insert resumable ProposalSet");
+        }
+
+        let listed = list_resumable_runs(
+            &db,
+            ListResumableRunsPayload {
+                project_id: "project-1".to_string(),
+                surface_path_id: None,
+                limit: Some(10),
+            },
+        )
+        .expect("list mixed timestamp Runs");
+        let run_ids: Vec<&str> = listed
+            .as_array()
+            .expect("resumable list")
+            .iter()
+            .map(|run| run["runId"].as_str().expect("runId"))
+            .collect();
+        assert_eq!(
+            run_ids,
+            vec!["run-legacy-space", "run-rfc3339-millis"],
+            "ordering must compare instants, not the legacy space versus RFC3339 separator"
         );
     }
 

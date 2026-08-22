@@ -151,9 +151,9 @@ pub(crate) fn claim_next_task(
     conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = CASE WHEN status = 'pending' THEN 'running' ELSE status END,
-                started_at = COALESCE(started_at, datetime('now'))
+                started_at = COALESCE(started_at, ?2)
           WHERE id = ?1",
-        params![payload.run_id],
+        params![payload.run_id, started_at],
     )?;
 
     Ok(Some(ClaimedTask {

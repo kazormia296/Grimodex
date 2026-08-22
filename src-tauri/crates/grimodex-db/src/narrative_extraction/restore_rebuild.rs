@@ -2723,6 +2723,15 @@ mod tests {
                 })
             })
             .expect("create an in-flight rebuild run");
+        let generic_error = crate::narrative_extraction::repository::cancel_run(
+            &db,
+            run_id.clone(),
+            "project-1".to_string(),
+        )
+        .expect_err("generic cancellation must not win the Rebuild finalization gap");
+        assert!(generic_error
+            .to_string()
+            .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
         db.with_conn(|conn| create_epoch_in_tx(conn, "project-1", "restore", None))
             .expect("rotate the semantic epoch");
 

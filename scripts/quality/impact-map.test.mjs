@@ -77,6 +77,33 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
   );
 });
 
+test("the Narrative semantic suite executes terminal timestamp and projection gates", () => {
+  const commandText = JSON.stringify(
+    LIGHT_SUITE_DEFINITIONS["narrative-semantic-contract"].commands,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::execution_state::tests::run_transition_persists_millisecond_rfc3339_timestamps/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::every_generic_public_task_api_rejects_runtime_owned_automatic_runs/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::repository::unit_tests::list_resumable_runs_orders_mixed_legacy_and_rfc3339_instants/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::legacy_backfill::tests::backfill_owner_finalizer_survives_generic_cancel_phase_gap/,
+  );
+  assert.match(
+    commandText,
+    /narrative_extraction::restore_rebuild::tests::rebuild_finalization_after_epoch_rotation_is_failed_and_returns_error/,
+  );
+  assert.match(commandText, /narrative_terminal_failure_projection/);
+});
+
 test("incremental Freshness runtime changes select the Narrative runtime gate", async () => {
   const source = await readFile(
     new URL("../../evals/impact-map.yaml", import.meta.url),
@@ -213,6 +240,11 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
     "src/application/narrative-extraction/extractionCoordinator.ts",
     "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
   ];
   const tests = [
     "src/features/narrative-semantic-core/contracts/scopeV2.test.ts",
@@ -227,6 +259,12 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     "src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts",
     "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.test.ts",
     "src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs",
+    "src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs",
     "scripts/quality/impact-map.test.mjs",
   ];
 

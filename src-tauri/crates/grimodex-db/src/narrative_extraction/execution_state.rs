@@ -291,14 +291,15 @@ pub(crate) fn transition_task_status_in_tx(
         to.as_str()
     );
 
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_tasks
             SET status = ?1,
-                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END,
+                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, ?3) ELSE started_at END,
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END,
                 version = version + 1
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), task_id, from.as_str()],
+          WHERE id = ?4 AND status = ?5",
+        params![to.as_str(), to.is_terminal(), transition_at, task_id, from.as_str()],
     )?;
     anyhow::ensure!(
         updated == 1,
@@ -335,12 +336,19 @@ pub(crate) fn transition_attempt_status_in_tx(
         to.as_str()
     );
 
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = ?1,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), attempt_id, from.as_str()],
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END
+          WHERE id = ?4 AND status = ?5",
+        params![
+            to.as_str(),
+            to.is_terminal(),
+            transition_at,
+            attempt_id,
+            from.as_str()
+        ],
     )?;
     anyhow::ensure!(
         updated == 1,
@@ -371,7 +379,7 @@ pub(crate) fn transition_attempt_status_in_tx(
 /// Runs entirely inside the caller's transaction — callers own the
 /// surrounding `BEGIN`/`COMMIT` (see `with_immediate_transaction`).
 pub(crate) fn supersede_run_in_tx(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
-    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Superseded)?;
+    let transition_at = transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Superseded)?;
 
     conn.execute(
         "UPDATE narrative_extraction_tasks
@@ -379,24 +387,24 @@ pub(crate) fn supersede_run_in_tx(conn: &Connection, run_id: &str) -> anyhow::Re
                 lease_owner = NULL,
                 lease_expires_at = NULL,
                 heartbeat_at = NULL,
-                completed_at = datetime('now'),
+                completed_at = ?2,
                 version = version + 1
           WHERE run_id = ?1
             AND status IN ('queued', 'running')",
-        params![run_id],
+        params![run_id, transition_at],
     )?;
 
     conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = 'failed',
-                completed_at = datetime('now'),
+                completed_at = ?2,
                 failure_code = 'NEX_RUN_SUPERSEDED',
                 retry_disposition = 'superseded'
           WHERE status = 'running'
             AND task_id IN (
               SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1
             )",
-        params![run_id],
+        params![run_id, transition_at],
     )?;
 
     Ok(())

@@ -280,40 +280,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
         })
     });
 
-    let finalize_status = if transform_result.is_ok() {
-        NarrativeRunStatus::Completed
-    } else {
-        NarrativeRunStatus::Failed
-    };
-    let finalize_result = db.with_conn(|conn| {
-        with_immediate_transaction(conn, |conn| {
-            // Bind terminal Finding evidence to the timestamp persisted by
-            // the terminal Run transition. This avoids a pre-transition
-            // clock sample becoming older than the completed Run itself.
-            let finalized_at = transition_run_status_in_tx(conn, &run_id, finalize_status)?;
-            match &transform_result {
-                Ok(_) => {
-                    resolve_terminal_failure_for_run_in_tx(
-                        conn,
-                        project_id,
-                        &run_id,
-                        &finalized_at,
-                    )?;
-                }
-                Err(error) => {
-                    project_terminal_failure_for_run_in_tx(
-                        conn,
-                        project_id,
-                        &run_id,
-                        &error.to_string(),
-                        &finalized_at,
-                        true,
-                    )?;
-                }
-            }
-            Ok(())
-        })
-    });
+    let finalize_result = finalize_legacy_backfill_run(db, project_id, &run_id, &transform_result);
     if let Err(finalize_error) = finalize_result {
         return Err(anyhow::anyhow!(
             "legacy dependency backfill: failed to finalize run '{run_id}' with durable terminal evidence: {finalize_error}"
@@ -324,6 +291,52 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
         Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
         Err(error) => Err(error),
     }
+}
+
+/// Finalize one Backfill Run after its independent transform transaction.
+/// Keeping this owner-only step in a named helper makes the phase boundary
+/// explicit: the generic task APIs must not be able to cancel the Run between
+/// the transform commit and this durable status/evidence transaction.
+fn finalize_legacy_backfill_run(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    transform_result: &anyhow::Result<BackfillSummary>,
+) -> anyhow::Result<()> {
+    let finalize_status = if transform_result.is_ok() {
+        NarrativeRunStatus::Completed
+    } else {
+        NarrativeRunStatus::Failed
+    };
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            // Bind terminal Finding evidence to the timestamp persisted by
+            // the terminal Run transition. This avoids a pre-transition
+            // clock sample becoming older than the completed Run itself.
+            let finalized_at = transition_run_status_in_tx(conn, run_id, finalize_status)?;
+            match transform_result {
+                Ok(_) => {
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &finalized_at,
+                    )?;
+                }
+                Err(error) => {
+                    project_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        run_id,
+                        &error.to_string(),
+                        &finalized_at,
+                        true,
+                    )?;
+                }
+            }
+            Ok(())
+        })
+    })
 }
 
 /// Status of the most recent Backfill Run for one project, if any --
@@ -656,6 +669,7 @@ mod tests {
     use crate::narrative_extraction::application_contributions::{
         list_contributions_for_application, list_contributions_for_target,
     };
+    use crate::narrative_extraction::repository::cancel_run;
     use crate::narrative_extraction::semantic_epoch::list_epochs;
     use crate::Database;
     use std::path::Path;
@@ -1448,6 +1462,67 @@ mod tests {
         assert_eq!(run_kind, "backfill");
         assert_eq!(status, "completed");
         assert_eq!(work_key.as_deref(), Some(LEGACY_BACKFILL_WORK_KEY));
+    }
+
+    #[test]
+    fn backfill_owner_finalizer_survives_generic_cancel_phase_gap() {
+        let db = test_db();
+        let run_id = db
+            .with_conn(|conn| {
+                seed_project(conn, "project-1");
+                with_immediate_transaction(conn, |conn| {
+                    let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
+                    let created = create_system_run_in_tx(
+                        conn,
+                        "project-1",
+                        "backfill",
+                        &epoch_id,
+                        LEGACY_BACKFILL_WORK_KEY,
+                        &json!({ "phase": "transform-committed" }),
+                        "backfill-spec-digest",
+                        SystemRunWorkKeyReuse::RunningAndCompleted,
+                        None,
+                    )?;
+                    let run_id = created["runId"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("missing backfill run id"))?
+                        .to_string();
+                    Ok(run_id)
+                })
+            })
+            .expect("create phase-gap Backfill Run");
+
+        let generic_error = cancel_run(&db, run_id.clone(), "project-1".to_string())
+            .expect_err("generic cancellation must not win the Backfill phase gap");
+        assert!(generic_error
+            .to_string()
+            .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"));
+
+        let transform_result: anyhow::Result<BackfillSummary> = Err(anyhow::anyhow!(
+            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: committed transform cannot be finalized"
+        ));
+        finalize_legacy_backfill_run(&db, "project-1", &run_id, &transform_result)
+            .expect("Backfill owner finalizer must retain failure evidence");
+
+        db.with_conn(|conn| {
+            let (status, terminal_code, observations): (String, Option<String>, i64) = conn
+                .query_row(
+                    "SELECT r.status, r.terminal_reason_code,
+                            (SELECT COUNT(*) FROM narrative_maintenance_finding_observations
+                              WHERE run_id = ?1)
+                       FROM narrative_extraction_runs r WHERE r.id = ?1",
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+            assert_eq!(status, "failed");
+            assert!(terminal_code.is_some());
+            assert!(
+                observations > 0,
+                "failed Backfill must retain terminal evidence"
+            );
+            Ok(())
+        })
+        .expect("read owner-finalized Backfill Run");
     }
 
     #[test]
