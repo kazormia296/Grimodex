@@ -10,6 +10,7 @@
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
 use super::dependency_edges::{
@@ -41,6 +42,8 @@ use super::terminal_failure::{
 };
 use crate::Database;
 
+const RESTORE_EPOCH_ID_DOMAIN: &[u8] = b"grimodex:semantic-epoch:restore:v1";
+
 type RebuildRunIdentityRow = (
     String,
     Option<String>,
@@ -52,6 +55,53 @@ type RebuildRunIdentityRow = (
 fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(!value.trim().is_empty(), "{name} is required");
     Ok(())
+}
+
+/// Derive the restore Semantic Epoch ID from the project and the canonical
+/// restore identity.  Length-delimited fields keep the project and image
+/// boundaries unambiguous, while the domain prefix prevents this digest from
+/// being reused as an identifier for another kind of object.
+pub(crate) fn deterministic_restore_epoch_id(project_id: &str, restore_identity: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(RESTORE_EPOCH_ID_DOMAIN);
+    for value in [project_id, restore_identity] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("restore-epoch-sha256:{}", hex::encode(hasher.finalize()))
+}
+
+fn create_restore_epoch_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    restore_identity: &str,
+) -> anyhow::Result<String> {
+    require_non_empty(project_id, "projectId")?;
+    require_non_empty(restore_identity, "restoreIdentity")?;
+    let epoch_number: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(epoch_number), -1) + 1
+           FROM narrative_semantic_epochs
+          WHERE project_id = ?1",
+        params![project_id],
+        |row| row.get(0),
+    )?;
+    let epoch_id = deterministic_restore_epoch_id(project_id, restore_identity);
+    let created_at = chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string();
+    conn.execute(
+        "INSERT INTO narrative_semantic_epochs
+            (id, project_id, epoch_number, reason, triggered_by_change_event_uid, created_at)
+         VALUES (?1, ?2, ?3, 'restore', ?4, ?5)",
+        params![
+            epoch_id,
+            project_id,
+            epoch_number,
+            restore_identity,
+            created_at
+        ],
+    )?;
+    Ok(epoch_id)
 }
 
 // ---------------------------------------------------------------------
@@ -113,6 +163,7 @@ pub fn ensure_restore_epochs_for_workspace(
     db: &Database,
     restore_identity: &str,
 ) -> anyhow::Result<Vec<String>> {
+    let restore_identity = restore_identity.trim();
     require_non_empty(restore_identity, "restoreIdentity")?;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -140,13 +191,7 @@ pub fn ensure_restore_epochs_for_workspace(
                     minted.push(epoch_id);
                     continue;
                 }
-                let epoch_id = rotate_epoch_for_restore_in_tx(
-                    conn,
-                    &project_id,
-                    "project-restored",
-                    Some(restore_identity),
-                )?
-                .ok_or_else(|| anyhow::anyhow!("restore epoch rotation unexpectedly skipped"))?;
+                let epoch_id = create_restore_epoch_in_tx(conn, &project_id, restore_identity)?;
                 minted.push(epoch_id);
             }
             Ok(minted)
@@ -2167,6 +2212,29 @@ mod tests {
             .with_conn(|conn| list_epochs(conn, "project-1"))
             .expect("list epochs");
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn restore_epoch_id_is_stable_project_scoped_and_domain_separated() {
+        let restore_identity = "restore-image-sha256:deadbeef";
+        let same = deterministic_restore_epoch_id("project-1", restore_identity);
+        assert_eq!(
+            same,
+            deterministic_restore_epoch_id("project-1", restore_identity)
+        );
+        assert!(same.starts_with("restore-epoch-sha256:"));
+        assert_ne!(
+            same,
+            deterministic_restore_epoch_id("project-1", "restore-image-sha256:cafebabe")
+        );
+        assert_ne!(
+            same,
+            deterministic_restore_epoch_id("project-2", restore_identity)
+        );
+        assert_ne!(
+            same,
+            deterministic_restore_epoch_id("project-1", "semantic-epoch-reset:deadbeef")
+        );
     }
 
     #[test]

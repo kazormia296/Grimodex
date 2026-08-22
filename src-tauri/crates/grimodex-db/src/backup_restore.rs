@@ -1494,6 +1494,10 @@ pub(crate) fn wait_for_sole_owner(authority: &PinnedWorkspaceDb) -> AppResult<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::{
+        canonical_work_key_for_epoch, AutomaticRunKind, REBUILD_DERIVED_WORK_KEY,
+        VERIFY_WORK_KEY_PREFIX,
+    };
     use crate::open::{
         spawn_workspace_maintenance_worker, try_claim_workspace_maintenance,
         workspace_maintenance_exclusive_waiters,
@@ -1778,7 +1782,8 @@ mod tests {
             let rows = db.execute(
                 "SELECT COUNT(*) AS total,
                         SUM(CASE WHEN reason = 'restore' THEN 1 ELSE 0 END) AS restores,
-                        MAX(triggered_by_change_event_uid) AS identity
+                        MAX(triggered_by_change_event_uid) AS identity,
+                        MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
                    FROM narrative_semantic_epochs
                   WHERE project_id = 'restore-project'",
                 &[],
@@ -1788,19 +1793,36 @@ mod tests {
                 rows[0]["total"].as_i64().unwrap_or_default(),
                 rows[0]["restores"].as_i64().unwrap_or_default(),
                 rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
             ))
         })
         .expect("read first staged restore epoch");
         assert_eq!(first.0, 2);
         assert_eq!(first.1, 1);
         assert!(first.2.starts_with("restore-image-sha256:"));
+        assert!(first.3.starts_with("restore-epoch-sha256:"));
+        let first_rebuild_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY,
+            Some(&first.3),
+        )
+        .expect("canonical rebuild work coordinate");
+        let first_verify_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::Verify,
+            &format!("{VERIFY_WORK_KEY_PREFIX}{}", first.3),
+            Some(&first.3),
+        )
+        .expect("canonical verify work coordinate");
 
         restore_backup_core(&state, backup_name, || {}).expect("retry same normal restore");
         let second = with_db_state(&state, |db| {
             let rows = db.execute(
                 "SELECT COUNT(*) AS total,
                         SUM(CASE WHEN reason = 'restore' THEN 1 ELSE 0 END) AS restores,
-                        MAX(triggered_by_change_event_uid) AS identity
+                        MAX(triggered_by_change_event_uid) AS identity,
+                        MAX(CASE WHEN reason = 'restore' THEN id END) AS epoch_id
                    FROM narrative_semantic_epochs
                   WHERE project_id = 'restore-project'",
                 &[],
@@ -1810,10 +1832,27 @@ mod tests {
                 rows[0]["total"].as_i64().unwrap_or_default(),
                 rows[0]["restores"].as_i64().unwrap_or_default(),
                 rows[0]["identity"].as_str().unwrap_or_default().to_string(),
+                rows[0]["epoch_id"].as_str().unwrap_or_default().to_string(),
             ))
         })
         .expect("read retried staged restore epoch");
         assert_eq!(second, first);
+        let second_rebuild_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::RebuildDerived,
+            REBUILD_DERIVED_WORK_KEY,
+            Some(&second.3),
+        )
+        .expect("retried canonical rebuild work coordinate");
+        let second_verify_work = canonical_work_key_for_epoch(
+            "restore-project",
+            AutomaticRunKind::Verify,
+            &format!("{VERIFY_WORK_KEY_PREFIX}{}", second.3),
+            Some(&second.3),
+        )
+        .expect("retried canonical verify work coordinate");
+        assert_eq!(second_rebuild_work, first_rebuild_work);
+        assert_eq!(second_verify_work, first_verify_work);
         let _ = std::fs::remove_dir_all(dir);
     }
 

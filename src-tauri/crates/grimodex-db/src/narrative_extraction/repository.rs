@@ -1,7 +1,7 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use anyhow::Context;
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
+use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -10,6 +10,7 @@ use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
     PROPOSAL_REVISION_CONSUMER_KIND,
 };
+use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
@@ -397,53 +398,7 @@ pub(crate) fn create_system_run_in_tx(
 }
 
 fn next_system_run_timestamp(conn: &Connection, project_id: &str) -> anyhow::Result<String> {
-    let now = Utc::now();
-    let now_millis = DateTime::<Utc>::from_timestamp_millis(now.timestamp_millis())
-        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: current clock"))?;
-    let mut statement = conn.prepare(
-        "SELECT COALESCE(completed_at, started_at, created_at)
-           FROM narrative_extraction_runs
-          WHERE project_id = ?1
-            AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')",
-    )?;
-    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
-    let mut latest = None;
-    for row in rows {
-        let value = row?;
-        let parsed = DateTime::parse_from_rfc3339(&value)
-            .map(|instant| instant.with_timezone(&Utc))
-            .or_else(|_| {
-                NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
-                    .or_else(|_| NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S"))
-                    .map(|instant| DateTime::<Utc>::from_naive_utc_and_offset(instant, Utc))
-            })
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
-                )
-            })?;
-        latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
-    }
-    let next = latest
-        .map(|latest| {
-            let next = latest
-                .checked_add_signed(Duration::milliseconds(1))
-                .ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot advance lifecycle instant '{}'",
-                        latest.to_rfc3339()
-                    )
-                })?;
-            anyhow::ensure!(
-                next.year() <= 9999,
-                "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot persist lifecycle instant '{}'",
-                next.to_rfc3339()
-            );
-            Ok(next)
-        })
-        .transpose()?
-        .map_or(now_millis, |latest| now_millis.max(latest));
-    Ok(next.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    next_run_lifecycle_timestamp_in_tx(conn, project_id)
 }
 
 /// Who asked for a system Run, and which request it was.

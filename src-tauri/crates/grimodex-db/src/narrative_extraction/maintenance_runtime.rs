@@ -1937,6 +1937,14 @@ pub const fn retry_backoff_ms(attempt: u32) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::execution_state::{
+        transition_run_status_in_tx, NarrativeRunStatus,
+    };
+    use crate::narrative_extraction::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+    use crate::narrative_extraction::restore_rebuild::DependencyGraphVerifyReport;
+    use crate::Database;
+    use rusqlite::params;
+    use serde_json::json;
 
     #[test]
     fn automatic_kind_set_is_closed() {
@@ -1962,5 +1970,91 @@ mod tests {
         let result = coalesce_desired_work([first, second]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reasons, ["a", "b"]);
+    }
+
+    #[test]
+    fn rediscovery_orders_new_terminal_run_after_imported_future_run() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, outcome_summary_json, created_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', ?1, ?1,
+                         'sha256:backfill', 'completed', '{}', ?2,
+                         '2020-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z',
+                         'backfill', 'epoch-1', ?3)",
+                params![
+                    json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    })
+                    .to_string(),
+                    json!({
+                        "maintenancePhase": "backfill-complete",
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                        "semanticEpochId": "epoch-1",
+                        "summary": {
+                            "epoch_created": true,
+                            "contributions_created": 0,
+                            "edges_created": 0,
+                            "applications_without_run_id": 0
+                        }
+                    })
+                    .to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            let future_report = serde_json::to_value(DependencyGraphVerifyReport {
+                rebuild_required: true,
+                ..DependencyGraphVerifyReport::default()
+            })?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, outcome_summary_json, created_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES ('imported-future-verify', 'project-1', 'maintenance', '{}', '{}',
+                         'sha256:verify', 'completed', '{}', ?1,
+                         '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
+                         'dependency-verify', 'epoch-1', 'dependency-verify:epoch-1')",
+                params![json!({ "report": future_report }).to_string()],
+            )?;
+            let created = create_system_run_in_tx(
+                conn,
+                "project-1",
+                "semantic-index-rebuild",
+                "epoch-1",
+                REBUILD_DERIVED_WORK_KEY,
+                &json!({}),
+                "sha256:rebuild",
+                SystemRunWorkKeyReuse::None,
+                None,
+            )?;
+            let run_id = created["runId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("created Run has no id"))?;
+            transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
+            Ok(())
+        })
+        .expect("seed imported and newly completed maintenance Runs");
+
+        let next = discover_durable_maintenance_work(&db, "project-1", "durable-wake")
+            .expect("rediscover next maintenance phase")
+            .expect("completed rebuild must request confirmation Verify");
+        assert_eq!(next.run_kind, AutomaticRunKind::Verify);
+        assert_eq!(next.semantic_epoch_id.as_deref(), Some("epoch-1"));
     }
 }

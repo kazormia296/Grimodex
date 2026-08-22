@@ -1,8 +1,9 @@
 //! C2-ZA durable liveness evidence for the incremental Freshness consumer.
 //!
 //! These tests deliberately keep scheduler `Idle` semantics intact.  A
-//! completed Run and a cursor at the Feed head are a readiness claim, not a
-//! request to mint another Run when there is no unacknowledged Feed range.
+//! completed Run and a cursor at the Feed head are database facts, not proof
+//! that a scheduler is still alive; with no external health seam they remain
+//! incomplete readiness evidence.
 
 use grimodex_db::narrative_extraction::{
     ensure_test_schema, inspect_project_cutover_readiness, run_incremental_freshness_cycle,
@@ -191,7 +192,7 @@ fn incremental_readiness(db: &Database) -> (ReadinessState, Vec<String>) {
 }
 
 #[test]
-fn completed_current_epoch_run_and_cursor_at_feed_head_prove_durable_liveness() {
+fn completed_current_epoch_run_and_cursor_at_feed_head_do_not_prove_scheduler_liveness() {
     let (db, run_id) = process_one_feed_range();
 
     db.with_conn(|conn| {
@@ -272,9 +273,38 @@ fn completed_current_epoch_run_and_cursor_at_feed_head_prove_durable_liveness() 
     let (state, reasons) = incremental_readiness(&db);
     assert_eq!(
         state,
-        ReadinessState::Passed,
-        "durable current-epoch evidence should pass C2-ZA: {reasons:?}"
+        ReadinessState::Incomplete,
+        "DB-only current-epoch evidence cannot prove scheduler liveness: {reasons:?}"
     );
+    assert!(reasons.iter().any(|reason| {
+        reason == "incremental-freshness-scheduler-liveness-evidence-unavailable"
+    }));
+}
+
+#[test]
+fn stopped_scheduler_with_old_completed_run_and_head_cursor_is_incomplete() {
+    let db = fixture_db();
+    seed_scene_feed_event(&db, 1);
+    seed_completed_freshness_run(
+        &db,
+        CURRENT_EPOCH_ID,
+        "old-completed-freshness-run",
+        1,
+        json!({
+            "runId": "old-completed-freshness-run",
+            "projectId": PROJECT_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 1,
+            "hasMore": false,
+        }),
+    );
+    seed_acknowledged_cursor(&db, 1, None);
+
+    let (state, reasons) = incremental_readiness(&db);
+    assert_eq!(state, ReadinessState::Incomplete, "{reasons:?}");
+    assert!(reasons.iter().any(|reason| {
+        reason == "incremental-freshness-scheduler-liveness-evidence-unavailable"
+    }));
 }
 
 #[test]

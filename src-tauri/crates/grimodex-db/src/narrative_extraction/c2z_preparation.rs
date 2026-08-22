@@ -1556,7 +1556,14 @@ fn inspect_incremental_runtime_gate(
             "incremental-freshness-completed-outcome-not-at-feed-head",
         ));
     }
-    Ok(ReadinessGate::passed())
+    // The database can prove that the last observed run reached the Feed
+    // head, but it cannot prove that a scheduler is still alive and able to
+    // process the next event.  Keep this gate incomplete until a real
+    // external scheduler-health evidence seam exists; a completed Run must
+    // never self-attest its producer's liveness.
+    Ok(ReadinessGate::incomplete(
+        "incremental-freshness-scheduler-liveness-evidence-unavailable",
+    ))
 }
 
 fn is_canonical_instant(value: &str) -> bool {
