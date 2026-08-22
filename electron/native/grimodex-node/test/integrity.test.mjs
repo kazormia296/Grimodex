@@ -38,13 +38,67 @@ backend.onEvent((channel, payload) => {
   maintenanceEvents.push(JSON.parse(payload));
 });
 
-async function waitForMaintenanceEvent(timeoutMs = 3_000) {
+function maintenanceEventBaseline() {
+  return maintenanceEvents.length;
+}
+
+function currentMaintenanceBinding() {
+  const raw = backend.getNarrativeMaintenanceWorkspaceBinding();
+  return typeof raw === "string" ? JSON.parse(raw) : raw;
+}
+
+function maintenanceEventPredicate({ projectId, operation, binding, reason }) {
+  return (event) =>
+    event?.projectId === projectId &&
+    event?.operation === operation &&
+    event?.reason === (reason ?? "semantic-epoch-rotated") &&
+    event?.authorityId === binding.authorityId &&
+    event?.generation === binding.generation;
+}
+
+async function waitForMaintenanceEventAfter(
+  baselineCount,
+  predicate,
+  label = "epoch rotation event",
+  timeoutMs = 3_000,
+) {
+  assert.ok(
+    Number.isSafeInteger(baselineCount) && baselineCount >= 0,
+    "event baseline must be a non-negative integer",
+  );
+  assert.equal(typeof predicate, "function", "event predicate is required");
   const deadline = Date.now() + timeoutMs;
-  while (maintenanceEvents.length === 0 && Date.now() <= deadline) {
+  while (Date.now() <= deadline) {
+    const event = maintenanceEvents
+      .slice(baselineCount)
+      .find((candidate) => predicate(candidate));
+    if (event) return event;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.ok(maintenanceEvents.length > 0, "epoch rotation event was not emitted");
-  return maintenanceEvents.at(-1);
+  assert.fail(
+    `${label} was not emitted after baseline ${baselineCount}; ` +
+      `newEvents=${JSON.stringify(maintenanceEvents.slice(baselineCount))}`,
+  );
+}
+
+async function assertNoMaintenanceEventAfter(
+  baselineCount,
+  label = "unexpected epoch rotation event",
+  timeoutMs = 100,
+) {
+  assert.ok(
+    Number.isSafeInteger(baselineCount) && baselineCount >= 0,
+    "event baseline must be a non-negative integer",
+  );
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    assert.equal(
+      maintenanceEvents.length,
+      baselineCount,
+      `${label}: event delta must remain zero`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 function mutationIdentity(requestId) {
@@ -97,34 +151,37 @@ test("integrityCheck はレポート object の JSON を返す", async () => {
 });
 
 test("repairIntegrity は空 workspace でもレポート object を返す", async () => {
-  const eventCountBefore = maintenanceEvents.length;
+  const payload = {
+    projectId: PROJECT,
+    requestId: "integrity-empty-repair",
+    sessionId: "integrity-test-session",
+    eventUid: "integrity-empty-event",
+    occurredAt: "2026-08-13T10:00:00.000Z",
+    authorityRoute: "restore-or-migration",
+    caller: "integrity-repair",
+    controls: [
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
+  };
+  const baselineCount = maintenanceEventBaseline();
   const report = JSON.parse(
-    await backend.repairIntegrity({
-      projectId: PROJECT,
-      requestId: "integrity-empty-repair",
-      sessionId: "integrity-test-session",
-      eventUid: "integrity-empty-event",
-      occurredAt: "2026-08-13T10:00:00.000Z",
-      authorityRoute: "restore-or-migration",
-      caller: "integrity-repair",
-      controls: [
-        "exclusive-system-operation",
-        "semantic-epoch-event",
-        "full-rebuild-marker",
-      ],
-      provenance: null,
-      writesAuthorityProtectedField: false,
-    }),
+    await backend.repairIntegrity(payload),
   );
   assert.equal(typeof report, "object");
   assert.ok(report !== null && !Array.isArray(report));
   assert.equal(report.changeEventUid ?? null, null);
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, eventCountBefore);
+  await assertNoMaintenanceEventAfter(
+    baselineCount,
+    "empty repair must not emit an epoch wake",
+  );
 });
 
 test("failed repair emits no epoch wake", async () => {
-  const eventCountBefore = maintenanceEvents.length;
+  const baselineCount = maintenanceEventBaseline();
   await assert.rejects(
     backend.repairIntegrity({
       projectId: PROJECT,
@@ -143,12 +200,14 @@ test("failed repair emits no epoch wake", async () => {
       writesAuthorityProtectedField: false,
     }),
   );
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, eventCountBefore);
+  await assertNoMaintenanceEventAfter(
+    baselineCount,
+    "failed repair must not emit an epoch wake",
+  );
 });
 
 test("failed snapshot restore emits no epoch wake", async () => {
-  const eventCountBefore = maintenanceEvents.length;
+  const baselineCount = maintenanceEventBaseline();
   await assert.rejects(
     backend.projectSnapshotApplyRestore({
       requestId: "snapshot-failed-request",
@@ -159,8 +218,10 @@ test("failed snapshot restore emits no epoch wake", async () => {
       inserts: [],
     }),
   );
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, eventCountBefore);
+  await assertNoMaintenanceEventAfter(
+    baselineCount,
+    "failed snapshot restore must not emit an epoch wake",
+  );
 });
 
 test("non-noop repair emits one observer-only epoch wake and replay emits none", async () => {
@@ -213,19 +274,30 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     provenance: null,
     writesAuthorityProtectedField: false,
   };
+  const binding = currentMaintenanceBinding();
+  assert.ok(binding?.authorityId);
+  assert.ok(Number.isSafeInteger(binding?.generation));
+  const baselineCount = maintenanceEventBaseline();
   const report = JSON.parse(await backend.repairIntegrity(payload));
   assert.ok(report.codexSourcesFixed > 0);
-  const firstEvent = await waitForMaintenanceEvent();
+  const firstEvent = await waitForMaintenanceEventAfter(
+    baselineCount,
+    maintenanceEventPredicate({
+      projectId: "repair-event-p1",
+      operation: "integrity-repair",
+      binding,
+    }),
+    "integrity repair epoch wake",
+  );
   assert.deepEqual(firstEvent, {
     projectId: "repair-event-p1",
     operation: "integrity-repair",
     reason: "semantic-epoch-rotated",
+    authorityId: binding.authorityId,
+    generation: binding.generation,
   });
-  assert.equal(typeof firstEvent.authorityId, "string");
-  assert.ok(firstEvent.authorityId.length > 0);
-  assert.equal(Number.isSafeInteger(firstEvent.generation), true);
-  const countAfterFirst = maintenanceEvents.length;
 
+  const replayBaseline = maintenanceEventBaseline();
   const replay = JSON.parse(
     await backend.repairIntegrity({
       ...payload,
@@ -234,8 +306,10 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     }),
   );
   assert.deepEqual(replay, report);
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, countAfterFirst);
+  await assertNoMaintenanceEventAfter(
+    replayBaseline,
+    "repair replay must not emit an epoch wake",
+  );
 });
 
 test("non-noop snapshot restore emits once, replay emits none, and first no-op emits none", async () => {
@@ -285,22 +359,44 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
     scopes: ["labels"],
     inserts,
   };
+  // Keep the real repair wake from the preceding fixture in the ledger. The
+  // restore assertion must only accept a new, matching event after this
+  // baseline; an old repair event can never satisfy it.
+  assert.ok(
+    maintenanceEvents.some(
+      (event) =>
+        event.projectId === "repair-event-p1" &&
+        event.operation === "integrity-repair",
+    ),
+    "the event ledger must retain the preceding repair wake",
+  );
+  const binding = currentMaintenanceBinding();
+  assert.ok(binding?.authorityId);
+  assert.ok(Number.isSafeInteger(binding?.generation));
+  const restoreBaseline = maintenanceEventBaseline();
   const restored = JSON.parse(
     await backend.projectSnapshotApplyRestore(payload),
   );
   assert.equal(restored.noOp, false);
   assert.equal(typeof restored.changeEventUid, "string");
-  const firstEvent = await waitForMaintenanceEvent();
+  const firstEvent = await waitForMaintenanceEventAfter(
+    restoreBaseline,
+    maintenanceEventPredicate({
+      projectId,
+      operation: "project-snapshot-restore",
+      binding,
+    }),
+    "snapshot restore epoch wake",
+  );
   assert.deepEqual(firstEvent, {
     projectId,
     operation: "project-snapshot-restore",
     reason: "semantic-epoch-rotated",
+    authorityId: binding.authorityId,
+    generation: binding.generation,
   });
-  assert.equal(typeof firstEvent.authorityId, "string");
-  assert.ok(firstEvent.authorityId.length > 0);
-  assert.equal(Number.isSafeInteger(firstEvent.generation), true);
-  const countAfterRestore = maintenanceEvents.length;
 
+  const replayBaseline = maintenanceEventBaseline();
   const replay = JSON.parse(
     await backend.projectSnapshotApplyRestore({
       ...payload,
@@ -308,9 +404,12 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
     }),
   );
   assert.deepEqual(replay, restored);
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, countAfterRestore);
+  await assertNoMaintenanceEventAfter(
+    replayBaseline,
+    "snapshot restore replay must not emit an epoch wake",
+  );
 
+  const noOpBaseline = maintenanceEventBaseline();
   const firstNoOp = JSON.parse(
     await backend.projectSnapshotApplyRestore({
       ...payload,
@@ -320,8 +419,10 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
   );
   assert.equal(firstNoOp.noOp, true);
   assert.equal(firstNoOp.changeEventUid ?? null, null);
-  await new Promise((resolve) => setTimeout(resolve, 25));
-  assert.equal(maintenanceEvents.length, countAfterRestore);
+  await assertNoMaintenanceEventAfter(
+    noOpBaseline,
+    "snapshot restore no-op must not emit an epoch wake",
+  );
 });
 
 test("ftsOptimize / ftsRebuild / ftsRebuildEn は空 workspace で成功する", async () => {
