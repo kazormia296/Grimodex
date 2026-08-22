@@ -504,15 +504,14 @@ fn validate_relevant_run_timestamp(
     Ok(())
 }
 
+const RETRYABLE_NULL_TERMINAL_REASON: &str = "NEX_MAINTENANCE_SQLITE_LOCKED";
+
 fn is_retryable_failed_backfill_without_terminal(run: &DurableMaintenanceRun) -> bool {
     run.run_kind == "backfill"
         && run.status == "failed"
         && run.started_at_raw.is_none()
         && run.completed_at.is_none()
-        && run
-            .terminal_reason_code
-            .as_deref()
-            .is_some_and(|reason| classify_failure(reason).retryable)
+        && run.terminal_reason_code.as_deref() == Some(RETRYABLE_NULL_TERMINAL_REASON)
 }
 
 /// Validate lifecycle shape only after project, coordinate, and status

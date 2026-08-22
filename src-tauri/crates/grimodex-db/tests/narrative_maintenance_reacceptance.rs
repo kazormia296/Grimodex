@@ -65,6 +65,29 @@ fn seed_completed_backfill_marker(db: &Database) {
     .expect("seed completed Backfill marker");
 }
 
+fn seed_failed_backfill_without_terminal(db: &Database, run_id: &str, reason: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at,
+                 run_kind, semantic_epoch_id, work_key, terminal_reason_code)
+             VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest',
+                     'failed', '{}', '2026-08-23T10:00:00.000Z', NULL, NULL,
+                     'backfill', ?3, ?4, ?5)",
+            params![
+                run_id,
+                PROJECT_ID,
+                EPOCH_ID,
+                LEGACY_BACKFILL_WORK_KEY,
+                reason
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed failed Backfill without completed_at");
+}
+
 #[test]
 fn ordinary_work_and_durable_wake_are_rejected_as_one_ack_scope() {
     let db = fixture_db();
@@ -145,21 +168,11 @@ fn durable_transient_failure_is_retried_and_succeeds_after_lock_release() {
 fn retryable_failed_null_terminal_is_accepted_but_nonretryable_is_rejected() {
     let retryable_db = fixture_db();
     seed_completed_backfill_marker(&retryable_db);
-    retryable_db
-        .with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO narrative_extraction_runs
-                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, created_at, started_at, completed_at,
-                     run_kind, semantic_epoch_id, work_key, terminal_reason_code)
-                 VALUES ('retryable-failed-without-terminal', ?1, 'maintenance', '{}', '{}', 'digest',
-                         'failed', '{}', '2026-08-23T10:00:00.000Z', NULL, NULL,
-                         'backfill', ?2, ?3, 'NEX_MAINTENANCE_SQLITE_LOCKED')",
-                params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
-            )?;
-            Ok(())
-        })
-        .expect("seed retryable failed Backfill without completed_at");
+    seed_failed_backfill_without_terminal(
+        &retryable_db,
+        "retryable-failed-without-terminal",
+        "NEX_MAINTENANCE_SQLITE_LOCKED",
+    );
 
     let discovered =
         discover_durable_maintenance_work(&retryable_db, PROJECT_ID, "reacceptance-test")
@@ -167,30 +180,31 @@ fn retryable_failed_null_terminal_is_accepted_but_nonretryable_is_rejected() {
             .expect("retryable failed Backfill must request retry");
     assert_eq!(discovered.run_kind, AutomaticRunKind::Backfill);
 
-    let nonretryable_db = fixture_db();
-    seed_completed_backfill_marker(&nonretryable_db);
-    nonretryable_db
-        .with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO narrative_extraction_runs
-                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
-                     status, coverage_json, created_at, started_at, completed_at,
-                     run_kind, semantic_epoch_id, work_key, terminal_reason_code)
-                 VALUES ('nonretryable-failed-without-terminal', ?1, 'maintenance', '{}', '{}', 'digest',
-                         'failed', '{}', '2026-08-23T10:00:00.000Z', NULL, NULL,
-                         'backfill', ?2, ?3, 'NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION')",
-                params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
-            )?;
-            Ok(())
-        })
-        .expect("seed nonretryable failed Backfill without completed_at");
+    for (index, reason) in [
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+        "NEX_FAKE_SQLITE_LOCKED",
+        "NEX_MAINTENANCE_SQLITE_LOCKED_EXTRA",
+        "NEX_VERIFY_STALE_EPOCH",
+        "NEX_UNKNOWN_FAILURE",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let nonretryable_db = fixture_db();
+        seed_completed_backfill_marker(&nonretryable_db);
+        seed_failed_backfill_without_terminal(
+            &nonretryable_db,
+            &format!("nonretryable-failed-without-terminal-{index}"),
+            reason,
+        );
 
-    let error =
-        discover_durable_maintenance_work(&nonretryable_db, PROJECT_ID, "reacceptance-test")
-            .expect_err("nonretryable failed Backfill without completed_at must fail closed");
-    assert!(error
-        .to_string()
-        .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+        let error =
+            discover_durable_maintenance_work(&nonretryable_db, PROJECT_ID, "reacceptance-test")
+                .expect_err("nonretryable failed Backfill without completed_at must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+    }
 }
 
 #[test]
