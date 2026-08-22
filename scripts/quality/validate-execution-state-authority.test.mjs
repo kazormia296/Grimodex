@@ -311,6 +311,67 @@ describe("validate-execution-state-authority", () => {
     );
   });
 
+  it("accepts the terminal rule's durable diagnostic history override", () => {
+    const findingContract = baseFindingContract({
+      rules: [
+        ...baseFindingContract().rules,
+        {
+          ruleId: "narrative.maintenance-contract-failure",
+          version: 1,
+          identityScope: "maintenance-work",
+          observationStorageClass: "durable-derived-history",
+          observationFields: [
+            "stableSubject",
+            "failureCode",
+            "reasonCode",
+            "evidenceFreshness",
+          ],
+          materialBasisFields: [
+            "stableSubject",
+            "failureCode",
+            "reasonCode",
+            "evidenceFreshness",
+          ],
+        },
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.deepEqual(result.errors, []);
+  });
+
+  it("rejects a maintenance rule without an explicit durable history override", () => {
+    const findingContract = baseFindingContract({
+      rules: [
+        ...baseFindingContract().rules,
+        {
+          ruleId: "narrative.maintenance-contract-failure",
+          version: 1,
+          identityScope: "maintenance-work",
+          observationFields: [
+            "stableSubject",
+            "failureCode",
+            "reasonCode",
+            "evidenceFreshness",
+          ],
+          materialBasisFields: [
+            "stableSubject",
+            "failureCode",
+            "reasonCode",
+            "evidenceFreshness",
+          ],
+        },
+      ],
+    });
+    const root = writeFixtureRoot({ findingContract });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("maintenance-work rule must declare observationStorageClass"),
+      ),
+    );
+  });
+
   it("rejects attention application conditions that omit identity resolution", () => {
     const attentionContract = baseAttentionContract({
       applicationConditions: [

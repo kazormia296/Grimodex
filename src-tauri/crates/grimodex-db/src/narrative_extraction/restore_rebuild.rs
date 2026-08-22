@@ -4243,6 +4243,62 @@ mod tests {
         assert!(!report.is_clean());
     }
 
+    #[test]
+    fn project_verify_does_not_dirty_on_durable_terminal_history_from_prior_epoch() {
+        let db = test_db();
+        let old_epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let current_epoch_id = db
+            .with_conn(|conn| {
+                rotate_epoch_for_restore_in_tx(conn, "project-1", "project-restored", None)
+            })
+            .expect("rotate epoch")
+            .expect("restore must mint the current epoch");
+        assert_ne!(old_epoch_id, current_epoch_id);
+
+        let edge_id = "edge-observation-from-prior-epoch";
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES (?1, 'project-1', 'run-old', ?2, ?3,
+                         'narrative-extraction-run:run-old', 'source-missing',
+                         'source-missing', 'sha256:edge-basis',
+                         '2026-08-15T00:00:00.000Z', NULL,
+                         'narrative.consumer-freshness', 1, 'sha256:edge-observation')",
+                params![edge_id, old_epoch_id, edge_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_maintenance_finding_observations
+                    (id, project_id, run_id, semantic_epoch_id, edge_id,
+                     finding_key, reason_code, evidence_freshness_snapshot,
+                     material_basis_digest, observed_at, finding_identity,
+                     rule_id, rule_version, observation_digest)
+                 VALUES ('terminal-failure:v1:NEX_MAINTENANCE_UNCLASSIFIED:00000000-0000-4000-8000-000000000001',
+                         'project-1', 'run-terminal-old', ?1, NULL,
+                         'narrative-maintenance-failure:backfill:legacy-dependency-backfill:v2',
+                         'component-incompatible', 'unknown', 'sha256:terminal-basis',
+                         '2026-08-15T00:00:00.000Z', 'terminal-identity',
+                         'narrative.maintenance-contract-failure', 1,
+                         'sha256:terminal-observation')",
+                params![old_epoch_id],
+            )?;
+            Ok(())
+        })
+        .expect("seed edge and durable terminal observations from the prior epoch");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        assert_eq!(
+            report.finding_observation_ids_outside_current_epoch,
+            vec![edge_id.to_string()],
+            "Verify must report rebuildable edge history but ignore durable terminal history"
+        );
+    }
+
     // -- regression: rebuild-derived must resolve a snapshot-document Source
     //    under its OWNING Consumer's run id, not the Rebuild Run's own id --
 
