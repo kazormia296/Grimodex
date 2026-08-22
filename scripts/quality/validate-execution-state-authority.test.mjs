@@ -136,7 +136,7 @@ function c25bFailurePolicies() {
       retryDisposition: "retryable",
       maxAttempts: 3,
       backoffPolicy: "exponential-bounded",
-      nextAttemptPolicy: "requeue-new-run-same-sealed-system-work",
+      nextAttemptPolicy: "requeue-same-sealed-system-work",
       policyVersion: "v1",
     },
   ];
@@ -650,6 +650,29 @@ describe("validate-execution-state-authority", () => {
       result.errors.some((error) =>
         error.includes(
           "NEX_MAINTENANCE_INTERRUPTED Finding route must be exactly 'none'",
+        ),
+      ),
+    );
+  });
+
+  it("rejects a cross-phase C2-5B code instead of matching retryability by substring", () => {
+    const findingRoutingMatrix = c25bFindingRoutingMatrix();
+    findingRoutingMatrix[0].failureCode =
+      "NEX_MAINTENANCE_TRANSIENT_RETRYABLE";
+    const root = writeFixtureRoot({
+      failurePolicy: baseFailurePolicy({
+        policies: [
+          ...baseFailurePolicy().policies,
+          ...c25bFailurePolicies(),
+        ],
+        findingRoutingMatrix,
+      }),
+    });
+    const result = validateExecutionStateAuthority({ repoRoot: root });
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes(
+          "findingRoutingMatrix contains unknown failureCode NEX_MAINTENANCE_TRANSIENT_RETRYABLE",
         ),
       ),
     );

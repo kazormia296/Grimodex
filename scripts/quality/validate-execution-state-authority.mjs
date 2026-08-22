@@ -72,6 +72,35 @@ const CANONICAL_TERMINAL_FINDING_RULE = Object.freeze({
   ]),
 });
 
+// C2-5B owns the three maintenance lifecycle classifications below.  Keep
+// this table exact and code-based: a failure code is not retryable merely
+// because it shares a prefix or substring with a known code from another
+// phase, and transport-level JavaScript retries do not consume this ledger
+// policy's Attempt budget.
+const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
+  NEX_MAINTENANCE_TRANSIENT: Object.freeze({
+    retryDisposition: "retryable",
+    maxAttempts: 3,
+    backoffPolicy: "exponential-bounded",
+    nextAttemptPolicy: "requeue-same-sealed-system-work",
+    findingRoute: "none",
+  }),
+  NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: Object.freeze({
+    retryDisposition: "manual",
+    maxAttempts: 0,
+    backoffPolicy: "none",
+    nextAttemptPolicy: "none",
+    findingRoute: "maintenance-inbox",
+  }),
+  NEX_MAINTENANCE_INTERRUPTED: Object.freeze({
+    retryDisposition: "retryable",
+    maxAttempts: 3,
+    backoffPolicy: "exponential-bounded",
+    nextAttemptPolicy: "requeue-same-sealed-system-work",
+    findingRoute: "none",
+  }),
+});
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -233,12 +262,14 @@ function validateFailurePolicy(failurePolicy, errors) {
     return;
   }
   const seen = new Set();
+  const policiesByCode = new Map();
   for (const policy of failurePolicy.policies) {
     if (!isObject(policy) || !isNonEmptyString(policy.failureCode)) continue;
     if (seen.has(policy.failureCode)) {
       errors.push(`duplicate failureCode: ${policy.failureCode}`);
     }
     seen.add(policy.failureCode);
+    policiesByCode.set(policy.failureCode, policy);
     const isRetryable = policy.retryDisposition === "retryable";
     const hasNextAttemptPolicy = policy.nextAttemptPolicy !== "none";
     if (isRetryable && !hasNextAttemptPolicy) {
@@ -251,6 +282,85 @@ function validateFailurePolicy(failurePolicy, errors) {
         `${policy.failureCode} is not retryable (${policy.retryDisposition}) but declares a nextAttemptPolicy other than "none"`,
       );
     }
+  }
+
+  // The C2-5B matrix is optional for older fixture contracts, but once any
+  // C2-5B classification is present it becomes a required, exact set. This
+  // preserves the older validator fixtures while making the canonical policy
+  // fail closed if a code or its Finding route drifts.
+  const hasC25BClassification = Object.keys(
+    C25B_FAILURE_POLICY_EXPECTATIONS,
+  ).some((failureCode) => policiesByCode.has(failureCode));
+  if (!hasC25BClassification && failurePolicy.findingRoutingMatrix === undefined) {
+    return;
+  }
+
+  for (const [failureCode, expected] of Object.entries(
+    C25B_FAILURE_POLICY_EXPECTATIONS,
+  )) {
+    const policy = policiesByCode.get(failureCode);
+    if (!policy) {
+      errors.push(
+        `C2-5B failure policy is missing the exact registration for ${failureCode}`,
+      );
+      continue;
+    }
+    for (const field of [
+      "retryDisposition",
+      "maxAttempts",
+      "backoffPolicy",
+      "nextAttemptPolicy",
+    ]) {
+      if (policy[field] !== expected[field]) {
+        errors.push(
+          `${failureCode} ${field} must be exactly ${JSON.stringify(expected[field])} for C2-5B failure policy; got ${JSON.stringify(policy[field])}`,
+        );
+      }
+    }
+  }
+
+  const routingMatrix = failurePolicy.findingRoutingMatrix;
+  if (!Array.isArray(routingMatrix)) {
+    errors.push(
+      "C2-5B failure policy must declare findingRoutingMatrix for its exact Finding routing contract",
+    );
+    return;
+  }
+  const routedCodes = new Set();
+  for (const route of routingMatrix) {
+    if (!isObject(route) || !isNonEmptyString(route.failureCode)) continue;
+    if (routedCodes.has(route.failureCode)) {
+      errors.push(
+        `C2-5B findingRoutingMatrix contains duplicate failureCode: ${route.failureCode}`,
+      );
+    }
+    routedCodes.add(route.failureCode);
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[route.failureCode];
+    if (!expected) {
+      errors.push(
+        `C2-5B findingRoutingMatrix contains unknown failureCode ${route.failureCode}; matching by prefix or substring is forbidden`,
+      );
+      continue;
+    }
+    if (route.findingRoute !== expected.findingRoute) {
+      errors.push(
+        `${route.failureCode} Finding route must be exactly '${expected.findingRoute}' for C2-5B failure policy; got '${route.findingRoute}'`,
+      );
+    }
+  }
+  for (const [failureCode, expected] of Object.entries(
+    C25B_FAILURE_POLICY_EXPECTATIONS,
+  )) {
+    if (!routedCodes.has(failureCode)) {
+      errors.push(
+        `C2-5B findingRoutingMatrix is missing the exact route for ${failureCode} (expected '${expected.findingRoute}')`,
+      );
+    }
+  }
+  if (routedCodes.size !== Object.keys(C25B_FAILURE_POLICY_EXPECTATIONS).length) {
+    errors.push(
+      "C2-5B findingRoutingMatrix must contain exactly the three C2-5B failure codes; unknown or cross-phase codes are not routed by substring",
+    );
   }
 }
 

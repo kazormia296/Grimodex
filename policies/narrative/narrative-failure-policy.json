@@ -4,6 +4,20 @@
   "failureCodePrefix": "NEX_",
   "retryDispositions": ["retryable", "terminal", "superseded", "manual"],
   "nextAttemptInvariant": "next_attempt_at is set if and only if retryDisposition is retryable",
+  "findingRoutingMatrix": [
+    {
+      "failureCode": "NEX_MAINTENANCE_TRANSIENT",
+      "findingRoute": "none"
+    },
+    {
+      "failureCode": "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+      "findingRoute": "maintenance-inbox"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_INTERRUPTED",
+      "findingRoute": "none"
+    }
+  ],
   "policies": [
     {
       "failureCode": "NEX_RUN_CREATE_IDEMPOTENCY_CONFLICT",
@@ -75,6 +89,30 @@
       "maxAttempts": 3,
       "backoffPolicy": "none",
       "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_TRANSIENT",
+      "retryDisposition": "retryable",
+      "maxAttempts": 3,
+      "backoffPolicy": "exponential-bounded",
+      "nextAttemptPolicy": "requeue-same-sealed-system-work",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+      "retryDisposition": "manual",
+      "maxAttempts": 0,
+      "backoffPolicy": "none",
+      "nextAttemptPolicy": "none",
+      "policyVersion": "v1"
+    },
+    {
+      "failureCode": "NEX_MAINTENANCE_INTERRUPTED",
+      "retryDisposition": "retryable",
+      "maxAttempts": 3,
+      "backoffPolicy": "exponential-bounded",
+      "nextAttemptPolicy": "requeue-same-sealed-system-work",
       "policyVersion": "v1"
     },
     {
