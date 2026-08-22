@@ -197,8 +197,15 @@ function isValidOperation(kind: string, value: string): boolean {
         normalizerVersion: value,
       }).valid;
     case "dependency-effect-rule-id": {
-      const registry = structuredClone(DEFAULT_DEPENDENCY_EFFECT_REGISTRY);
-      registry.effectRules[0] = { ...registry.effectRules[0], id: value };
+      const [firstRule, ...remainingRules] =
+        DEFAULT_DEPENDENCY_EFFECT_REGISTRY.effectRules;
+      if (firstRule === undefined) {
+        throw new Error("dependency effect registry requires a rule fixture");
+      }
+      const registry = {
+        ...DEFAULT_DEPENDENCY_EFFECT_REGISTRY,
+        effectRules: [{ ...firstRule, id: value }, ...remainingRules],
+      };
       return validateDependencyEffectRegistry(registry).length === 0;
     }
     default:
