@@ -38,6 +38,16 @@ function binding(authorityId: string, generation: number) {
   return { authorityId, generation };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("narrative maintenance reacceptance boundaries", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -164,7 +174,7 @@ describe("narrative maintenance reacceptance boundaries", () => {
     },
   );
 
-  it("binds enqueue and redispatch to the latest authority snapshot", async () => {
+  it("keeps replacement-authority work bound to its captured snapshot", async () => {
     let binding = { authorityId: "authority-one", generation: 1 };
     const runNarrativeMaintenanceCycle = vi
       .fn()
@@ -182,6 +192,10 @@ describe("narrative maintenance reacceptance boundaries", () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
 
     expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
+      workspaceBinding: { authorityId: "authority-one", generation: 1 },
+    });
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0]).toMatchObject({
       workspaceBinding: binding,
     });
     scheduler.dispose();
@@ -201,9 +215,9 @@ describe("narrative maintenance reacceptance boundaries", () => {
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
     // Keep A's failed work pending while the replacement authority arrives.
     scheduler.requestWithBinding(work, binding("authority-b", 2));
-    await vi.advanceTimersByTimeAsync(
-      ERROR_RETRY_DELAY_MS * (NARRATIVE_MAINTENANCE_MAX_RETRIES + 1),
-    );
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
 
     const callsFor = (authorityId: string) =>
       runNarrativeMaintenanceCycle.mock.calls.filter(
@@ -240,10 +254,9 @@ describe("narrative maintenance reacceptance boundaries", () => {
     // then enqueue the same durable key from the replacement authority.
     await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
     scheduler.requestWithBinding(work, binding("authority-b", 2));
-    await vi.advanceTimersByTimeAsync(
-      ERROR_RETRY_DELAY_MS * (NARRATIVE_MAINTENANCE_MAX_RETRIES + 1) +
-        BACKLOG_DELAY_MS * 4,
-    );
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
 
     const wakeCallsFor = (authorityId: string) =>
       runNarrativeMaintenanceCycle.mock.calls.filter(
@@ -259,4 +272,47 @@ describe("narrative maintenance reacceptance boundaries", () => {
     );
     scheduler.dispose();
   });
+
+  it("keeps replacement work retry state when an old in-flight attempt fails", async () => {
+    const oldCompletion = deferred<NarrativeMaintenanceCycleResult>();
+    let authorityACalls = 0;
+    const runNarrativeMaintenanceCycle = vi.fn(async (payload: {
+      workspaceBinding?: { authorityId: string };
+    }) => {
+      if (payload.workspaceBinding?.authorityId === "authority-a") {
+        authorityACalls += 1;
+        if (authorityACalls === 2) {
+          return oldCompletion.promise;
+        }
+      }
+      throw new Error("replacement work failure");
+    });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+    const work = backfill("same-project", "in-flight-work-failure");
+    scheduler.requestWithBinding(work, binding("authority-a", 1));
+    scheduler.start();
+
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    scheduler.requestWithBinding(work, binding("authority-b", 2));
+    oldCompletion.reject(new Error("old authority failed"));
+    await vi.advanceTimersByTimeAsync(0);
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+    const callsFor = (authorityId: string) =>
+      runNarrativeMaintenanceCycle.mock.calls.filter(
+        ([payload]) => payload.workspaceBinding?.authorityId === authorityId,
+      );
+    expect(callsFor("authority-a")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(callsFor("authority-b")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    scheduler.dispose();
+  });
+
 });

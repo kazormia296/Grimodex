@@ -32,6 +32,20 @@ process.on("exit", () => {
 
 const backend = new Backend(join(root, "app-data"));
 const PROJECT = "default-project";
+const maintenanceEvents = [];
+backend.onEvent((channel, payload) => {
+  if (channel !== "narrative-maintenance:epoch-rotated") return;
+  maintenanceEvents.push(JSON.parse(payload));
+});
+
+async function waitForMaintenanceEvent(timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (maintenanceEvents.length === 0 && Date.now() <= deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok(maintenanceEvents.length > 0, "epoch rotation event was not emitted");
+  return maintenanceEvents.at(-1);
+}
 
 function mutationIdentity(requestId) {
   return {
@@ -83,6 +97,7 @@ test("integrityCheck はレポート object の JSON を返す", async () => {
 });
 
 test("repairIntegrity は空 workspace でもレポート object を返す", async () => {
+  const eventCountBefore = maintenanceEvents.length;
   const report = JSON.parse(
     await backend.repairIntegrity({
       projectId: PROJECT,
@@ -103,6 +118,164 @@ test("repairIntegrity は空 workspace でもレポート object を返す", asy
   );
   assert.equal(typeof report, "object");
   assert.ok(report !== null && !Array.isArray(report));
+  assert.equal(report.changeEventUid ?? null, null);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, eventCountBefore);
+});
+
+test("non-noop repair emits one observer-only epoch wake and replay emits none", async () => {
+  await backend.dbExecute(
+    "INSERT INTO projects (id, title) VALUES (?, ?), (?, ?)",
+    ["repair-event-p1", "Repair one", "repair-event-p2", "Repair two"],
+    "run",
+  );
+  await backend.dbExecute(
+    "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order) VALUES (?, ?, ?, ?, ?)",
+    ["repair-event-scene", "repair-event-p2", "scene", "Foreign scene", "a0"],
+    "run",
+  );
+  await backend.dbExecute(
+    "INSERT INTO chat_sessions (id, project_id, title) VALUES (?, ?, ?)",
+    ["repair-event-session", "repair-event-p2", "Foreign session"],
+    "run",
+  );
+  await backend.dbExecute(
+    "INSERT INTO chat_messages (id, session_id, role, content) VALUES (?, ?, ?, ?)",
+    ["repair-event-message", "repair-event-session", "user", "Foreign"],
+    "run",
+  );
+  await backend.dbExecute(
+    "INSERT INTO codex_entries (id, project_id, type, name, source_chat_message_id, version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [
+      "repair-event-codex",
+      "repair-event-p1",
+      "character",
+      "Foreign source",
+      "repair-event-message",
+      1,
+      "2026-08-23T00:00:00.000Z",
+    ],
+    "run",
+  );
+  const payload = {
+    projectId: "repair-event-p1",
+    requestId: "repair-event-request",
+    sessionId: "repair-event-session",
+    eventUid: "repair-event-change",
+    occurredAt: "2026-08-23T00:00:00.000Z",
+    authorityRoute: "restore-or-migration",
+    caller: "integrity-repair",
+    controls: [
+      "exclusive-system-operation",
+      "semantic-epoch-event",
+      "full-rebuild-marker",
+    ],
+    provenance: null,
+    writesAuthorityProtectedField: false,
+  };
+  const report = JSON.parse(await backend.repairIntegrity(payload));
+  assert.ok(report.codexSourcesFixed > 0);
+  const firstEvent = await waitForMaintenanceEvent();
+  assert.deepEqual(firstEvent, {
+    projectId: "repair-event-p1",
+    operation: "integrity-repair",
+    reason: "semantic-epoch-rotated",
+  });
+  const countAfterFirst = maintenanceEvents.length;
+
+  const replay = JSON.parse(
+    await backend.repairIntegrity({
+      ...payload,
+      sessionId: "repair-event-session-replay",
+      eventUid: "repair-event-change-replay",
+    }),
+  );
+  assert.deepEqual(replay, report);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, countAfterFirst);
+});
+
+test("non-noop snapshot restore emits once, replay emits none, and first no-op emits none", async () => {
+  const projectId = "snapshot-event-p1";
+  const snapshotId = "snapshot-event-s1";
+  await backend.dbExecute(
+    "INSERT INTO projects (id, title) VALUES (?, ?)",
+    [projectId, "Snapshot event"],
+    "run",
+  );
+  await backend.dbExecute(
+    "INSERT INTO labels (id, project_id, name, color) VALUES (?, ?, ?, ?)",
+    ["snapshot-event-label", projectId, "Before", "#111111"],
+    "run",
+  );
+  await backend.projectSnapshotCreate({
+    projectId,
+    snapshotId,
+    name: "Snapshot event fixture",
+    description: null,
+    createdAt: "2026-08-23T00:00:00.000Z",
+    treeRows: [],
+    codexRows: [],
+    snippetRows: [],
+    versionIds: [],
+  });
+  await backend.dbExecute(
+    "DELETE FROM labels WHERE id = ?",
+    ["snapshot-event-label"],
+    "run",
+  );
+  const context = JSON.parse(
+    await backend.projectSnapshotRestoreContext(projectId, snapshotId, ["labels"]),
+  );
+  const labelsScope = context.auxRows.find(({ scope }) => scope === "labels");
+  assert.ok(labelsScope);
+  const inserts = JSON.parse(labelsScope.payloadJson).rows.map((row) => ({
+    table: "labels",
+    row,
+    mode: "insert",
+  }));
+  const payload = {
+    requestId: "snapshot-event-request",
+    sessionId: "snapshot-event-session",
+    projectId,
+    snapshotId,
+    scopes: ["labels"],
+    inserts,
+  };
+  const restored = JSON.parse(
+    await backend.projectSnapshotApplyRestore(payload),
+  );
+  assert.equal(restored.noOp, false);
+  assert.equal(typeof restored.changeEventUid, "string");
+  const firstEvent = await waitForMaintenanceEvent();
+  assert.deepEqual(firstEvent, {
+    projectId,
+    operation: "project-snapshot-restore",
+    reason: "semantic-epoch-rotated",
+  });
+  const countAfterRestore = maintenanceEvents.length;
+
+  const replay = JSON.parse(
+    await backend.projectSnapshotApplyRestore({
+      ...payload,
+      sessionId: "snapshot-event-session-replay",
+    }),
+  );
+  assert.deepEqual(replay, restored);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, countAfterRestore);
+
+  const firstNoOp = JSON.parse(
+    await backend.projectSnapshotApplyRestore({
+      ...payload,
+      requestId: "snapshot-event-no-op-request",
+      sessionId: "snapshot-event-no-op-session",
+    }),
+  );
+  assert.equal(firstNoOp.noOp, true);
+  assert.equal(firstNoOp.changeEventUid ?? null, null);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(maintenanceEvents.length, countAfterRestore);
 });
 
 test("ftsOptimize / ftsRebuild / ftsRebuildEn は空 workspace で成功する", async () => {

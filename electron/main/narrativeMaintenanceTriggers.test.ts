@@ -247,7 +247,7 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
-  it("coalesces an event arriving during discovery and reruns with restore priority", async () => {
+  it("replaces an in-flight chain with the newest workspace event", async () => {
     const scheduler = makeScheduler();
     let resolveFirst!: (value: unknown) => void;
     const firstResponse = new Promise<unknown>((resolve) => {
@@ -278,7 +278,13 @@ describe("narrative maintenance trigger coordinator", () => {
       2,
       "restore-completed",
     );
-    expect(scheduler.requestManyWithBinding).toHaveBeenCalledTimes(2);
+    // The first authority result is stale once the replacement event advances
+    // the chain generation; only the replacement discovery may enqueue.
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledTimes(1);
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      expect.anything(),
+      { authorityId: "authority-restore", generation: 5 },
+    );
     coordinator.dispose();
   });
 

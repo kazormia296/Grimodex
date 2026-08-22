@@ -107,9 +107,38 @@ use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
 
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
+}
+
+fn idempotency_receipt_exists(
+    db: &Database,
+    domain: &str,
+    request_id: &str,
+) -> anyhow::Result<bool> {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM idempotency_requests
+                 WHERE domain = ?1 AND request_id = ?2
+            )",
+            [domain, request_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    })
+}
+
+fn emit_narrative_epoch_rotated(state: &AppState, project_id: &str, operation: &str) {
+    state.events.emit(
+        NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT,
+        serde_json::json!({
+            "projectId": project_id,
+            "operation": operation,
+            "reason": "semantic-epoch-rotated",
+        }),
+    );
 }
 
 fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
@@ -2414,11 +2443,22 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(
-                    &project_snapshots::apply_project_snapshot_restore(db, payload)?,
-                )?)
-            })
+            let project_id = payload.project_id.clone();
+            let request_id = payload.request_id.clone();
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (result, replayed) = with_db_state(&state.ws, |db| {
+                let replayed =
+                    idempotency_receipt_exists(db, "project_snapshot_restore", &request_id)?;
+                let result = project_snapshots::apply_project_snapshot_restore(db, payload)?;
+                Ok((result, replayed))
+            })?;
+            if !replayed && !result.no_op {
+                emit_narrative_epoch_rotated(&state, &project_id, "project-snapshot-restore");
+            }
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -3311,10 +3351,25 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: RepairIntegrityPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
+            let project_id = payload.project_id.clone();
+            let request_id = payload.request_id.clone();
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (report, replayed) = with_db_state(&state.ws, |db| {
+                let replayed = idempotency_receipt_exists(db, "repair_integrity", &request_id)?;
                 let report = db.repair_integrity(payload)?;
-                Ok(serde_json::to_string(&report)?)
-            })
+                Ok((report, replayed))
+            })?;
+            let changed = report.codex_sources_fixed > 0
+                || report.snippet_sources_fixed > 0
+                || report.snippet_scenes_fixed > 0
+                || report.change_event_uid.is_some();
+            if !replayed && changed {
+                emit_narrative_epoch_rotated(&state, &project_id, "integrity-repair");
+            }
+            Ok(serde_json::to_string(&report).map_err(anyhow::Error::from)?)
         })
         .await
     }

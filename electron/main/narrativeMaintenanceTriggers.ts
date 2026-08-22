@@ -8,7 +8,8 @@ import {
 
 export type NarrativeMaintenanceWakeReason =
   | "workspace-opened"
-  | "restore-completed";
+  | "restore-completed"
+  | "semantic-epoch-rotated";
 
 export const NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS = 250;
 export const NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS = 3;
@@ -188,15 +189,6 @@ function wakeReasonFromEventPayload(
     : "workspace-opened";
 }
 
-function mergeWakeReason(
-  first: NarrativeMaintenanceWakeReason | null,
-  second: NarrativeMaintenanceWakeReason,
-): NarrativeMaintenanceWakeReason {
-  return first === "restore-completed" || second === "restore-completed"
-    ? "restore-completed"
-    : "workspace-opened";
-}
-
 export function createNarrativeMaintenanceTriggerCoordinator(
   backend: (NarrativeMaintenanceDiscoveryBackend & object) | null,
   scheduler: NarrativeMaintenanceScheduler,
@@ -208,9 +200,14 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   let timer: ReturnType<typeof setTimeout> | null = null;
   let scheduledReason: NarrativeMaintenanceWakeReason | null = null;
   let scheduledDelayMs: number | null = null;
-  let pendingReason: NarrativeMaintenanceWakeReason | null = null;
-  let pendingDelayMs: number | null = null;
+  let scheduledGeneration: number | null = null;
+  let pendingEvent: {
+    reason: NarrativeMaintenanceWakeReason;
+    generation: number;
+  } | null = null;
+  let pendingRetryDelayMs: number | null = null;
   let lastWakeReason: NarrativeMaintenanceWakeReason | null = null;
+  let chainGeneration = 0;
   let rediscoveryAttempts = 0;
   let lastDiscoveryFingerprint: string | null = null;
 
@@ -220,48 +217,58 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     timer = null;
     scheduledReason = null;
     scheduledDelayMs = null;
+    scheduledGeneration = null;
   };
 
-  const queuePending = (
-    reason: NarrativeMaintenanceWakeReason,
-    delayMs: number,
-  ): void => {
-    pendingReason = mergeWakeReason(pendingReason, reason);
-    pendingDelayMs =
-      pendingDelayMs === null ? delayMs : Math.min(pendingDelayMs, delayMs);
+  const queueRetry = (delayMs: number): void => {
+    pendingRetryDelayMs =
+      pendingRetryDelayMs === null
+        ? delayMs
+        : Math.min(pendingRetryDelayMs, delayMs);
   };
 
   const armTimer = (
     reason: NarrativeMaintenanceWakeReason,
     delayMs: number,
+    generation = chainGeneration,
   ): void => {
     if (disposed) return;
-    const timerReason =
-      timer === null
-        ? reason
-        : mergeWakeReason(scheduledReason, reason);
-    lastWakeReason = timerReason;
+    if (generation !== chainGeneration) return;
+    const timerReason = reason;
+    lastWakeReason = reason;
     scheduledReason = timerReason;
-    if (timer !== null && scheduledDelayMs !== null) {
+    scheduledGeneration = generation;
+    if (
+      timer !== null &&
+      scheduledDelayMs !== null &&
+      scheduledGeneration === generation
+    ) {
       if (delayMs >= scheduledDelayMs) return;
       clearTimer();
       scheduledReason = timerReason;
+      scheduledGeneration = generation;
     }
     scheduledDelayMs = delayMs;
+    const timerGeneration = generation;
     timer = setTimeout(() => {
       const nextReason = scheduledReason ?? reason;
+      const nextGeneration = scheduledGeneration ?? timerGeneration;
       timer = null;
       scheduledReason = null;
       scheduledDelayMs = null;
-      startDiscovery(nextReason);
+      scheduledGeneration = null;
+      startDiscovery(nextReason, nextGeneration);
     }, delayMs);
   };
 
-  const startDiscovery = (reason: NarrativeMaintenanceWakeReason): void => {
-    if (disposed) return;
+  const startDiscovery = (
+    reason: NarrativeMaintenanceWakeReason,
+    generation: number,
+  ): void => {
+    if (disposed || generation !== chainGeneration) return;
     lastWakeReason = reason;
     if (discoveryInFlight) {
-      queuePending(reason, 0);
+      queueRetry(0);
       return;
     }
     const discover = backend?.discoverNarrativeMaintenanceWork;
@@ -272,11 +279,13 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       return;
     }
     discoveryInFlight = true;
+    const discoveryGeneration = generation;
     void (async () => {
       try {
         const response = normalizeDiscoveryResponse(
           await discover.call(backend, reason),
         );
+        if (discoveryGeneration !== chainGeneration) return;
         if ("status" in response) {
           requestRediscovery();
           return;
@@ -309,18 +318,26 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           }
         }
       } catch (error) {
-        if (!disposed) {
+        if (!disposed && discoveryGeneration === chainGeneration) {
           warn("[narrative-maintenance] discovery failed:", error);
           requestRediscovery();
         }
       } finally {
         discoveryInFlight = false;
-        if (!disposed && pendingReason !== null) {
-          const nextReason = pendingReason;
-          const nextDelay = pendingDelayMs ?? 0;
-          pendingReason = null;
-          pendingDelayMs = null;
-          armTimer(nextReason, nextDelay);
+        if (!disposed && pendingEvent !== null) {
+          const nextEvent = pendingEvent;
+          pendingEvent = null;
+          pendingRetryDelayMs = null;
+          armTimer(nextEvent.reason, 0, nextEvent.generation);
+        } else if (
+          !disposed &&
+          discoveryGeneration === chainGeneration &&
+          pendingRetryDelayMs !== null &&
+          lastWakeReason !== null
+        ) {
+          const nextDelay = pendingRetryDelayMs;
+          pendingRetryDelayMs = null;
+          armTimer(lastWakeReason, nextDelay, discoveryGeneration);
         }
       }
     })();
@@ -333,31 +350,52 @@ export function createNarrativeMaintenanceTriggerCoordinator(
     }
     rediscoveryAttempts += 1;
     if (discoveryInFlight) {
-      queuePending(lastWakeReason, NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS);
+      queueRetry(NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS);
       return;
     }
-    armTimer(lastWakeReason, NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS);
+    armTimer(
+      lastWakeReason,
+      NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS,
+      chainGeneration,
+    );
   };
 
   return {
     handleBackendEvent(channel, payload): void {
-      if (disposed || channel !== "workspace:opened") return;
-      rediscoveryAttempts = 0;
-      const reason = wakeReasonFromEventPayload(payload);
-      lastDiscoveryFingerprint = null;
-      if (discoveryInFlight) {
-        queuePending(reason, 0);
+      if (
+        disposed ||
+        (channel !== "workspace:opened" &&
+          channel !== "narrative-maintenance:epoch-rotated")
+      ) {
         return;
       }
-      armTimer(reason, 0);
+      const generation = ++chainGeneration;
+      rediscoveryAttempts = 0;
+      const reason =
+        channel === "narrative-maintenance:epoch-rotated"
+          ? "semantic-epoch-rotated"
+          : wakeReasonFromEventPayload(payload);
+      lastDiscoveryFingerprint = null;
+      lastWakeReason = reason;
+      clearTimer();
+      pendingRetryDelayMs = null;
+      if (discoveryInFlight) {
+        // A new backend event denotes a new authority/epoch chain. Keep only
+        // the newest event; an old in-flight completion is observationally
+        // stale and must not enqueue its binding or mutate retry state.
+        pendingEvent = { reason, generation };
+        return;
+      }
+      pendingEvent = null;
+      armTimer(reason, 0, generation);
     },
     requestRediscovery,
     dispose(): void {
       if (disposed) return;
       disposed = true;
       clearTimer();
-      pendingReason = null;
-      pendingDelayMs = null;
+      pendingEvent = null;
+      pendingRetryDelayMs = null;
     },
   };
 }

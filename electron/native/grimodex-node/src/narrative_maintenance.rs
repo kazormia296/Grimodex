@@ -17,6 +17,7 @@ use grimodex_db::Database;
 pub(crate) enum WakeReason {
     WorkspaceOpened,
     RestoreCompleted,
+    SemanticEpochRotated,
 }
 
 impl WakeReason {
@@ -24,6 +25,7 @@ impl WakeReason {
         match value {
             "workspace-opened" => Ok(Self::WorkspaceOpened),
             "restore-completed" => Ok(Self::RestoreCompleted),
+            "semantic-epoch-rotated" => Ok(Self::SemanticEpochRotated),
             _ => anyhow::bail!(
                 "NEX_MAINTENANCE_DISCOVERY_INVALID_REASON: '{value}' is not a supported wake reason"
             ),
@@ -34,6 +36,7 @@ impl WakeReason {
         match self {
             Self::WorkspaceOpened => "workspace-opened",
             Self::RestoreCompleted => "restore-completed",
+            Self::SemanticEpochRotated => "semantic-epoch-rotated",
         }
     }
 }
@@ -127,6 +130,10 @@ mod tests {
         assert_eq!(
             WakeReason::parse("restore-completed").unwrap(),
             WakeReason::RestoreCompleted
+        );
+        assert_eq!(
+            WakeReason::parse("semantic-epoch-rotated").unwrap(),
+            WakeReason::SemanticEpochRotated
         );
         assert!(WakeReason::parse("workspace:restored").is_err());
         assert!(WakeReason::parse("repair").is_err());
