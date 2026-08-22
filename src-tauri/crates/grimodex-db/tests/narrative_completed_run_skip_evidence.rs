@@ -6,13 +6,15 @@
 
 use grimodex_db::narrative_extraction::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence,
-    read_completed_run_skip_evidence, CompletedRunSkipDecision, CompletedRunSkipEvidence,
-    CompletedRunSkipExpectation, CompletedRunSkipReason,
+    persist_completed_run_skip_evidence_in_tx, read_completed_run_skip_evidence,
+    CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
+    CompletedRunSkipReason,
 };
 use grimodex_db::narrative_extraction::{digest_plan, ensure_test_schema};
 use grimodex_db::Database;
-use rusqlite::params;
+use rusqlite::{params, Connection};
 use serde_json::json;
+use std::path::Path;
 
 const PROJECT_ID: &str = "project-c2-5b-b";
 const EPOCH_ID: &str = "epoch-c2-5b-b";
@@ -229,6 +231,39 @@ fn successful_outcome() -> serde_json::Value {
     })
 }
 
+fn raw_outcome_summary_json(db: &Database, run_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("read raw outcome")
+}
+
+fn minimal_run_connection(path: &Path) -> Connection {
+    let conn = Connection::open(path).expect("open concurrency fixture");
+    conn.busy_timeout(std::time::Duration::from_millis(100))
+        .expect("set busy timeout");
+    conn.execute_batch(
+        "PRAGMA journal_mode=WAL;
+         CREATE TABLE IF NOT EXISTS narrative_extraction_runs (
+             id TEXT PRIMARY KEY,
+             project_id TEXT NOT NULL,
+             run_kind TEXT NOT NULL,
+             status TEXT NOT NULL,
+             semantic_epoch_id TEXT,
+             work_key TEXT,
+             completed_at TEXT,
+             outcome_summary_json TEXT,
+             version INTEGER NOT NULL
+         );",
+    )
+    .expect("create concurrency fixture");
+    conn
+}
+
 #[test]
 fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
     let db = fixture_db();
@@ -273,6 +308,155 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
         .with_conn(|conn| read_completed_run_skip_evidence(conn, PROJECT_ID, "dependency-verify"))
         .expect("read tampered evidence");
     assert_eq!(rejected, None);
+}
+
+#[test]
+fn idempotent_persist_preserves_unknown_fields_and_terminal_digest_aliases() {
+    for alias in ["successfulTerminalDigest", "terminalDigest"] {
+        let db = fixture_db();
+        let mut outcome = successful_outcome();
+        let mut stored_evidence = serde_json::to_value(evidence()).expect("evidence json");
+        let digest = stored_evidence
+            .as_object_mut()
+            .expect("evidence object")
+            .remove("reportDigest")
+            .expect("canonical report digest");
+        let object = stored_evidence.as_object_mut().expect("evidence object");
+        object.insert(
+            "futureEvidenceField".to_string(),
+            json!({"schema": 2, "preserve": true}),
+        );
+        object.insert(alias.to_string(), digest);
+        outcome["skipEvidence"] = stored_evidence;
+        insert_completed_verify_run(&db, "completed", Some(outcome));
+        let before = raw_outcome_summary_json(&db, RUN_ID);
+
+        persist_completed_run_skip_evidence(&db, RUN_ID, &evidence())
+            .expect("semantic equality must be idempotent");
+
+        assert_eq!(raw_outcome_summary_json(&db, RUN_ID), before);
+        assert_eq!(
+            db.with_conn(|conn| read_completed_run_skip_evidence(
+                conn,
+                PROJECT_ID,
+                "dependency-verify"
+            ))
+            .expect("read aliased evidence"),
+            Some(evidence())
+        );
+    }
+}
+
+#[test]
+fn known_evidence_mismatch_conflicts_without_rewriting_forward_fields() {
+    let db = fixture_db();
+    let mut outcome = successful_outcome();
+    let mut stored_evidence = serde_json::to_value(evidence()).expect("evidence json");
+    let object = stored_evidence.as_object_mut().expect("evidence object");
+    object.insert(
+        "futureEvidenceField".to_string(),
+        json!({"schema": 2, "preserve": true}),
+    );
+    let digest = object
+        .remove("reportDigest")
+        .expect("canonical report digest");
+    object.insert("successfulTerminalDigest".to_string(), digest);
+    outcome["skipEvidence"] = stored_evidence;
+    insert_completed_verify_run(&db, "completed", Some(outcome));
+    let before = raw_outcome_summary_json(&db, RUN_ID);
+
+    let mut mismatched = evidence();
+    mismatched.graph_contract_digest =
+        "sha256:4444444444444444444444444444444444444444444444444444444444444444".to_string();
+    let error = persist_completed_run_skip_evidence(&db, RUN_ID, &mismatched)
+        .expect_err("known coordinate mismatch must conflict");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_SKIP_EVIDENCE_CONFLICT"));
+    assert_eq!(raw_outcome_summary_json(&db, RUN_ID), before);
+}
+
+#[test]
+fn in_tx_persistence_rejects_an_autocommit_connection() {
+    let db = fixture_db();
+    insert_completed_verify_run(&db, "completed", Some(successful_outcome()));
+    let error = db
+        .with_conn(|conn| persist_completed_run_skip_evidence_in_tx(conn, RUN_ID, &evidence()))
+        .expect_err("in-tx API must require a caller-owned transaction");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_SKIP_TRANSACTION_REQUIRED"));
+}
+
+#[test]
+fn in_tx_persistence_does_not_overwrite_a_concurrent_outcome_mutation() {
+    let path = std::env::temp_dir().join(format!(
+        "grimodex-skip-evidence-concurrency-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    let conn = minimal_run_connection(&path);
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, run_kind, status, semantic_epoch_id, work_key,
+             completed_at, outcome_summary_json, version)
+         VALUES (?1, ?2, 'dependency-verify', 'completed', ?3, ?4, ?5, ?6, 0)",
+        params![
+            RUN_ID,
+            PROJECT_ID,
+            EPOCH_ID,
+            format!("dependency-verify:{EPOCH_ID}"),
+            "2026-08-22T00:00:00.000Z",
+            successful_outcome().to_string(),
+        ],
+    )
+    .expect("insert concurrency run");
+    conn.execute_batch("BEGIN")
+        .expect("begin deferred caller transaction");
+    let _: String = conn
+        .query_row(
+            "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
+            [RUN_ID],
+            |row| row.get(0),
+        )
+        .expect("establish caller snapshot");
+
+    let concurrent = minimal_run_connection(&path);
+    let mut mutated_outcome = successful_outcome();
+    mutated_outcome["concurrentMutation"] = json!(true);
+    concurrent
+        .execute(
+            "UPDATE narrative_extraction_runs
+                SET outcome_summary_json = ?1, version = version + 1
+              WHERE id = ?2",
+            params![mutated_outcome.to_string(), RUN_ID],
+        )
+        .expect("mutate outcome concurrently");
+    drop(concurrent);
+
+    let error = persist_completed_run_skip_evidence_in_tx(&conn, RUN_ID, &evidence())
+        .expect_err("stale caller snapshot must not overwrite concurrent mutation");
+    assert!(error
+        .to_string()
+        .contains("NEX_MAINTENANCE_SKIP_EVIDENCE_LOST"));
+    conn.execute_batch("ROLLBACK")
+        .expect("rollback stale caller transaction");
+    drop(conn);
+
+    let observed = minimal_run_connection(&path);
+    let stored: String = observed
+        .query_row(
+            "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
+            [RUN_ID],
+            |row| row.get(0),
+        )
+        .expect("read concurrent outcome");
+    let stored: serde_json::Value = serde_json::from_str(&stored).expect("parse outcome");
+    assert_eq!(stored.get("concurrentMutation"), Some(&json!(true)));
+    assert!(stored.get("skipEvidence").is_none());
+    drop(observed);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(path.with_extension("db-shm"));
 }
 
 #[test]
