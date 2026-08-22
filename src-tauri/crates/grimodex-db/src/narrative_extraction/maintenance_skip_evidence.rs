@@ -18,7 +18,10 @@ use serde_json::Value;
 
 use super::commit::digest_plan;
 use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
-use super::restore_rebuild::{REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION};
+use super::restore_rebuild::{
+    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION,
+};
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
 
@@ -130,13 +133,27 @@ type PersistRunRow = (
     Option<String>,
 );
 
+type ReadRunRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 /// Decide whether the latest Run for the requested project/Run Kind carries
 /// complete, current, successful skip evidence.
 pub fn evaluate_completed_run_skip(
     conn: &Connection,
     expected: &CompletedRunSkipExpectation,
 ) -> Result<CompletedRunSkipDecision> {
-    validate_expectation_shape(expected)?;
+    if validate_expectation_shape(expected).is_err() {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EvidenceMalformed,
+        });
+    }
     if !is_supported_run_kind(&expected.run_kind) {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::UnsupportedRunKind,
@@ -149,7 +166,7 @@ pub fn evaluate_completed_run_skip(
                     completed_at, outcome_summary_json
               FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY rowid DESC LIMIT 1",
+              ORDER BY created_at DESC, id DESC LIMIT 1",
             params![expected.project_id, expected.run_kind],
             |row| {
                 Ok(LatestRun {
@@ -222,6 +239,13 @@ pub fn evaluate_completed_run_skip(
             })
         }
     };
+    if outcome.get("semanticEpochId").and_then(Value::as_str)
+        != Some(expected.semantic_epoch_id.as_str())
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::EpochMismatch,
+        });
+    }
     let Some(evidence_value) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) else {
         return Ok(CompletedRunSkipDecision::Rerun {
             reason: CompletedRunSkipReason::EvidenceMissing,
@@ -237,7 +261,11 @@ pub fn evaluate_completed_run_skip(
     };
     if validate_evidence_shape(&evidence).is_err() {
         return Ok(CompletedRunSkipDecision::Rerun {
-            reason: CompletedRunSkipReason::EvidenceMalformed,
+            reason: if is_canonical_digest(&evidence.report_digest) {
+                CompletedRunSkipReason::EvidenceMalformed
+            } else {
+                CompletedRunSkipReason::ReportDigestMismatch
+            },
         });
     }
 
@@ -289,7 +317,11 @@ pub fn evaluate_completed_run_skip(
         });
     }
 
-    let outcome_digest = match successful_outcome_digest(&expected.run_kind, &outcome) {
+    let outcome_digest = match successful_outcome_digest(
+        &expected.run_kind,
+        &outcome,
+        &expected.semantic_epoch_id,
+    ) {
         Ok(digest) => digest,
         Err(_) => {
             return Ok(CompletedRunSkipDecision::Rerun {
@@ -322,19 +354,42 @@ pub fn read_completed_run_skip_evidence(
     project_id: &str,
     run_kind: &str,
 ) -> Result<Option<CompletedRunSkipEvidence>> {
-    let row: Option<(String, Option<String>, Option<String>)> = conn
+    let row: Option<ReadRunRow> = conn
         .query_row(
-            "SELECT status, completed_at, outcome_summary_json
+            "SELECT project_id, run_kind, status, semantic_epoch_id, work_key,
+                    completed_at, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY rowid DESC LIMIT 1",
+              ORDER BY created_at DESC, id DESC LIMIT 1",
             params![project_id, run_kind],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((status, completed_at, outcome_json)) = row else {
+    let Some((
+        row_project_id,
+        row_run_kind,
+        status,
+        row_epoch_id,
+        work_key,
+        completed_at,
+        outcome_json,
+    )) = row
+    else {
         return Ok(None);
     };
+    if row_project_id != project_id || row_run_kind != run_kind {
+        return Ok(None);
+    }
     if status != "completed"
         || completed_at
             .as_deref()
@@ -342,12 +397,19 @@ pub fn read_completed_run_skip_evidence(
     {
         return Ok(None);
     }
+    let Some(row_epoch_id) = row_epoch_id.as_deref() else {
+        return Ok(None);
+    };
+    if !canonical_work_key_matches(run_kind, row_epoch_id, work_key.as_deref()) {
+        return Ok(None);
+    }
     let Some(outcome_json) = outcome_json else {
         return Ok(None);
     };
-    let outcome: Value = serde_json::from_str(&outcome_json)
-        .ok()
-        .unwrap_or(Value::Null);
+    let outcome: Value = match serde_json::from_str(&outcome_json) {
+        Ok(value) => value,
+        Err(_) => return Ok(None),
+    };
     let Some(evidence) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) else {
         return Ok(None);
     };
@@ -356,12 +418,19 @@ pub fn read_completed_run_skip_evidence(
         Err(_) => return Ok(None),
     };
     if validate_evidence_shape(&parsed).is_err()
-        || parsed.run_kind_contract_version != supported_run_kind_contract_version(&parsed.run_kind)
-        || successful_outcome_digest(&parsed.run_kind, &outcome)
-            .ok()
-            .as_deref()
-            != Some(parsed.report_digest.as_str())
+        || parsed.project_id != row_project_id
+        || parsed.run_kind != row_run_kind
+        || parsed.semantic_epoch_id != row_epoch_id
+        || parsed.run_kind_contract_version
+            != supported_run_kind_contract_version(row_run_kind.as_str())
     {
+        return Ok(None);
+    }
+    let outcome_digest = match successful_outcome_digest(run_kind, &outcome, row_epoch_id) {
+        Ok(digest) => digest,
+        Err(_) => return Ok(None),
+    };
+    if outcome_digest != parsed.report_digest {
         return Ok(None);
     }
     Ok(Some(parsed))
@@ -451,15 +520,11 @@ pub fn persist_completed_run_skip_evidence_in_tx(
     })?;
     let mut outcome: Value = serde_json::from_str(&outcome_json)
         .with_context(|| format!("NEX_MAINTENANCE_SKIP_OUTCOME_MALFORMED: Run '{run_id}'"))?;
-    let outcome_digest = successful_outcome_digest(&run_kind, &outcome)?;
+    let outcome_digest =
+        successful_outcome_digest(&run_kind, &outcome, &evidence.semantic_epoch_id)?;
     ensure!(
         evidence.report_digest == outcome_digest,
         "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISMATCH: evidence report digest does not match Run '{run_id}'"
-    );
-    ensure!(
-        evidence.run_kind_contract_version
-            == outcome_contract_version(&run_kind, &outcome).unwrap_or_default(),
-        "NEX_MAINTENANCE_SKIP_CONTRACT_MISMATCH: evidence contract version does not match Run '{run_id}'"
     );
     let evidence_value = serde_json::to_value(evidence)?;
     if let Some(existing) = outcome.get(COMPLETED_RUN_SKIP_EVIDENCE_FIELD) {
@@ -515,9 +580,9 @@ fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<
     validate_component(&expected.project_id, "projectId")?;
     validate_component(&expected.run_kind, "runKind")?;
     validate_component(&expected.semantic_epoch_id, "semanticEpochId")?;
-    validate_component(&expected.graph_contract_digest, "graphContractDigest")?;
-    validate_component(&expected.rule_registry_digest, "ruleRegistryDigest")?;
-    validate_component(
+    validate_digest(&expected.graph_contract_digest, "graphContractDigest")?;
+    validate_digest(&expected.rule_registry_digest, "ruleRegistryDigest")?;
+    validate_digest(
         &expected.producer_generation_set_digest,
         "producerGenerationSetDigest",
     )?;
@@ -526,7 +591,7 @@ fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<
         "runKindContractVersion",
     )?;
     if let Some(report_digest) = expected.report_digest.as_deref() {
-        validate_component(report_digest, "reportDigest")?;
+        validate_digest(report_digest, "reportDigest")?;
     }
     Ok(())
 }
@@ -543,6 +608,13 @@ fn validate_evidence_shape(evidence: &CompletedRunSkipEvidence) -> Result<()> {
         report_digest: Some(evidence.report_digest.clone()),
     };
     validate_expectation_shape(&expected)?;
+    validate_digest(&evidence.graph_contract_digest, "graphContractDigest")?;
+    validate_digest(&evidence.rule_registry_digest, "ruleRegistryDigest")?;
+    validate_digest(
+        &evidence.producer_generation_set_digest,
+        "producerGenerationSetDigest",
+    )?;
+    validate_digest(&evidence.report_digest, "reportDigest")?;
     ensure!(
         is_supported_run_kind(&evidence.run_kind),
         "NEX_MAINTENANCE_SKIP_RUN_KIND_UNSUPPORTED: '{}' cannot carry completed-run skip evidence",
@@ -564,6 +636,26 @@ fn validate_component(value: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_digest(value: &str, name: &str) -> Result<()> {
+    ensure!(
+        value.starts_with("sha256:"),
+        "{name} must use the sha256: digest prefix"
+    );
+    let hex = &value["sha256:".len()..];
+    ensure!(
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f')),
+        "{name} must be sha256: followed by exactly 64 lowercase hexadecimal characters"
+    );
+    Ok(())
+}
+
+fn is_canonical_digest(value: &str) -> bool {
+    validate_digest(value, "digest").is_ok()
+}
+
 fn outcome_contract_version<'a>(run_kind: &str, outcome: &'a Value) -> Option<&'a str> {
     let key = match run_kind {
         VERIFY_RUN_KIND => "verifyContractVersion",
@@ -573,7 +665,11 @@ fn outcome_contract_version<'a>(run_kind: &str, outcome: &'a Value) -> Option<&'
     outcome.get(key).and_then(Value::as_str)
 }
 
-fn successful_outcome_digest(run_kind: &str, outcome: &Value) -> Result<String> {
+fn successful_outcome_digest(
+    run_kind: &str,
+    outcome: &Value,
+    expected_epoch_id: &str,
+) -> Result<String> {
     ensure!(
         is_supported_run_kind(run_kind),
         "NEX_MAINTENANCE_SKIP_RUN_KIND_UNSUPPORTED: '{run_kind}'"
@@ -581,6 +677,15 @@ fn successful_outcome_digest(run_kind: &str, outcome: &Value) -> Result<String> 
     ensure!(
         outcome.get("failure").is_none(),
         "NEX_MAINTENANCE_SKIP_OUTCOME_FAILED: terminal outcome carries failure"
+    );
+    ensure!(
+        outcome_contract_version(run_kind, outcome)
+            == Some(supported_run_kind_contract_version(run_kind)),
+        "NEX_MAINTENANCE_SKIP_CONTRACT_MISMATCH: outcome contract version is not current"
+    );
+    ensure!(
+        outcome.get("semanticEpochId").and_then(Value::as_str) == Some(expected_epoch_id),
+        "NEX_MAINTENANCE_SKIP_EPOCH_MISMATCH: outcome semantic epoch is not bound to the Run"
     );
     let (payload_key, digest_key) = match run_kind {
         VERIFY_RUN_KIND => ("report", "reportDigest"),
@@ -590,6 +695,19 @@ fn successful_outcome_digest(run_kind: &str, outcome: &Value) -> Result<String> 
     let payload = outcome.get(payload_key).ok_or_else(|| {
         anyhow::anyhow!("NEX_MAINTENANCE_SKIP_REPORT_MISSING: outcome has no {payload_key}")
     })?;
+    match run_kind {
+        VERIFY_RUN_KIND => {
+            serde_json::from_value::<DependencyGraphVerifyReport>(payload.clone()).with_context(
+                || "NEX_MAINTENANCE_SKIP_REPORT_SHAPE_INVALID: Verify report shape is not current",
+            )?;
+        }
+        REBUILD_RUN_KIND => {
+            serde_json::from_value::<RebuildDerivedStateSummary>(payload.clone()).with_context(
+                || "NEX_MAINTENANCE_SKIP_SUMMARY_SHAPE_INVALID: Rebuild summary shape is not current",
+            )?;
+        }
+        _ => unreachable!(),
+    }
     let recorded_digest = outcome
         .get(digest_key)
         .and_then(Value::as_str)
@@ -598,7 +716,7 @@ fn successful_outcome_digest(run_kind: &str, outcome: &Value) -> Result<String> 
                 "NEX_MAINTENANCE_SKIP_REPORT_DIGEST_MISSING: outcome has no report digest ({digest_key})"
             )
         })?;
-    validate_component(recorded_digest, digest_key)?;
+    validate_digest(recorded_digest, digest_key)?;
     let expected_digest = format!("sha256:{}", digest_plan(payload));
     ensure!(
         recorded_digest == expected_digest,

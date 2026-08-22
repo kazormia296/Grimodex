@@ -495,7 +495,7 @@ pub enum RebuildDerivedStateOutcome {
 
 /// Counts from one completed `rebuild_narrative_derived_state_for_project`
 /// pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebuildDerivedStateSummary {
     pub consumers_evaluated: usize,
