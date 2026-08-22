@@ -183,6 +183,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     } else {
         "running"
     };
+    let run_timestamp = grimodex_core::now_rfc3339_millis();
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -193,7 +194,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
                      snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
                      created_at, started_at, version)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                         datetime('now'), CASE WHEN ?10 = 'running' THEN datetime('now') ELSE NULL END, 0)",
+                         ?12, CASE WHEN ?10 = 'running' THEN ?12 ELSE NULL END, 0)",
                 params![
                     run_id,
                     payload.project_id,
@@ -206,6 +207,7 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
                     payload.registry_digest,
                     status,
                     coverage_json,
+                    run_timestamp,
                 ],
             )?;
 
@@ -345,6 +347,7 @@ pub(crate) fn create_system_run_in_tx(
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;
     let run_id = Uuid::new_v4().to_string();
+    let run_timestamp = grimodex_core::now_rfc3339_millis();
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -352,8 +355,8 @@ pub(crate) fn create_system_run_in_tx(
              run_kind, semantic_epoch_id, work_key,
              request_id, idempotency_domain, request_payload_digest, actor_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6,
-                 'running', ?7, datetime('now'), datetime('now'), 0,
-                 ?3, ?8, ?9, ?10, ?11, ?12, ?13)",
+                 'running', ?7, ?8, ?8, 0,
+                 ?3, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             run_id,
             project_id,
@@ -362,6 +365,7 @@ pub(crate) fn create_system_run_in_tx(
             spec_json_text,
             spec_digest,
             coverage_json_text,
+            run_timestamp,
             semantic_epoch_id,
             work_key,
             request.map(|request| request.request_id),

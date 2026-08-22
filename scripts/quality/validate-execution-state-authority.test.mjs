@@ -285,7 +285,11 @@ describe("validate-execution-state-authority", () => {
   });
 
   it("accepts a minimal well-formed fixture", () => {
-    const root = writeFixtureRoot();
+    const root = writeFixtureRoot({
+      findingContract: baseFindingContract({
+        rules: [...baseFindingContract().rules, terminalFindingRule()],
+      }),
+    });
     const result = validateExecutionStateAuthority({ repoRoot: root });
     assert.deepEqual(result.errors, []);
   });

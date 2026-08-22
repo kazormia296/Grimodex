@@ -52,12 +52,41 @@ const REQUIRED_ATTENTION_APPLICATION_CONDITIONS = Object.freeze([
   "snooze-not-expired",
 ]);
 
+const CANONICAL_TERMINAL_FINDING_RULE = Object.freeze({
+  ruleId: "narrative.maintenance-contract-failure",
+  version: 1,
+  identityScope: "maintenance-work",
+  observationStorageClass: "durable-derived-history",
+  writerAuthority: "maintenance-run-finalization-transaction",
+  observationFields: Object.freeze([
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+  ]),
+  materialBasisFields: Object.freeze([
+    "stableSubject",
+    "failureCode",
+    "reasonCode",
+    "evidenceFreshness",
+  ]),
+});
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasExactStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    new Set(actual).size === expected.length &&
+    expected.every((value) => actual.includes(value))
+  );
 }
 
 function readJson(repoRoot, relativePath, errors, label) {
@@ -258,6 +287,52 @@ function validateFindingRuleRegistry(findingContract, errors) {
       }
     }
   }
+
+  const canonicalRules = findingContract.rules.filter(
+    (rule) =>
+      isObject(rule) &&
+      rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId &&
+      rule.version === CANONICAL_TERMINAL_FINDING_RULE.version,
+  );
+  if (canonicalRules.length !== 1) {
+    errors.push(
+      `narrative-finding-contract.json must contain exactly one canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version}; found ${canonicalRules.length}`,
+    );
+  }
+  const canonicalRuleIdEntries = findingContract.rules.filter(
+    (rule) =>
+      isObject(rule) && rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId,
+  );
+  if (canonicalRuleIdEntries.length > 1) {
+    errors.push(
+      `narrative-finding-contract.json canonical terminal ruleId must not have another version: ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}`,
+    );
+  }
+  const [canonicalRule] = canonicalRules;
+  if (!canonicalRule) return;
+  for (const property of [
+    "identityScope",
+    "observationStorageClass",
+    "writerAuthority",
+  ]) {
+    if (canonicalRule[property] !== CANONICAL_TERMINAL_FINDING_RULE[property]) {
+      errors.push(
+        `canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version} must declare ${property}=${CANONICAL_TERMINAL_FINDING_RULE[property]}`,
+      );
+    }
+  }
+  for (const property of ["observationFields", "materialBasisFields"]) {
+    if (
+      !hasExactStringSet(
+        canonicalRule[property],
+        CANONICAL_TERMINAL_FINDING_RULE[property],
+      )
+    ) {
+      errors.push(
+        `canonical terminal rule ${CANONICAL_TERMINAL_FINDING_RULE.ruleId}@${CANONICAL_TERMINAL_FINDING_RULE.version} must declare the exact ${property} set`,
+      );
+    }
+  }
 }
 
 function validateAttentionApplicationConditions(attentionContract, errors) {
@@ -312,14 +387,18 @@ function validateAuthorityMatrixLinkage(
       "maintenance-finding-observation authority writePolicy must be evaluator-publish-only",
     );
   }
-  const terminalFindingAuthority = byConcern.get(
-    "maintenance-terminal-finding-observation",
+  const terminalFindingAuthorities = authorityMatrix.authorities.filter(
+    (entry) =>
+      isObject(entry) &&
+      entry.concern === "maintenance-terminal-finding-observation",
   );
-  if (!terminalFindingAuthority) {
+  if (terminalFindingAuthorities.length !== 1) {
     errors.push(
-      "semantic-core-authorities.json is missing the maintenance-terminal-finding-observation concern required by C2-5B-C",
+      `semantic-core-authorities.json must contain exactly one maintenance-terminal-finding-observation concern required by C2-5B-C; found ${terminalFindingAuthorities.length}`,
     );
-  } else {
+  }
+  const [terminalFindingAuthority] = terminalFindingAuthorities;
+  if (terminalFindingAuthority) {
     if (
       terminalFindingAuthority.canonicalAuthority !==
       "maintenance-run-finalization-transaction"
@@ -331,6 +410,24 @@ function validateAuthorityMatrixLinkage(
     if (terminalFindingAuthority.writePolicy !== "maintenance-finalization-only") {
       errors.push(
         "maintenance-terminal-finding-observation writePolicy must be maintenance-finalization-only",
+      );
+    }
+    const canonicalTerminalRule =
+      isObject(findingContract) && Array.isArray(findingContract.rules)
+        ? findingContract.rules.find(
+          (rule) =>
+            isObject(rule) &&
+            rule.ruleId === CANONICAL_TERMINAL_FINDING_RULE.ruleId &&
+            rule.version === CANONICAL_TERMINAL_FINDING_RULE.version,
+          )
+        : null;
+    if (
+      canonicalTerminalRule &&
+      canonicalTerminalRule.writerAuthority !==
+        terminalFindingAuthority.canonicalAuthority
+    ) {
+      errors.push(
+        "canonical terminal Finding writerAuthority must match maintenance-terminal-finding-observation canonicalAuthority",
       );
     }
   }

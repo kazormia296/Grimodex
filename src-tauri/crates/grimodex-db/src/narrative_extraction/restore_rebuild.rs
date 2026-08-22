@@ -421,7 +421,6 @@ fn finalize_rebuild_run(
     semantic_epoch_id: &str,
     work_result: &anyhow::Result<RebuildDerivedStateSummary>,
 ) -> anyhow::Result<()> {
-    let observed_at = grimodex_core::now_rfc3339_millis();
     let stale_epoch_error = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             ensure_rebuild_run_identity_in_tx(conn, project_id, run_id, semantic_epoch_id)?;
@@ -437,13 +436,14 @@ fn finalize_rebuild_run(
                     Some(&error),
                 );
                 record_run_outcome_in_tx(conn, run_id, &outcome)?;
-                transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                let finalized_at =
+                    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
                 project_terminal_failure_for_run_in_tx(
                     conn,
                     project_id,
                     run_id,
                     &error,
-                    &observed_at,
+                    &finalized_at,
                     true,
                 )?;
                 return Ok(Some(error));
@@ -467,7 +467,7 @@ fn finalize_rebuild_run(
                 ),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
-            transition_run_status_in_tx(
+            let finalized_at = transition_run_status_in_tx(
                 conn,
                 run_id,
                 if work_result.is_ok() {
@@ -482,7 +482,7 @@ fn finalize_rebuild_run(
                         conn,
                         project_id,
                         run_id,
-                        &observed_at,
+                        &finalized_at,
                     )?;
                 }
                 Err(error) => {
@@ -491,7 +491,7 @@ fn finalize_rebuild_run(
                         project_id,
                         run_id,
                         &error.to_string(),
-                        &observed_at,
+                        &finalized_at,
                         true,
                     )?;
                 }
@@ -1130,12 +1130,13 @@ pub fn run_dependency_verify_for_project(
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    let finalized_at =
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
                     resolve_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         &run_id,
-                        &grimodex_core::now_rfc3339_millis(),
+                        &finalized_at,
                     )?;
                     Ok(())
                 })
@@ -1155,13 +1156,14 @@ pub fn run_dependency_verify_for_project(
                         &run_id,
                         &json!({ "failure": error.to_string() }),
                     )?;
-                    transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                    let finalized_at =
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         &run_id,
                         &error.to_string(),
-                        &grimodex_core::now_rfc3339_millis(),
+                        &finalized_at,
                         true,
                     )?;
                     Ok(())

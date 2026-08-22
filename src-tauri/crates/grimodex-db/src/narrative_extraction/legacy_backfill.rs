@@ -287,10 +287,18 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
     };
     let finalize_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            transition_run_status_in_tx(conn, &run_id, finalize_status)?;
+            // Bind terminal Finding evidence to the timestamp persisted by
+            // the terminal Run transition. This avoids a pre-transition
+            // clock sample becoming older than the completed Run itself.
+            let finalized_at = transition_run_status_in_tx(conn, &run_id, finalize_status)?;
             match &transform_result {
                 Ok(_) => {
-                    resolve_terminal_failure_for_run_in_tx(conn, project_id, &run_id, &now)?;
+                    resolve_terminal_failure_for_run_in_tx(
+                        conn,
+                        project_id,
+                        &run_id,
+                        &finalized_at,
+                    )?;
                 }
                 Err(error) => {
                     project_terminal_failure_for_run_in_tx(
@@ -298,7 +306,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
                         project_id,
                         &run_id,
                         &error.to_string(),
-                        &now,
+                        &finalized_at,
                         true,
                     )?;
                 }

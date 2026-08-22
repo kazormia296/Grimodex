@@ -318,11 +318,25 @@ fn active_finding_observations<'a>(
         } else {
             latest_finding_lifecycle_for_identity(conn, project_id, &finding_identity)?
         };
-        let is_proven_resolved = latest_lifecycle.as_ref().is_some_and(|row| {
-            row.state == FindingLifecycleState::Resolved
-                && row.semantic_epoch_id == observation.semantic_epoch_id
-                && row.observed_at >= observation.observed_at
-        });
+        let is_proven_resolved = match latest_lifecycle.as_ref() {
+            Some(row)
+                if row.state == FindingLifecycleState::Resolved
+                    && row.semantic_epoch_id == observation.semantic_epoch_id =>
+            {
+                if is_terminal {
+                    terminal_resolution_is_strictly_newer(
+                        conn,
+                        &row.observed_at,
+                        &observation.observed_at,
+                    )?
+                } else {
+                    // Preserve the established edge-scoped diagnostic order;
+                    // only terminal history needs instant-aware comparison.
+                    row.observed_at >= observation.observed_at
+                }
+            }
+            _ => false,
+        };
         if !is_proven_resolved {
             active_observations.push(observation);
         }
@@ -345,6 +359,34 @@ fn active_finding_observations<'a>(
         has_unresolved_identity,
         latest_display_observation,
     ))
+}
+
+/// Compare a terminal lifecycle resolution with its Observation using
+/// SQLite's instant parser. Restored rows may use different RFC3339 offsets,
+/// so lexical comparison is not a valid chronology. Equal, older, or
+/// malformed/null timestamps must not prove resolution; malformed values are
+/// an Inbox read error rather than permission to hide durable failure history.
+fn terminal_resolution_is_strictly_newer(
+    conn: &Connection,
+    resolution_observed_at: &str,
+    observation_observed_at: &str,
+) -> anyhow::Result<bool> {
+    let comparison: i64 = conn.query_row(
+        "SELECT CASE
+                    WHEN julianday(?1) IS NULL OR julianday(?2) IS NULL THEN 2
+                    WHEN julianday(?1) > julianday(?2) THEN 1
+                    ELSE 0
+                END",
+        params![resolution_observed_at, observation_observed_at],
+        |row| row.get(0),
+    )?;
+    match comparison {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => anyhow::bail!(
+            "NEX_FINDING_INBOX_TIMESTAMP_INVALID: terminal lifecycle or observation timestamp is not a valid instant"
+        ),
+    }
 }
 
 /// Assemble the Maintenance Inbox for `project_id` as of `now`. Read-only:

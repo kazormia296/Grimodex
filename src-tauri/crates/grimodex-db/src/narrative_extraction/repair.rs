@@ -1320,7 +1320,8 @@ fn finalize_repair_run(
             if let Some(outcome) = outcome {
                 record_run_outcome_in_tx(conn, run_id, outcome)?;
             }
-            transition_run_status_in_tx(conn, run_id, status)
+            transition_run_status_in_tx(conn, run_id, status)?;
+            Ok(())
         })
     })
 }

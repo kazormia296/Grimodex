@@ -223,7 +223,7 @@ pub(crate) fn transition_run_status_in_tx(
     conn: &Connection,
     run_id: &str,
     to: NarrativeRunStatus,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<String> {
     let current_raw: Option<String> = conn
         .query_row(
             "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
@@ -242,20 +242,26 @@ pub(crate) fn transition_run_status_in_tx(
         to.as_str()
     );
 
+    // Run timestamps are also terminal Finding ordering evidence. SQLite's
+    // datetime('now') is only second precision, while terminal Observations
+    // use the shared RFC3339-millisecond clock. Keep every status transition
+    // on that same canonical clock so a same-second .500 failure and .900
+    // success remain chronologically distinguishable.
+    let transition_at = grimodex_core::now_rfc3339_millis();
     let updated = conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = ?1,
-                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, datetime('now')) ELSE started_at END,
-                completed_at = CASE WHEN ?2 THEN datetime('now') ELSE completed_at END,
+                started_at = CASE WHEN ?1 = 'running' THEN COALESCE(started_at, ?3) ELSE started_at END,
+                completed_at = CASE WHEN ?2 THEN ?3 ELSE completed_at END,
                 version = version + 1
-          WHERE id = ?3 AND status = ?4",
-        params![to.as_str(), to.is_terminal(), run_id, from.as_str()],
+          WHERE id = ?4 AND status = ?5",
+        params![to.as_str(), to.is_terminal(), transition_at, run_id, from.as_str()],
     )?;
     anyhow::ensure!(
         updated == 1,
         "NEX_EXECUTION_STATUS_TRANSITION_CONFLICT: run '{run_id}' status changed concurrently"
     );
-    Ok(())
+    Ok(transition_at)
 }
 
 /// Transition a Task's status, fail closed against `task_transition_allowed`.
