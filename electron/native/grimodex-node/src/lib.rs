@@ -61,11 +61,12 @@ use grimodex_db::lint_terms::{
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
-    ListResumableRunsPayload, NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
+    ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
+    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
+    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
+    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -1651,6 +1652,70 @@ impl Backend {
         .await
     }
 
+    /// Electron main-only serialized system-work cycle.
+    ///
+    /// The request is validated in shared Rust, then executed against one
+    /// pinned `WorkspaceAuthority` connection.  In particular, this method
+    /// never reconstructs a `Database` from the workspace path: doing so
+    /// would create the detached second writer that caused
+    /// `SQLITE_BUSY_SNAPSHOT` in the old post-open worker.  A missing or
+    /// switching workspace is a structured unavailable result so the main
+    /// scheduler retains the durable trigger rather than treating it as a
+    /// successful drain.
+    #[napi]
+    pub async fn run_narrative_maintenance_cycle(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let request: MaintenanceCycleRequest = from_wire("payload", payload)?;
+            let normalized_work = request.normalized_work()?;
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let generation = state
+                .narrative_maintenance_recovery_gate
+                .current_generation();
+            let result = narrative_extraction::run_system_work_cycle_with_modes(
+                authority.db(),
+                &request,
+                |item| {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .mode_for(generation, &item.canonical_key())
+                },
+            )?;
+            let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
+            // Only a fully validated, serialized, and completed cycle
+            // advances the recovery boundary. Invalid wire data or a failed
+            // adapter keeps the next attempt in StartupRecovery for each
+            // unacknowledged canonical WorkKey in this generation.
+            // Deferred/empty wakes do not mark any identity as recovered.
+            if matches!(
+                result.status,
+                MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
+            ) {
+                for item in &normalized_work {
+                    state
+                        .narrative_maintenance_recovery_gate
+                        .mark_recovered(generation, &item.canonical_key());
+                }
+            }
+            Ok(json)
+        })
+        .await
+    }
+
     /// drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
     /// CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
     /// は "run" | "get" | "all" | "values"。
@@ -2324,6 +2389,9 @@ impl Backend {
                 let semantic_span = trace.begin_span(NativeWorkspaceOpenSpanName::SemanticRotate);
                 state_for_hook.semantic.rotate_workspace_epoch();
                 trace.finish_span(semantic_span);
+                state_for_hook
+                    .narrative_maintenance_recovery_gate
+                    .mark_workspace_swapped();
             };
             let result = match open_workspace_sync_traced(
                 &state.ws,

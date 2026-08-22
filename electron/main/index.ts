@@ -31,6 +31,7 @@ import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
+import { createNarrativeMaintenanceScheduler } from "./narrativeMaintenance.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -393,8 +394,14 @@ if (!gotSingleInstanceLock) {
       broadcastBackendEvent,
     );
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
+    // Main-only system-work seam. No production trigger is enqueued in this
+    // lane; future C2-5B trigger owners call `request` with a validated work
+    // item, while the scheduler already owns coalescing/project serialization
+    // and durable `hasMore` wake scope.
+    const narrativeMaintenance = createNarrativeMaintenanceScheduler(backend);
     licenseValidation.start();
     narrativeFreshness.start();
+    narrativeMaintenance.start();
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
@@ -402,6 +409,7 @@ if (!gotSingleInstanceLock) {
       updater.dispose();
       licenseValidation.dispose();
       narrativeFreshness.dispose();
+      narrativeMaintenance.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();

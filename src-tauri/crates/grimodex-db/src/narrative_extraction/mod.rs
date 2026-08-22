@@ -142,6 +142,11 @@ pub use maintenance_runtime::{
     RunLedgerCounts, StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
     REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
+pub use maintenance_runtime::{
+    run_system_work_cycle, run_system_work_cycle_with_modes, MaintenanceCycleRequest,
+    MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
+    MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+};
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
     publish_freshness_evaluation_in_tx, write_consumer_freshness_in_tx, write_edge_state_in_tx,

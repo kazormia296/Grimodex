@@ -47,6 +47,13 @@ export declare class Backend {
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
   /**
+   * Electron main-only serialized system-work cycle. The payload is the
+   * coalesced project-scoped work DTO; renderer/preload never receives this
+   * method and the native implementation executes only on the live workspace
+   * authority connection.
+   */
+  runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`
    * は "run" | "get" | "all" | "values"。

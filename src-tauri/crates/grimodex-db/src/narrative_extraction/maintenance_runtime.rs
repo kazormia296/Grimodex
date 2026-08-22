@@ -194,6 +194,354 @@ pub const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 pub const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
 pub const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 
+/// Maximum number of coalesced work items accepted by one main-process cycle.
+/// A cycle is deliberately bounded so a burst of trigger events cannot turn
+/// one background call into an unbounded writer hold.  Project serialization
+/// remains the main scheduler's responsibility; this bound is the native
+/// boundary's last line of defence for callers that bypass that scheduler.
+pub const MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE: usize = 32;
+
+/// Main-only request DTO for the serialized system-work cycle.  This is not an
+/// IPC/preload contract: the only production consumer is the Electron main
+/// scheduler's N-API seam.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaintenanceCycleRequest {
+    pub work: Vec<MaintenanceWorkRequest>,
+    #[serde(default)]
+    pub wake_project_ids: Vec<String>,
+}
+
+/// One project-scoped automatic work item delivered by the main scheduler.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaintenanceWorkRequest {
+    pub project_id: String,
+    pub run_kind: AutomaticRunKind,
+    pub work_key: String,
+    pub semantic_epoch_id: Option<String>,
+    pub reasons: Vec<String>,
+}
+
+/// Status returned by the live native cycle.  `Coalesced` means every item
+/// was already owned by a live Run; it is not a successful execution and the
+/// main scheduler must not invent a second Run for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MaintenanceCycleStatus {
+    Accepted,
+    Coalesced,
+    /// The request is valid but its adapter is not enabled in this lane.  A
+    /// deferred result is deliberately not an ACK: the main scheduler keeps
+    /// the exact work identity queued without hot-looping until a later
+    /// phase owner explicitly re-enqueues it.
+    Deferred,
+}
+
+/// Result of one bounded live-authority cycle.  `has_more` is intentionally
+/// durable-scope agnostic here: enabled system adapters report whether they
+/// have another durable unit to process, while the main scheduler preserves
+/// the project scope when it schedules an empty wake.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceCycleResult {
+    pub status: MaintenanceCycleStatus,
+    pub has_more: bool,
+}
+
+impl MaintenanceCycleResult {
+    pub const fn accepted(has_more: bool) -> Self {
+        Self {
+            status: MaintenanceCycleStatus::Accepted,
+            has_more,
+        }
+    }
+
+    pub const fn coalesced() -> Self {
+        Self {
+            status: MaintenanceCycleStatus::Coalesced,
+            has_more: false,
+        }
+    }
+
+    pub const fn deferred(has_more: bool) -> Self {
+        Self {
+            status: MaintenanceCycleStatus::Deferred,
+            has_more,
+        }
+    }
+}
+
+impl MaintenanceCycleRequest {
+    /// Validate and coalesce the wire request before any DB write.  Keeping
+    /// this validation in shared Rust as well as the TS scheduler prevents a
+    /// stale or hand-written main caller from reaching a Repair adapter or
+    /// smuggling a path-shaped identity into a canonical key.
+    pub fn normalized_work(&self) -> anyhow::Result<Vec<DesiredWork>> {
+        anyhow::ensure!(
+            self.work.len() <= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+            "NEX_MAINTENANCE_BATCH_TOO_LARGE: at most {MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE} work items are allowed"
+        );
+        for project_id in &self.wake_project_ids {
+            require_component(project_id.clone(), "projectId")?;
+        }
+
+        let mut desired = Vec::with_capacity(self.work.len());
+        for item in &self.work {
+            anyhow::ensure!(
+                !item.reasons.is_empty(),
+                "NEX_MAINTENANCE_INVALID_REQUEST: at least one reason is required"
+            );
+            let epoch = item
+                .semantic_epoch_id
+                .clone()
+                .map(|value| require_component(value, "semanticEpochId"))
+                .transpose()?;
+            if !matches!(item.run_kind, AutomaticRunKind::Backfill) {
+                anyhow::ensure!(
+                    epoch.is_some(),
+                    "NEX_MAINTENANCE_INVALID_REQUEST: semanticEpochId is required for epoch-bound work"
+                );
+            }
+            let mut work = DesiredWork::new_with_epoch(
+                item.project_id.clone(),
+                item.run_kind,
+                item.work_key.clone(),
+                epoch,
+                item.reasons[0].clone(),
+            )?;
+            for reason in &item.reasons[1..] {
+                work.add_reason(&require_component(reason.clone(), "reason")?);
+            }
+            desired.push(work);
+        }
+        Ok(coalesce_desired_work(desired))
+    }
+}
+
+/// Execute one coalesced request on the caller's live `Database` authority.
+///
+/// The function deliberately accepts `&Database`, not a filesystem path.  A
+/// caller that has pinned `WorkspaceAuthority` therefore keeps the matching
+/// lease and SQLite connection for the complete cycle; this is the critical
+/// guard against the detached second-writer/`SQLITE_BUSY_SNAPSHOT` failure
+/// that removed the old post-open Backfill worker.
+///
+/// C2-5B-A enables only the already-safe Backfill adapter in execute mode.
+/// Verify and Rebuild-Derived are validated and acknowledged as an explicit
+/// deferred seam; their production trigger symbols remain unwired until the
+/// C2-3 contract-aware skip/Finding join. Repair is not representable in the
+/// request enum at all.
+pub fn run_system_work_cycle(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode: RecoveryMode,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_modes(db, request, |_| mode)
+}
+
+/// Execute a cycle with recovery mode selected per canonical WorkKey.
+///
+/// The Electron process uses this form because one bounded batch can contain
+/// a key already recovered in the current workspace generation and another
+/// key first observed after a handoff. A workspace-wide boolean would let the
+/// latter coalesce a persisted interrupted Run forever.
+pub fn run_system_work_cycle_with_modes(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+) -> anyhow::Result<MaintenanceCycleResult> {
+    let work = request.normalized_work()?;
+    if work.is_empty() {
+        // An empty request is meaningful only as the scheduler's durable
+        // project-scoped wake. There is no detached poll or speculative write
+        // to perform here. If a prior cycle left an active automatic Run, the
+        // wake cannot reconstruct its adapter payload safely, so it reports a
+        // typed deferred continuation rather than ACKing and dropping it.
+        let wake_project_ids = request
+            .wake_project_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let has_more = has_durable_active_work(db, &wake_project_ids)?;
+        return Ok(if has_more {
+            MaintenanceCycleResult::deferred(true)
+        } else {
+            MaintenanceCycleResult::accepted(false)
+        });
+    }
+
+    // Validate the entire batch before recovering or dispatching any item.
+    // Verify/Rebuild are intentionally not enabled in C2-5B-A; returning a
+    // typed deferred result keeps their durable identities visible to the
+    // scheduler and prevents a mixed batch from partially ACKing them.
+    for item in &work {
+        validate_dispatch_contract(item)?;
+    }
+    if work
+        .iter()
+        .any(|item| !matches!(item.run_kind, AutomaticRunKind::Backfill))
+    {
+        return Ok(MaintenanceCycleResult::deferred(true));
+    }
+
+    let mut all_coalesced = true;
+    for item in &work {
+        let action = recover_cycle_work(db, item, mode_for(item))?;
+        match action {
+            RecoveryAction::CoalescedRunning { .. } | RecoveryAction::CoalescedPending { .. } => {
+                continue
+            }
+            RecoveryAction::SkipCompleted { .. } => {
+                all_coalesced = false;
+                continue;
+            }
+            RecoveryAction::ManualIntervention { code } => {
+                anyhow::bail!("{code}: maintenance work requires manual intervention")
+            }
+            RecoveryAction::RecoverInterrupted { .. }
+            | RecoveryAction::RecoverStaleEpoch { .. } => {
+                // `recover_cycle_work` terminalizes explicit candidates and
+                // returns a second decision, so this arm is unreachable.
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_RECOVERY_INCOMPLETE: active Run remained after recovery"
+                )
+            }
+            RecoveryAction::StartFresh | RecoveryAction::Retry { .. } => {
+                all_coalesced = false;
+                dispatch_enabled_work(db, item)?;
+            }
+        }
+    }
+
+    Ok(if all_coalesced {
+        MaintenanceCycleResult::coalesced()
+    } else {
+        // Backfill is a complete per-project transform today.  A pending or
+        // running automatic Run from another durable work identity is the one
+        // remaining-work signal this seam can establish without a schema
+        // change; the scheduler converts it to a project-scoped empty wake.
+        let project_ids = work
+            .iter()
+            .map(|item| item.project_id.as_str())
+            .collect::<Vec<_>>();
+        MaintenanceCycleResult::accepted(has_durable_active_work(db, &project_ids)?)
+    })
+}
+
+fn recover_cycle_work(
+    db: &Database,
+    item: &DesiredWork,
+    mode: RecoveryMode,
+) -> anyhow::Result<RecoveryAction> {
+    let work_key = item.work_key_identity();
+    let expected_epoch = work_key.semantic_epoch_id.as_deref();
+    let decision = decide_run_recovery_for_epoch(db, &work_key, expected_epoch, mode, None)?;
+    match decision.action {
+        RecoveryAction::RecoverInterrupted { run_ids } => {
+            terminalize_interrupted_runs_for_epoch(
+                db,
+                &item.project_id,
+                &work_key,
+                expected_epoch,
+                &run_ids,
+            )?;
+            // The just-terminalized row is provenance for this recovery, not
+            // a failed attempt that should consume the next cycle's retry
+            // budget. Start the same durable WorkKey anew.
+            Ok(RecoveryAction::StartFresh)
+        }
+        RecoveryAction::RecoverStaleEpoch { runs } => {
+            let expected_epoch = expected_epoch.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_STALE_EPOCH_UNSCOPED: stale recovery requires an epoch-bound work key"
+                )
+            })?;
+            terminalize_stale_interrupted_runs_for_epoch(
+                db,
+                &item.project_id,
+                &work_key,
+                expected_epoch,
+                &runs,
+            )?;
+            Ok(RecoveryAction::StartFresh)
+        }
+        action => Ok(action),
+    }
+}
+
+fn validate_dispatch_contract(item: &DesiredWork) -> anyhow::Result<()> {
+    match item.run_kind {
+        AutomaticRunKind::Backfill => {
+            anyhow::ensure!(
+                item.work_key == LEGACY_BACKFILL_WORK_KEY,
+                "NEX_MAINTENANCE_UNKNOWN_BACKFILL_WORK_KEY: '{}'",
+                item.work_key
+            );
+            Ok(())
+        }
+        AutomaticRunKind::Verify => {
+            anyhow::ensure!(
+                item.work_key == format!("{VERIFY_WORK_KEY_PREFIX}{}", item.semantic_epoch_id.as_deref().unwrap_or_default()),
+                "NEX_MAINTENANCE_VERIFY_WORK_KEY_MISMATCH: work key is not bound to its Semantic Epoch"
+            );
+            Ok(())
+        }
+        AutomaticRunKind::RebuildDerived => {
+            anyhow::ensure!(
+                item.work_key == REBUILD_DERIVED_WORK_KEY,
+                "NEX_MAINTENANCE_UNKNOWN_REBUILD_WORK_KEY: '{}'",
+                item.work_key
+            );
+            Ok(())
+        }
+    }
+}
+
+fn dispatch_enabled_work(db: &Database, item: &DesiredWork) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        matches!(item.run_kind, AutomaticRunKind::Backfill),
+        "NEX_MAINTENANCE_ADAPTER_NOT_ENABLED: '{}' is deferred in C2-5B-A",
+        item.run_kind.as_str()
+    );
+    validate_dispatch_contract(item)?;
+    // This adapter uses the exact Database supplied by the live
+    // WorkspaceAuthority. It owns its transaction phases but never opens a
+    // second filesystem connection.
+    super::bootstrap_legacy_dependency_backfill_for_project(db, &item.project_id)?;
+    Ok(())
+}
+
+/// Return whether the supplied project scope still owns an active automatic
+/// Run.  This is deliberately a read-only query over the live authority: no
+/// new queue table, migration, or detached connection is introduced by the
+/// wake contract.
+fn has_durable_active_work(db: &Database, project_ids: &[&str]) -> anyhow::Result<bool> {
+    if project_ids.is_empty() {
+        return Ok(false);
+    }
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT 1
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1
+                AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
+                AND status IN ('pending', 'running')
+              LIMIT 1",
+        )?;
+        for project_id in project_ids {
+            if statement
+                .query_row(params![project_id], |_| Ok(()))
+                .optional()?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
 /// Trigger vocabulary consumed by the pure desired-work planner.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]

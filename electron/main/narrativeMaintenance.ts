@@ -49,7 +49,9 @@ export interface NarrativeMaintenanceCycleRequest {
 export type NarrativeMaintenanceCycleResult =
   | { status: "accepted"; hasMore: boolean }
   | { status: "workspace-unavailable" }
-  | { status: "coalesced" };
+  | { status: "coalesced" }
+  /** Valid work whose adapter is intentionally not enabled in this lane. */
+  | { status: "deferred"; hasMore: boolean };
 
 export interface NarrativeMaintenanceBackendLike {
   /**
@@ -59,7 +61,7 @@ export interface NarrativeMaintenanceBackendLike {
    */
   runNarrativeMaintenanceCycle?(
     request: NarrativeMaintenanceCycleRequest,
-  ): Promise<NarrativeMaintenanceCycleResult>;
+  ): Promise<unknown>;
 }
 
 export interface NarrativeMaintenanceScheduler {
@@ -214,6 +216,9 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
     if (value.status === "coalesced") {
       return { status: "coalesced" };
     }
+    if (value.status === "deferred" && typeof value.hasMore === "boolean") {
+      return { status: "deferred", hasMore: value.hasMore };
+    }
     throw new Error("native maintenance cycle returned invalid status");
   }
 
@@ -306,6 +311,11 @@ export function createNarrativeMaintenanceScheduler(
   // issue the empty wake while this scheduler's project claim is held.
   const durableWakeProjects = new Set<string>();
   const durableWakeRetryCounts = new Map<string, number>();
+  // A deferred adapter must remain durable without creating an idle retry
+  // loop.  Keep the canonical work identity parked, rather than the whole
+  // project: an enabled Backfill for the same project must still proceed.
+  const deferredWorkKeys = new Set<string>();
+  const deferredWakeProjects = new Set<string>();
   let cancelCoordinatorWait: (() => void) | null = null;
 
   const clearTimer = (): void => {
@@ -357,6 +367,23 @@ export function createNarrativeMaintenanceScheduler(
     pending.set(key, work);
   };
 
+  const hasRunnablePendingWork = (
+    blockedProjects: ReadonlySet<string> = new Set(),
+  ): boolean =>
+    [...pending.values()].some(
+      (work) =>
+        !deferredWorkKeys.has(canonicalNarrativeMaintenanceWorkKey(work)) &&
+        !blockedProjects.has(work.projectId),
+    );
+
+  const hasRunnableWake = (
+    blockedProjects: ReadonlySet<string> = new Set(),
+  ): boolean =>
+    [...durableWakeProjects].some(
+      (projectId) =>
+        !deferredWakeProjects.has(projectId) && !blockedProjects.has(projectId),
+    );
+
   const runCycle = async (): Promise<void> => {
     if (disposed || inFlight) return;
     const method = backend?.runNarrativeMaintenanceCycle;
@@ -364,13 +391,18 @@ export function createNarrativeMaintenanceScheduler(
 
     if (pending.size === 0 && durableWakeProjects.size === 0) return;
 
-    const candidates = [...pending.values()];
+    const candidates = [...pending.values()].filter(
+      (work) =>
+        !deferredWorkKeys.has(canonicalNarrativeMaintenanceWorkKey(work)),
+    );
     // Process ordinary work first. A wake-only cycle is represented by an
     // empty batch, but only after its durable project has been claimed.
     const projectIds = [
       ...new Set([
         ...candidates.map((work) => work.projectId),
-        ...durableWakeProjects,
+        ...[...durableWakeProjects].filter(
+          (projectId) => !deferredWakeProjects.has(projectId),
+        ),
       ]),
     ];
     const claimedProjects = sharedCoordinator
@@ -383,6 +415,12 @@ export function createNarrativeMaintenanceScheduler(
     const batch = candidates.filter((work) =>
       claimedProjectSet.has(work.projectId),
     );
+    const deferredBatch = batch.filter((work) => work.runKind !== "backfill");
+    const enabledBatch = batch.filter((work) => work.runKind === "backfill");
+    // If the whole batch is deferred, send it through the native typed
+    // deferred seam.  When enabled work is present, hold only the deferred
+    // identities back so another project (or same-project Backfill) can run.
+    const backendBatch = enabledBatch.length > 0 ? enabledBatch : batch;
     const sendingWakeProjects = claimedProjects.filter((projectId) =>
       durableWakeProjects.has(projectId),
     );
@@ -396,17 +434,23 @@ export function createNarrativeMaintenanceScheduler(
     for (const projectId of sendingWakeProjects) {
       durableWakeProjects.delete(projectId);
     }
-    for (const work of batch) {
+    for (const work of backendBatch) {
       pending.delete(canonicalNarrativeMaintenanceWorkKey(work));
+    }
+    if (enabledBatch.length > 0) {
+      for (const work of deferredBatch) {
+        deferredWorkKeys.add(canonicalNarrativeMaintenanceWorkKey(work));
+      }
     }
     inFlight = true;
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
-    let shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+    let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
+    let deferredCycle = false;
     try {
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
-        work: batch,
+        work: backendBatch,
         wakeProjectIds: sendingWakeProjects,
       });
       // Validate the response before clearing retry state.  A malformed
@@ -422,18 +466,37 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance cycle could not acquire an active workspace",
         );
       }
+      if (cycleResult.status === "deferred") {
+        deferredCycle = true;
+        throw new Error(
+          "native maintenance cycle deferred an unenabled adapter",
+        );
+      }
+      if (
+        deferredBatch.length > 0 &&
+        deferredBatch.length === backendBatch.length
+      ) {
+        // A future/native implementation must not be able to accidentally
+        // ACK a batch whose every item is still deferred. Keep this guard in
+        // main as well as the shared Rust contract so a stale binding cannot
+        // drop Verify/Rebuild identities.
+        deferredCycle = true;
+        throw new Error(
+          "native maintenance cycle acknowledged an unenabled adapter",
+        );
+      }
       for (const projectId of [
         ...new Set([
           ...sendingWakeProjects,
-          ...batch.map((work) => work.projectId),
+          ...backendBatch.map((work) => work.projectId),
         ]),
       ]) {
         durableWakeRetryCounts.delete(projectId);
       }
-      for (const work of batch) {
+      for (const work of backendBatch) {
         retryCounts.delete(canonicalNarrativeMaintenanceWorkKey(work));
       }
-      shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+      shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
       if (
         !disposed &&
         cycleResult.status === "accepted" &&
@@ -442,7 +505,7 @@ export function createNarrativeMaintenanceScheduler(
         const wakeProjects = [
           ...new Set([
             ...sendingWakeProjects,
-            ...batch.map((work) => work.projectId),
+            ...backendBatch.map((work) => work.projectId),
           ]),
         ];
         if (wakeProjects.length === 0) {
@@ -458,12 +521,27 @@ export function createNarrativeMaintenanceScheduler(
       }
     } catch (error) {
       if (!disposed) {
-        if (workspaceUnavailable) {
+        if (deferredCycle) {
+          for (const work of backendBatch) {
+            requeueWork(work);
+            deferredWorkKeys.add(canonicalNarrativeMaintenanceWorkKey(work));
+          }
+          for (const projectId of sendingWakeProjects) {
+            durableWakeProjects.add(projectId);
+            deferredWakeProjects.add(projectId);
+          }
+          warn(
+            "[narrative-maintenance] adapter is not enabled; retaining deferred trigger",
+          );
+          // Do not schedule this project again until a new explicit request
+          // clears its park.  This is a typed non-ACK, not a retry failure.
+          shouldSchedule = false;
+        } else if (workspaceUnavailable) {
           // This is an expected, recoverable state while a workspace is
           // closed or switching.  It is not a failed delivery and must not
           // consume the bounded error retry budget: dropping this batch would
           // lose the only trigger until another event happens to arrive.
-          for (const work of batch) requeueWork(work);
+          for (const work of backendBatch) requeueWork(work);
           for (const projectId of sendingWakeProjects) {
             durableWakeProjects.add(projectId);
           }
@@ -471,9 +549,9 @@ export function createNarrativeMaintenanceScheduler(
             "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
           );
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
-          shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else {
-          for (const work of batch) {
+          for (const work of backendBatch) {
             const key = canonicalNarrativeMaintenanceWorkKey(work);
             const retryCount = (retryCounts.get(key) ?? 0) + 1;
             if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
@@ -506,21 +584,24 @@ export function createNarrativeMaintenanceScheduler(
           }
           warn("[narrative-maintenance] background cycle failed:", error);
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
-          shouldSchedule = pending.size > 0 || durableWakeProjects.size > 0;
+          shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         }
       }
     } finally {
       sharedCoordinator?.release(claimedProjects);
       inFlight = false;
-      if (!disposed && shouldSchedule) {
+      if (
+        !disposed &&
+        (shouldSchedule || hasRunnablePendingWork() || hasRunnableWake())
+      ) {
         const blockedProjects = new Set(blockedProjectIds);
-        const hasNewUnblockedPendingWork = [...pending.values()].some(
-          (work) => !blockedProjects.has(work.projectId),
-        );
+        const hasNewUnblockedPendingWork =
+          hasRunnablePendingWork(blockedProjects);
+        const hasNewUnblockedWake = hasRunnableWake(blockedProjects);
         if (
           blockedProjectIds.length > 0 &&
           !hasNewUnblockedPendingWork &&
-          durableWakeProjects.size === 0
+          !hasNewUnblockedWake
         ) {
           waitForProjectRelease(blockedProjectIds);
         } else {
@@ -534,6 +615,8 @@ export function createNarrativeMaintenanceScheduler(
     if (disposed) return;
     const work = validateRequest(rawWork);
     const key = canonicalNarrativeMaintenanceWorkKey(work);
+    deferredWorkKeys.delete(key);
+    deferredWakeProjects.delete(work.projectId);
     const existing = pending.get(key);
     if (existing && !existing.reasons.includes(work.reason)) {
       pending.set(key, {

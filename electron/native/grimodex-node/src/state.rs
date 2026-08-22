@@ -13,6 +13,7 @@ use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
+use grimodex_db::narrative_extraction::RecoveryMode;
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -97,6 +98,79 @@ impl grimodex_ai::emit::StreamEmitter for EventQueue {
 }
 
 const MAX_STREAM_ABORT_TOMBSTONES: usize = 256;
+
+/// Recovery bookkeeping for one main-process maintenance runtime.
+///
+/// A workspace swap advances the generation and clears the set of recovered
+/// canonical WorkKeys. Startup recovery is selected independently for each
+/// identity that has not yet completed a cycle successfully; an invalid
+/// request, deferred adapter, or failed cycle therefore leaves that identity
+/// in StartupRecovery.
+struct NarrativeMaintenanceRecoveryState {
+    workspace_generation: u64,
+    recovered_work_keys: HashSet<String>,
+}
+
+pub struct NarrativeMaintenanceRecoveryGate {
+    state: Mutex<NarrativeMaintenanceRecoveryState>,
+}
+
+impl Default for NarrativeMaintenanceRecoveryGate {
+    fn default() -> Self {
+        Self {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: 0,
+                recovered_work_keys: HashSet::new(),
+            }),
+        }
+    }
+}
+
+impl NarrativeMaintenanceRecoveryGate {
+    pub fn current_generation(&self) -> u64 {
+        self.state
+            .lock()
+            .map(|state| state.workspace_generation)
+            .unwrap_or_default()
+    }
+
+    pub fn mark_workspace_swapped(&self) -> u64 {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state.workspace_generation = state.workspace_generation.wrapping_add(1);
+        state.recovered_work_keys.clear();
+        state.workspace_generation
+    }
+
+    pub fn mode_for(&self, generation: u64, work_key: &str) -> RecoveryMode {
+        let recovered = self
+            .state
+            .lock()
+            .map(|state| {
+                state.workspace_generation == generation
+                    && state.recovered_work_keys.contains(work_key)
+            })
+            .unwrap_or(false);
+        if recovered {
+            RecoveryMode::SameProcessLive
+        } else {
+            RecoveryMode::StartupRecovery
+        }
+    }
+
+    /// Must be called only after the live cycle has validated and completed.
+    pub fn mark_recovered(&self, generation: u64, work_key: &str) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.workspace_generation == generation {
+            state.recovered_work_keys.insert(work_key.to_string());
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct StreamCancellation {
@@ -283,6 +357,9 @@ pub struct AppState {
     /// Session::run's mutable owner. Callers must use `try_lock` and return the
     /// stable `RERANKER_BUSY` marker instead of waiting behind an inference.
     pub semantic_reranker: Mutex<grimodex_semantic::reranker::RerankerRuntime>,
+    /// Workspace-generation-scoped startup-recovery gate for the main-only
+    /// narrative maintenance cycle.
+    pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
 }
 
 impl AppState {
@@ -360,6 +437,7 @@ impl AppState {
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
                 reranker_resource_root,
             )),
+            narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
         })
     }
 }
@@ -458,6 +536,46 @@ mod tests {
             }
             SinkState::Registered(_) => panic!("登録前は Pending のまま"),
         }
+    }
+
+    #[test]
+    fn narrative_recovery_gate_is_generation_and_work_key_scoped() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let generation_one = gate.current_generation();
+        let key_a = "narrative-maintenance:v1/backfill/project-a/key-a";
+        let key_b = "narrative-maintenance:v1/backfill/project-a/key-b";
+
+        assert_eq!(
+            gate.mode_for(generation_one, key_a),
+            RecoveryMode::StartupRecovery
+        );
+        gate.mark_recovered(generation_one, key_a);
+        assert_eq!(
+            gate.mode_for(generation_one, key_a),
+            RecoveryMode::SameProcessLive
+        );
+        assert_eq!(
+            gate.mode_for(generation_one, key_b),
+            RecoveryMode::StartupRecovery,
+            "an unscanned/deferred WorkKey must not inherit another key's ACK"
+        );
+
+        let generation_two = gate.mark_workspace_swapped();
+        assert_ne!(generation_two, generation_one);
+        assert_eq!(
+            gate.mode_for(generation_two, key_a),
+            RecoveryMode::StartupRecovery,
+            "workspace handoff clears prior generation identities"
+        );
+        gate.mark_recovered(generation_two, key_a);
+        assert_eq!(
+            gate.mode_for(generation_two, key_a),
+            RecoveryMode::SameProcessLive
+        );
+        assert_eq!(
+            gate.mode_for(generation_two, key_b),
+            RecoveryMode::StartupRecovery
+        );
     }
 
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。
