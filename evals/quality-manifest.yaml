@@ -219,6 +219,8 @@ requirements:
       - electron/shared/ipcContract.ts
       - electron/native/grimodex-node/src/lib.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/product-journeys.mjs
     lightTests:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
@@ -227,6 +229,8 @@ requirements:
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
+      - scripts/product-journey-phase1.test.mjs
+      - scripts/c2-5b-product-journeys.test.mjs
     heavyTests:
       - src/features/chat/agent/agentToolCall.live.test.ts
     evaluatedBy:
@@ -656,6 +660,8 @@ requirements:
       - evals/qualifications/live-models.yaml
       - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/product-journeys.mjs
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
@@ -678,6 +684,8 @@ requirements:
       - scripts/quality/run-live-model-qualification.test.mjs
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/ai-verification/aiPathRegistry.webEditor.test.ts
+      - scripts/product-journey-phase1.test.mjs
+      - scripts/c2-5b-product-journeys.test.mjs
       - scripts/semantic-reranker-release.test.mjs
       - scripts/quality/validate-narrative-writers.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_gate31_review_contracts.py
@@ -694,6 +702,10 @@ requirements:
       - eval-route-search-scenes
       - eval-narrative-runtime-authority-fail-closed
 heavyEvaluations:
+  - id: heavy-c2-5b-narrative-maintenance-product-journeys
+    suiteId: narrative-runtime
+    command: GRIMODEX_PRODUCT_JOURNEY_SET=c2-5b pnpm electron:product-journeys
+    reason: Runs the eleven durable C2-5B maintenance journeys in a built Electron/native environment; missing trigger owners or production adapters remain an intentional red acceptance result until the corresponding implementation lanes land.
   - id: heavy-agent-tool-loop
     suiteId: tool-policy
     command: pnpm test:node --run src/features/chat/agent/agentToolCall.live.test.ts

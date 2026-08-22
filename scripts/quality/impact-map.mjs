@@ -151,6 +151,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/narrative-extraction/maintenance",
       ],
       [
+        "node",
+        "--test",
+        "scripts/product-journey-phase1.test.mjs",
+        "scripts/c2-5b-product-journeys.test.mjs",
+      ],
+      [
         "cargo",
         "test",
         "--manifest-path",

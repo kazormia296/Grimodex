@@ -282,6 +282,27 @@ rules:
       - GDX-NARR-TEMPORAL-001
     suites:
       - narrative-extraction
+  - id: narrative-maintenance-product-journeys
+    reason: C2-5B durable maintenance journeys bind schema, epoch, digest, retry, interruption, workspace-wake, and feed-liveness evidence to the runtime and semantic contract gates.
+    paths:
+      - electron/scripts/narrative-maintenance-product-journeys.mjs
+      - electron/scripts/product-journeys.mjs
+      - electron/main/narrativeFreshness.ts
+      - electron/main/narrativeFreshness.test.ts
+      - electron/native/grimodex-node/**
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/**
+      - src-tauri/crates/grimodex-db/tests/narrative_*.rs
+      - src/features/narrative-extraction/maintenance/**
+      - policies/narrative/narrative-run-kind-policy.json
+      - policies/narrative/narrative-failure-policy.json
+      - scripts/c2-5b-product-journeys.test.mjs
+      - scripts/product-journey-phase1.test.mjs
+    requirements:
+      - GDX-POLICY-001
+      - GDX-TRACE-001
+    suites:
+      - narrative-runtime
+      - narrative-semantic-contract
   - id: semantic-retrieval-experiments
     reason: Offline retrieval fixtures, private-label contracts, and shadow evidence must preserve grounding, isolation, artifact validation, and traceability.
     paths:

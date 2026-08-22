@@ -9,6 +9,7 @@ import {
   PRODUCT_CONTRACT_REQUIREMENTS,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_COVERAGE_BACKLOG,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_ROLLOUT_MODE,
   PRODUCT_SCOPE_TRANSITIONS,
 } from "../electron/scripts/product-journey-catalog.mjs";
@@ -30,6 +31,7 @@ const EXPECTED_JOURNEY_IDS = [
   "lint-native-roundtrip",
   "map-native-roundtrip",
   "snapshot-native-roundtrip",
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
 ];
 
 const IMPLEMENTED_CONTRACT_IDS = [
@@ -42,6 +44,9 @@ const IMPLEMENTED_CONTRACT_IDS = [
   "native-command-roundtrip:lint-term-dictionary",
   "native-command-roundtrip:map-write-bundle",
   "native-command-roundtrip:project-snapshot",
+  ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
+    (entry) => entry.contracts[0],
+  ),
 ];
 
 const EXEMPTED_CHAT_SCOPE_CONTRACT_IDS = [

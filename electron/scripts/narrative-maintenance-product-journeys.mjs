@@ -1,9 +1,11 @@
 import { once } from "node:events";
 import { execFile as execFileCallback } from "node:child_process";
-import { copyFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { promisify } from "node:util";
+
+import { NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG } from "./product-journey-catalog.mjs";
 
 const execFile = promisify(execFileCallback);
 
@@ -29,19 +31,34 @@ export const NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV =
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN";
 export const NARRATIVE_MAINTENANCE_OWNER_TOKEN =
   "c2-5b-product-journey-owner-v1";
-export const NARRATIVE_MAINTENANCE_JOURNEY_IDS = Object.freeze([
-  "c2-5b-schema-backfill-verify",
-  "c2-5b-restore-verify-rebuild-verify",
-  "c2-5b-graph-digest-no-skip",
-  "c2-5b-rule-digest-no-skip",
-  "c2-5b-producer-generation-no-skip",
-  "c2-5b-transient-bounded-retry",
-  "c2-5b-terminal-failure-inbox",
-  "c2-5b-interrupted-run-recovery",
-  "c2-5b-no-automatic-repair",
-  "c2-5b-foreground-write-workspace-wake",
-  "c2-5b-incremental-liveness",
+export const NARRATIVE_MAINTENANCE_FAULTS = Object.freeze([
+  "transient-io",
+  "contract-violation",
+  "process-interruption",
 ]);
+export const NARRATIVE_MAINTENANCE_TRIGGERS = Object.freeze([
+  "dependency-gap",
+  "foreground-workspace-wake",
+  "graphContractDigest-changed",
+  "ruleRegistryDigest-changed",
+  "producerGenerationSetDigest-changed",
+]);
+export const NARRATIVE_MAINTENANCE_SEAM_CONTRACT = Object.freeze({
+  ownerTokenEnv: NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  setupEnv: NARRATIVE_MAINTENANCE_SETUP_ENV,
+  setupDisabledValue: "disabled",
+  faultEnv: NARRATIVE_MAINTENANCE_FAULT_ENV,
+  triggerEnv: NARRATIVE_MAINTENANCE_TRIGGER_ENV,
+  packagedPolicy:
+    "packaged launches and non-CI launches must ignore fault/trigger/setup seams; only an unpackaged CI product-journey launch with the exact owner token may consume them",
+  ciEnv: "CI",
+  ciValue: "true",
+  jsDigestAuthority: "durable native outcome skipEvidence fields",
+});
+export const NARRATIVE_MAINTENANCE_JOURNEY_IDS = Object.freeze(
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((journey) => journey.id),
+);
 
 const RUN_COLUMNS = `
   id,
@@ -93,15 +110,20 @@ async function queryRows(harness, page, sql, params = [], method = "all") {
 }
 
 async function projectIdFor(harness, page) {
-  return harness.waitUntil(async () => {
-    const rows = await queryRows(
-      harness,
-      page,
-      "SELECT id FROM projects ORDER BY created_at, id LIMIT 1",
-    );
-    const projectId = String(rows[0]?.id ?? "");
-    return projectId || null;
-  }, "C2-5B product journey project authority", 30_000, 250);
+  return harness.waitUntil(
+    async () => {
+      const rows = await queryRows(
+        harness,
+        page,
+        "SELECT id FROM projects ORDER BY created_at, id LIMIT 1",
+      );
+      const projectId = String(rows[0]?.id ?? "");
+      return projectId || null;
+    },
+    "C2-5B product journey project authority",
+    30_000,
+    250,
+  );
 }
 
 function summarizeRuns(rows) {
@@ -145,7 +167,9 @@ function skipEvidenceForRun(run, label) {
   }
   for (const field of Object.values(DIGEST_EVIDENCE_FIELD_BY_TRIGGER)) {
     if (typeof evidence[field] !== "string" || evidence[field].length === 0) {
-      throw new Error(`${label}: skipEvidence.${field} is not a durable string`);
+      throw new Error(
+        `${label}: skipEvidence.${field} is not a durable string`,
+      );
     }
   }
   return evidence;
@@ -341,8 +365,7 @@ async function withLaunchEnvironment(
   const previousFault = process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
   const previousTrigger = process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV];
   const previousSetup = process.env[NARRATIVE_MAINTENANCE_SETUP_ENV];
-  const previousOwnerToken =
-    process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
+  const previousOwnerToken = process.env[NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV];
   if (fault) process.env[NARRATIVE_MAINTENANCE_FAULT_ENV] = fault;
   else delete process.env[NARRATIVE_MAINTENANCE_FAULT_ENV];
   if (trigger) process.env[NARRATIVE_MAINTENANCE_TRIGGER_ENV] = trigger;
@@ -432,7 +455,8 @@ async function contextForLaunch(
   setupMetadata = null,
 ) {
   const projectId = await projectIdFor(harness, launched.page);
-  const currentRuns = baselineRuns ?? (await runLedger(harness, launched.page, projectId));
+  const currentRuns =
+    baselineRuns ?? (await runLedger(harness, launched.page, projectId));
   return workspaceContext(
     harness,
     launched,
@@ -454,6 +478,7 @@ async function withWorkspace(
     trigger = null,
     additionalWorkspaces = [],
     prepareWorkspace = null,
+    readRunSnapshotFn = readRunSnapshot,
   } = {},
 ) {
   const workspace = harness.workspacePath(id);
@@ -463,6 +488,7 @@ async function withWorkspace(
   const setupMetadata = prepareWorkspace
     ? await prepareWorkspace(workspace)
     : null;
+  const preLaunchRuns = await readRunSnapshotFn(workspace);
   const launched = await withLaunchEnvironment(
     {
       fault,
@@ -477,7 +503,7 @@ async function withWorkspace(
       launched,
       workspace,
       id,
-      undefined,
+      preLaunchRuns,
       setupMetadata,
     );
     return await callback(context);
@@ -576,11 +602,22 @@ async function patchScene(context, scene, text) {
 async function createRestoreBackupFixture(workspace) {
   const backupName = "grimodex-c2-5b-restore-seed.db";
   const backupDirectory = path.join(workspace, "backups");
+  const destination = path.join(backupDirectory, backupName);
   await mkdir(backupDirectory, { recursive: true });
-  await copyFile(
-    path.join(workspace, "grimodex.db"),
-    path.join(backupDirectory, backupName),
-  );
+  const escapedDestination = destination.replaceAll("'", "''");
+  try {
+    // SQLite's online backup API includes committed WAL frames; copying only
+    // grimodex.db would create a stale restore fixture when a WAL is present.
+    await execFile("sqlite3", [
+      path.join(workspace, "grimodex.db"),
+      `.backup '${escapedDestination}'`,
+    ]);
+  } catch (error) {
+    throw new Error(
+      `WAL-safe restore fixture requires sqlite3 online backup support: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
   return backupName;
 }
 
@@ -588,18 +625,45 @@ async function prepareLegacySchemaMarker(workspace) {
   const databasePath = path.join(workspace, "grimodex.db");
   try {
     await execFile("sqlite3", [databasePath, "PRAGMA user_version = 30;"]);
+    await execFile("sqlite3", [
+      databasePath,
+      "DELETE FROM schema_data_migrations WHERE migration_id = 'narrative-c2-finding-identity-v31';",
+    ]);
     const { stdout } = await execFile("sqlite3", [
       databasePath,
       "PRAGMA user_version;",
     ]);
     const marker = Number(String(stdout).trim());
     if (marker !== 30) {
-      throw new Error(`legacy schema fixture marker was not written: ${marker}`);
+      throw new Error(
+        `legacy schema fixture marker was not written: ${marker}`,
+      );
     }
     return marker;
   } catch (error) {
     throw new Error(
       `schema marker fixture requires the sqlite3 test dependency: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
+}
+
+async function readRunSnapshot(workspace) {
+  const databasePath = path.join(workspace, "grimodex.db");
+  try {
+    const { stdout } = await execFile("sqlite3", [
+      "-json",
+      databasePath,
+      "SELECT id FROM narrative_extraction_runs ORDER BY created_at, id;",
+    ]);
+    const rows = JSON.parse(String(stdout).trim() || "[]");
+    if (!Array.isArray(rows)) {
+      throw new Error("sqlite3 returned a non-array snapshot");
+    }
+    return rows;
+  } catch (error) {
+    throw new Error(
+      `durable Run snapshot requires the sqlite3 test dependency: ${error instanceof Error ? error.message : String(error)}`,
       { cause: error },
     );
   }
@@ -640,7 +704,8 @@ async function waitForStableLedger(context, baselineRows, label) {
 
 async function waitForProcessExit(app, label, timeoutMs = 5_000) {
   const child = app?.process?.();
-  if (!child) throw new Error(`${label}: Electron child process is unavailable`);
+  if (!child)
+    throw new Error(`${label}: Electron child process is unavailable`);
   if (child.exitCode !== null || child.signalCode !== null) {
     return { exitCode: child.exitCode, signalCode: child.signalCode };
   }
@@ -650,7 +715,12 @@ async function waitForProcessExit(app, label, timeoutMs = 5_000) {
   }));
   const timeout = new Promise((_, reject) => {
     const timer = setTimeout(
-      () => reject(new Error(`${label}: test-only process interruption seam was not exercised`)),
+      () =>
+        reject(
+          new Error(
+            `${label}: test-only process interruption seam was not exercised`,
+          ),
+        ),
       timeoutMs,
     );
     exit.finally(() => clearTimeout(timer)).catch(() => undefined);
@@ -662,6 +732,7 @@ async function runSchemaBackfillVerify(
   harness,
   configureWorkspace,
   prepareSchemaMarker = prepareLegacySchemaMarker,
+  readRunSnapshotFn = readRunSnapshot,
 ) {
   const id = "c2-5b-schema-backfill-verify";
   return withWorkspace(
@@ -679,18 +750,33 @@ async function runSchemaBackfillVerify(
       if (!Number.isSafeInteger(Number(marker[0]?.user_version))) {
         throw new Error("schema marker was not observed through the live DB");
       }
+      const migratedMarker = await context.query(
+        "SELECT migration_id FROM schema_data_migrations WHERE migration_id = ?",
+        ["narrative-c2-finding-identity-v31"],
+      );
+      if (
+        migratedMarker[0]?.migration_id !== "narrative-c2-finding-identity-v31"
+      ) {
+        throw new Error(
+          "schema marker/open did not leave the durable v31 migration marker",
+        );
+      }
       context.record("schema-marker-observed", {
         sourceSchemaVersion,
         schemaVersion: Number(marker[0].user_version),
+        migrationId: migratedMarker[0].migration_id,
       });
       await waitForRunSequence(
         context,
         ["backfill", "dependency-verify"],
-      "schema-marker/open",
+        "schema-marker/open",
       );
       context.record("schema-marker-backfill-verify-complete");
     },
-    { prepareWorkspace: prepareSchemaMarker },
+    {
+      prepareWorkspace: prepareSchemaMarker,
+      readRunSnapshotFn,
+    },
   );
 }
 
@@ -699,9 +785,19 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
   const workspace = harness.workspacePath(id);
   await configureJourneyWorkspace(harness, configureWorkspace, workspace);
   const backupName = await createRestoreBackupFixture(workspace);
-  const launched = await harness.launch(`${id}/open`);
+  const preLaunchRuns = await readRunSnapshot(workspace);
+  const launched = await withLaunchEnvironment(
+    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    () => harness.launch(`${id}/open`),
+  );
   try {
-    const context = await contextForLaunch(harness, launched, workspace, id);
+    const context = await contextForLaunch(
+      harness,
+      launched,
+      workspace,
+      id,
+      preLaunchRuns,
+    );
     const baselineRuns = context.baselineRuns;
     const beforeEpochs = await context.epochs();
     await context.harness.invokeOk(context.page, "restore_backup", {
@@ -719,10 +815,12 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     );
     if (!newEpochs.some((epoch) => epoch.reason === "restore")) {
       throw new Error(
-        `restore/epoch journey did not observe a durable restore epoch: ${JSON.stringify({
-          beforeEpochs,
-          epochs,
-        })}`,
+        `restore/epoch journey did not observe a durable restore epoch: ${JSON.stringify(
+          {
+            beforeEpochs,
+            epochs,
+          },
+        )}`,
       );
     }
     const restoreEpoch = newEpochs.find((epoch) => epoch.reason === "restore");
@@ -772,8 +870,7 @@ async function runDigestChangeJourney(
       (rows) =>
         rows.some(
           (row) =>
-            row.runKind === "dependency-verify" &&
-            row.status === "completed",
+            row.runKind === "dependency-verify" && row.status === "completed",
         )
           ? rows
           : null,
@@ -781,7 +878,11 @@ async function runDigestChangeJourney(
     );
     baselineContext.baselineRuns = baselineRows;
   } finally {
-    await harness.close(baselineLaunch.app, baselineLaunch.page, `${id}/baseline`);
+    await harness.close(
+      baselineLaunch.app,
+      baselineLaunch.page,
+      `${id}/baseline`,
+    );
   }
 
   const changedLaunch = await withLaunchEnvironment(
@@ -822,12 +923,17 @@ async function runDigestChangeJourney(
     );
     const afterEvidence = skipEvidenceForRun(latest, `${coordinate} changed`);
     const changedField = DIGEST_EVIDENCE_FIELD_BY_TRIGGER[coordinate];
-    if (!changedField || beforeEvidence[changedField] === afterEvidence[changedField]) {
+    if (
+      !changedField ||
+      beforeEvidence[changedField] === afterEvidence[changedField]
+    ) {
       throw new Error(
-        `${coordinate} changed journey did not change exact skipEvidence.${changedField}: ${JSON.stringify({
-          before: beforeEvidence,
-          after: afterEvidence,
-        })}`,
+        `${coordinate} changed journey did not change exact skipEvidence.${changedField}: ${JSON.stringify(
+          {
+            before: beforeEvidence,
+            after: afterEvidence,
+          },
+        )}`,
       );
     }
     for (const field of Object.values(DIGEST_EVIDENCE_FIELD_BY_TRIGGER)) {
@@ -836,10 +942,12 @@ async function runDigestChangeJourney(
         beforeEvidence[field] !== afterEvidence[field]
       ) {
         throw new Error(
-          `${coordinate} changed journey changed an unrelated exact skipEvidence field ${field}: ${JSON.stringify({
-            before: beforeEvidence[field],
-            after: afterEvidence[field],
-          })}`,
+          `${coordinate} changed journey changed an unrelated exact skipEvidence field ${field}: ${JSON.stringify(
+            {
+              before: beforeEvidence[field],
+              after: afterEvidence[field],
+            },
+          )}`,
         );
       }
     }
@@ -894,7 +1002,9 @@ async function runTransientRetry(harness, configureWorkspace) {
       }
       const inboxCount = await countInboxObservations(context);
       if (inboxCount !== 0) {
-        throw new Error("transient retry incorrectly projected a durable Inbox Finding");
+        throw new Error(
+          "transient retry incorrectly projected a durable Inbox Finding",
+        );
       }
       context.record("transient-retry-succeeded", {
         runIds: freshAttempts.map((run) => run.id),
@@ -963,7 +1073,10 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
         context.baselineRuns,
         "terminal failure retry boundary",
       );
-      const laterBackfills = rowsAfter(settledRows, context.baselineRuns).filter(
+      const laterBackfills = rowsAfter(
+        settledRows,
+        context.baselineRuns,
+      ).filter(
         (row) =>
           row.runKind === "backfill" &&
           row.createdAt > failed.createdAt &&
@@ -987,7 +1100,7 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
   const id = "c2-5b-interrupted-run-recovery";
   const workspace = harness.workspacePath(id);
   await configureJourneyWorkspace(harness, configureWorkspace, workspace);
-  const baselineRuns = [];
+  const baselineRuns = await readRunSnapshot(workspace);
 
   const interruptedLaunch = await withLaunchEnvironment(
     {
@@ -1030,14 +1143,15 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       ...exit,
     });
   } finally {
-    await harness.close(
-      interruptedLaunch.app,
-      interruptedLaunch.page,
-      `${id}/interrupted`,
-    ).catch(() => undefined);
+    await harness
+      .close(interruptedLaunch.app, interruptedLaunch.page, `${id}/interrupted`)
+      .catch(() => undefined);
   }
 
-  const recoveredLaunch = await harness.launch(`${id}/recovered`);
+  const recoveredLaunch = await withLaunchEnvironment(
+    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    () => harness.launch(`${id}/recovered`),
+  );
   try {
     const recoveredContext = await contextForLaunch(
       harness,
@@ -1062,7 +1176,10 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       "process interruption durable recovery",
     );
     const stale = recoveredRows.find((row) => row.id === interruptedRun.id);
-    if (stale?.status === "failed" && !String(stale.terminalReasonCode).includes("INTERRUPT")) {
+    if (
+      stale?.status === "failed" &&
+      !String(stale.terminalReasonCode).includes("INTERRUPT")
+    ) {
       throw new Error(
         `interrupted Run was closed without an interruption reason: ${JSON.stringify(stale)}`,
       );
@@ -1073,7 +1190,11 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       recoveredRunIds: fresh.map((run) => run.id),
     });
   } finally {
-    await harness.close(recoveredLaunch.app, recoveredLaunch.page, `${id}/recovered`);
+    await harness.close(
+      recoveredLaunch.app,
+      recoveredLaunch.page,
+      `${id}/recovered`,
+    );
   }
 }
 
@@ -1090,7 +1211,9 @@ async function runNoAutomaticRepair(harness, configureWorkspace) {
       );
       const allRows = await context.runs();
       if (allRows.some((row) => row.runKind === "dependency-repair")) {
-        throw new Error("automatic maintenance reached the human-only Repair Run kind");
+        throw new Error(
+          "automatic maintenance reached the human-only Repair Run kind",
+        );
       }
       context.record("automatic-repair-absent", {
         runKinds: allRows.map((row) => row.runKind),
@@ -1101,69 +1224,123 @@ async function runNoAutomaticRepair(harness, configureWorkspace) {
 }
 
 async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
-  const workspaceA = harness.workspacePath("c2-5b-foreground-write-workspace-a");
-  const workspaceB = harness.workspacePath("c2-5b-foreground-write-workspace-b");
+  const id = "c2-5b-foreground-write-workspace-wake";
+  const workspaceA = harness.workspacePath(
+    "c2-5b-foreground-write-workspace-a",
+  );
+  const workspaceB = harness.workspacePath(
+    "c2-5b-foreground-write-workspace-b",
+  );
   await configureJourneyWorkspace(harness, configureWorkspace, workspaceA, {
     additionalWorkspaces: [workspaceB],
   });
-  const first = await harness.launch("c2-5b-foreground-write-workspace-wake/authoring");
-  const second = await harness.launch("c2-5b-foreground-write-workspace-wake/wake");
+  const first = await withLaunchEnvironment(
+    {
+      trigger: "foreground-workspace-wake",
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
+    () => harness.launch(`${id}/authoring`),
+  );
   try {
-    const context = await contextForLaunch(harness, first, workspaceA, "wake");
+    const context = await contextForLaunch(harness, first, workspaceA, id);
     const scene = await createSceneIfNeeded(context, "foreground-authoring");
     const body = `C2-5B-FOREGROUND-${Date.now()}`;
-    const writer = patchScene(context, scene, body);
-    const wake = (async () => {
-      await harness.invokeOk(second.page, "open_workspace", {
-        path: workspaceB,
-      });
-      await harness.invokeOk(second.page, "open_workspace", {
-        path: workspaceA,
-      });
-    })();
-    await Promise.all([writer, wake]);
-    const persisted = await harness.waitUntil(async () => {
-      const rows = await queryRows(
-        harness,
-        first.page,
-        "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
-        [scene.id, context.projectId],
-      );
-      return String(rows[0]?.content ?? "").includes(body) ? rows[0] : null;
-    }, "foreground authoring body after workspace wake", 30_000, 100);
-    const runs = await runLedger(harness, first.page, context.projectId);
-    const wakeRuns = await runLedger(harness, second.page, context.projectId);
+    const wakeBaseline = await context.runs();
+    await harness.invokeOk(first.page, "open_workspace", {
+      path: workspaceB,
+    });
+    context.record("workspace-switched-to-secondary", {
+      workspace: workspaceB,
+    });
+    await harness.invokeOk(first.page, "open_workspace", {
+      path: workspaceA,
+    });
+    const workspaceOpenedAt = Date.now();
+    context.record("workspace-opened-primary", {
+      workspace: workspaceA,
+      workspaceOpenedAt,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    context.record("workspace-opened-scheduler-grace-elapsed", {
+      delayMs: 250,
+    });
+    const schedulerRun = await waitForLedger(
+      context,
+      (rows) => {
+        const fresh = rowsAfter(rows, wakeBaseline);
+        return fresh.find(
+          (row) =>
+            ["backfill", "dependency-verify", "freshness-evaluation"].includes(
+              row.runKind,
+            ) && row.status === "running",
+        );
+      },
+      "foreground workspace wake scheduler running barrier",
+    );
+    const schedulerCreatedAt = Date.parse(schedulerRun.createdAt ?? "");
     if (
-      [...runs, ...wakeRuns].some((row) =>
+      Number.isFinite(schedulerCreatedAt) &&
+      schedulerCreatedAt < workspaceOpenedAt - 1_000
+    ) {
+      throw new Error(
+        `workspace wake scheduler Run ${schedulerRun.id} predates the A workspace:opened event`,
+      );
+    }
+    const foregroundWriteStartedAt = Date.now();
+    context.record("foreground-write-started-while-scheduler-running", {
+      schedulerRunId: schedulerRun.id,
+      schedulerRunStatus: schedulerRun.status,
+      schedulerRunCreatedAt: schedulerRun.createdAt,
+      workspaceOpenedAt,
+      foregroundWriteStartedAt,
+    });
+    const writer = patchScene(context, scene, body);
+    await writer;
+    const persisted = await harness.waitUntil(
+      async () => {
+        const rows = await queryRows(
+          harness,
+          first.page,
+          "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
+          [scene.id, context.projectId],
+        );
+        return String(rows[0]?.content ?? "").includes(body) ? rows[0] : null;
+      },
+      "foreground authoring body after workspace wake",
+      30_000,
+      100,
+    );
+    const runs = await runLedger(harness, first.page, context.projectId);
+    if (
+      runs.some((row) =>
         String(row.outcomeSummaryJson).includes("BUSY_SNAPSHOT"),
       )
     ) {
-      throw new Error("workspace wake surfaced SQLITE_BUSY_SNAPSHOT in durable Run evidence");
-    }
-    const persistedOnWake = await harness.waitUntil(async () => {
-      const rows = await queryRows(
-        harness,
-        second.page,
-        "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
-        [scene.id, context.projectId],
+      throw new Error(
+        "workspace wake surfaced SQLITE_BUSY_SNAPSHOT in durable Run evidence",
       );
-      return String(rows[0]?.content ?? "").includes(body) ? rows[0] : null;
-    }, "workspace wake observes foreground body", 30_000, 100);
+    }
+    const persistedOnWake = await harness.waitUntil(
+      async () => {
+        const rows = await queryRows(
+          harness,
+          first.page,
+          "SELECT content FROM tree_nodes WHERE id = ? AND project_id = ?",
+          [scene.id, context.projectId],
+        );
+        return String(rows[0]?.content ?? "").includes(body) ? rows[0] : null;
+      },
+      "workspace wake observes foreground body",
+      30_000,
+      100,
+    );
     context.record("foreground-write-workspace-wake-complete", {
       persisted: Boolean(persisted && persistedOnWake),
-      runCount: new Set([...runs, ...wakeRuns].map((row) => row.id)).size,
+      schedulerRunId: schedulerRun.id,
+      runCount: runs.length,
     });
   } finally {
-    await harness.close(
-      second.app,
-      second.page,
-      "c2-5b-foreground-write-workspace-wake/wake",
-    );
-    await harness.close(
-      first.app,
-      first.page,
-      "c2-5b-foreground-write-workspace-wake/authoring",
-    );
+    await harness.close(first.app, first.page, `${id}/authoring`);
   }
 }
 
@@ -1180,9 +1357,15 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
   let beforeRuns;
   try {
     beforeContext = await contextForLaunch(harness, first, workspace, id);
-    const scene = await createSceneIfNeeded(beforeContext, "incremental-liveness");
+    const scene = await createSceneIfNeeded(
+      beforeContext,
+      "incremental-liveness",
+    );
     await patchScene(beforeContext, scene, `C2-5B-LIVENESS-${Date.now()}`);
-    beforeReadiness = await waitForReadiness(beforeContext, "incremental runtime");
+    beforeReadiness = await waitForReadiness(
+      beforeContext,
+      "incremental runtime",
+    );
     beforeRuns = await beforeContext.runs();
   } finally {
     await harness.close(first.app, first.page, `${id}/before-restart`);
@@ -1210,7 +1393,9 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
       );
     }
     if (afterReadiness.feedAndCursor.feedHead <= 0) {
-      throw new Error("incremental restart did not retain a durable change-feed head");
+      throw new Error(
+        "incremental restart did not retain a durable change-feed head",
+      );
     }
     if (
       Number(afterReadiness.feedAndCursor.cursor.acknowledgedThrough) !==
@@ -1247,6 +1432,7 @@ async function runIncrementalLiveness(harness, configureWorkspace) {
 export function createNarrativeMaintenanceProductJourneys({
   configureWorkspace,
   prepareSchemaMarker = prepareLegacySchemaMarker,
+  readRunSnapshotFn = readRunSnapshot,
 }) {
   if (typeof configureWorkspace !== "function") {
     throw new Error("C2-5B product journeys require configureWorkspace");
@@ -1259,6 +1445,7 @@ export function createNarrativeMaintenanceProductJourneys({
           harness,
           configureWorkspace,
           prepareSchemaMarker,
+          readRunSnapshotFn,
         ),
     },
     {

@@ -75,6 +75,11 @@ test("the Narrative runtime suite executes incremental Freshness integration", (
       "cargo check --manifest-path electron/native/grimodex-node/Cargo.toml",
     ),
   );
+  assert.ok(
+    commandLines.includes(
+      "node --test scripts/product-journey-phase1.test.mjs scripts/c2-5b-product-journeys.test.mjs",
+    ),
+  );
 });
 
 test("the Narrative semantic suite executes terminal timestamp and projection gates", () => {
