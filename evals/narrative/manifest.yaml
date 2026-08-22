@@ -14,6 +14,8 @@ requirements:
     description: Actuality, attribution, narrative frame, clustering, significance, and proposal gating remain distinct.
   - id: GDX-NARR-COVERAGE-001
     description: Partial corpus coverage must remain explicit and must not be reported as complete.
+  - id: GDX-NARR-MOTIF-001
+    description: Conspicuous or repeated motifs must not be promoted to Chronicle events or causal claims without explicit textual support.
 suites:
   - id: chronicle-micro-v1
     version: 1
@@ -33,6 +35,28 @@ suites:
       inexactEvidenceQuoteCount: 0
       unsupportedCompleteCoverageClaimCount: 0
     certification:
+      requiresProductionPrompt: true
+      requiresProductionParser: true
+      legacyBaselineIsCertification: false
+  - id: chronicle-motif-boundary-v1
+    version: 1
+    slice: chronicle
+    tier: micro
+    caseSchema: schemas/case-v1.schema.json
+    caseFile: cases/chronicle-motif-boundary-v1.yaml
+    caseCount: 5
+    requirementIds:
+      - GDX-NARR-EVAL-001
+      - GDX-NARR-EVIDENCE-001
+      - GDX-NARR-SEMANTIC-001
+      - GDX-NARR-MOTIF-001
+    releaseGates:
+      criticalViolationCount: 0
+      unknownEvidenceDocumentCount: 0
+      inexactEvidenceQuoteCount: 0
+      unsupportedCompleteCoverageClaimCount: 0
+    certification:
+      diagnosticOnly: true
       requiresProductionPrompt: true
       requiresProductionParser: true
       legacyBaselineIsCertification: false
