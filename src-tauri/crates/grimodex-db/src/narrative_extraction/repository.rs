@@ -103,6 +103,7 @@ fn ensure_generic_task_api_allowed(conn: &Connection, run_id: &str) -> anyhow::R
                 OR run_kind IN (
                   'backfill',
                   'dependency-verify',
+                  'dependency-repair',
                   'semantic-index-rebuild'
                 )
               )
@@ -196,11 +197,11 @@ pub fn create_run(db: &Database, payload: CreateRunPayload) -> anyhow::Result<Va
     } else {
         "running"
     };
-    let run_timestamp = grimodex_core::now_rfc3339_millis();
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             require_narrative_extraction_allowed(conn)?;
+            let run_timestamp = next_run_lifecycle_timestamp_in_tx(conn, &payload.project_id)?;
             conn.execute(
                 "INSERT INTO narrative_extraction_runs
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
@@ -683,7 +684,7 @@ pub fn cancel_run(db: &Database, run_id: String, project_id: String) -> anyhow::
         with_immediate_transaction(conn, |conn| {
             ensure_run_project(conn, &run_id, &project_id)?;
             ensure_generic_task_api_allowed(conn, &run_id)?;
-            let lifecycle_at = grimodex_core::now_rfc3339_millis();
+            let lifecycle_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
             let updated = conn.execute(
                 "UPDATE narrative_extraction_runs
                     SET status = 'cancelled',
@@ -791,7 +792,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.artifacts,
             )?;
 
-            maybe_complete_run(conn, &payload.run_id, &lifecycle_at)?;
+            maybe_complete_run(conn, &payload.run_id)?;
 
             Ok(json!({
                 "taskId": payload.task_id,
@@ -863,8 +864,10 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
             )?;
 
             if requeue {
-                maybe_complete_run(conn, &payload.run_id, &lifecycle_at)?;
+                maybe_complete_run(conn, &payload.run_id)?;
             } else {
+                let run_lifecycle_at =
+                    next_run_lifecycle_timestamp_in_tx(conn, &payload.project_id)?;
                 conn.execute(
                     "UPDATE narrative_extraction_runs
                         SET status = 'failed',
@@ -874,7 +877,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
                       WHERE id = ?3 AND status = 'running'",
                     params![
                         json!({ "failedTaskId": payload.task_id }).to_string(),
-                        lifecycle_at,
+                        run_lifecycle_at,
                         payload.run_id,
                     ],
                 )?;
@@ -890,7 +893,7 @@ pub fn fail_task(db: &Database, payload: FailTaskPayload) -> anyhow::Result<Valu
     })
 }
 
-fn maybe_complete_run(conn: &Connection, run_id: &str, lifecycle_at: &str) -> anyhow::Result<()> {
+fn maybe_complete_run(conn: &Connection, run_id: &str) -> anyhow::Result<()> {
     let remaining: i64 = conn.query_row(
         "SELECT COUNT(*)
            FROM narrative_extraction_tasks
@@ -900,13 +903,19 @@ fn maybe_complete_run(conn: &Connection, run_id: &str, lifecycle_at: &str) -> an
         |row| row.get(0),
     )?;
     if remaining == 0 {
+        let project_id: String = conn.query_row(
+            "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let run_lifecycle_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
         conn.execute(
             "UPDATE narrative_extraction_runs
                 SET status = 'completed',
                     completed_at = ?2,
                     version = version + 1
               WHERE id = ?1 AND status = 'running'",
-            params![run_id, lifecycle_at],
+            params![run_id, run_lifecycle_at],
         )?;
     }
     Ok(())
@@ -2084,7 +2093,10 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod unit_tests {
-    use super::super::{transition_run_status_in_tx, ClaimTaskPayload, NarrativeRunStatus};
+    use super::super::{
+        transition_run_status_in_tx, ClaimTaskPayload, FailTaskPayload, FinishTaskPayload,
+        NarrativeRunStatus,
+    };
     use super::*;
     use crate::Database;
     use serde_json::json;
@@ -2150,6 +2162,65 @@ mod unit_tests {
             Ok(())
         })
         .expect("insert automatic Run");
+    }
+
+    fn insert_imported_run_with_lifecycle(
+        db: &Database,
+        run_id: &str,
+        created_at: &str,
+        started_at: Option<&str>,
+        completed_at: Option<&str>,
+    ) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, started_at, completed_at, version)
+                 VALUES (?1, 'project-1', 'chronicle.extract', '{}', '{}', 'imported',
+                         'completed', '{}', ?2, ?3, ?4, 0)",
+                params![run_id, created_at, started_at, completed_at],
+            )?;
+            Ok(())
+        })
+        .expect("insert imported lifecycle Run");
+    }
+
+    fn run_lifecycle(db: &Database, run_id: &str) -> (String, Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT created_at, started_at, completed_at
+                   FROM narrative_extraction_runs WHERE id = ?1",
+                params![run_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read Run lifecycle")
+    }
+
+    fn create_run_with_task(db: &Database, run_id: &str, task_id: &str) {
+        create_run(
+            db,
+            CreateRunPayload {
+                run_id: Some(run_id.to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: format!("spec-{run_id}"),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![CreateTaskSeed {
+                    task_id: Some(task_id.to_string()),
+                    task_kind: "extract".to_string(),
+                    input_json: Some(json!({})),
+                    priority: None,
+                }],
+            },
+        )
+        .expect("create manual Run with task");
     }
 
     #[test]
@@ -2235,6 +2306,7 @@ mod unit_tests {
             "backfill",
             "dependency-verify",
             "semantic-index-rebuild",
+            "dependency-repair",
         ]
         .into_iter()
         .enumerate()
@@ -2286,6 +2358,7 @@ mod unit_tests {
             "backfill",
             "dependency-verify",
             "semantic-index-rebuild",
+            "dependency-repair",
         ]
         .into_iter()
         .enumerate()
@@ -2452,6 +2525,234 @@ mod unit_tests {
             completed_at.ends_with('Z') && completed_at.contains('.'),
             "Run lifecycle timestamps must be RFC3339 with milliseconds: {completed_at}"
         );
+    }
+
+    #[test]
+    fn every_manual_run_lifecycle_route_stays_after_imported_future_authority() {
+        let db = full_migrated_db();
+        let future = "2099-01-01T00:00:00.000Z";
+        insert_imported_run_with_lifecycle(
+            &db,
+            "imported-future",
+            future,
+            Some(future),
+            Some(future),
+        );
+
+        // Manual create is a project-scoped lifecycle allocation, including
+        // the implicit start for a Run seeded with work.
+        create_run_with_task(&db, "manual-create", "task-create");
+        let (created, started, completed) = run_lifecycle(&db, "manual-create");
+        assert!(
+            created.as_str() > future,
+            "manual create moved behind imported authority"
+        );
+        assert_eq!(started.as_deref(), Some(created.as_str()));
+        assert_eq!(completed, None);
+
+        // A pending Run can acquire its first lifecycle start through the
+        // task-lease claim route, which must use the same authority.
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-claim".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "spec-manual-claim".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create pending Run");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_extraction_tasks
+                    (id, run_id, task_kind, status, input_json, priority,
+                     attempt_count, created_at, version)
+                 VALUES ('task-claim', 'manual-claim', 'extract', 'queued', '{}', 0, 0, ?1, 0)",
+                params![future],
+            )?;
+            Ok(())
+        })
+        .expect("insert queued task for pending Run");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-claim".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "lifecycle-test".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim pending Run task");
+        assert_eq!(claim["claimed"], true);
+        let (_, started, _) = run_lifecycle(&db, "manual-claim");
+        assert!(
+            started.as_deref().is_some_and(|value| value > future),
+            "task claim moved Run start behind imported authority: {started:?}"
+        );
+
+        // Generic cancellation, completion, and failure all terminalize via
+        // the same project-scoped cursor.
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-cancel".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "spec-manual-cancel".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create cancellable Run");
+        cancel_run(&db, "manual-cancel".to_string(), "project-1".to_string())
+            .expect("cancel manual Run");
+        let (created, _, completed) = run_lifecycle(&db, "manual-cancel");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+
+        create_run_with_task(&db, "manual-finish", "task-finish");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-finish".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "finish-owner".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim finish task");
+        let task = &claim["task"];
+        finish_task(
+            &db,
+            FinishTaskPayload {
+                run_id: "manual-finish".to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task["taskId"].as_str().expect("finish task id").to_string(),
+                attempt_id: task["attemptId"]
+                    .as_str()
+                    .expect("finish attempt id")
+                    .to_string(),
+                lease_owner: "finish-owner".to_string(),
+                output_json: Some(json!({"ok": true})),
+                artifacts: vec![],
+            },
+        )
+        .expect("finish task");
+        let (created, _, completed) = run_lifecycle(&db, "manual-finish");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+
+        create_run_with_task(&db, "manual-fail", "task-fail");
+        let claim = claim_task(
+            &db,
+            ClaimTaskPayload {
+                run_id: "manual-fail".to_string(),
+                project_id: "project-1".to_string(),
+                lease_owner: "fail-owner".to_string(),
+                lease_duration_secs: Some(300),
+                task_kinds: None,
+            },
+        )
+        .expect("claim fail task");
+        let task = &claim["task"];
+        fail_task(
+            &db,
+            FailTaskPayload {
+                run_id: "manual-fail".to_string(),
+                project_id: "project-1".to_string(),
+                task_id: task["taskId"].as_str().expect("fail task id").to_string(),
+                attempt_id: task["attemptId"]
+                    .as_str()
+                    .expect("fail attempt id")
+                    .to_string(),
+                lease_owner: "fail-owner".to_string(),
+                error_message: "expected failure".to_string(),
+                output_json: None,
+                requeue: Some(false),
+            },
+        )
+        .expect("fail task");
+        let (created, _, completed) = run_lifecycle(&db, "manual-fail");
+        assert!(completed
+            .as_deref()
+            .is_some_and(|value| value > created.as_str()));
+    }
+
+    #[test]
+    fn malformed_and_maximum_imported_lifecycle_instants_fail_closed() {
+        let malformed = full_migrated_db();
+        insert_imported_run_with_lifecycle(
+            &malformed,
+            "imported-malformed",
+            "not-an-instant",
+            None,
+            None,
+        );
+        let error = create_run(
+            &malformed,
+            CreateRunPayload {
+                run_id: Some("must-not-persist".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "malformed".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect_err("malformed imported lifecycle must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+
+        let overflow = full_migrated_db();
+        insert_imported_run_with_lifecycle(
+            &overflow,
+            "imported-overflow",
+            "9999-12-31T23:59:59.999Z",
+            Some("9999-12-31T23:59:59.999Z"),
+            Some("9999-12-31T23:59:59.999Z"),
+        );
+        let error = create_run(
+            &overflow,
+            CreateRunPayload {
+                run_id: Some("must-not-overflow".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "overflow".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect_err("maximum imported lifecycle must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW"));
     }
 
     #[test]

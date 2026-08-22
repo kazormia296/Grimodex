@@ -41,6 +41,7 @@ use super::terminal_failure::{
     project_terminal_failure_for_run_in_tx, resolve_terminal_failure_for_run_in_tx,
 };
 use crate::Database;
+use uuid::Uuid;
 
 const RESTORE_EPOCH_ID_DOMAIN: &[u8] = b"grimodex:semantic-epoch:restore:v1";
 
@@ -63,12 +64,23 @@ fn require_non_empty(value: &str, name: &str) -> anyhow::Result<()> {
 /// being reused as an identifier for another kind of object.
 pub(crate) fn deterministic_restore_epoch_id(project_id: &str, restore_identity: &str) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(RESTORE_EPOCH_ID_DOMAIN);
-    for value in [project_id, restore_identity] {
+    for value in [
+        RESTORE_EPOCH_ID_DOMAIN,
+        project_id.as_bytes(),
+        restore_identity.as_bytes(),
+    ] {
         hasher.update((value.len() as u64).to_be_bytes());
-        hasher.update(value.as_bytes());
+        hasher.update(value);
     }
-    format!("restore-epoch-sha256:{}", hex::encode(hasher.finalize()))
+    let digest = hasher.finalize();
+    let mut uuid_bytes = [0_u8; 16];
+    uuid_bytes.copy_from_slice(&digest[..16]);
+    // SHA-256 supplies deterministic entropy; mark the UUID as a name-based
+    // (v5-equivalent) identifier and use the RFC 4122 variant so every
+    // consumer can parse and classify the persisted Semantic Epoch ID.
+    uuid_bytes[6] = (uuid_bytes[6] & 0x0f) | 0x50;
+    uuid_bytes[8] = (uuid_bytes[8] & 0x3f) | 0x80;
+    Uuid::from_bytes(uuid_bytes).to_string()
 }
 
 fn create_restore_epoch_in_tx(
@@ -2222,7 +2234,22 @@ mod tests {
             same,
             deterministic_restore_epoch_id("project-1", restore_identity)
         );
-        assert!(same.starts_with("restore-epoch-sha256:"));
+        let parsed = uuid::Uuid::parse_str(&same).expect("restore epoch id is canonical UUID");
+        assert_eq!(
+            same.len(),
+            36,
+            "restore epoch UUID uses canonical string form"
+        );
+        assert_eq!(
+            parsed.as_bytes()[6] >> 4,
+            5,
+            "restore epoch UUID is version 5"
+        );
+        assert_eq!(
+            parsed.as_bytes()[8] & 0xc0,
+            0x80,
+            "restore epoch UUID uses the RFC 4122 variant"
+        );
         assert_ne!(
             same,
             deterministic_restore_epoch_id("project-1", "restore-image-sha256:cafebabe")
@@ -2234,6 +2261,11 @@ mod tests {
         assert_ne!(
             same,
             deterministic_restore_epoch_id("project-1", "semantic-epoch-reset:deadbeef")
+        );
+        assert_ne!(
+            deterministic_restore_epoch_id("ab", "c"),
+            deterministic_restore_epoch_id("a", "bc"),
+            "project and restore identity boundaries must be length-delimited"
         );
     }
 

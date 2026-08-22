@@ -1800,7 +1800,9 @@ mod tests {
         assert_eq!(first.0, 2);
         assert_eq!(first.1, 1);
         assert!(first.2.starts_with("restore-image-sha256:"));
-        assert!(first.3.starts_with("restore-epoch-sha256:"));
+        let first_epoch_id = uuid::Uuid::parse_str(&first.3).expect("restore epoch id is UUID");
+        assert_eq!(first_epoch_id.as_bytes()[6] >> 4, 5);
+        assert_eq!(first_epoch_id.as_bytes()[8] & 0xc0, 0x80);
         let first_rebuild_work = canonical_work_key_for_epoch(
             "restore-project",
             AutomaticRunKind::RebuildDerived,

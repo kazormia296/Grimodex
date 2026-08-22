@@ -2,17 +2,16 @@
 //! extraction Run / Task / Attempt, physically enforcing
 //! `policies/narrative/narrative-execution-state.json`.
 //!
-//! `narrative_extraction/repository.rs` still writes raw status string
-//! literals (`"pending"`, `"queued"`, ...) directly and is not rewired onto
-//! this module yet — that is out of scope for Gate C2 Lane B and belongs to
-//! a later pass (C2-T1 / Legacy Cleanup). This module exists so new call
-//! sites have a fail-closed primitive to transition status through instead
-//! of trusting a bare `UPDATE ... SET status = ?`.
+//! `narrative_extraction/repository.rs` retains raw status string literals
+//! (`"pending"`, `"queued"`, ...) for its generic task API's narrow CAS
+//! statements, while all of its Run lifecycle timestamps use the shared
+//! project-scoped allocator below. Runtime-owned routes use the typed
+//! fail-closed transition primitive instead of trusting a bare
+//! `UPDATE ... SET status = ?`.
 //!
-//! Nothing in production code calls these items yet (by design, see above),
-//! so this file intentionally silences `dead_code` at module scope rather
-//! than sprinkling per-item `#[allow(dead_code)]` — the whole module is
-//! forward-looking scaffolding, exercised directly by its own tests.
+//! Some enum transition helpers are still exercised only by their focused
+//! tests, so this file intentionally silences `dead_code` at module scope
+//! rather than sprinkling per-item `#[allow(dead_code)]`.
 #![allow(dead_code)]
 
 use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
