@@ -157,6 +157,10 @@ fn emit_narrative_epoch_rotated(
     );
 }
 
+fn should_emit_narrative_epoch_rotated(replayed: bool, changed: bool) -> bool {
+    !replayed && changed
+}
+
 fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
         owner_token.len() <= 200,
@@ -2474,7 +2478,7 @@ impl Backend {
                 let result = project_snapshots::apply_project_snapshot_restore(db, payload)?;
                 (result, replayed)
             };
-            if !replayed && !result.no_op {
+            if should_emit_narrative_epoch_rotated(replayed, !result.no_op) {
                 emit_narrative_epoch_rotated(
                     &state,
                     &binding,
@@ -3393,7 +3397,7 @@ impl Backend {
                 || report.snippet_sources_fixed > 0
                 || report.snippet_scenes_fixed > 0
                 || report.change_event_uid.is_some();
-            if !replayed && changed {
+            if should_emit_narrative_epoch_rotated(replayed, changed) {
                 emit_narrative_epoch_rotated(&state, &binding, &project_id, "integrity-repair");
             }
             Ok(serde_json::to_string(&report).map_err(anyhow::Error::from)?)
@@ -7543,5 +7547,18 @@ mod semantic_reranker_lane_tests {
 
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod narrative_maintenance_epoch_event_tests {
+    use super::should_emit_narrative_epoch_rotated;
+
+    #[test]
+    fn emission_requires_a_first_successful_changed_mutation() {
+        assert!(should_emit_narrative_epoch_rotated(false, true));
+        assert!(!should_emit_narrative_epoch_rotated(true, true));
+        assert!(!should_emit_narrative_epoch_rotated(false, false));
+        assert!(!should_emit_narrative_epoch_rotated(true, false));
     }
 }
