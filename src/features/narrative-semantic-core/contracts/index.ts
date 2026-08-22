@@ -1,4 +1,5 @@
 export * from "./assertionState";
+export * from "./contractString";
 export * from "./disclosure";
 export * from "./dependencyRole";
 export * from "./evidencePolicy";

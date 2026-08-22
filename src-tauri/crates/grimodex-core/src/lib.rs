@@ -35,6 +35,7 @@ pub mod canonical_json;
 pub mod change_events;
 pub mod chronicle_time;
 pub mod codex_matching;
+pub mod contract_string;
 pub mod license;
 pub mod narrative_dependency;
 pub mod narrative_ir;

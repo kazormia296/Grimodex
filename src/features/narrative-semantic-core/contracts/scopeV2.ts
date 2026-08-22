@@ -4,6 +4,7 @@ import {
   stableJsonStringify,
 } from "@/features/narrative-extraction/source/digest";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
+import { isContractNonEmptyString } from "./contractString";
 
 /** The only Scope structural version admitted by the NIR-0 contract. */
 export const SCOPE_V2_SCHEMA_VERSION = 2 as const;
@@ -111,10 +112,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
-
 function hasOwn(value: Record<string, unknown>, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
@@ -151,7 +148,10 @@ function validateUnresolved(
       path: `${path}.reason`,
     };
   }
-  if (hasOwn(value, "constraintId") && !isNonEmptyString(value.constraintId)) {
+  if (
+    hasOwn(value, "constraintId") &&
+    !isContractNonEmptyString(value.constraintId)
+  ) {
     return {
       valid: false,
       reason: "invalid-constraint-id",
@@ -186,7 +186,7 @@ function validateReferenceConstraint(
       path,
     );
     if (unknownFields) return unknownFields;
-    return isNonEmptyString(value.ref)
+    return isContractNonEmptyString(value.ref)
       ? undefined
       : { valid: false, reason: "empty-reference", path: `${path}.ref` };
   }
@@ -211,7 +211,10 @@ function validateTemporalBoundary(
       reason: "unknown-interval-boundary-field",
     };
   }
-  if (!isNonEmptyString(value.ref) || typeof value.inclusive !== "boolean") {
+  if (
+    !isContractNonEmptyString(value.ref) ||
+    typeof value.inclusive !== "boolean"
+  ) {
     return { valid: false, reason: "invalid-interval-boundary", path };
   }
   return undefined;

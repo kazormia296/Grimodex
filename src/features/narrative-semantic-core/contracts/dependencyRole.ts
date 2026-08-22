@@ -1,6 +1,7 @@
 import dependencyRolePolicy from "../../../../policies/narrative/narrative-dependency-role-registry.json";
 import { sha256Hex } from "@grimodex/scan-contract";
 import { stableJsonStringify } from "@/features/narrative-extraction/source/digest";
+import { isContractTrimmedNonEmptyString } from "./contractString";
 
 export const DEPENDENCY_ROLE_CONTRACT_VERSION =
   "narrative-dependency-role/1" as const;
@@ -233,9 +234,7 @@ function hasOnlyKeys(
 }
 
 function nonEmpty(value: unknown): value is string {
-  return (
-    typeof value === "string" && value.length > 0 && value.trim() === value
-  );
+  return isContractTrimmedNonEmptyString(value);
 }
 
 function isAsciiAlphaNumeric(character: string): boolean {

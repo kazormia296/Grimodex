@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::canonical_json::canonical_json_string;
+use crate::contract_string::is_contract_trimmed_non_empty;
 
 pub const DEPENDENCY_ROLE_CONTRACT_VERSION: &str = "narrative-dependency-role/1";
 
@@ -588,7 +589,7 @@ pub fn validate_dependency_selector_value(
 }
 
 fn is_trimmed_non_empty(value: &str) -> bool {
-    !value.is_empty() && value.trim() == value
+    is_contract_trimmed_non_empty(value)
 }
 
 fn is_ascii_alphanumeric(value: char) -> bool {
@@ -779,6 +780,11 @@ pub fn validate_dependency_effect_registry(
     let mut effect_keys = HashSet::new();
     let mut covered_roles = HashSet::new();
     for rule in &registry.effect_rules {
+        if !is_contract_trimmed_non_empty(&rule.id) {
+            return Err(DependencyContractError::InvalidRegistry(
+                "effect rule id must be non-empty".to_string(),
+            ));
+        }
         if !rule_ids.insert(rule.id.clone()) {
             return Err(DependencyContractError::DuplicateEffectRule(
                 rule.id.clone(),

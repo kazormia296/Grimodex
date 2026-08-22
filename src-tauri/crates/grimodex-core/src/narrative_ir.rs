@@ -9,6 +9,7 @@ use serde_json::{json, Map, Value};
 use thiserror::Error;
 
 use crate::canonical_json::{canonical_json_digest, canonical_json_string};
+use crate::contract_string::is_contract_non_empty;
 use crate::narrative_dependency::{
     canonicalize_dependency_selector, evaluate_dependency_effect, load_dependency_role_registry,
     validate_dependency_selector_value, DependencyContractError, DependencyEffectInput,
@@ -79,7 +80,7 @@ fn object<'a>(
 }
 
 fn non_empty_string(value: &Value) -> bool {
-    value.as_str().is_some_and(|text| !text.trim().is_empty())
+    value.as_str().is_some_and(is_contract_non_empty)
 }
 
 /// Read an unsigned integer by numeric value rather than JSON number spelling.
@@ -629,12 +630,12 @@ fn evidence_input_ref(entry: &Map<String, Value>) -> Option<&str> {
     entry
         .get("sourceKey")
         .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| is_contract_non_empty(value))
         .or_else(|| {
             entry
                 .get("evidenceRef")
                 .and_then(Value::as_str)
-                .filter(|value| !value.trim().is_empty())
+                .filter(|value| is_contract_non_empty(value))
         })
 }
 
@@ -1584,7 +1585,7 @@ pub fn derive_chronicle_scene_event_scope(
     proposal_payload: &Value,
     reveal_basis: &Value,
 ) -> Result<ChronicleScopeDerivation, NarrativeIrValidationError> {
-    if scene_ref.trim().is_empty() {
+    if !is_contract_non_empty(scene_ref) {
         return Err(validation_error("empty-reference", "sceneRef"));
     }
     validate_proposal_payload(proposal_payload)?;

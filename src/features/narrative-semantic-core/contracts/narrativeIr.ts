@@ -21,6 +21,7 @@ import {
   validateDependencySelector,
 } from "./dependencyRole";
 import type { DependencyRole, DependencySelector } from "./dependencyRole";
+import { isContractNonEmptyString } from "./contractString";
 
 export type { NarrativeScopeV2 } from "./scopeV2";
 
@@ -277,9 +278,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
-}
+const isNonEmptyString = isContractNonEmptyString;
 
 function isDigest(value: unknown): value is Sha256Digest {
   return typeof value === "string" && SHA256_PATTERN.test(value);
@@ -316,7 +315,8 @@ function validateSchemaRef(value: unknown, path: string): Invalid | undefined {
   if (!isRecord(value)) return invalid("invalid-payload-schema-ref", path);
   const unknown = rejectUnknownFields(value, new Set(["id", "version"]));
   if (unknown) return invalid(unknown.reason, `${path}.${unknown.path}`);
-  return isNonEmptyString(value.id) && isNonEmptyString(value.version)
+  return isContractNonEmptyString(value.id) &&
+    isContractNonEmptyString(value.version)
     ? undefined
     : invalid("invalid-payload-schema-ref", path);
 }
@@ -331,7 +331,8 @@ function validateProducer(value: unknown, path: string): Invalid | undefined {
   if (!PRODUCER_KIND_SET.has(value.kind as string)) {
     return invalid("unsupported-producer-kind", `${path}.kind`);
   }
-  return isNonEmptyString(value.id) && isNonEmptyString(value.version)
+  return isContractNonEmptyString(value.id) &&
+    isContractNonEmptyString(value.version)
     ? undefined
     : invalid("invalid-identifier", path);
 }
