@@ -8,8 +8,8 @@
 use serde::Serialize;
 
 use grimodex_db::narrative_extraction::{
-    get_current_epoch, plan_maintenance_trigger, DesiredWork, MaintenanceTrigger,
-    MaintenanceWorkRequest, MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    discover_durable_maintenance_work, DesiredWork, MaintenanceWorkRequest,
+    MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 use grimodex_db::Database;
 
@@ -27,6 +27,13 @@ impl WakeReason {
             _ => anyhow::bail!(
                 "NEX_MAINTENANCE_DISCOVERY_INVALID_REASON: '{value}' is not a supported wake reason"
             ),
+        }
+    }
+
+    fn durable_reason(self) -> &'static str {
+        match self {
+            Self::WorkspaceOpened => "workspace-opened",
+            Self::RestoreCompleted => "restore-completed",
         }
     }
 }
@@ -56,55 +63,53 @@ fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
 
 /// Discover all bounded pages from the exact live Database authority.
 ///
-/// Stable project-id ordering makes the result deterministic. All pages are
-/// produced while one pinned Database authority is held; JavaScript receives
-/// the complete result before any queue mutation occurs.
+/// Stable project-id ordering makes the result deterministic. Project ids are
+/// read under one short connection guard, which is released before asking the
+/// DB-aware durable planner about each project. The planner opens its own
+/// short guard; keeping the enumeration guard alive here would deadlock on the
+/// non-reentrant Database connection mutex. The `Database` itself remains the
+/// one pinned authority for every planner call, and JavaScript receives the
+/// complete result before any queue mutation occurs.
 pub(crate) fn discover_all(
     db: &Database,
     binding: MaintenanceWorkspaceBinding,
     reason: WakeReason,
 ) -> anyhow::Result<DiscoveryResult> {
-    db.with_conn(|conn| {
+    let project_ids = db.with_conn(|conn| {
         let mut statement = conn.prepare("SELECT id FROM projects ORDER BY id ASC")?;
         let mut project_ids = Vec::new();
         for row in statement.query_map([], |row| row.get::<_, String>(0))? {
             project_ids.push(row?);
         }
+        Ok(project_ids)
+    })?;
 
-        let mut pages = Vec::new();
-        let mut page_work = Vec::new();
-        for project_id in project_ids {
-            let trigger = match reason {
-                WakeReason::WorkspaceOpened => MaintenanceTrigger::WorkspaceOpened { project_id },
-                WakeReason::RestoreCompleted => match get_current_epoch(conn, &project_id)? {
-                    Some(epoch) => MaintenanceTrigger::RestoreCompleted {
-                        project_id,
-                        semantic_epoch_id: epoch.id,
-                    },
-                    None => MaintenanceTrigger::LegacyBackfillRequired { project_id },
-                },
-            };
-            let planned = plan_maintenance_trigger(&trigger)?;
-            if !page_work.is_empty()
-                && page_work.len() + planned.len() > MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE
-            {
-                pages.push(DiscoveryWorkPage { work: page_work });
-                page_work = Vec::new();
-            }
-            anyhow::ensure!(
-                planned.len() <= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
-                "NEX_MAINTENANCE_DISCOVERY_PROJECT_TOO_LARGE: planner returned too much work for one project"
-            );
-            page_work.extend(planned.into_iter().map(work_request));
-        }
-
-        if !page_work.is_empty() {
+    let mut pages = Vec::new();
+    let mut page_work = Vec::new();
+    for project_id in project_ids {
+        let planned = discover_durable_maintenance_work(db, &project_id, reason.durable_reason())?
+            .into_iter()
+            .map(work_request)
+            .collect::<Vec<_>>();
+        anyhow::ensure!(
+            planned.len() <= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+            "NEX_MAINTENANCE_DISCOVERY_PROJECT_TOO_LARGE: planner returned too much work for one project"
+        );
+        if !page_work.is_empty()
+            && page_work.len() + planned.len() > MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE
+        {
             pages.push(DiscoveryWorkPage { work: page_work });
+            page_work = Vec::new();
         }
-        Ok(DiscoveryResult {
-            workspace_binding: binding,
-            pages,
-        })
+        page_work.extend(planned);
+    }
+
+    if !page_work.is_empty() {
+        pages.push(DiscoveryWorkPage { work: page_work });
+    }
+    Ok(DiscoveryResult {
+        workspace_binding: binding,
+        pages,
     })
 }
 

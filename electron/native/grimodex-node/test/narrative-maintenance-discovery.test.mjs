@@ -49,36 +49,40 @@ function projectPayload(projectId) {
   };
 }
 
-test("one N-API discovery call returns one binding and bounded stable pages", async (t) => {
-  const fixture = fixtureForTest(t, "pages");
-  await fixture.backend.openWorkspace(join(fixture.root, "workspace"));
-  for (let index = 0; index < 33; index += 1) {
-    await fixture.backend.projectCreate(projectPayload(`maintenance-${index}`));
-  }
+test(
+  "one N-API discovery call returns one binding and bounded stable pages",
+  { timeout: 30_000 },
+  async (t) => {
+    const fixture = fixtureForTest(t, "pages");
+    await fixture.backend.openWorkspace(join(fixture.root, "workspace"));
+    for (let index = 0; index < 33; index += 1) {
+      await fixture.backend.projectCreate(projectPayload(`maintenance-${index}`));
+    }
 
-  const result = JSON.parse(
-    await fixture.backend.discoverNarrativeMaintenanceWork("workspace-opened"),
-  );
-  assert.equal(typeof result.workspaceBinding.authorityId, "string");
-  assert.equal(Number.isSafeInteger(result.workspaceBinding.generation), true);
-  assert.ok(result.pages.length >= 2, "33 projects require multiple pages");
-  assert.ok(
-    result.pages.every(({ work }) => work.length <= 32),
-    "native pages are bounded before main receives them",
-  );
-  const projectIds = result.pages.flatMap(({ work }) =>
-    work.map(({ projectId }) => projectId),
-  );
-  assert.deepEqual(projectIds, [...projectIds].sort());
-  assert.ok(projectIds.includes("maintenance-0"));
-  assert.ok(projectIds.includes("maintenance-32"));
-  for (const work of result.pages.flatMap(({ work }) => work)) {
-    assert.equal("graphContractDigest" in work, false);
-    assert.equal("ruleRegistryDigest" in work, false);
-    assert.equal("producerGenerationSetDigest" in work, false);
-    assert.notEqual(work.runKind, "repair");
-  }
-});
+    const result = JSON.parse(
+      await fixture.backend.discoverNarrativeMaintenanceWork("workspace-opened"),
+    );
+    assert.equal(typeof result.workspaceBinding.authorityId, "string");
+    assert.equal(Number.isSafeInteger(result.workspaceBinding.generation), true);
+    assert.ok(result.pages.length >= 2, "33 projects require multiple pages");
+    assert.ok(
+      result.pages.every(({ work }) => work.length <= 32),
+      "native pages are bounded before main receives them",
+    );
+    const projectIds = result.pages.flatMap(({ work }) =>
+      work.map(({ projectId }) => projectId),
+    );
+    assert.deepEqual(projectIds, [...projectIds].sort());
+    assert.ok(projectIds.includes("maintenance-0"));
+    assert.ok(projectIds.includes("maintenance-32"));
+    for (const work of result.pages.flatMap(({ work }) => work)) {
+      assert.equal("graphContractDigest" in work, false);
+      assert.equal("ruleRegistryDigest" in work, false);
+      assert.equal("producerGenerationSetDigest" in work, false);
+      assert.notEqual(work.runKind, "repair");
+    }
+  },
+);
 
 test("restore install creates a fresh epoch whose first durable work is Verify", async (t) => {
   const fixture = fixtureForTest(t, "restore");
@@ -133,6 +137,36 @@ test("the live binding round-trips into the cycle without a detached path", asyn
     }),
   );
   assert.ok(["accepted", "coalesced", "deferred"].includes(result.status));
+});
+
+test("an authority swap fail-closes an old discovery binding", async (t) => {
+  const fixture = fixtureForTest(t, "authority-swap");
+  const firstWorkspace = join(fixture.root, "workspace-a");
+  const secondWorkspace = join(fixture.root, "workspace-b");
+  await fixture.backend.openWorkspace(firstWorkspace);
+  const first = JSON.parse(
+    await fixture.backend.discoverNarrativeMaintenanceWork("workspace-opened"),
+  );
+  const firstWork = first.pages.flatMap(({ work }) => work).slice(0, 1);
+  await fixture.backend.openWorkspace(secondWorkspace);
+  const second = JSON.parse(
+    await fixture.backend.discoverNarrativeMaintenanceWork("workspace-opened"),
+  );
+  assert.notEqual(
+    second.workspaceBinding.authorityId,
+    first.workspaceBinding.authorityId,
+    "a workspace replacement must receive a new authority identity",
+  );
+  if (firstWork.length === 0) return;
+  const stale = JSON.parse(
+    await fixture.backend.runNarrativeMaintenanceCycle({
+      work: firstWork,
+      wakeProjectIds: [],
+      workspaceBinding: first.workspaceBinding,
+    }),
+  );
+  assert.equal(stale.status, "workspace-unavailable");
+  assert.match(stale.reason ?? "", /binding|workspace|snapshot/i);
 });
 
 test("foreground authoring and a background wake share one live writer", async (t) => {

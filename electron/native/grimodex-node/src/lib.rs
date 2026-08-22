@@ -1711,6 +1711,35 @@ impl Backend {
             let binding = state
                 .narrative_maintenance_recovery_gate
                 .binding_for_authority(&authority_id);
+            // The binding gate and workspace state are separate locks. Re-pin
+            // the active snapshot after binding so a swap in that interval
+            // cannot return an old authority paired with a new generation.
+            // Fail closed; main will park the wake and rediscover after open.
+            let current_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-snapshot-changed",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let current_binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&current_snapshot.authority));
+            if !Arc::ptr_eq(&snapshot.authority, &current_snapshot.authority)
+                || binding != current_binding
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
             let discovery =
                 narrative_maintenance::discover_all(snapshot.authority.db(), binding, wake_reason)
                     .map_err(AppError::Anyhow)?;
