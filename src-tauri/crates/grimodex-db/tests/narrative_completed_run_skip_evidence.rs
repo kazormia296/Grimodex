@@ -24,7 +24,7 @@ const GRAPH_DIGEST: &str =
 const RULE_DIGEST: &str = "sha256:2222222222222222222222222222222222222222222222222222222222222222";
 const PRODUCER_DIGEST: &str =
     "sha256:3333333333333333333333333333333333333333333333333333333333333333";
-const RUN_CONTRACT_VERSION: &str = "5";
+const RUN_CONTRACT_VERSION: &str = "6";
 const REBUILD_RUN_ID: &str = "run-c2-5b-b-rebuild";
 
 fn fixture_db() -> Database {
@@ -56,13 +56,16 @@ fn report() -> serde_json::Value {
         "edgeIdsWithCrossProjectConsumer": [],
         "edgeIdsWithMalformedKeys": [],
         "edgeStateIdsOutsideCurrentEpoch": [],
+        "edgeIdsWithoutCurrentEpochState": [],
         "findingObservationIdsOutsideCurrentEpoch": [],
+        "consumerKeysWithoutCurrentEpochFreshness": [],
         "duplicateEdgeIdsToDeactivate": [],
         "edgeIdsWithUnresolvableConsumerScope": [],
         "consumerKeysWithStaleDependencySetDigest": [],
         "consumerKeysWithUncomputedDependencySetDigest": [],
         "orphanedAttentionFindingKeys": [],
-        "orphanedAttentionRehomeAmbiguities": []
+        "orphanedAttentionRehomeAmbiguities": [],
+        "rebuildRequired": false
     })
 }
 
@@ -87,6 +90,7 @@ fn evidence() -> CompletedRunSkipEvidence {
     CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
         run_kind: "dependency-verify".to_string(),
+        work_key: format!("dependency-verify:{EPOCH_ID}"),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -100,6 +104,7 @@ fn expectation() -> CompletedRunSkipExpectation {
     CompletedRunSkipExpectation {
         project_id: PROJECT_ID.to_string(),
         run_kind: "dependency-verify".to_string(),
+        work_key: format!("dependency-verify:{EPOCH_ID}"),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -113,6 +118,7 @@ fn rebuild_evidence() -> CompletedRunSkipEvidence {
     CompletedRunSkipEvidence {
         project_id: PROJECT_ID.to_string(),
         run_kind: "semantic-index-rebuild".to_string(),
+        work_key: "dependency-rebuild-derived".to_string(),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -126,6 +132,7 @@ fn rebuild_expectation() -> CompletedRunSkipExpectation {
     CompletedRunSkipExpectation {
         project_id: PROJECT_ID.to_string(),
         run_kind: "semantic-index-rebuild".to_string(),
+        work_key: "dependency-rebuild-derived".to_string(),
         semantic_epoch_id: EPOCH_ID.to_string(),
         graph_contract_digest: GRAPH_DIGEST.to_string(),
         rule_registry_digest: RULE_DIGEST.to_string(),
@@ -460,7 +467,7 @@ fn in_tx_persistence_does_not_overwrite_a_concurrent_outcome_mutation() {
 }
 
 #[test]
-fn rebuild_summary_evidence_uses_the_same_fail_closed_skip_contract() {
+fn completed_rebuild_runs_are_never_reused_by_the_skip_contract() {
     let db = fixture_db();
     db.with_conn(|conn| {
         conn.execute(
@@ -487,17 +494,15 @@ fn rebuild_summary_evidence_uses_the_same_fail_closed_skip_contract() {
         Ok(())
     })
     .expect("insert rebuild run");
-    persist_completed_run_skip_evidence(&db, REBUILD_RUN_ID, &rebuild_evidence())
-        .expect("persist rebuild skip evidence");
+    assert!(persist_completed_run_skip_evidence(&db, REBUILD_RUN_ID, &rebuild_evidence()).is_err());
 
     let decision = db
         .with_conn(|conn| evaluate_completed_run_skip(conn, &rebuild_expectation()))
         .expect("evaluate rebuild skip");
     assert_eq!(
         decision,
-        CompletedRunSkipDecision::Skip {
-            run_id: REBUILD_RUN_ID.to_string(),
-            report_digest: rebuild_report_digest(),
+        CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::UnsupportedRunKind,
         }
     );
 }
@@ -538,7 +543,10 @@ fn every_contract_coordinate_is_a_skip_boundary() {
     for (field, value, reason) in cases {
         let mut current = expectation();
         match field {
-            "semantic_epoch_id" => current.semantic_epoch_id = value.to_string(),
+            "semantic_epoch_id" => {
+                current.semantic_epoch_id = value.to_string();
+                current.work_key = format!("dependency-verify:{value}");
+            }
             "graph_contract_digest" => current.graph_contract_digest = value.to_string(),
             "rule_registry_digest" => current.rule_registry_digest = value.to_string(),
             "producer_generation_set_digest" => {
@@ -606,6 +614,7 @@ fn malformed_missing_and_tampered_report_evidence_fail_closed() {
             Some(json!({
                 "projectId": PROJECT_ID,
                 "runKind": "dependency-verify",
+                "workKey": format!("dependency-verify:{EPOCH_ID}"),
                 "semanticEpochId": EPOCH_ID,
                 "graphContractDigest": GRAPH_DIGEST,
                 "ruleRegistryDigest": RULE_DIGEST,
@@ -619,6 +628,7 @@ fn malformed_missing_and_tampered_report_evidence_fail_closed() {
             Some(json!({
                 "projectId": PROJECT_ID,
                 "runKind": "dependency-verify",
+                "workKey": format!("dependency-verify:{EPOCH_ID}"),
                 "semanticEpochId": EPOCH_ID,
                 "graphContractDigest": GRAPH_DIGEST,
                 "ruleRegistryDigest": RULE_DIGEST,
@@ -857,7 +867,7 @@ fn outcome_epoch_mismatch_is_rejected_for_verify_and_rebuild() {
     assert_eq!(
         rebuild_decision,
         CompletedRunSkipDecision::Rerun {
-            reason: CompletedRunSkipReason::EpochMismatch
+            reason: CompletedRunSkipReason::UnsupportedRunKind
         }
     );
     assert!(

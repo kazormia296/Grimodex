@@ -85,7 +85,7 @@ use super::dependency_edges::{
 };
 use super::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
-use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
@@ -93,21 +93,20 @@ use super::terminal_failure::{
 };
 use crate::Database;
 
+/// Generation of the production legacy dependency writer. This is the
+/// writer-owned value consumed by the bundled producer registry; it changes
+/// with the declaration semantics, not merely with a policy fixture.
+pub(crate) const LEGACY_DEPENDENCY_PRODUCER_GENERATION: &str = "legacy-dependency-backfill:v2";
+
 /// Work key every project's Legacy Dependency Backfill Run is created
 /// under (Run Kind Policy `dependency-backfill`). One logical Backfill per
 /// project per algorithm version -- see
-/// [`bootstrap_legacy_dependency_backfill_for_project`].
-///
-/// The trailing `:v<n>` is load-bearing and must move with
-/// [`LEGACY_BACKFILL_ALGORITHM_VERSION`] (a test pins that). The Run Kind
-/// Policy seals `backfillAlgorithmVersion` as a `sealedParameters` entry, so
-/// the contract already says two Runs at different algorithm versions are
-/// not the same work -- but `find_reusable_system_run` matches on
-/// `(project_id, run_kind, work_key, status)` and never opens the sealed
-/// spec, so with a version-free key a Run left `completed` by an older
-/// algorithm is reused and the new transform never runs. Carrying the
-/// version in the key is what makes the implementation honour the seal.
-const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
+/// [`bootstrap_legacy_dependency_backfill_for_project`]. It is deliberately
+/// the same writer-owned generation value: the trailing `:v<n>` is load-
+/// bearing and moves with [`LEGACY_BACKFILL_ALGORITHM_VERSION`], so a
+/// completed Run from an older transform cannot be reused under a new
+/// producer coordinate.
+pub(crate) const LEGACY_BACKFILL_WORK_KEY: &str = LEGACY_DEPENDENCY_PRODUCER_GENERATION;
 
 /// Sealed into the Run's `spec_json` per the Run Kind Policy's
 /// `sealedParameters`. This backfill has no legacy schema-version/
@@ -116,12 +115,12 @@ const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 /// row", not a bounded/versioned slice), so `backfillAlgorithmVersion` is
 /// the one parameter worth sealing: bump it if this transform's write
 /// shape ever changes in a way that would make an older completed Run
-/// unsafe to treat as equivalent to a fresh one.
-/// `"2"` since Contribution `target_object_identity` and Dependency Edge
+/// unsafe to treat as equivalent to a fresh one. `"2"` since Contribution
+/// `target_object_identity` and Dependency Edge
 /// `source_object_identity` are both written in canonical form: a Run
 /// completed under `"1"` left `codex_entry:<id>` Contributions and
 /// double-prefixed Edges, so it is not equivalent to a fresh one.
-const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
+pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
 pub enum LegacyBackfillBootstrapOutcome {
@@ -142,7 +141,7 @@ pub enum LegacyBackfillBootstrapOutcome {
 pub(crate) const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct BackfillSummary {
     /// Whether this call minted the project's `initial` Semantic Epoch.
     /// `false` means the project already had at least one epoch.
@@ -187,15 +186,11 @@ struct LegacyProjectionDependency {
 /// [`backfill_project_semantic_build_graph_in_tx`], this owns its own
 /// transaction(s) -- callers must not already be inside one.
 ///
-/// Its only production caller today is the Admin IPC
-/// `retryNarrativeLegacyBackfill`. The policy's `automatic-once` post-open
-/// trigger is intentionally **not** wired: committing from a second
-/// connection while the foreground holds a deferred transaction fails that
-/// transaction with SQLITE_BUSY_SNAPSHOT, which `busy_timeout` cannot
-/// retry (see the long comment at the former call site in `open.rs`, and
-/// `execute.rs`'s `BEGIN IMMEDIATE` note). Re-wiring it requires either
-/// running on the live authority's connection or making
-/// `domain_writes.rs`'s deferred transactions IMMEDIATE.
+/// Production callers include the Admin IPC `retryNarrativeLegacyBackfill`
+/// and the C2-5B live phase owner. The latter supplies the same live
+/// `Database` authority as Verify/Rebuild, so the automatic-once path does
+/// not create a second connection that could fail a foreground deferred
+/// transaction with `SQLITE_BUSY_SNAPSHOT`.
 ///
 /// Three phases, each its own transaction, so a Phase 2 failure cannot
 /// erase the Phase 1 Run record it should be explaining:
@@ -216,24 +211,21 @@ struct LegacyProjectionDependency {
 ///      Run row rather than stuck at `running` forever.
 ///
 /// A `failed` Run is not reused by phase 1's `RunningAndCompleted` check,
-/// so a later invocation retries it. With the post-open trigger unwired,
-/// that retry is operator-driven (the Admin IPC) rather than automatic:
-/// `autoRetryableFailureClasses`' bounded auto-retry (SQLite busy,
-/// process interruption, app shutdown, lease timeout, transient I/O) will
-/// only fall out of "retry on next open" once that trigger is restored.
+/// so a later invocation retries it. The C2-5B phase owner rediscovers this
+/// durable work on the next wake/restart and applies the policy's bounded
+/// retry classes (SQLite busy, process interruption, app shutdown, lease
+/// timeout, and transient I/O); an operator can still invoke this entry point
+/// explicitly through the Admin IPC.
 /// A structurally-broken project
 /// (`NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION`) fails the same way on
 /// every invocation; Lane C projects that terminal evidence into the
 /// Maintenance Inbox without changing current Freshness or Attention.
 ///
-/// Known gap, not addressed here: a crash strictly between phase 1
-/// committing and phase 3 running (the transform itself is a fast,
-/// bounded SQL scan+upsert, so this window is narrow but not zero) leaves
-/// the Run stuck at `running`, which phase 1's `RunningAndCompleted`
-/// check treats as "still in progress" and does not retry. Recovering a
-/// Run/Task/Attempt stuck `running` after a terminated process is a Lane
-/// B / execution-state-model concern spanning every Run Kind, not
-/// something specific to Backfill worth solving narrowly here.
+/// If a process terminates between phase 1 and phase 3, the shared
+/// maintenance recovery ledger terminalizes the interrupted Run before the
+/// phase owner rediscovers it. This keeps Backfill's once-boundary semantics
+/// while allowing a retryable failure to be scheduled without creating a
+/// second active Run.
 pub fn bootstrap_legacy_dependency_backfill_for_project(
     db: &Database,
     project_id: &str,
@@ -253,7 +245,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
                 project_id,
                 "backfill",
                 &epoch_id,
-                LEGACY_BACKFILL_WORK_KEY,
+                LEGACY_DEPENDENCY_PRODUCER_GENERATION,
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningAndCompleted,
@@ -310,6 +302,31 @@ fn finalize_legacy_backfill_run(
     };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
+            let semantic_epoch_id: Option<String> = conn.query_row(
+                "SELECT semantic_epoch_id FROM narrative_extraction_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_BACKFILL_RUN_EPOCH_MISSING: Run '{run_id}' has no Semantic Epoch"
+                )
+            })?;
+            let outcome = match transform_result {
+                Ok(summary) => json!({
+                    "maintenancePhase": "backfill-complete",
+                    "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                    "semanticEpochId": semantic_epoch_id,
+                    "summary": summary,
+                }),
+                Err(error) => json!({
+                    "maintenancePhase": "backfill-failed",
+                    "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                    "semanticEpochId": semantic_epoch_id,
+                    "failure": error.to_string(),
+                }),
+            };
+            record_run_outcome_in_tx(conn, run_id, &outcome)?;
             // Bind terminal Finding evidence to the timestamp persisted by
             // the terminal Run transition. This avoids a pre-transition
             // clock sample becoming older than the completed Run itself.
@@ -548,6 +565,7 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 /// prefix a second time -- `project:scene:project:scene:s1` -- and every
 /// backfilled Edge then evaluated as `source-missing` because no resolver
 /// could match it back to its Source.
+// NARRATIVE_DEPENDENCY_PRODUCER: legacy-application-projection-dependency
 fn record_legacy_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -1571,7 +1589,9 @@ mod tests {
                         (SELECT COUNT(*) FROM narrative_maintenance_finding_observations)
                    FROM narrative_extraction_runs r
                   WHERE r.project_id = 'project-1' AND r.run_kind = 'backfill'
-                  ORDER BY r.rowid DESC LIMIT 1",
+                  ORDER BY julianday(COALESCE(r.completed_at, r.started_at, r.created_at)) DESC,
+                           COALESCE(r.completed_at, r.started_at, r.created_at) DESC,
+                           r.id DESC LIMIT 1",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;

@@ -24,8 +24,13 @@ mod foreshadow_undo;
 mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
+pub mod maintenance_contracts;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
+pub use maintenance_contracts::{
+    bundled_dependency_producer_registry, current_maintenance_coordinates, DependencyProducerEntry,
+    DependencyProducerRegistry, DependencyProducerWriter, MaintenanceContractCoordinates,
+};
 pub use maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence,
     persist_completed_run_skip_evidence_in_tx, read_completed_run_skip_evidence,
@@ -143,8 +148,9 @@ pub use incremental_freshness::{
 pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
-    decide_execution, decide_run_recovery, decide_run_recovery_for_epoch, plan_maintenance_trigger,
-    read_run_ledger, read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
+    decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
+    discover_durable_maintenance_work, plan_maintenance_trigger, read_run_ledger,
+    read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
     terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
     terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
     FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
@@ -187,9 +193,10 @@ pub use repair::{
     RepairPlan,
 };
 pub use restore_rebuild::{
-    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
-    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
+    ensure_restore_epochs_for_workspace, rebuild_narrative_derived_state_for_project,
+    run_dependency_verify_for_project, verify_narrative_dependency_graph_for_project,
+    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
+    VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
@@ -410,16 +417,14 @@ pub fn narrative_extraction_set_human_field_lock(
 /// read authority either way, per the Run Kind Policy's
 /// `duringBackfillProductBehavior`).
 ///
-/// **Currently unwired.** It was called from `open.rs`'s post-swap zone
-/// until that turned every workspace open into a second-connection writer
-/// and started failing foreground deferred transactions with
-/// SQLITE_BUSY_SNAPSHOT; see the comment at the former call site in
-/// `open.rs` for the hazard and what re-wiring requires. Retained because
-/// it is the intended automatic-once entry point once that is fixed.
+/// The durable C2-5B phase owner invokes the per-project implementation on
+/// its live `Database` connection. This facade remains a compatibility entry
+/// point for callers that need best-effort workspace bootstrap; it does not
+/// own phase discovery or dispatch.
 pub fn narrative_extraction_bootstrap_legacy_backfill(db: &Database) {
     let project_ids: Vec<String> = match db.with_conn(|conn| {
         let mut statement =
-            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, rowid ASC")?;
+            conn.prepare("SELECT id FROM projects ORDER BY created_at ASC, id ASC")?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)

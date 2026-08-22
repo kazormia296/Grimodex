@@ -2,19 +2,19 @@
 //! extraction Run / Task / Attempt, physically enforcing
 //! `policies/narrative/narrative-execution-state.json`.
 //!
-//! `narrative_extraction/repository.rs` still writes raw status string
-//! literals (`"pending"`, `"queued"`, ...) directly and is not rewired onto
-//! this module yet — that is out of scope for Gate C2 Lane B and belongs to
-//! a later pass (C2-T1 / Legacy Cleanup). This module exists so new call
-//! sites have a fail-closed primitive to transition status through instead
-//! of trusting a bare `UPDATE ... SET status = ?`.
+//! `narrative_extraction/repository.rs` retains raw status string literals
+//! (`"pending"`, `"queued"`, ...) for its generic task API's narrow CAS
+//! statements, while all of its Run lifecycle timestamps use the shared
+//! project-scoped allocator below. Runtime-owned routes use the typed
+//! fail-closed transition primitive instead of trusting a bare
+//! `UPDATE ... SET status = ?`.
 //!
-//! Nothing in production code calls these items yet (by design, see above),
-//! so this file intentionally silences `dead_code` at module scope rather
-//! than sprinkling per-item `#[allow(dead_code)]` — the whole module is
-//! forward-looking scaffolding, exercised directly by its own tests.
+//! Some enum transition helpers are still exercised only by their focused
+//! tests, so this file intentionally silences `dead_code` at module scope
+//! rather than sprinkling per-item `#[allow(dead_code)]`.
 #![allow(dead_code)]
 
+use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 
 /// Run-level execution status. Mirrors
@@ -215,6 +215,76 @@ fn attempt_transition_allowed(from: NarrativeAttemptStatus, to: NarrativeAttempt
     matches!((from, to), (Running, Completed) | (Running, Failed))
 }
 
+fn parse_run_lifecycle_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+            )
+        })
+}
+
+/// Return the next canonical millisecond in the project's persisted Run
+/// lifecycle authority. Wall-clock time is only a lower bound: an imported
+/// image may legitimately contain a future lifecycle instant, and terminal
+/// completion must not move the ordering cursor backwards from that evidence.
+pub(crate) fn next_run_lifecycle_timestamp_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<String> {
+    let now = Utc::now();
+    let now_millis = DateTime::<Utc>::from_timestamp_millis(now.timestamp_millis())
+        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: current clock"))?;
+    let mut statement = conn.prepare(
+        "SELECT created_at, started_at, completed_at
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1",
+    )?;
+    let rows = statement.query_map(params![project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
+    let mut latest = None;
+    for row in rows {
+        let (created_at, started_at, completed_at) = row?;
+        for value in [Some(created_at), started_at, completed_at]
+            .into_iter()
+            .flatten()
+        {
+            let parsed = parse_run_lifecycle_instant(&value)?;
+            latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
+        }
+    }
+    let next = latest
+        .map(|latest| {
+            let next = latest
+                .checked_add_signed(Duration::milliseconds(1))
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot advance lifecycle instant '{}'",
+                    latest.to_rfc3339()
+                )
+                })?;
+            anyhow::ensure!(
+                next.year() <= 9999,
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot persist lifecycle instant '{}'",
+                next.to_rfc3339()
+            );
+            Ok(next)
+        })
+        .transpose()?
+        .map_or(now_millis, |latest| now_millis.max(latest));
+    Ok(next.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+
 /// Transition a Run's status, fail closed against `run_transition_allowed`.
 /// Sets `started_at` (once, via `COALESCE`) on entry into `running` and
 /// `completed_at` on entry into any terminal status. Callers own the
@@ -224,15 +294,15 @@ pub(crate) fn transition_run_status_in_tx(
     run_id: &str,
     to: NarrativeRunStatus,
 ) -> anyhow::Result<String> {
-    let current_raw: Option<String> = conn
+    let current: Option<(String, String)> = conn
         .query_row(
-            "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+            "SELECT status, project_id FROM narrative_extraction_runs WHERE id = ?1",
             params![run_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let current_raw = current_raw
-        .ok_or_else(|| anyhow::anyhow!("narrative extraction run not found: '{run_id}'"))?;
+    let (current_raw, project_id) =
+        current.ok_or_else(|| anyhow::anyhow!("narrative extraction run not found: '{run_id}'"))?;
     let from = NarrativeRunStatus::try_from(current_raw.as_str())?;
 
     anyhow::ensure!(
@@ -247,7 +317,7 @@ pub(crate) fn transition_run_status_in_tx(
     // use the shared RFC3339-millisecond clock. Keep every status transition
     // on that same canonical clock so a same-second .500 failure and .900
     // success remain chronologically distinguishable.
-    let transition_at = grimodex_core::now_rfc3339_millis();
+    let transition_at = next_run_lifecycle_timestamp_in_tx(conn, &project_id)?;
     let updated = conn.execute(
         "UPDATE narrative_extraction_runs
             SET status = ?1,
@@ -413,7 +483,9 @@ pub(crate) fn supersede_run_in_tx(conn: &Connection, run_id: &str) -> anyhow::Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::narrative_extraction::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
     use crate::Database;
+    use serde_json::json;
 
     fn open_db() -> Database {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
@@ -780,5 +852,58 @@ mod tests {
             Ok(())
         })
         .expect("query after rejected supersede");
+    }
+
+    #[test]
+    fn terminal_system_run_after_imported_future_lifecycle_stays_latest() {
+        let db = open_db();
+        let timestamps: (String, String) = db
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-1', 'project-1', 0, 'initial',
+                             '2099-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, completed_at,
+                         run_kind, semantic_epoch_id, work_key, version)
+                     VALUES ('imported-future-run', 'project-1', 'maintenance', '{}', '{}',
+                             'digest', 'completed', '{}', '2099-01-01T00:00:00.000Z',
+                             '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
+                             'dependency-verify', 'epoch-1', 'imported-future-run', 0)",
+                    [],
+                )?;
+                let created = create_system_run_in_tx(
+                    conn,
+                    "project-1",
+                    "semantic-index-rebuild",
+                    "epoch-1",
+                    "dependency-rebuild-derived",
+                    &json!({}),
+                    "sha256:test",
+                    SystemRunWorkKeyReuse::None,
+                    None,
+                )?;
+                let run_id = created["runId"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("created Run has no id"))?;
+                transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Completed)?;
+                conn.query_row(
+                    "SELECT created_at, completed_at
+                       FROM narrative_extraction_runs WHERE id = ?1",
+                    [run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("complete a new system Run after importing a future Run");
+
+        assert_eq!(timestamps.0, "2099-01-01T00:00:00.001Z");
+        assert_eq!(timestamps.1, "2099-01-01T00:00:00.002Z");
+        assert!(timestamps.1.ends_with(".002Z"));
     }
 }

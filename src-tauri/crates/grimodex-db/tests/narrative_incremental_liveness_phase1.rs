@@ -1,8 +1,9 @@
 //! C2-ZA durable liveness evidence for the incremental Freshness consumer.
 //!
 //! These tests deliberately keep scheduler `Idle` semantics intact.  A
-//! completed Run and a cursor at the Feed head are a readiness claim, not a
-//! request to mint another Run when there is no unacknowledged Feed range.
+//! completed Run and a cursor at the Feed head are database facts, not proof
+//! that a scheduler is still alive; with no external health seam they remain
+//! incomplete readiness evidence.
 
 use grimodex_db::narrative_extraction::{
     ensure_test_schema, inspect_project_cutover_readiness, run_incremental_freshness_cycle,
@@ -191,7 +192,7 @@ fn incremental_readiness(db: &Database) -> (ReadinessState, Vec<String>) {
 }
 
 #[test]
-fn completed_current_epoch_run_and_cursor_at_feed_head_prove_durable_liveness() {
+fn completed_current_epoch_run_and_cursor_at_feed_head_do_not_prove_scheduler_liveness() {
     let (db, run_id) = process_one_feed_range();
 
     db.with_conn(|conn| {
@@ -272,9 +273,38 @@ fn completed_current_epoch_run_and_cursor_at_feed_head_prove_durable_liveness() 
     let (state, reasons) = incremental_readiness(&db);
     assert_eq!(
         state,
-        ReadinessState::Passed,
-        "durable current-epoch evidence should pass C2-ZA: {reasons:?}"
+        ReadinessState::Incomplete,
+        "DB-only current-epoch evidence cannot prove scheduler liveness: {reasons:?}"
     );
+    assert!(reasons.iter().any(|reason| {
+        reason == "incremental-freshness-scheduler-liveness-evidence-unavailable"
+    }));
+}
+
+#[test]
+fn stopped_scheduler_with_old_completed_run_and_head_cursor_is_incomplete() {
+    let db = fixture_db();
+    seed_scene_feed_event(&db, 1);
+    seed_completed_freshness_run(
+        &db,
+        CURRENT_EPOCH_ID,
+        "old-completed-freshness-run",
+        1,
+        json!({
+            "runId": "old-completed-freshness-run",
+            "projectId": PROJECT_ID,
+            "fromSequenceExclusive": 0,
+            "throughSequenceInclusive": 1,
+            "hasMore": false,
+        }),
+    );
+    seed_acknowledged_cursor(&db, 1, None);
+
+    let (state, reasons) = incremental_readiness(&db);
+    assert_eq!(state, ReadinessState::Incomplete, "{reasons:?}");
+    assert!(reasons.iter().any(|reason| {
+        reason == "incremental-freshness-scheduler-liveness-evidence-unavailable"
+    }));
 }
 
 #[test]
@@ -389,13 +419,105 @@ fn active_reservation_is_not_completed_liveness_evidence() {
         conn.execute(
             "UPDATE narrative_change_cursors
                 SET semantic_epoch_id = ?1, reserved_through_sequence = 1,
-                    active_run_id = ?2
+                    active_run_id = ?2,
+                    lease_expires_at = '2099-01-01T00:00:00.000Z'
               WHERE project_id = ?3 AND consumer_id = ?4",
             params![CURRENT_EPOCH_ID, run_id, PROJECT_ID, CONSUMER_ID],
         )?;
         Ok(())
     })
     .expect("seed active reservation shape");
+
+    assert_ne!(incremental_readiness(&db).0, ReadinessState::Passed);
+}
+
+#[test]
+fn stale_lease_without_active_reservation_is_not_durable_liveness() {
+    let (db, _) = process_one_feed_range();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_change_cursors
+                SET lease_expires_at = '2020-01-01T00:00:00.000Z'
+              WHERE project_id = ?1 AND consumer_id = ?2",
+            params![PROJECT_ID, CONSUMER_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed stale lease without reservation owner");
+
+    let (state, reasons) = incremental_readiness(&db);
+    assert_ne!(state, ReadinessState::Passed);
+    assert!(
+        reasons.iter().any(|reason| reason.contains("reservation")),
+        "{reasons:?}"
+    );
+}
+
+#[test]
+fn malformed_newer_run_cannot_be_hidden_by_an_older_valid_run() {
+    let (db, _) = process_one_feed_range();
+    let valid_run_id = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'freshness-evaluation'
+                  ORDER BY rowid DESC LIMIT 1",
+                [PROJECT_ID],
+                |row| row.get::<_, String>(0),
+            )?)
+        })
+        .expect("read valid run");
+    let malformed_outcome = json!({
+        "runId": "malformed-newer-run",
+        "projectId": PROJECT_ID,
+        "fromSequenceExclusive": 0,
+        "throughSequenceInclusive": 1,
+        "hasMore": false,
+    });
+    seed_completed_freshness_run(
+        &db,
+        CURRENT_EPOCH_ID,
+        "malformed-newer-run",
+        1,
+        malformed_outcome,
+    );
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET created_at = 'not-an-instant', completed_at = 'not-an-instant'
+              WHERE id = 'malformed-newer-run'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("make the newest run timestamp malformed");
+
+    let (state, reasons) = incremental_readiness(&db);
+    assert_ne!(state, ReadinessState::Passed);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| { reason.contains("not-current") || reason.contains("malformed") }),
+        "{reasons:?}; valid run was {valid_run_id}"
+    );
+}
+
+#[test]
+fn work_key_range_must_match_completed_outcome_range() {
+    let (db, run_id) = process_one_feed_range();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET work_key = ?1
+              WHERE id = ?2",
+            params![
+                format!("incremental-freshness:{CURRENT_EPOCH_ID}:1:1:fixture"),
+                run_id,
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("tamper completed work key range");
 
     assert_ne!(incremental_readiness(&db).0, ReadinessState::Passed);
 }
