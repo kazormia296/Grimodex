@@ -2893,6 +2893,15 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "Function.call bound target shifts object argument",
+        source: [
+          "function safeTarget(value) {}",
+          "function consume(value) { value.fn(); }",
+          "const invoke = safeTarget.call.bind(consume, null);",
+          "invoke({ fn: database[key] });",
+        ].join("\n"),
+      },
+      {
         name: "Reflect.apply bound target through call",
         source: [
           "function consume(fn) { fn(); }",
@@ -2924,10 +2933,11 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
-        name: "Reflect.apply nested call.call composition",
+        name: "Reflect.apply call.call target shifts arguments",
         source: [
           "function consume(fn) { fn(); }",
-          "Reflect.apply.bind(null, consume).call.call(null, null, [database[key]]);",
+          "const invoke = Reflect.apply.bind(null, consume);",
+          "invoke.call.call(invoke, null, null, [database[key]]);",
         ].join("\n"),
       },
       {
@@ -2955,13 +2965,15 @@ describe("validate-semantic-core-boundary", () => {
         "function consume(fn) { fn(); }",
         "const invoke = consume.call.bind(consume, null);",
         "invoke(() => true);",
+        "function ignore(value) {}",
+        "consume.call.bind(ignore, null)(database[key]);",
         "const apply = Reflect.apply.bind(null, consume);",
+        "apply.call.call(null, null, [database[key]]);",
         "apply.call(null, null, [() => true]);",
         "apply.apply(null, [null, [() => true]]);",
         "const fullyBoundApply = Reflect.apply.bind(null, consume, null, [() => true]);",
         "fullyBoundApply.apply(null, []);",
         "Reflect.apply.call.bind(Reflect.apply, Reflect)(consume, null, [() => true]);",
-        "Reflect.apply.bind(null, consume).call.call(null, null, [() => true]);",
         "Reflect.apply.bind(null, consume, null, [() => true]).call(null);",
       ].join("\n"),
     );

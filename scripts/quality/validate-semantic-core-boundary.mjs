@@ -4228,6 +4228,22 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return isInvocationTainted(targetExpression);
   };
 
+  const reflectCallLayerCount = (capability) => {
+    let count = 0;
+    const seen = new Set();
+    let current = capability;
+    while (
+      current?.kind === "reflect" &&
+      current.via === "call" &&
+      !seen.has(current)
+    ) {
+      seen.add(current);
+      count += 1;
+      current = current.boundCapability;
+    }
+    return count;
+  };
+
   const LOCAL_CALL_MAX_DEPTH = 64;
 
   const bindingsForIdentifier = (identifier) => {
@@ -5067,6 +5083,42 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return result;
   }
 
+  const localFunctionInvokesParameter = (functionNode) => {
+    if (!functionNode?.body) return false;
+    const parameterBindings = new Set();
+    for (const parameter of functionNode.parameters ?? []) {
+      collectBindingIdentifiers(parameter.name, (identifier) => {
+        const binding = lookupBinding(identifier);
+        if (!binding?.ambiguous && binding?.binding) {
+          parameterBindings.add(binding.binding);
+        }
+      });
+    }
+    if (parameterBindings.size === 0) return false;
+    let found = false;
+    const visit = (node) => {
+      if (!node || found) return;
+      if (node !== functionNode.body && isFunctionScopeNode(node)) return;
+      if (ts.isCallExpression(node)) {
+        const callee = unwrapExpression(node.expression);
+        const calleeBinding = ts.isIdentifier(callee)
+          ? lookupBinding(callee)
+          : undefined;
+        if (
+          !calleeBinding?.ambiguous &&
+          calleeBinding?.binding &&
+          parameterBindings.has(calleeBinding.binding)
+        ) {
+          found = true;
+          return;
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(functionNode.body);
+    return found;
+  };
+
   function evaluateLocalCall(
     node,
     environment,
@@ -5253,12 +5305,21 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         capability.mode === "indirect" &&
         capability.via === "call"
       ) {
+        const callLayerCount = reflectCallLayerCount(capability);
+        const outerReceiver = unwrapExpression(node.arguments[0]);
+        const outerReceiverIsNullish =
+          !outerReceiver ||
+          outerReceiver.kind === ts.SyntaxKind.NullKeyword ||
+          (ts.isIdentifier(outerReceiver) &&
+            outerReceiver.text === "undefined" &&
+            !lookupBinding(outerReceiver));
+        if (callLayerCount > 1 && outerReceiverIsNullish) return undefined;
         const boundArguments = Array.isArray(capability.boundArguments)
           ? capability.boundArguments
           : [];
         const combinedArguments = [
           ...boundArguments,
-          ...node.arguments.slice(1),
+          ...node.arguments.slice(callLayerCount > 1 ? callLayerCount : 1),
         ];
         targetExpression = combinedArguments[0];
         thisExpression = combinedArguments[1];
@@ -5434,18 +5495,36 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
               depth + 1,
             )
           : cleanLocalResult();
-        argumentResult = mergeLocalResults(thisResult, argumentContainerResult);
+        const boundTargetResult = boundInvocation.thisArgument
+          ? evaluateLocalExpression(
+              boundInvocation.thisArgument,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : cleanLocalResult();
+        argumentResult = mergeLocalResults(
+          mergeLocalResults(thisResult, argumentContainerResult),
+          boundTargetResult,
+        );
         effectiveArgumentValues = argumentValuesFromContainer(
           argumentContainerResult.returnValue,
         );
         receiverValue = thisResult.returnValue;
-        candidates = [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
-          node: candidateNode,
-          mode: "apply",
-          receiverValue,
-          boundThis: undefined,
-          boundArguments: undefined,
-        }));
+        candidates = boundInvocation.thisArgument
+          ? candidatesFromTarget(
+              boundInvocation.thisArgument,
+              "apply",
+              receiverValue,
+              boundTargetResult.returnValue,
+            )
+          : [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
+              node: candidateNode,
+              mode: "apply",
+              receiverValue,
+              boundThis: undefined,
+              boundArguments: undefined,
+            }));
       } else {
         argumentExpressions = node.arguments;
       }
@@ -5475,18 +5554,26 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         );
         effectiveArgumentValues = argumentResultForCall.values;
         receiverValue = thisResult.returnValue;
-        candidates = [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
-          node: candidateNode,
-          mode: boundInvocation.method,
-          receiverValue,
-          boundThis: undefined,
-          boundArguments: undefined,
-        }));
+        candidates = boundInvocation.thisArgument
+          ? candidatesFromTarget(
+              boundInvocation.thisArgument,
+              boundInvocation.method,
+              receiverValue,
+              boundReceiverResult.returnValue,
+            )
+          : [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
+              node: candidateNode,
+              mode: boundInvocation.method,
+              receiverValue,
+              boundThis: undefined,
+              boundArguments: undefined,
+            }));
       }
       if (
-        (boundInvocation.method === "call" ||
-          boundInvocation.method === "apply") &&
-        effectiveArgumentValues?.some((value) => invocationValueIsTainted(value))
+        effectiveArgumentValues?.some((value) => invocationValueIsTainted(value)) &&
+        candidates.some((candidate) =>
+          localFunctionInvokesParameter(candidate.node),
+        )
       ) {
         argumentResult.consumed = true;
       }
