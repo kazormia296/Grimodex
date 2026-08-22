@@ -56,28 +56,39 @@ function maintenanceEventPredicate({ projectId, operation, binding, reason }) {
     event?.generation === binding.generation;
 }
 
+const MAINTENANCE_EVENT_POLL_INTERVAL_MS = 10;
+const realMaintenanceEventSleep = (milliseconds) =>
+  new Promise((resolve) => setTimeout(resolve, milliseconds));
+
 async function waitForMaintenanceEventAfter(
   baselineCount,
   predicate,
   label = "epoch rotation event",
   timeoutMs = 3_000,
+  {
+    events = maintenanceEvents,
+    now = () => Date.now(),
+    sleep = realMaintenanceEventSleep,
+  } = {},
 ) {
   assert.ok(
     Number.isSafeInteger(baselineCount) && baselineCount >= 0,
     "event baseline must be a non-negative integer",
   );
   assert.equal(typeof predicate, "function", "event predicate is required");
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
-    const event = maintenanceEvents
-      .slice(baselineCount)
-      .find((candidate) => predicate(candidate));
+  const eventAfterBaseline = () =>
+    events.slice(baselineCount).find((candidate) => predicate(candidate));
+  const deadline = now() + timeoutMs;
+  while (now() <= deadline) {
+    const event = eventAfterBaseline();
     if (event) return event;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await sleep(MAINTENANCE_EVENT_POLL_INTERVAL_MS);
   }
+  const finalEvent = eventAfterBaseline();
+  if (finalEvent) return finalEvent;
   assert.fail(
     `${label} was not emitted after baseline ${baselineCount}; ` +
-      `newEvents=${JSON.stringify(maintenanceEvents.slice(baselineCount))}`,
+      `newEvents=${JSON.stringify(events.slice(baselineCount))}`,
   );
 }
 
@@ -85,21 +96,92 @@ async function assertNoMaintenanceEventAfter(
   baselineCount,
   label = "unexpected epoch rotation event",
   timeoutMs = 100,
+  {
+    events = maintenanceEvents,
+    now = () => Date.now(),
+    sleep = realMaintenanceEventSleep,
+    predicate = () => true,
+  } = {},
 ) {
   assert.ok(
     Number.isSafeInteger(baselineCount) && baselineCount >= 0,
     "event baseline must be a non-negative integer",
   );
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() <= deadline) {
+  assert.equal(typeof predicate, "function", "event predicate is required");
+  const assertNoEventDelta = () => {
+    const newEvents = events.slice(baselineCount);
+    const matchingEvent = newEvents.find((event) => predicate(event));
     assert.equal(
-      maintenanceEvents.length,
-      baselineCount,
-      `${label}: event delta must remain zero`,
+      newEvents.length,
+      0,
+      `${label}: event delta must remain zero; ` +
+        `matchingEvent=${JSON.stringify(matchingEvent ?? null)}`,
     );
-    await new Promise((resolve) => setTimeout(resolve, 10));
+  };
+  const deadline = now() + timeoutMs;
+  while (now() <= deadline) {
+    assertNoEventDelta();
+    await sleep(MAINTENANCE_EVENT_POLL_INTERVAL_MS);
   }
+  // An event can be delivered by the final sleep after the last loop body;
+  // inspect the post-baseline slice once more before declaring quiescence.
+  assertNoEventDelta();
 }
+
+test("maintenance event pollers inspect events delivered during the final sleep", async () => {
+  const binding = { authorityId: "unit-authority", generation: 7 };
+  const event = {
+    projectId: "unit-project",
+    operation: "unit-operation",
+    reason: "semantic-epoch-rotated",
+    authorityId: binding.authorityId,
+    generation: binding.generation,
+  };
+  const predicate = maintenanceEventPredicate({
+    projectId: event.projectId,
+    operation: event.operation,
+    binding,
+  });
+
+  let clock = 0;
+  let sleepCount = 0;
+  const events = [];
+  const sleep = async (milliseconds) => {
+    assert.equal(milliseconds, MAINTENANCE_EVENT_POLL_INTERVAL_MS);
+    sleepCount += 1;
+    clock += milliseconds;
+    events.push(event);
+  };
+  const observed = await waitForMaintenanceEventAfter(
+    0,
+    predicate,
+    "deterministic final-sleep event",
+    5,
+    { events, now: () => clock, sleep },
+  );
+  assert.deepEqual(observed, event);
+  assert.equal(sleepCount, 1);
+
+  let noEventClock = 0;
+  let noEventSleepCount = 0;
+  const lateEvents = [];
+  const lateSleep = async (milliseconds) => {
+    assert.equal(milliseconds, MAINTENANCE_EVENT_POLL_INTERVAL_MS);
+    noEventSleepCount += 1;
+    noEventClock += milliseconds;
+    lateEvents.push(event);
+  };
+  await assert.rejects(
+    assertNoMaintenanceEventAfter(
+      0,
+      "deterministic final-sleep unexpected event",
+      5,
+      { events: lateEvents, now: () => noEventClock, sleep: lateSleep, predicate },
+    ),
+    /event delta must remain zero/,
+  );
+  assert.equal(noEventSleepCount, 1);
+});
 
 function mutationIdentity(requestId) {
   return {
