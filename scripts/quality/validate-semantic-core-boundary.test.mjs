@@ -2815,6 +2815,88 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("preserves bounded call/apply and Reflect bind composition", () => {
+    const sensitiveCases = [
+      {
+        name: "Function.call bound around a local callable",
+        source: [
+          "function consume(fn) { fn(); }",
+          "const invoke = consume.call.bind(consume, null);",
+          "invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply bound target through call",
+        source: [
+          "function consume(fn) { fn(); }",
+          "const invoke = Reflect.apply.bind(null, consume);",
+          "invoke.call(null, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply bound target through apply",
+        source: [
+          "function consume(fn) { fn(); }",
+          "const invoke = Reflect.apply.bind(null, consume);",
+          "invoke.apply(null, [null, [database[key]]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply fully bound arguments through apply",
+        source: [
+          "function consume(fn) { fn(); }",
+          "const invoke = Reflect.apply.bind(null, consume, null, [database[key]]);",
+          "invoke.apply(null, []);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply call bind composition",
+        source: [
+          "function consume(fn) { fn(); }",
+          "Reflect.apply.call.bind(Reflect.apply, Reflect)(consume, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply fully bound target call",
+        source: [
+          "function consume(fn) { fn(); }",
+          "Reflect.apply.bind(null, consume, null, [database[key]]).call(null);",
+        ].join("\n"),
+      },
+    ];
+
+    const failures = [];
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `local-wrapper-reflect-composition-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      if (!errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error))) {
+        failures.push(`${testCase.name}: ${JSON.stringify(errors)}`);
+      }
+    }
+    assert.deepEqual(failures, [], `bounded wrapper cases must reject: ${JSON.stringify(failures)}`);
+
+    const safeErrors = validateInterpreterSourceFixture(
+      "local-wrapper-reflect-composition-controls.mts",
+      [
+        "function consume(fn) { fn(); }",
+        "const invoke = consume.call.bind(consume, null);",
+        "invoke(() => true);",
+        "const apply = Reflect.apply.bind(null, consume);",
+        "apply.call(null, null, [() => true]);",
+        "apply.apply(null, [null, [() => true]]);",
+        "const fullyBoundApply = Reflect.apply.bind(null, consume, null, [() => true]);",
+        "fullyBoundApply.apply(null, []);",
+        "Reflect.apply.call.bind(Reflect.apply, Reflect)(consume, null, [() => true]);",
+        "Reflect.apply.bind(null, consume, null, [() => true]).call(null);",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      safeErrors,
+      [],
+      `safe bounded wrapper composition must remain allowed: ${JSON.stringify(safeErrors)}`,
+    );
+  });
+
   it("rejects an Interpreter boundary with no roots or no deny rules", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(

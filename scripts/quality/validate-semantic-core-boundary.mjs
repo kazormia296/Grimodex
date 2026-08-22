@@ -2142,6 +2142,7 @@ function localCallableMethodValue(
   thisArgument = undefined,
   boundArguments = undefined,
   thisValue = undefined,
+  boundInvocation = undefined,
 ) {
   const callableSet = new Set(callables ?? []);
   return {
@@ -2157,6 +2158,7 @@ function localCallableMethodValue(
       thisArgument,
       boundArguments,
       thisValue,
+      boundInvocation,
     },
     classConstructor: undefined,
     classConstructors: new Set(),
@@ -2170,6 +2172,7 @@ function localBoundCallableValue(
   thisArgument,
   boundArguments,
   thisValue = undefined,
+  boundInvocation = undefined,
 ) {
   const callableSet = new Set(callables ?? []);
   return {
@@ -2185,6 +2188,7 @@ function localBoundCallableValue(
       thisArgument,
       boundArguments: Array.isArray(boundArguments) ? boundArguments : [],
       thisValue,
+      boundInvocation,
     },
     classConstructor: undefined,
     classConstructors: new Set(),
@@ -2199,6 +2203,7 @@ function reflectCapabilityValue(
   mode = undefined,
   boundArguments = undefined,
   ambiguous = false,
+  boundCapability = undefined,
 ) {
   return {
     tainted: false,
@@ -2211,6 +2216,7 @@ function reflectCapabilityValue(
       mode,
       boundArguments,
       ambiguous,
+      boundCapability,
     },
     container: undefined,
     callables: new Set(),
@@ -2228,6 +2234,35 @@ function invocationArgumentListsEqual(left, right) {
   return (
     left.length === right.length &&
     left.every((argument, index) => argument === right[index])
+  );
+}
+
+function reflectCapabilityMetadataEqual(left, right, seen = new WeakMap()) {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  if (
+    left.kind !== right.kind ||
+    left.method !== right.method ||
+    left.via !== right.via ||
+    left.mode !== right.mode ||
+    left.ambiguous !== right.ambiguous ||
+    !invocationArgumentListsEqual(left.boundArguments, right.boundArguments)
+  ) {
+    return false;
+  }
+  if (left.boundCapability === right.boundCapability) return true;
+  if (!left.boundCapability || !right.boundCapability) return false;
+  const seenRights = seen.get(left.boundCapability);
+  if (seenRights?.has(right.boundCapability)) return true;
+  if (seenRights) {
+    seenRights.add(right.boundCapability);
+  } else {
+    seen.set(left.boundCapability, new WeakSet([right.boundCapability]));
+  }
+  return reflectCapabilityMetadataEqual(
+    left.boundCapability,
+    right.boundCapability,
+    seen,
   );
 }
 
@@ -2315,6 +2350,15 @@ function localCallMetadataEqual(left, right) {
   if (!invocationArgumentListsEqual(left.boundArguments, right.boundArguments)) {
     return false;
   }
+  if (left.boundInvocation !== undefined || right.boundInvocation !== undefined) {
+    if (
+      left.boundInvocation === undefined ||
+      right.boundInvocation === undefined ||
+      !localCallMetadataEqual(left.boundInvocation, right.boundInvocation)
+    ) {
+      return false;
+    }
+  }
   const leftCallables = left.callables ?? new Set();
   const rightCallables = right.callables ?? new Set();
   return (
@@ -2336,11 +2380,21 @@ function mergeLocalCallMetadata(left, right) {
   ) {
     return undefined;
   }
+  if (left.boundInvocation !== undefined || right.boundInvocation !== undefined) {
+    if (
+      left.boundInvocation === undefined ||
+      right.boundInvocation === undefined ||
+      !localCallMetadataEqual(left.boundInvocation, right.boundInvocation)
+    ) {
+      return undefined;
+    }
+  }
   return {
     method: left.method,
     thisArgument: left.thisArgument,
     thisValue: left.thisValue ?? right.thisValue,
     boundArguments: left.boundArguments ?? right.boundArguments,
+    boundInvocation: left.boundInvocation ?? right.boundInvocation,
     callables: new Set([
       ...(left.callables ?? []),
       ...(right.callables ?? []),
@@ -2351,12 +2405,7 @@ function mergeLocalCallMetadata(left, right) {
 function mergeInvocationCapabilities(left, right) {
   if (!left) return right;
   if (!right) return left;
-  const metadataMatches =
-    left.kind === right.kind &&
-    left.method === right.method &&
-    left.via === right.via &&
-    left.mode === right.mode &&
-    invocationArgumentListsEqual(left.boundArguments, right.boundArguments);
+  const metadataMatches = reflectCapabilityMetadataEqual(left, right);
   const ambiguous = left.ambiguous === true || right.ambiguous === true;
   if (
     metadataMatches &&
@@ -2378,6 +2427,12 @@ function mergeInvocationCapabilities(left, right) {
         ? left.boundArguments
         : undefined,
       ambiguous: ambiguous || !metadataMatches,
+      boundCapability: reflectCapabilityMetadataEqual(
+        left.boundCapability,
+        right.boundCapability,
+      )
+        ? left.boundCapability
+        : undefined,
     };
   }
   return undefined;
@@ -2567,15 +2622,7 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
     left.tainted !== right.tainted ||
     left.source !== right.source ||
     left.defined !== right.defined ||
-    left.capability?.kind !== right.capability?.kind ||
-    left.capability?.method !== right.capability?.method ||
-    left.capability?.via !== right.capability?.via ||
-    left.capability?.mode !== right.capability?.mode ||
-    left.capability?.ambiguous !== right.capability?.ambiguous ||
-    !invocationArgumentListsEqual(
-      left.capability?.boundArguments,
-      right.capability?.boundArguments,
-    ) ||
+    !reflectCapabilityMetadataEqual(left.capability, right.capability) ||
     !localCallMetadataEqual(left.localCall, right.localCall) ||
     !invocationMetadataSetsEqual(
       left,
@@ -3304,12 +3351,19 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.localCall?.method === "bound"
             ? receiver.localCall
             : undefined;
+        const boundInvocation =
+          key === "bind" &&
+          (receiver.localCall?.method === "call" ||
+            receiver.localCall?.method === "apply")
+            ? receiver.localCall
+            : undefined;
         const callableValue = localCallableMethodValue(
           receiver.callables,
           key,
           boundMetadata?.thisArgument,
           boundMetadata?.boundArguments,
           boundMetadata?.thisValue,
+          boundInvocation,
         );
         if (callableValue.callables.size > 0) return callableValue;
       }
@@ -3322,8 +3376,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.capability.method,
           key,
           key === "bind" ? "bind-factory" : "indirect",
-          undefined,
+          receiver.capability.boundArguments,
           receiver.capability.ambiguous,
+          receiver.capability,
         );
       }
       if (key === undefined) {
@@ -3379,13 +3434,20 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.capability.method,
           unwrapped.name.text,
           unwrapped.name.text === "bind" ? "bind-factory" : "indirect",
-          undefined,
+          receiver.capability.boundArguments,
           receiver.capability.ambiguous,
+          receiver.capability,
         );
       }
       if (INVOCATION_ALIAS_METHODS.has(unwrapped.name.text)) {
         const boundMetadata =
           receiver.localCall?.method === "bound"
+            ? receiver.localCall
+            : undefined;
+        const boundInvocation =
+          unwrapped.name.text === "bind" &&
+          (receiver.localCall?.method === "call" ||
+            receiver.localCall?.method === "apply")
             ? receiver.localCall
             : undefined;
         const callableValue = localCallableMethodValue(
@@ -3394,6 +3456,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           boundMetadata?.thisArgument,
           boundMetadata?.boundArguments,
           boundMetadata?.thisValue,
+          boundInvocation,
         );
         if (callableValue.callables.size > 0) return callableValue;
       }
@@ -3605,12 +3668,19 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         calleeValue.capability?.kind === "reflect" &&
         calleeValue.capability.mode === "bind-factory"
       ) {
+        const boundCapability = calleeValue.capability.boundCapability;
+        const isBoundCallWrapper =
+          boundCapability?.mode === "indirect" &&
+          boundCapability.via === "call";
         return reflectCapabilityValue(
           calleeValue.capability.method,
           "bind",
           "bound",
-          unwrapped.arguments.slice(1),
+          isBoundCallWrapper
+            ? boundCapability.boundArguments ?? []
+            : unwrapped.arguments.slice(1),
           calleeValue.capability.ambiguous,
+          boundCapability,
         );
       }
       if (
@@ -3640,6 +3710,19 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           boundThis,
           boundArguments,
           calleeValue.localCall.thisValue,
+          calleeValue.localCall.boundInvocation
+            ? {
+                ...calleeValue.localCall.boundInvocation,
+                thisArgument:
+                  unwrapped.arguments[0] ??
+                  calleeValue.localCall.boundInvocation.thisArgument,
+                boundArguments: [
+                  ...(calleeValue.localCall.boundInvocation.boundArguments ?? []),
+                  ...unwrapped.arguments.slice(1),
+                ],
+                thisValue: calleeValue.localCall.thisValue,
+              }
+            : undefined,
         );
       }
       if (
@@ -3983,22 +4066,28 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     ) {
       return false;
     }
+    const boundArguments = Array.isArray(callee.capability.boundArguments)
+      ? callee.capability.boundArguments
+      : [];
     let targetExpression = node.arguments[0];
     if (callee.capability.mode === "bound") {
-      if (!Array.isArray(callee.capability.boundArguments)) return true;
       targetExpression =
-        callee.capability.boundArguments[0] ?? node.arguments[0];
+        boundArguments[0] ?? node.arguments[0];
     } else if (
       callee.capability.mode === "indirect" &&
       callee.capability.via === "call"
     ) {
-      targetExpression = node.arguments[1];
+      targetExpression = boundArguments[0] ?? node.arguments[1];
     } else if (
       callee.capability.mode === "indirect" &&
       callee.capability.via === "apply"
     ) {
       const argumentsValue = expressionValue(node.arguments[1]);
-      return readContainerProperty(argumentsValue, "0").value.tainted;
+      targetExpression = boundArguments[0];
+      if (targetExpression === undefined) {
+        targetExpression = readContainerProperty(argumentsValue, "0").value;
+        return invocationValueIsTainted(targetExpression);
+      }
     }
     return isInvocationTainted(targetExpression);
   };
@@ -4261,12 +4350,19 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           receiver.returnValue.localCall?.method === "bound"
             ? receiver.returnValue.localCall
             : undefined;
+        const boundInvocation =
+          key === "bind" &&
+          (receiver.returnValue.localCall?.method === "call" ||
+            receiver.returnValue.localCall?.method === "apply")
+            ? receiver.returnValue.localCall
+            : undefined;
         const callableValue = localCallableMethodValue(
           receiver.returnValue.callables,
           key,
           boundMetadata?.thisArgument,
           boundMetadata?.boundArguments,
           boundMetadata?.thisValue,
+          boundInvocation,
         );
         if (callableValue.callables.size > 0) {
           return {
@@ -4828,6 +4924,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   }
 
   function evaluateLocalCall(node, environment, activeFunctions, depth) {
+    if (!node) return undefined;
     const isConstructorCall = ts.isNewExpression(node);
     if (
       (!ts.isCallExpression(node) && !isConstructorCall) ||
@@ -4959,8 +5056,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       let thisValueOverride;
       let argumentContainerValueOverride;
       if (capability.mode === "bound") {
-        const boundArguments = capability.boundArguments;
-        if (!Array.isArray(boundArguments)) return undefined;
+        const boundArguments = Array.isArray(capability.boundArguments)
+          ? capability.boundArguments
+          : [];
         targetExpression = boundArguments[0] ?? node.arguments[0];
         thisExpression = boundArguments[1] ?? node.arguments[1];
         argumentContainerExpression =
@@ -4969,9 +5067,16 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         capability.mode === "indirect" &&
         capability.via === "call"
       ) {
-        targetExpression = node.arguments[1];
-        thisExpression = node.arguments[2];
-        argumentContainerExpression = node.arguments[3];
+        const boundArguments = Array.isArray(capability.boundArguments)
+          ? capability.boundArguments
+          : [];
+        const combinedArguments = [
+          ...boundArguments,
+          ...node.arguments.slice(1),
+        ];
+        targetExpression = combinedArguments[0];
+        thisExpression = combinedArguments[1];
+        argumentContainerExpression = combinedArguments[2];
       } else if (
         capability.mode === "indirect" &&
         capability.via === "apply"
@@ -4987,10 +5092,22 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         const indirectArguments = argumentValuesFromContainer(
           indirectArgumentResult.returnValue,
         );
-        argumentResult = mergeLocalResults(argumentResult, indirectArgumentResult);
-        targetValueOverride = indirectArguments[0];
-        thisValueOverride = indirectArguments[1];
-        argumentContainerValueOverride = indirectArguments[2];
+        const boundArgumentResult = evaluateArgumentExpressions(
+          Array.isArray(capability.boundArguments)
+            ? capability.boundArguments
+            : [],
+        );
+        const combinedArguments = [
+          ...boundArgumentResult.values,
+          ...indirectArguments,
+        ];
+        argumentResult = mergeLocalResults(
+          mergeLocalResults(argumentResult, indirectArgumentResult),
+          boundArgumentResult.result,
+        );
+        targetValueOverride = combinedArguments[0];
+        thisValueOverride = combinedArguments[1];
+        argumentContainerValueOverride = combinedArguments[2];
       } else {
         targetExpression = node.arguments[0];
         thisExpression = node.arguments[1];
@@ -5031,7 +5148,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           cleanLocalResult(argumentContainerValueOverride),
         );
       }
-      argumentResult = mergeLocalResults(thisResult, argumentContainerResult);
+      argumentResult = mergeLocalResults(
+        argumentResult,
+        mergeLocalResults(thisResult, argumentContainerResult),
+      );
       effectiveArgumentValues =
         argumentContainerValueOverride !== undefined
           ? argumentValuesFromContainer(argumentContainerValueOverride)
@@ -5073,8 +5193,117 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           boundThis,
           boundArguments,
           thisResult.returnValue,
+          localCall.boundInvocation
+            ? {
+                ...localCall.boundInvocation,
+                thisArgument:
+                  node.arguments[0] ?? localCall.boundInvocation.thisArgument,
+                boundArguments: [
+                  ...(localCall.boundInvocation.boundArguments ?? []),
+                  ...node.arguments.slice(1),
+                ],
+                thisValue: thisResult.returnValue,
+              }
+            : undefined,
         ),
       };
+    } else if (localCall?.method === "bound" && localCall.boundInvocation) {
+      const boundInvocation = localCall.boundInvocation;
+      const boundInvocationArguments = Array.isArray(
+        boundInvocation.boundArguments,
+      )
+        ? boundInvocation.boundArguments
+        : [];
+      let thisExpression;
+      let argumentExpressions;
+      if (boundInvocation.method === "call") {
+        thisExpression = boundInvocationArguments[0] ?? node.arguments[0];
+        argumentExpressions =
+          boundInvocationArguments.length > 0
+            ? [
+                ...boundInvocationArguments.slice(1),
+                ...node.arguments,
+              ]
+            : node.arguments.slice(1);
+      } else if (boundInvocation.method === "apply") {
+        const combinedArguments = [
+          ...boundInvocationArguments,
+          ...node.arguments,
+        ];
+        thisExpression = combinedArguments[0];
+        const argumentContainerExpression = combinedArguments[1];
+        const thisResult = thisExpression
+          ? evaluateLocalExpression(
+              thisExpression,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : cleanLocalResult();
+        const argumentContainerResult = argumentContainerExpression
+          ? evaluateLocalExpression(
+              argumentContainerExpression,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : cleanLocalResult();
+        argumentResult = mergeLocalResults(thisResult, argumentContainerResult);
+        effectiveArgumentValues = argumentValuesFromContainer(
+          argumentContainerResult.returnValue,
+        );
+        receiverValue = thisResult.returnValue;
+        candidates = [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
+          node: candidateNode,
+          mode: "apply",
+          receiverValue,
+          boundThis: undefined,
+          boundArguments: undefined,
+        }));
+      } else {
+        argumentExpressions = node.arguments;
+      }
+      if (candidates === undefined) {
+        const thisResult = thisExpression
+          ? evaluateLocalExpression(
+              thisExpression,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : cleanLocalResult();
+        const boundReceiverResult = boundInvocation.thisArgument
+          ? evaluateLocalExpression(
+              boundInvocation.thisArgument,
+              environment,
+              activeFunctions,
+              depth + 1,
+            )
+          : cleanLocalResult();
+        const argumentResultForCall = evaluateArgumentExpressions(
+          argumentExpressions ?? [],
+        );
+        argumentResult = mergeLocalResults(
+          mergeLocalResults(thisResult, boundReceiverResult),
+          argumentResultForCall.result,
+        );
+        effectiveArgumentValues = argumentResultForCall.values;
+        receiverValue = thisResult.returnValue;
+        candidates = [...(boundInvocation.callables ?? [])].map((candidateNode) => ({
+          node: candidateNode,
+          mode: boundInvocation.method,
+          receiverValue,
+          boundThis: undefined,
+          boundArguments: undefined,
+        }));
+      }
+      if (
+        (boundInvocation.method === "call" ||
+          boundInvocation.method === "apply") &&
+        effectiveArgumentValues?.some((value) => invocationValueIsTainted(value))
+      ) {
+        argumentResult.consumed = true;
+      }
     } else {
       const mode = localCall?.method ?? "direct";
       let argumentExpressions = node.arguments;
