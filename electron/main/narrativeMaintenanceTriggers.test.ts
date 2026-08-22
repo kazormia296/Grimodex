@@ -16,6 +16,16 @@ function makeScheduler() {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function page(work: readonly Record<string, unknown>[]) {
   return { work };
 }
@@ -377,17 +387,66 @@ describe("narrative maintenance trigger coordinator", () => {
       discovery("authority-live", 10, [[backfill("rotated-project", "semantic-epoch-rotated")]]),
     );
     const coordinator = createNarrativeMaintenanceTriggerCoordinator(
-      { discoverNarrativeMaintenanceWork },
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => ({
+          authorityId: "authority-live",
+          generation: 10,
+        }),
+        discoverNarrativeMaintenanceWork,
+      },
       scheduler,
     );
 
     coordinator.handleBackendEvent("narrative-maintenance:epoch-rotated", {
       projectId: "rotated-project",
+      authorityId: "authority-live",
+      generation: 10,
     });
     await vi.runAllTimersAsync();
 
     expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
       "semantic-epoch-rotated",
+    );
+    coordinator.dispose();
+  });
+
+  it("ignores a late A epoch event while B workspace-opened discovery is in flight", async () => {
+    const scheduler = makeScheduler();
+    const currentBinding = { authorityId: "authority-b", generation: 2 };
+    const bDiscovery = deferred<unknown>();
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockReturnValueOnce(bDiscovery.promise);
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      {
+        getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+        discoverNarrativeMaintenanceWork,
+      },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("workspace:opened", {});
+    await vi.runOnlyPendingTimersAsync();
+    coordinator.handleBackendEvent("narrative-maintenance:epoch-rotated", {
+      projectId: "project-a",
+      operation: "integrity-repair",
+      reason: "semantic-epoch-rotated",
+      authorityId: "authority-a",
+      generation: 1,
+    });
+    bDiscovery.resolve(
+      discovery("authority-b", 2, [[backfill("project-b")]]),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
+      "workspace-opened",
+    );
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledOnce();
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "project-b" })],
+      currentBinding,
     );
     coordinator.dispose();
   });
