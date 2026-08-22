@@ -7791,7 +7791,7 @@ mod narrative_maintenance_foreground_release_tests {
             metadata_dir.join("workspace.json"),
             serde_json::json!({
                 "id": format!("workspace-{label}"),
-                "createdAt": "2026-01-01T00:00:00.000Z"
+                "created_at": "2026-01-01T00:00:00.000Z"
             })
             .to_string(),
         )
@@ -7940,6 +7940,12 @@ mod narrative_maintenance_foreground_release_tests {
     async fn napi_release_is_exact_for_project_and_duplicate_safe() {
         let (backend, root) = backend_with_workspace("exact");
         let (run_id, authority) = start_foreground_run(&backend).await;
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let binding_wire = serde_json::to_string(&binding).expect("binding JSON");
+        let binding_json: Value = serde_json::from_str(&binding_wire).expect("binding JSON value");
+        assert!(binding_json["generation"]
+            .as_u64()
+            .is_some_and(|generation| { generation > 0 && generation <= ((1u64 << 53) - 1) }));
 
         let unrelated = backend
             .release_narrative_maintenance_foreground_barrier("project-other".to_string())
@@ -7965,6 +7971,30 @@ mod narrative_maintenance_foreground_release_tests {
         let duplicate: Value = serde_json::from_str(&duplicate).expect("duplicate JSON");
         assert_eq!(duplicate["status"], "not-held");
         assert_eq!(run_status(&authority, &run_id), "completed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_claim_is_exact_and_wrong_project_does_not_arm_release() {
+        let (backend, root) = backend_with_workspace("claim");
+        let (run_id, authority) = start_foreground_run(&backend).await;
+
+        let wrong = backend
+            .claim_narrative_maintenance_foreground_barrier("project-other".to_string())
+            .await
+            .expect("wrong project claim response");
+        let wrong: Value = serde_json::from_str(&wrong).expect("wrong claim JSON");
+        assert_eq!(wrong["status"], "not-held");
+        assert_eq!(run_status(&authority, &run_id), "running");
+
+        let exact = backend
+            .claim_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("exact project claim response");
+        let exact: Value = serde_json::from_str(&exact).expect("exact claim JSON");
+        assert_eq!(exact["status"], "claimed");
+        assert_eq!(exact["runId"], run_id);
+        assert_eq!(run_status(&authority, &run_id), "running");
         let _ = std::fs::remove_dir_all(root);
     }
 

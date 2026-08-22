@@ -853,6 +853,47 @@ mod tests {
     }
 
     #[test]
+    fn maintenance_generation_is_safe_and_rolls_over_without_zero() {
+        const MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let generation = gate.current_generation();
+        assert!(generation > 0);
+        assert!(generation <= MAX_SAFE_GENERATION);
+        assert_eq!(checked_next_narrative_maintenance_generation(0), 1);
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION - 1),
+            MAX_SAFE_GENERATION
+        );
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION),
+            1
+        );
+
+        let near_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION - 1,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let first_rollover = near_max.mark_workspace_swapped();
+        assert!(first_rollover > 0 && first_rollover <= MAX_SAFE_GENERATION);
+        let second_rollover = near_max.mark_workspace_swapped();
+        assert!(second_rollover > 0 && second_rollover <= MAX_SAFE_GENERATION);
+        assert!(near_max.current_generation() <= MAX_SAFE_GENERATION);
+
+        let at_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let at_max_rollover = at_max.mark_workspace_swapped();
+        assert!(at_max_rollover > 0 && at_max_rollover <= MAX_SAFE_GENERATION);
+    }
+
+    #[test]
     fn fresh_recovery_gate_does_not_reuse_a_prior_process_generation() {
         let first_process = NarrativeMaintenanceRecoveryGate::default();
         let restarted_process = NarrativeMaintenanceRecoveryGate::default();

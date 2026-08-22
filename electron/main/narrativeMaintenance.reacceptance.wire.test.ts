@@ -46,6 +46,29 @@ describe("narrative maintenance strict wire boundary", () => {
     scheduler.dispose();
   });
 
+  it("round-trips a native JSON binding through the typed scheduler request", async () => {
+    const binding = {
+      authorityId: "workspace:wire-roundtrip",
+      generation: Number.MAX_SAFE_INTEGER,
+    };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => JSON.stringify(binding),
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill("wire-roundtrip-project"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0].workspaceBinding).toEqual(
+      binding,
+    );
+    scheduler.dispose();
+  });
+
   it("bounds a durable wake batch to the same 32-project cycle limit", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

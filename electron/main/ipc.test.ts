@@ -1658,6 +1658,135 @@ describe("registerIpcRouter fail-soft logging", () => {
     }
   });
 
+  it("claims the exact project before arming a timer and never releases a wrong project", async () => {
+    vi.useFakeTimers();
+    try {
+      const claim = vi.fn(async (projectId: string) =>
+        projectId === "p1"
+          ? '{"status":"claimed","runId":"run-1"}'
+          : '{"status":"not-held"}',
+      );
+      const release = vi.fn(async () => '{"status":"completed"}');
+      const treeNodePatch = vi.fn(async () => '{"patched":true}');
+      registerIpcRouter(
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        activeNarrativeMaintenanceCiSeam,
+      );
+
+      const invoke = invokeHandler();
+      const patchArgs = (projectId: string, suffix: string) => ({
+        payload: {
+          projectId,
+          requestId: `claim-request-${suffix}`,
+          sessionId: `claim-session-${suffix}`,
+          eventUid: `claim-event-${suffix}`,
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+          changeEvent: {
+            eventUid: `claim-event-${suffix}`,
+            sessionId: `claim-session-${suffix}`,
+            timestamp: 1,
+          },
+        },
+      });
+      const wrong = await invoke(
+        { sender: { id: 886 } },
+        "tree_node_patch",
+        patchArgs("wrong-project", "wrong"),
+      );
+      expect(wrong.ok).toBe(true);
+      expect(claim).toHaveBeenCalledWith("wrong-project");
+      await vi.runAllTimersAsync();
+      expect(release).not.toHaveBeenCalled();
+
+      const exact = await invoke(
+        { sender: { id: 886 } },
+        "tree_node_patch",
+        patchArgs("p1", "exact"),
+      );
+      expect(exact.ok).toBe(true);
+      expect(claim).toHaveBeenLastCalledWith("p1");
+      expect(release).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(
+        NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+      );
+      await vi.runOnlyPendingTimersAsync();
+      expect(release).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledWith("p1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails closed on malformed or rejected native claims without arming a timer", async () => {
+    vi.useFakeTimers();
+    try {
+      const claim = vi
+        .fn()
+        .mockResolvedValueOnce("malformed")
+        .mockRejectedValueOnce(new Error("workspace swapped"));
+      const release = vi.fn();
+      const treeNodePatch = vi.fn(async () => '{"patched":true}');
+      registerIpcRouter(
+        {
+          treeNodePatch,
+          claimNarrativeMaintenanceForegroundBarrier: claim,
+          releaseNarrativeMaintenanceForegroundBarrier: release,
+        } as unknown as NapiBackendLike,
+        {},
+        undefined,
+        undefined,
+        activeNarrativeMaintenanceCiSeam,
+      );
+      const invoke = invokeHandler();
+      const patchArgs = (suffix: string) => ({
+        payload: {
+          projectId: "p1",
+          requestId: `malformed-request-${suffix}`,
+          sessionId: `malformed-session-${suffix}`,
+          eventUid: `malformed-event-${suffix}`,
+          origin: "human",
+          nodeId: "scene-1",
+          updatedAt: "2026-08-23T00:00:00.000Z",
+          patch: { content: "{}" },
+          bumpVersion: true,
+          baseVersion: 0,
+          changeEvent: {
+            eventUid: `malformed-event-${suffix}`,
+            sessionId: `malformed-session-${suffix}`,
+            timestamp: 1,
+          },
+        },
+      });
+      await invoke(
+        { sender: { id: 885 } },
+        "tree_node_patch",
+        patchArgs("first"),
+      );
+      await invoke(
+        { sender: { id: 885 } },
+        "tree_node_patch",
+        patchArgs("second"),
+      );
+      await vi.runAllTimersAsync();
+      expect(claim).toHaveBeenCalledTimes(2);
+      expect(release).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("does not schedule for an inactive seam", async () => {
     const release = vi.fn();
     const treeNodePatch = vi.fn(async () => '{"patched":true}');
