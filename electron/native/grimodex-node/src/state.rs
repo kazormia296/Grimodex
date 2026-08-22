@@ -13,7 +13,9 @@ use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
-use grimodex_db::narrative_extraction::{MaintenanceWorkspaceBinding, RecoveryMode};
+use grimodex_db::narrative_extraction::{
+    MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig, RecoveryMode,
+};
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -114,6 +116,47 @@ struct NarrativeMaintenanceRecoveryState {
 
 pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
+}
+
+/// One-shot native storage for the authorized product-journey configuration.
+/// Main performs the launch gate, while this state validates it again and
+/// rejects every second configuration attempt.
+pub struct NarrativeMaintenanceCiSeamState {
+    configured: AtomicBool,
+    config: Mutex<Option<NarrativeMaintenanceCiConfig>>,
+}
+
+impl Default for NarrativeMaintenanceCiSeamState {
+    fn default() -> Self {
+        Self {
+            configured: AtomicBool::new(false),
+            config: Mutex::new(None),
+        }
+    }
+}
+
+impl NarrativeMaintenanceCiSeamState {
+    pub fn configure(&self, config: NarrativeMaintenanceCiConfig) -> anyhow::Result<()> {
+        config.validate()?;
+        if self.configured.swap(true, Ordering::AcqRel) {
+            anyhow::bail!(
+                "NEX_MAINTENANCE_CI_SEAM_ALREADY_CONFIGURED: product journey seam is one-shot"
+            );
+        }
+        let mut slot = self
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(config);
+        Ok(())
+    }
+
+    pub fn config(&self) -> Option<NarrativeMaintenanceCiConfig> {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
 }
 
 impl Default for NarrativeMaintenanceRecoveryGate {
@@ -427,6 +470,9 @@ pub struct AppState {
     /// Workspace-generation-scoped startup-recovery gate for the main-only
     /// narrative maintenance cycle.
     pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// One-shot, CI-only product-journey configuration. This is deliberately
+    /// not part of the renderer/preload bridge or shared IPC contract.
+    pub narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState,
     /// Serializes the two N-API mutation adapters that may rotate a
     /// Narrative Semantic Epoch. The lock covers the idempotency preflight
     /// and the shared-Rust transaction so exactly one first execution emits
@@ -510,6 +556,7 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
             narrative_maintenance_mutation_lock: Mutex::new(()),
         })
     }

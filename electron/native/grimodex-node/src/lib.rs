@@ -63,7 +63,8 @@ use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
     ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceAttentionClearPayload,
     NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
     RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
     RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
@@ -1730,6 +1731,23 @@ impl Backend {
             .map_err(|error| napi::Error::from_reason(error.to_string()))
     }
 
+    /// Configure the one-shot, main-only product-journey seam. The payload is
+    /// parsed into the shared Rust schema and validated again there; this
+    /// method is intentionally not present in the renderer IPC router.
+    #[napi]
+    pub fn configure_narrative_maintenance_ci_seam(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let config: NarrativeMaintenanceCiConfig =
+            from_wire("payload", payload).map_err(app_err_to_napi)?;
+        self.state
+            .narrative_maintenance_ci_seam
+            .configure(config)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        Ok(serde_json::json!({ "status": "enabled" }).to_string())
+    }
+
     /// Main-process-only workspace-wide maintenance discovery.
     ///
     /// The active `WorkspaceAuthority` is pinned once for the complete
@@ -1865,7 +1883,8 @@ impl Backend {
                 })
                 .to_string());
             }
-            let result = narrative_extraction::run_system_work_cycle_with_modes(
+            let ci_config = state.narrative_maintenance_ci_seam.config();
+            let result = narrative_extraction::run_system_work_cycle_with_modes_and_config(
                 authority.db(),
                 &request,
                 |item| {
@@ -1873,6 +1892,7 @@ impl Backend {
                         .narrative_maintenance_recovery_gate
                         .mode_for_binding(request_binding, &item.canonical_key())
                 },
+                ci_config.as_ref(),
             )?;
             let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
             // Only a fully validated, serialized, and completed cycle

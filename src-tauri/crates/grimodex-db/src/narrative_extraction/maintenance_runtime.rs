@@ -7,7 +7,8 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
@@ -214,6 +215,402 @@ pub const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 /// responsibility; this bound is the native boundary's last line of defence
 /// for callers that bypass that scheduler.
 pub const MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE: usize = 32;
+
+/// Canonical product-journey owner token. The Electron main process performs
+/// the outer launch gate; the shared crate repeats the check at the native
+/// boundary so a forged N-API caller cannot enable the seam accidentally.
+pub const NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN: &str =
+    "c2-5b-product-journey-owner-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NarrativeMaintenanceCiFault {
+    TransientIo,
+    ContractViolation,
+    ProcessInterruption,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NarrativeMaintenanceCiTrigger {
+    #[serde(rename = "dependency-gap")]
+    DependencyGap,
+    #[serde(rename = "foreground-workspace-wake")]
+    ForegroundWorkspaceWake,
+    #[serde(rename = "graphContractDigest-changed")]
+    GraphContractDigestChanged,
+    #[serde(rename = "ruleRegistryDigest-changed")]
+    RuleRegistryDigestChanged,
+    #[serde(rename = "producerGenerationSetDigest-changed")]
+    ProducerGenerationSetDigestChanged,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NarrativeMaintenanceCiSetup {
+    Disabled,
+}
+
+/// Typed configuration accepted only by the main -> N-API -> shared-Rust
+/// startup seam. It deliberately has no digest fields: product journeys read
+/// durable native skip evidence instead of allowing JavaScript to choose a
+/// semantic coordinate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeMaintenanceCiConfig {
+    pub is_packaged: bool,
+    pub ci: String,
+    pub owner_token: String,
+    pub fault: Option<NarrativeMaintenanceCiFault>,
+    pub trigger: Option<NarrativeMaintenanceCiTrigger>,
+    pub setup: Option<NarrativeMaintenanceCiSetup>,
+    pub product_journey_barrier_id: Option<String>,
+    pub correlation: Option<String>,
+}
+
+impl NarrativeMaintenanceCiConfig {
+    pub fn validate(&self) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.is_packaged && self.ci == "true",
+            "NEX_MAINTENANCE_CI_SEAM_INACTIVE: only unpackaged CI launches may enable the product journey seam"
+        );
+        anyhow::ensure!(
+            self.owner_token == NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN,
+            "NEX_MAINTENANCE_CI_SEAM_OWNER_MISMATCH: product journey owner token is not canonical"
+        );
+        match (
+            self.product_journey_barrier_id.as_deref(),
+            self.correlation.as_deref(),
+        ) {
+            (Some(barrier), Some(correlation)) => {
+                validate_ci_identifier(barrier, "productJourneyBarrierId")?;
+                validate_ci_identifier(correlation, "correlation")?;
+            }
+            (None, None) => {}
+            _ => anyhow::bail!(
+                "NEX_MAINTENANCE_CI_SEAM_MARKER_INCOMPLETE: product journey barrier and correlation must be supplied together"
+            ),
+        }
+        Ok(())
+    }
+
+    pub fn foreground_marker(
+        &self,
+        work: &DesiredWork,
+        binding: &MaintenanceWorkspaceBinding,
+    ) -> Option<NarrativeSystemWorkMarker> {
+        if self.trigger != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake) {
+            return None;
+        }
+        Some(NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: work.canonical_key(),
+            authority_id: binding.authority_id.clone(),
+            generation: binding.generation,
+            product_journey_barrier_id: self.product_journey_barrier_id.clone()?,
+            correlation: self.correlation.clone()?,
+        })
+    }
+}
+
+fn validate_ci_identifier(value: &str, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.is_empty(), "{name} must not be empty");
+    anyhow::ensure!(value == value.trim(), "{name} must be trimmed");
+    anyhow::ensure!(!value.contains('\0'), "{name} must not contain NUL");
+    Ok(())
+}
+
+/// Immutable metadata stored under `Run.spec_json.systemWork`. This is
+/// native-owned: the marker is inserted before the Run row is created and is
+/// rejected if a caller tries to provide a conflicting value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeSystemWorkMarker {
+    pub trigger: String,
+    pub canonical_work_key: String,
+    pub authority_id: String,
+    pub generation: u64,
+    pub product_journey_barrier_id: String,
+    pub correlation: String,
+}
+
+/// The durable Run selected by the foreground product-journey barrier.  The
+/// marker is returned with the id so the N-API owner can release exactly this
+/// Run after an ordinary tree write; a different Run with the same project
+/// or work key is never sufficient.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForegroundSystemWorkRun {
+    pub run_id: String,
+    pub project_id: String,
+    pub marker: NarrativeSystemWorkMarker,
+}
+
+thread_local! {
+    static ACTIVE_SYSTEM_WORK_MARKER: RefCell<Option<NarrativeSystemWorkMarker>> =
+        const { RefCell::new(None) };
+}
+
+/// Attach one marker to the system Run created by a synchronous adapter call.
+/// The guard is process-local and never crosses a renderer or IPC boundary.
+pub(crate) fn with_system_work_marker<T>(
+    marker: Option<NarrativeSystemWorkMarker>,
+    operation: impl FnOnce() -> T,
+) -> T {
+    struct MarkerGuard(Option<NarrativeSystemWorkMarker>);
+    impl Drop for MarkerGuard {
+        fn drop(&mut self) {
+            let previous = self.0.take();
+            ACTIVE_SYSTEM_WORK_MARKER.with(|slot| {
+                let _ = slot.replace(previous);
+            });
+        }
+    }
+
+    let previous = ACTIVE_SYSTEM_WORK_MARKER.with(|slot| slot.replace(marker));
+    let _guard = MarkerGuard(previous);
+    operation()
+}
+
+pub(crate) fn active_system_work_marker() -> Option<NarrativeSystemWorkMarker> {
+    ACTIVE_SYSTEM_WORK_MARKER.with(|slot| slot.borrow().clone())
+}
+
+/// A successful automatic adapter must leave its marked Run running until the
+/// ordinary foreground write commits. Failures still terminalize immediately;
+/// the barrier only spans the successful work/authoring overlap.
+pub(crate) fn foreground_system_work_barrier_requested() -> bool {
+    active_system_work_marker().is_some()
+}
+
+pub(crate) fn spec_with_active_system_work_marker(spec_json: &Value) -> anyhow::Result<Value> {
+    let Some(marker) = active_system_work_marker() else {
+        return Ok(spec_json.clone());
+    };
+    let mut spec = spec_json.as_object().cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_MAINTENANCE_SYSTEM_WORK_SPEC_INVALID: system-work Run spec must be a JSON object"
+        )
+    })?;
+    let marker_value = serde_json::to_value(marker)?;
+    if let Some(existing) = spec.get("systemWork") {
+        anyhow::ensure!(
+            existing == &marker_value,
+            "NEX_MAINTENANCE_SYSTEM_WORK_MARKER_CONFLICT: Run systemWork marker is immutable"
+        );
+    } else {
+        spec.insert("systemWork".to_string(), marker_value);
+    }
+    Ok(Value::Object(spec))
+}
+
+/// Product-journey foreground barriers are discovered from durable state only
+/// after the native cycle has committed the marked Run.  Matching every
+/// immutable marker field, the authority binding, and the canonical work key
+/// prevents an unrelated system Run from satisfying the journey assertion.
+pub fn find_running_foreground_system_work_run(
+    db: &Database,
+    config: &NarrativeMaintenanceCiConfig,
+    binding: &MaintenanceWorkspaceBinding,
+) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
+    config.validate()?;
+    let barrier_id = config
+        .product_journey_barrier_id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("foreground barrier id is required"))?;
+    let correlation = config
+        .correlation
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("foreground correlation is required"))?;
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json
+               FROM narrative_extraction_runs
+              WHERE status = 'running'
+                AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
+              ORDER BY created_at ASC, id ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+            ))
+        })?;
+        let mut matches = Vec::new();
+        for row in rows {
+            let (run_id, project_id, run_kind, work_key, epoch_id, spec_json) = row?;
+            let Some(spec_json) = spec_json else {
+                continue;
+            };
+            let spec: Value = serde_json::from_str(&spec_json).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_SPEC_MALFORMED: Run '{run_id}' has malformed spec_json: {error}"
+                )
+            })?;
+            let Some(marker_value) = spec.get("systemWork") else {
+                continue;
+            };
+            let marker: NarrativeSystemWorkMarker =
+                serde_json::from_value(marker_value.clone()).map_err(|error| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_MARKER_MALFORMED: Run '{run_id}' has an invalid systemWork marker: {error}"
+                    )
+                })?;
+            if marker.product_journey_barrier_id != barrier_id
+                || marker.correlation != correlation
+                || marker.authority_id != binding.authority_id
+                || marker.generation != binding.generation
+                || marker.trigger != "workspace-opened"
+            {
+                continue;
+            }
+            let expected_key = canonical_work_key_for_epoch(
+                &project_id,
+                match run_kind.as_str() {
+                    "backfill" => AutomaticRunKind::Backfill,
+                    "dependency-verify" => AutomaticRunKind::Verify,
+                    "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
+                    _ => continue,
+                },
+                &work_key,
+                epoch_id.as_deref(),
+            )?;
+            anyhow::ensure!(
+                marker.canonical_work_key == expected_key,
+                "NEX_MAINTENANCE_SYSTEM_WORK_MARKER_WORK_KEY_MISMATCH: Run '{run_id}' marker does not match its durable work identity"
+            );
+            matches.push(ForegroundSystemWorkRun {
+                run_id,
+                project_id,
+                marker,
+            });
+        }
+        anyhow::ensure!(
+            matches.len() <= 1,
+            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE: multiple running Runs matched the exact product-journey barrier"
+        );
+        Ok(matches.pop())
+    })
+}
+
+/// Release one exact foreground Run after the ordinary authoring write has
+/// committed.  The Run is real durable work: its adapter recorded the native
+/// outcome before the barrier, and this owner-only transition supplies the
+/// terminal lifecycle timestamp.  A mismatched or unrelated Run fails closed.
+pub fn complete_foreground_system_work_run(
+    db: &Database,
+    barrier: &ForegroundSystemWorkRun,
+) -> anyhow::Result<()> {
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let row: Option<(String, String, String, Option<String>, String)> = conn
+                .query_row(
+                    "SELECT project_id, run_kind, work_key, semantic_epoch_id, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE id = ?1 AND status = 'running'",
+                    params![barrier.run_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((project_id, run_kind, work_key, epoch_id, spec_json)) = row else {
+                // A duplicate tree_node_patch after the first successful
+                // release is idempotent at the barrier boundary.
+                let status: Option<String> = conn
+                    .query_row(
+                        "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                        params![barrier.run_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                anyhow::ensure!(
+                    status.as_deref() == Some("completed"),
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running"
+                );
+                return Ok(());
+            };
+            anyhow::ensure!(
+                project_id == barrier.project_id,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_MISMATCH: exact foreground Run belongs to another project"
+            );
+            let spec: Value = serde_json::from_str(&spec_json)?;
+            let persisted_marker: NarrativeSystemWorkMarker = serde_json::from_value(
+                spec.get("systemWork")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
+            )?;
+            anyhow::ensure!(
+                persisted_marker == barrier.marker,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
+            );
+            let expected_key = canonical_work_key_for_epoch(
+                &project_id,
+                match run_kind.as_str() {
+                    "backfill" => AutomaticRunKind::Backfill,
+                    "dependency-verify" => AutomaticRunKind::Verify,
+                    "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
+                    _ => anyhow::bail!("foreground Run has unsupported maintenance kind"),
+                },
+                &work_key,
+                epoch_id.as_deref(),
+            )?;
+            anyhow::ensure!(
+                persisted_marker.canonical_work_key == expected_key,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
+            );
+            let mut outcome = match conn
+                .query_row(
+                    "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
+                    params![barrier.run_id],
+                    |row| row.get::<_, Option<String>>(0),
+                )?
+                .as_deref()
+            {
+                Some(text) => serde_json::from_str::<Value>(text)?,
+                None => json!({}),
+            };
+            let outcome_object = outcome.as_object_mut().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"
+                )
+            })?;
+            outcome_object.insert(
+                "foregroundBarrierReleased".to_string(),
+                Value::Bool(true),
+            );
+            outcome_object.insert(
+                "productJourneyBarrierId".to_string(),
+                Value::String(barrier.marker.product_journey_barrier_id.clone()),
+            );
+            outcome_object.insert(
+                "correlation".to_string(),
+                Value::String(barrier.marker.correlation.clone()),
+            );
+            super::repository::record_run_outcome_in_tx(conn, &barrier.run_id, &outcome)?;
+            let finalized_at = transition_run_status_in_tx(
+                conn,
+                &barrier.run_id,
+                NarrativeRunStatus::Completed,
+            )?;
+            super::terminal_failure::resolve_terminal_failure_for_run_in_tx(
+                conn,
+                &project_id,
+                &barrier.run_id,
+                &finalized_at,
+            )?;
+            Ok(())
+        })
+    })
+}
 
 /// Main-only request DTO for the serialized system-work cycle.  This is not an
 /// IPC/preload contract: the only production consumer is the Electron main
@@ -957,6 +1354,19 @@ pub fn run_system_work_cycle_with_modes(
     request: &MaintenanceCycleRequest,
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
 ) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_modes_and_config(db, request, mode_for, None)
+}
+
+/// Execute a cycle with the optional main-only product-journey context. The
+/// context is consumed only for the first newly-created Run in this cycle;
+/// follow-up Verify/Rebuild rows are ordinary durable phase rows and must not
+/// inherit a foreground barrier marker.
+pub fn run_system_work_cycle_with_modes_and_config(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+) -> anyhow::Result<MaintenanceCycleResult> {
     let mut work = request.normalized_work()?;
     anyhow::ensure!(
         work.is_empty() || request.wake_project_ids.is_empty(),
@@ -981,6 +1391,7 @@ pub fn run_system_work_cycle_with_modes(
     let mut dispatched_any = false;
     let mut coalesced_active = false;
     let mut has_more = false;
+    let mut foreground_marker_available = true;
     let mut project_ids = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());
@@ -1084,7 +1495,22 @@ pub fn run_system_work_cycle_with_modes(
                     }
                     continue;
                 }
-                dispatch_enabled_work(db, &item)?;
+                let marker = if foreground_marker_available {
+                    ci_config.and_then(|config| {
+                        request
+                            .workspace_binding
+                            .as_ref()
+                            .and_then(|binding| config.foreground_marker(&item, binding))
+                    })
+                } else {
+                    None
+                };
+                with_system_work_marker(marker.clone(), || {
+                    dispatch_enabled_work(db, &item)
+                })?;
+                if marker.is_some() {
+                    foreground_marker_available = false;
+                }
                 dispatched_any = true;
                 if let Some(next) = discover_durable_maintenance_work(
                     db,
@@ -2245,6 +2671,151 @@ mod tests {
         let result = coalesce_desired_work([first, second]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].reasons, ["a", "b"]);
+    }
+
+    #[test]
+    fn product_journey_marker_has_exact_native_owned_shape() {
+        let config = NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
+            setup: None,
+            product_journey_barrier_id: Some("barrier-1".to_string()),
+            correlation: Some("correlation-1".to_string()),
+        };
+        let work = DesiredWork::new(
+            "project-1",
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            "workspace-opened",
+        )
+        .expect("desired work");
+        let marker = config
+            .foreground_marker(
+                &work,
+                &MaintenanceWorkspaceBinding {
+                    authority_id: "authority:workspace-1".to_string(),
+                    generation: 7,
+                },
+            )
+            .expect("foreground marker");
+        let value = serde_json::to_value(&marker).expect("marker JSON");
+        let mut keys = value
+            .as_object()
+            .expect("marker object")
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "authorityId",
+                "canonicalWorkKey",
+                "correlation",
+                "generation",
+                "productJourneyBarrierId",
+                "trigger",
+            ]
+        );
+        assert_eq!(marker.trigger, "workspace-opened");
+        assert_eq!(
+            marker.canonical_work_key,
+            "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2"
+        );
+    }
+
+    #[test]
+    fn conflicting_system_work_marker_is_rejected_before_run_insert() {
+        let marker = NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/work".to_string(),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-1".to_string(),
+            correlation: "correlation-1".to_string(),
+        };
+        let error = with_system_work_marker(Some(marker), || {
+            spec_with_active_system_work_marker(&json!({
+                "systemWork": {
+                    "trigger": "workspace-opened",
+                    "canonicalWorkKey": "unrelated",
+                    "authorityId": "authority:workspace-1",
+                    "generation": 1,
+                    "productJourneyBarrierId": "barrier-1",
+                    "correlation": "correlation-1"
+                }
+            }))
+        })
+        .expect_err("a caller-provided conflicting marker must fail closed");
+        assert!(error.to_string().contains("MARKER_CONFLICT"));
+    }
+
+    #[test]
+    fn unrelated_running_run_cannot_satisfy_exact_foreground_barrier() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        let config = NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
+            setup: None,
+            product_journey_barrier_id: Some("barrier-expected".to_string()),
+            correlation: Some("correlation-expected".to_string()),
+        };
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+        };
+        let unrelated = NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/unrelated".to_string(),
+            authority_id: binding.authority_id.clone(),
+            generation: binding.generation,
+            product_journey_barrier_id: "barrier-other".to_string(),
+            correlation: "correlation-other".to_string(),
+        };
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project authority");
+        with_system_work_marker(Some(unrelated), || {
+            db.with_conn(|conn| {
+                create_system_run_in_tx(
+                    conn,
+                    "project-1",
+                    "backfill",
+                    "epoch-1",
+                    "unrelated",
+                    &json!({ "phase": "foreground-test" }),
+                    "sha256:test",
+                    SystemRunWorkKeyReuse::None,
+                    None,
+                )
+            })
+        })
+        .expect("insert unrelated real running Run");
+        assert!(
+            find_running_foreground_system_work_run(&db, &config, &binding)
+                .expect("barrier lookup")
+                .is_none(),
+            "a different barrier/correlation must not satisfy the foreground journey"
+        );
     }
 
     #[test]

@@ -48,6 +48,8 @@ export declare class Backend {
   runNarrativeFreshnessCycle(): Promise<string | null>
   /** Main-only enqueue snapshot for serialized maintenance work. */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
+  /** One-shot main-only CI product-journey seam configuration. */
+  configureNarrativeMaintenanceCiSeam(payload: any): string
   /**
    * Main-process-only workspace-wide discovery. The returned page is bound to
    * one pinned authority generation and is never registered as renderer IPC.

@@ -581,6 +581,13 @@ fn finalize_rebuild_run(
                 ),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
+            if work_result.is_ok()
+                && super::maintenance_runtime::foreground_system_work_barrier_requested()
+            {
+                // The native foreground barrier owns the terminal transition
+                // until the ordinary authoring write commits.
+                return Ok(None);
+            }
             let finalized_at = transition_run_status_in_tx(
                 conn,
                 run_id,
