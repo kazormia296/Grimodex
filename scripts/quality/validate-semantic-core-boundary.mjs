@@ -2770,7 +2770,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     accessor: undefined,
     accessors: new Set(),
   };
+  const globalFunctionValue = taintedInvocationValue("global-function");
+  const globalEvalValue = taintedInvocationValue("global-eval");
   globalThisContainer.entries.set("Reflect", globalReflectValue);
+  globalThisContainer.entries.set("Function", globalFunctionValue);
+  globalThisContainer.entries.set("eval", globalEvalValue);
   globalThisContainer.entries.set("undefined", cleanInvocationValue(false));
   globalThisContainer.entries.set("globalThis", globalThisValue);
 
@@ -3060,7 +3064,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     if (!value) return cleanInvocationValue();
     const containers = invocationContainerAlternatives(value);
     if (value.tainted && containers.length === 0) {
-      return taintedInvocationValue();
+      return taintedInvocationValue(value.source ?? "computed");
     }
     let result;
     for (const container of containers) {
@@ -3069,7 +3073,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         result = mergeInvocationValues(result, entry);
       }
     }
-    if (value.tainted) result = mergeInvocationValues(result, taintedInvocationValue());
+    if (value.tainted) {
+      result = mergeInvocationValues(
+        result,
+        taintedInvocationValue(value.source ?? "computed"),
+      );
+    }
     return result ?? cleanInvocationValue();
   };
 
@@ -3077,7 +3086,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     if (!value) return { found: false, value: cleanInvocationValue() };
     const containers = invocationContainerAlternatives(value);
     if (value.tainted && containers.length === 0) {
-      return { found: true, value: taintedInvocationValue() };
+      return {
+        found: true,
+        value: taintedInvocationValue(value.source ?? "computed"),
+      };
     }
     if (containers.length === 0) {
       return { found: false, value: cleanInvocationValue() };
@@ -3104,7 +3116,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       }
     }
     if (selectedValue !== undefined) return { found, value: selectedValue };
-    if (value.tainted) return { found: true, value: taintedInvocationValue() };
+    if (value.tainted) {
+      return {
+        found: true,
+        value: taintedInvocationValue(value.source ?? "computed"),
+      };
+    }
     return {
       found: false,
       value: cleanInvocationValue(),
@@ -3174,7 +3191,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     if (source.tainted) {
       target.unknown = mergeInvocationValues(
         target.unknown,
-        taintedInvocationValue(),
+        taintedInvocationValue(source.source ?? "computed"),
       );
     }
     for (const sourceContainer of invocationContainerAlternatives(source)) {
@@ -3226,7 +3243,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
 
   const restContainerValue = (value, excludedKeys, arrayStart) => {
     if (!value) return cleanInvocationValue();
-    if (value.tainted) return taintedInvocationValue();
+    if (value.tainted) {
+      return taintedInvocationValue(value.source ?? "computed");
+    }
     const sourceContainers = invocationContainerAlternatives(value);
     if (sourceContainers.length === 0) return cleanInvocationValue();
     const container = createInvocationContainer(sourceContainers[0].kind);
@@ -3359,7 +3378,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   };
 
   const expressionValue = (expression, seenBindings = new Set(), depth = 0) => {
-    if (!expression || depth > 24) return cleanInvocationValue();
+    if (!expression) return cleanInvocationValue();
+    if (depth > 24) return taintedInvocationValue("analysis-depth");
     const unwrapped = unwrapExpression(expression);
     if (!unwrapped) return cleanInvocationValue();
     if (unwrapped !== expression) {
@@ -3389,6 +3409,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       if (!result) {
         if (unwrapped.text === "Reflect") return globalReflectValue;
         if (unwrapped.text === "globalThis") return globalThisValue;
+        if (unwrapped.text === "Function") return globalFunctionValue;
+        if (unwrapped.text === "eval") return globalEvalValue;
         if (unwrapped.text === "undefined") return cleanInvocationValue(false);
         return cleanInvocationValue();
       }
@@ -3468,6 +3490,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         return taintedInvocationValue("computed");
       }
       if (receiver.tainted) {
+        if (receiver.source === "analysis-depth") {
+          return taintedInvocationValue("analysis-depth");
+        }
         if (invocationContainerAlternatives(receiver).length > 0) {
           const selected = readContainerProperty(receiver, key);
           if (
@@ -3542,6 +3567,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         if (callableValue?.callables.size > 0) return callableValue;
       }
       if (receiver.tainted) {
+        if (receiver.source === "analysis-depth") {
+          return taintedInvocationValue("analysis-depth");
+        }
         if (invocationContainerAlternatives(receiver).length > 0) {
           const selected = readContainerProperty(receiver, unwrapped.name.text);
           if (
@@ -3894,8 +3922,43 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return cleanInvocationValue();
   };
 
+  const taintAssignmentTarget = (target) => {
+    let current = unwrapExpression(target);
+    while (
+      current &&
+      (ts.isPropertyAccessExpression(current) ||
+        ts.isElementAccessExpression(current))
+    ) {
+      current = unwrapExpression(current.expression);
+    }
+    while (
+      current &&
+      ts.isBinaryExpression(current) &&
+      ts.isAssignmentOperator(current.operatorToken.kind)
+    ) {
+      current = unwrapExpression(current.left);
+    }
+    if (current && ts.isIdentifier(current)) {
+      return assignIdentifier(current, taintedInvocationValue("analysis-depth"));
+    }
+    if (
+      current &&
+      (ts.isObjectBindingPattern(current) || ts.isArrayBindingPattern(current))
+    ) {
+      let changed = false;
+      collectBindingIdentifiers(current, (identifier) => {
+        changed =
+          assignIdentifier(identifier, taintedInvocationValue("analysis-depth")) ||
+          changed;
+      });
+      return changed;
+    }
+    return false;
+  };
+
   const bindingPatternValue = (pattern, value, depth = 0) => {
-    if (!pattern || depth > 24) return false;
+    if (!pattern) return false;
+    if (depth > 24) return taintAssignmentTarget(pattern);
     if (ts.isIdentifier(pattern)) return assignIdentifier(pattern, value);
     if (ts.isObjectBindingPattern(pattern)) {
       const excludedKeys = [];
@@ -3972,7 +4035,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   };
 
   const assignMemberTarget = (target, value, depth = 0) => {
-    if (!target || depth > 24) return false;
+    if (!target) return false;
+    if (depth > 24) return taintAssignmentTarget(target);
     const receiver = unwrapExpression(target.expression);
     const key = propertyKeyForAccess(target);
     if (!receiver) return false;
@@ -4005,7 +4069,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   };
 
   const assignTarget = (target, value, depth = 0) => {
-    if (!target || depth > 24) return false;
+    if (!target) return false;
+    if (depth > 24) return taintAssignmentTarget(target);
     const unwrapped = unwrapExpression(target);
     if (ts.isIdentifier(unwrapped)) return assignIdentifier(unwrapped, value);
     if (
@@ -4151,7 +4216,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   const iterationValue = (value, isObjectKeys) => {
     if (isObjectKeys) return cleanInvocationValue();
     if (!value) return cleanInvocationValue();
-    if (value.tainted) return taintedInvocationValue();
+    if (value.tainted) {
+      return taintedInvocationValue(value.source ?? "computed");
+    }
     const containers = invocationContainerAlternatives(value);
     if (containers.length === 0) return cleanInvocationValue();
     let result;

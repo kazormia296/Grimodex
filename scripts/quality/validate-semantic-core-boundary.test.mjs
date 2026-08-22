@@ -1095,6 +1095,62 @@ describe("validate-semantic-core-boundary", () => {
     }
   });
 
+  it("fails closed for dynamic global invocation and bounded analysis overflow", () => {
+    const globalCases = [
+      'Function("fn", "fn()")(database[getKey()]);',
+      'eval("database[getKey()]");',
+      'const Fn = Function; Fn("fn", "fn()")(database[getKey()]);',
+      'const run = eval; run("database[getKey()]");',
+      'globalThis.Function("fn", "fn()")(database[getKey()]);',
+      'globalThis["eval"]("database[getKey()]");',
+      'const Fn = globalThis.Function; Fn("fn", "fn()")(database[getKey()]);',
+      'const get = Reflect.get; const Fn = get(globalThis, "Function"); Fn("fn", "fn()")(database[getKey()]);',
+      'Reflect.apply(Function, null, []);',
+      'Reflect.construct(globalThis.eval, []);',
+    ];
+    for (const [index, source] of globalCases.entries()) {
+      const filename = `invocation-taint-global-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `unshadowed global Function/eval route ${index} must be rejected: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const shadowedCases = [
+      'const Function = () => () => true; Function()();',
+      'const eval = () => true; eval("safe");',
+      'const globalThis = { Function: () => () => true, eval: () => true }; globalThis.Function()(); globalThis.eval("safe");',
+      'const Function = () => true; const Reflect = { apply: () => true, construct: () => true }; Reflect.apply(Function, null, []); Reflect.construct(Function, []);',
+    ];
+    for (const [index, source] of shadowedCases.entries()) {
+      const filename = `invocation-taint-shadowed-global-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, source);
+      assert.deepEqual(
+        errors,
+        [],
+        `shadowed global control ${index} must remain allowed: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    for (const depth of [24, 25, 26]) {
+      let deepExpression = "{ invoke: (fn) => fn() }";
+      for (let index = 0; index < depth; index += 1) {
+        deepExpression = `{ next: ${deepExpression} }`;
+      }
+      const access = `nested${".next".repeat(depth)}.invoke(database[key]);`;
+      const filename = `invocation-taint-analysis-depth-${depth}.mts`;
+      const errors = validateInterpreterSourceFixture(
+        filename,
+        [`const nested = ${deepExpression};`, access].join("\n"),
+      );
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `analysis depth ${depth} must not be clean: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
   it("closes ambiguous bindings, spread offsets, and nested member assignment aliases", () => {
     const sensitiveCases = [
       {

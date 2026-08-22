@@ -766,7 +766,10 @@ function assertEvidenceProvenance(
     throw new TypeError("Chronicle Adapter requires resolved Evidence Anchors");
   }
   const anchorsById = new Map<string, ResolvedEvidenceAnchor>();
-  const anchorsByEvidence = new Map<string, ResolvedEvidenceAnchor>();
+  const anchorsByEvidence = new Map<
+    string,
+    Map<string, ResolvedEvidenceAnchor>
+  >();
   for (const anchor of input.evidenceAnchors) {
     assertNonEmpty(anchor.id, "Evidence Anchor id");
     assertNonEmpty(anchor.sourceRef, "Evidence Anchor sourceRef");
@@ -776,7 +779,14 @@ function assertEvidenceProvenance(
     if (anchorsById.has(anchor.id))
       throw new TypeError("Evidence Anchor IDs must be unique");
     anchorsById.set(anchor.id, anchor);
-    anchorsByEvidence.set(`${anchor.sourceRef}\0${anchor.quote}`, anchor);
+    const anchorsByQuote = anchorsByEvidence.get(anchor.sourceRef) ?? new Map();
+    if (anchorsByQuote.has(anchor.quote)) {
+      throw new TypeError(
+        "Evidence Anchor sourceRef/quote pairs must be unique",
+      );
+    }
+    anchorsByQuote.set(anchor.quote, anchor);
+    anchorsByEvidence.set(anchor.sourceRef, anchorsByQuote);
   }
 
   const relevantObservations = [
@@ -786,9 +796,9 @@ function assertEvidenceProvenance(
   const referencedAnchors = new Set<string>();
   for (const observation of relevantObservations) {
     for (const evidence of observation.evidence) {
-      const anchor = anchorsByEvidence.get(
-        `${evidence.sourceRef}\0${evidence.quote}`,
-      );
+      const anchor = anchorsByEvidence
+        .get(evidence.sourceRef)
+        ?.get(evidence.quote);
       if (!anchor)
         throw new TypeError(
           "every Observation evidence ref requires a resolved Anchor",

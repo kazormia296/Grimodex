@@ -140,6 +140,46 @@ describe("Chronicle context-only prompt builder", () => {
     );
   });
 
+  it("keeps Context Set ordering and digests tuple-safe for embedded NUL fields", async () => {
+    const left: ContextSetEntry = {
+      ...observationEntry,
+      contextId: "a",
+      inputRef: "b\0c",
+    };
+    const right: ContextSetEntry = {
+      ...observationEntry,
+      contextId: "a\0b",
+      inputRef: "c",
+    };
+    const first = buildChroniclePromptArtifact({
+      stageId: "narrative_observation_extract",
+      componentContract: contract,
+      contextSet: [left, right],
+      modelInputs: [
+        { contextId: left.contextId, value: "left" },
+        { contextId: right.contextId, value: "right" },
+      ],
+    });
+    const second = buildChroniclePromptArtifact({
+      stageId: "narrative_observation_extract",
+      componentContract: contract,
+      contextSet: [right, left],
+      modelInputs: [
+        { contextId: right.contextId, value: "right" },
+        { contextId: left.contextId, value: "left" },
+      ],
+    });
+
+    expect(first.contextSet.map((entry) => entry.contextId)).toEqual([
+      left.contextId,
+      right.contextId,
+    ]);
+    expect(first).toEqual(second);
+    await expect(buildChroniclePromptDigests(first)).resolves.toEqual(
+      await buildChroniclePromptDigests(second),
+    );
+  });
+
   it("rejects a Context Set entry with an invalid selector at runtime", () => {
     expect(() =>
       buildChroniclePromptArtifact({

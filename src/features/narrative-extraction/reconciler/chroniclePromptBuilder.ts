@@ -67,15 +67,25 @@ function assertNonEmptyString(
   }
 }
 
-function contextSortKey(entry: ContextSetEntry): string {
-  return [entry.contextId, entry.inputRef, entry.stageId, entry.exposure].join(
-    "\u0000",
-  );
-}
-
 function compareCodeUnitStrings(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
+  return 0;
+}
+
+function compareContextEntries(
+  left: ContextSetEntry,
+  right: ContextSetEntry,
+): number {
+  for (const [leftValue, rightValue] of [
+    [left.contextId, right.contextId],
+    [left.inputRef, right.inputRef],
+    [left.stageId, right.stageId],
+    [left.exposure, right.exposure],
+  ] as const) {
+    const comparison = compareCodeUnitStrings(leftValue, rightValue);
+    if (comparison !== 0) return comparison;
+  }
   return 0;
 }
 
@@ -116,9 +126,7 @@ export function canonicalizeChronicleContextSet(
     seenContextIds.add(entry.contextId);
     seenInputRefs.add(entry.inputRef);
   }
-  return [...contextSet].sort((left, right) =>
-    compareCodeUnitStrings(contextSortKey(left), contextSortKey(right)),
-  );
+  return [...contextSet].sort(compareContextEntries);
 }
 
 export async function digestChronicleContextSet(

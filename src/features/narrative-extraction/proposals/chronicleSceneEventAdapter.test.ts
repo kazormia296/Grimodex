@@ -289,6 +289,76 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
     ).rejects.toThrow(/provenance|merged observation/i);
   });
 
+  it("keeps embedded-NUL evidence tuples bound to the correct Anchor", async () => {
+    const collisionAnchorA = {
+      ...anchor,
+      id: "anchor:nul-a",
+      sourceRef: "source:scene:1",
+      quote: "b\0c",
+      documentRef: "document:nul-a",
+    } as unknown as ResolvedEvidenceAnchor;
+    const collisionAnchorB = {
+      ...anchor,
+      id: "anchor:nul-b",
+      sourceRef: "source:scene:1\0b",
+      quote: "c",
+      documentRef: "document:nul-b",
+    } as unknown as ResolvedEvidenceAnchor;
+    const collisionObservation: RawChronicleEventObservation = {
+      ...observation,
+      localId: "observation:nul",
+      evidence: [{ sourceRef: "source:scene:1", quote: "b\0c" }],
+    };
+    const collisionInput = {
+      ...adapterInput,
+      proposalPayload: {
+        ...proposal,
+        evidenceAnchorIds: [collisionAnchorA.id],
+        evidenceDocumentRefs: [collisionAnchorA.documentRef],
+      },
+      hypothesis: {
+        ...hypothesis,
+        observationRefs: [collisionObservation.localId],
+      },
+      originalObservations: [collisionObservation],
+      mergedObservations: [collisionObservation],
+      originalObservationRefs: [collisionObservation.localId],
+      mergedObservationRefs: [collisionObservation.localId],
+      evidenceAnchors: [collisionAnchorA, collisionAnchorB],
+    } satisfies ChronicleSceneEventAdapterInput;
+
+    const result = await buildChronicleSceneEventV2(collisionInput);
+    expect(result.envelope.effectiveMaterialBasis.evidenceSet).toEqual([
+      expect.objectContaining({
+        evidenceRef: collisionAnchorA.id,
+        documentRef: collisionAnchorA.documentRef,
+        sourceKey: collisionAnchorA.sourceRef,
+        quote: collisionAnchorA.quote,
+      }),
+    ]);
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...collisionInput,
+        proposalPayload: {
+          ...collisionInput.proposalPayload,
+          evidenceAnchorIds: [collisionAnchorB.id],
+          evidenceDocumentRefs: [collisionAnchorB.documentRef],
+        },
+      }),
+    ).rejects.toThrow(/evidenceAnchorIds|provenance/i);
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...collisionInput,
+        evidenceAnchors: [
+          collisionAnchorA,
+          { ...collisionAnchorA, id: "anchor:nul-duplicate" },
+        ],
+      }),
+    ).rejects.toThrow(/sourceRef\/quote|unique/i);
+  });
+
   it("accepts verbatim deduplication subsets and deeply cloned equal observations", async () => {
     const deduplicatedResult = await buildChronicleSceneEventV2({
       ...adapterInput,

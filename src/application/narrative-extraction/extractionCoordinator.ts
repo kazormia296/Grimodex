@@ -13,6 +13,7 @@ import type {
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
+import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
 import {
   matchExistingChronicleEvent,
@@ -284,7 +285,7 @@ export async function observeChronicleEventsFromSnapshot(
 }
 
 function evidenceFingerprint(sourceRef: string, quote: string): string {
-  return `${sourceRef}\0${quote}`;
+  return chronicleEvidenceTupleKey(sourceRef, quote);
 }
 
 async function resolveObservationEvidence(
@@ -628,11 +629,24 @@ async function executeTask(
           (observation) => [observation.localId, observation] as const,
         ),
       );
-      const anchorsByQuote = new Map(
-        evidencePayload.anchors.map(
-          (anchor) => [`${anchor.sourceRef}\0${anchor.quote}`, anchor] as const,
-        ),
-      );
+      const anchorsByQuote = new Map<
+        string,
+        Map<string, ResolvedEvidenceAnchor | null>
+      >();
+      for (const anchor of evidencePayload.anchors) {
+        const anchorsBySource =
+          anchorsByQuote.get(anchor.sourceRef) ?? new Map();
+        const existing = anchorsBySource.get(anchor.quote);
+        if (!anchorsBySource.has(anchor.quote)) {
+          anchorsBySource.set(anchor.quote, anchor);
+        } else if (
+          existing === null ||
+          existing?.documentRef !== anchor.documentRef
+        ) {
+          anchorsBySource.set(anchor.quote, null);
+        }
+        anchorsByQuote.set(anchor.sourceRef, anchorsBySource);
+      }
 
       const matches = hypothesisPayload.hypotheses.map((hypothesis) => {
         const provenanceKeys: string[] = [];
@@ -641,13 +655,13 @@ async function executeTask(
           const observation = observationById.get(observationRef);
           if (!observation) continue;
           for (const evidence of observation.evidence) {
+            const anchor = anchorsByQuote
+              .get(evidence.sourceRef)
+              ?.get(evidence.quote);
+            if (!anchor) continue;
             provenanceKeys.push(
               evidenceFingerprint(evidence.sourceRef, evidence.quote),
             );
-            const anchor = anchorsByQuote.get(
-              `${evidence.sourceRef}\0${evidence.quote}`,
-            );
-            if (!anchor) continue;
             const sourceKey = documentSourceKeyForRef(
               snapshotPayload.snapshot,
               anchor.documentRef,

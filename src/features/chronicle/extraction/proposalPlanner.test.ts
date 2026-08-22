@@ -142,4 +142,52 @@ describe("planChronicleEventProposals", () => {
     expect(planned).toHaveLength(1);
     expect(planned[0].match.status).toBe("probable-duplicate");
   });
+
+  it("keeps embedded-NUL evidence tuples bound to their own anchor", () => {
+    const firstAnchor = anchor({
+      id: "anchor-nul-a",
+      sourceRef: "a",
+      quote: "b\0c",
+      documentRef: "document-nul-a",
+    });
+    const secondAnchor = anchor({
+      id: "anchor-nul-b",
+      sourceRef: "a\0b",
+      quote: "c",
+      documentRef: "document-nul-b",
+    });
+    const planned = planChronicleEventProposals({
+      hypotheses: [hypothesis()],
+      observations: [
+        observation({
+          evidence: [{ sourceRef: "a", quote: "b\0c" }],
+        }),
+      ],
+      anchors: [firstAnchor, secondAnchor],
+      matchesByHypothesisId: new Map([["hyp-1", { status: "none" }]]),
+      createId: () => "event-nul",
+    });
+
+    expect(planned[0]?.proposal.evidenceAnchorIds).toEqual([firstAnchor.id]);
+    expect(planned[0]?.proposal.evidenceDocumentRefs).toEqual([
+      firstAnchor.documentRef,
+    ]);
+  });
+
+  it("does not select an ambiguous duplicate evidence tuple", () => {
+    const firstAnchor = anchor({ id: "anchor-duplicate-a" });
+    const duplicateAnchor = anchor({
+      id: "anchor-duplicate-b",
+      documentRef: "document-duplicate-conflict",
+    });
+    const planned = planChronicleEventProposals({
+      hypotheses: [hypothesis()],
+      observations: [observation()],
+      anchors: [firstAnchor, duplicateAnchor],
+      matchesByHypothesisId: new Map([["hyp-1", { status: "none" }]]),
+      createId: () => "event-duplicate",
+    });
+
+    expect(planned).toEqual([]);
+  });
 });
