@@ -318,6 +318,51 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
 }
 
 #[test]
+fn equal_maximal_verify_created_at_is_ambiguous_regardless_of_run_id_order() {
+    for (successful_id, failed_id) in [
+        ("verify-success-a", "verify-failed-z"),
+        ("verify-success-z", "verify-failed-a"),
+    ] {
+        let db = fixture_db();
+        let created_at = "2026-08-23T00:00:00.000Z";
+        let completed_at = Some("2026-08-23T00:00:01.000Z");
+        insert_verify_run_with_metadata(
+            &db,
+            successful_id,
+            "completed",
+            Some(successful_outcome()),
+            created_at,
+            completed_at,
+            EPOCH_ID,
+            &format!("dependency-verify:{EPOCH_ID}"),
+        );
+        insert_verify_run_with_metadata(
+            &db,
+            failed_id,
+            "failed",
+            None,
+            created_at,
+            completed_at,
+            EPOCH_ID,
+            &format!("dependency-verify:{EPOCH_ID}"),
+        );
+        persist_completed_run_skip_evidence(&db, successful_id, &evidence())
+            .expect("seal the successful Verify evidence");
+
+        let decision = db
+            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .expect("evaluate equal-timestamp Verify candidates");
+        assert_eq!(
+            decision,
+            CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::AmbiguousLifecycle,
+            },
+            "run-id ordering must never decide which equal-timestamp terminal wins"
+        );
+    }
+}
+
+#[test]
 fn idempotent_persist_preserves_unknown_fields_and_terminal_digest_aliases() {
     for alias in ["successfulTerminalDigest", "terminalDigest"] {
         let db = fixture_db();
@@ -580,7 +625,7 @@ fn missing_or_non_successful_latest_run_never_falls_back_to_an_older_success() {
                  status, coverage_json, created_at, version, run_kind, semantic_epoch_id,
                  work_key)
              VALUES ('run-z-failed', ?1, 'maintenance', '{}', '{}', 'spec', 'failed', '{}',
-                     '2026-08-20T00:00:00.000Z', 0, 'dependency-verify', ?2, ?3)",
+                     '2026-08-20T00:00:01.000Z', 0, 'dependency-verify', ?2, ?3)",
             params![
                 PROJECT_ID,
                 EPOCH_ID,
@@ -956,7 +1001,7 @@ fn read_binds_run_identity_epoch_and_canonical_work_key_to_evidence() {
 }
 
 #[test]
-fn created_at_and_id_ordering_controls_latest_run_independent_of_insert_order() {
+fn created_at_controls_latest_run_and_equal_timestamps_fail_closed() {
     let db = fixture_db();
     insert_verify_run_with_metadata(
         &db,
@@ -1026,7 +1071,7 @@ fn created_at_and_id_ordering_controls_latest_run_independent_of_insert_order() 
             .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
             .expect("evaluate same-created ordering"),
         CompletedRunSkipDecision::Rerun {
-            reason: CompletedRunSkipReason::LatestRunNotSuccessful
+            reason: CompletedRunSkipReason::AmbiguousLifecycle
         }
     );
     assert_eq!(

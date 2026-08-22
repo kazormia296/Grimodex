@@ -255,11 +255,23 @@ pub(crate) fn next_run_lifecycle_timestamp_in_tx(
     let mut latest = None;
     for row in rows {
         let (created_at, started_at, completed_at) = row?;
-        for value in [Some(created_at), started_at, completed_at]
-            .into_iter()
-            .flatten()
+        // Imported lifecycle columns are independent ordering evidence. A
+        // malformed terminal marker must not hide a valid future
+        // created_at/started_at authority, so retain every component that
+        // parses and ignore only the malformed component. Discovery and
+        // recovery still validate the relevant row's lifecycle shape before
+        // treating it as reusable evidence.
+        for value in [
+            Some(created_at.as_str()),
+            started_at.as_deref(),
+            completed_at.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
         {
-            let parsed = parse_run_lifecycle_instant(&value)?;
+            let Ok(parsed) = parse_run_lifecycle_instant(value) else {
+                continue;
+            };
             latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
         }
     }

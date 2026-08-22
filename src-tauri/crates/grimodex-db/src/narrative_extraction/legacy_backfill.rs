@@ -71,6 +71,7 @@
 //! rows. `contributions_created`/`edges_created` in the returned summary
 //! both report 0 on that second run.
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
@@ -121,6 +122,133 @@ pub(crate) const LEGACY_BACKFILL_WORK_KEY: &str = LEGACY_DEPENDENCY_PRODUCER_GEN
 /// completed under `"1"` left `codex_entry:<id>` Contributions and
 /// double-prefixed Edges, so it is not equivalent to a fresh one.
 pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
+
+/// Validate the durable completion marker owned by the Backfill phase.
+///
+/// A `completed` Run with the right key/spec is not sufficient evidence that
+/// the Backfill crossed its once-boundary: the terminal outcome must be the
+/// current transform, bound to a project-owned Semantic Epoch, and carry the
+/// complete summary shape. Discovery, recovery, and the direct Admin retry
+/// all call this helper so they cannot disagree about whether a Run is safe to
+/// reuse.
+pub(crate) struct CompletedBackfillMarker<'a> {
+    pub(crate) run_kind: &'a str,
+    pub(crate) status: &'a str,
+    pub(crate) spec_json: Option<&'a str>,
+    pub(crate) semantic_epoch_id: Option<&'a str>,
+    pub(crate) work_key: Option<&'a str>,
+    pub(crate) completed_at: Option<&'a str>,
+    pub(crate) outcome_summary_json: Option<&'a str>,
+}
+
+/// Parse the timestamp formats used by both current system Runs and legacy
+/// SQLite rows. Marker reuse must use this same supported-instant contract as
+/// discovery/recovery instead of trusting a non-empty arbitrary string.
+pub(crate) fn parse_maintenance_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+            )
+        })
+}
+
+pub(crate) fn is_valid_completed_backfill_marker(
+    conn: &Connection,
+    project_id: &str,
+    marker: &CompletedBackfillMarker<'_>,
+) -> anyhow::Result<bool> {
+    if marker.run_kind != "backfill"
+        || marker.status != "completed"
+        || marker.work_key != Some(LEGACY_BACKFILL_WORK_KEY)
+    {
+        return Ok(false);
+    }
+    let Some(completed_at) = marker
+        .completed_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if parse_maintenance_instant(completed_at).is_err() {
+        return Ok(false);
+    }
+    let Some(epoch_id) = marker.semantic_epoch_id.filter(|value| !value.is_empty()) else {
+        return Ok(false);
+    };
+    let epoch_belongs_to_project: bool = conn.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM narrative_semantic_epochs
+              WHERE id = ?1 AND project_id = ?2
+         )",
+        params![epoch_id, project_id],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+    if !epoch_belongs_to_project {
+        return Ok(false);
+    }
+
+    let Some(spec_json) = marker.spec_json else {
+        return Ok(false);
+    };
+    let Ok(spec) = serde_json::from_str::<serde_json::Value>(spec_json) else {
+        return Ok(false);
+    };
+    if spec
+        .get("backfillAlgorithmVersion")
+        .and_then(|value| value.as_str())
+        != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+    {
+        return Ok(false);
+    }
+
+    let Some(outcome_json) = marker.outcome_summary_json else {
+        return Ok(false);
+    };
+    let Ok(outcome) = serde_json::from_str::<serde_json::Value>(outcome_json) else {
+        return Ok(false);
+    };
+    if outcome
+        .get("maintenancePhase")
+        .and_then(|value| value.as_str())
+        != Some("backfill-complete")
+        || outcome
+            .get("backfillAlgorithmVersion")
+            .and_then(|value| value.as_str())
+            != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
+        || outcome
+            .get("semanticEpochId")
+            .and_then(|value| value.as_str())
+            != Some(epoch_id)
+    {
+        return Ok(false);
+    }
+    let Some(summary) = outcome.get("summary").and_then(|value| value.as_object()) else {
+        return Ok(false);
+    };
+    Ok(summary
+        .get("epoch_created")
+        .and_then(|value| value.as_bool())
+        .is_some()
+        && summary
+            .get("contributions_created")
+            .and_then(|value| value.as_u64())
+            .is_some()
+        && summary
+            .get("edges_created")
+            .and_then(|value| value.as_u64())
+            .is_some()
+        && summary
+            .get("applications_without_run_id")
+            .and_then(|value| value.as_u64())
+            .is_some())
+}
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
 pub enum LegacyBackfillBootstrapOutcome {
@@ -195,12 +323,11 @@ struct LegacyProjectionDependency {
 /// Three phases, each its own transaction, so a Phase 2 failure cannot
 /// erase the Phase 1 Run record it should be explaining:
 ///
-///   1. Reuse-check + Run creation (`create_system_run_in_tx`,
-///      `SystemRunWorkKeyReuse::RunningAndCompleted` -- matching the
-///      ratified policy's `sameWorkKeyReuse` exactly) under a freshly
-///      ensured/created Semantic Epoch. If a Run already exists
-///      `pending`/`running`/`completed`, this returns `AlreadyRun` and
-///      does nothing further.
+///   1. Strict completed-marker reuse check, then Run creation
+///      (`create_system_run_in_tx` with running-only generic reuse) under a
+///      freshly ensured/created Semantic Epoch. A completed Run is reused
+///      only when its terminal outcome proves the Backfill boundary; a
+///      `pending`/`running` Run is coalesced by the generic work-key check.
 ///   2. Run the transform itself
 ///      (`backfill_project_semantic_build_graph_in_tx`) in its own
 ///      transaction, so a failure rolls back only its own partial writes,
@@ -210,8 +337,8 @@ struct LegacyProjectionDependency {
 ///      on phase 2 failure, so a failed attempt is visible via a `failed`
 ///      Run row rather than stuck at `running` forever.
 ///
-/// A `failed` Run is not reused by phase 1's `RunningAndCompleted` check,
-/// so a later invocation retries it. The C2-5B phase owner rediscovers this
+/// A `failed` Run is not reused by phase 1's running-only check, so a later
+/// invocation retries it. The C2-5B phase owner rediscovers this
 /// durable work on the next wake/restart and applies the policy's bounded
 /// retry classes (SQLite busy, process interruption, app shutdown, lease
 /// timeout, and transient I/O); an operator can still invoke this entry point
@@ -240,6 +367,9 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
             };
             let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
             let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            if let Some(run_id) = find_valid_completed_backfill_run_id(conn, project_id)? {
+                return Ok((run_id, true));
+            }
             let created = create_system_run_in_tx(
                 conn,
                 project_id,
@@ -248,7 +378,11 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
                 LEGACY_DEPENDENCY_PRODUCER_GENERATION,
                 &spec,
                 &spec_digest,
-                SystemRunWorkKeyReuse::RunningAndCompleted,
+                // Completed rows are reused only through the strict marker
+                // check above. A malformed completed row must not be returned
+                // by generic work-key deduplication, or recovery would keep
+                // rediscovering it without ever dispatching a fresh Backfill.
+                SystemRunWorkKeyReuse::RunningOnly,
                 // No request identity: this Run is started by the system
                 // itself, not by an addressable caller request.
                 None,
@@ -283,6 +417,52 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
         Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
         Err(error) => Err(error),
     }
+}
+
+fn find_valid_completed_backfill_run_id(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let mut statement = conn.prepare(
+        "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
+                completed_at, outcome_summary_json
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = 'backfill'
+            AND work_key = ?2 AND status = 'completed'
+          ORDER BY created_at DESC",
+    )?;
+    let rows = statement.query_map(params![project_id, LEGACY_BACKFILL_WORK_KEY], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, Option<String>>(5)?,
+            row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
+        ))
+    })?;
+    for row in rows {
+        let (run_id, run_kind, status, spec_json, epoch_id, work_key, completed_at, outcome_json) =
+            row?;
+        if is_valid_completed_backfill_marker(
+            conn,
+            project_id,
+            &CompletedBackfillMarker {
+                run_kind: &run_kind,
+                status: &status,
+                spec_json: spec_json.as_deref(),
+                semantic_epoch_id: epoch_id.as_deref(),
+                work_key: work_key.as_deref(),
+                completed_at: completed_at.as_deref(),
+                outcome_summary_json: outcome_json.as_deref(),
+            },
+        )? {
+            return Ok(Some(run_id));
+        }
+    }
+    Ok(None)
 }
 
 /// Finalize one Backfill Run after its independent transform transaction.
@@ -1645,6 +1825,47 @@ mod tests {
             })
             .expect("count backfill runs");
         assert_eq!(run_count, 1, "exactly one backfill run must ever exist");
+    }
+
+    #[test]
+    fn bootstrap_requires_a_supported_completed_at_for_marker_reuse() {
+        for completed_at in [None, Some("not-a-supported-instant")] {
+            let db = test_db();
+            db.with_conn(|conn| {
+                seed_project(conn, "project-1");
+                Ok(())
+            })
+            .expect("seed project");
+
+            let first_run_id =
+                match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+                    .expect("initial bootstrap")
+                {
+                    LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+                    LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                        panic!("initial bootstrap must create a Run")
+                    }
+                };
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET completed_at = ?1 WHERE id = ?2",
+                    params![completed_at, first_run_id],
+                )?;
+                Ok(())
+            })
+            .expect("corrupt completed timestamp");
+
+            let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+                .expect("timestamp-invalid marker must be rerunnable");
+            let second_run_id = match second {
+                LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+                LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                    panic!("timestamp-invalid marker must not be reused")
+                }
+            };
+            assert_ne!(second_run_id, first_run_id);
+        }
     }
 
     #[test]
