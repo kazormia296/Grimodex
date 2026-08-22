@@ -282,6 +282,110 @@ describe("narrative maintenance trigger coordinator", () => {
     coordinator.dispose();
   });
 
+  it("replaces a pending restore follow-up when a new ordinary open arrives", async () => {
+    const scheduler = makeScheduler();
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockResolvedValueOnce(
+        discovery("authority-restore", 5, [[backfill("restore-project", "restore-completed")]]),
+      )
+      .mockResolvedValueOnce(
+        discovery("authority-open", 6, [[backfill("ordinary-project")]]),
+      );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("workspace:opened", { reason: "restore" });
+    await vi.runAllTimersAsync();
+    coordinator.requestRediscovery();
+    await vi.advanceTimersByTimeAsync(100);
+    coordinator.handleBackendEvent("workspace:opened", {});
+    await vi.runAllTimersAsync();
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenNthCalledWith(
+      1,
+      "restore-completed",
+    );
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenNthCalledWith(
+      2,
+      "workspace-opened",
+    );
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledTimes(2);
+    expect(scheduler.requestManyWithBinding).toHaveBeenLastCalledWith(
+      [expect.objectContaining({ projectId: "ordinary-project", reason: "workspace-opened" })],
+      { authorityId: "authority-open", generation: 6 },
+    );
+    coordinator.dispose();
+  });
+
+  it("does not enqueue or mutate the new chain from an old in-flight discovery", async () => {
+    const scheduler = makeScheduler();
+    let resolveOld!: (value: unknown) => void;
+    const oldDiscovery = new Promise<unknown>((resolve) => {
+      resolveOld = resolve;
+    });
+    const discoverNarrativeMaintenanceWork = vi
+      .fn()
+      .mockReturnValueOnce(oldDiscovery)
+      .mockResolvedValueOnce(
+        discovery("authority-new", 9, [[backfill("new-project")]]),
+      );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("workspace:opened", { reason: "restore" });
+    await vi.runOnlyPendingTimersAsync();
+    coordinator.handleBackendEvent("workspace:opened", {});
+    resolveOld(
+      discovery("authority-old", 8, [[backfill("old-project", "restore-completed")]]),
+    );
+    await vi.runAllTimersAsync();
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenNthCalledWith(
+      1,
+      "restore-completed",
+    );
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenNthCalledWith(
+      2,
+      "workspace-opened",
+    );
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledTimes(1);
+    expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "new-project" })],
+      { authorityId: "authority-new", generation: 9 },
+    );
+    expect(scheduler.requestManyWithBinding).not.toHaveBeenCalledWith(
+      [expect.objectContaining({ projectId: "old-project" })],
+      expect.anything(),
+    );
+    coordinator.dispose();
+  });
+
+  it("wakes on the trusted in-session semantic epoch rotation event", async () => {
+    const scheduler = makeScheduler();
+    const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(
+      discovery("authority-live", 10, [[backfill("rotated-project", "semantic-epoch-rotated")]]),
+    );
+    const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+      { discoverNarrativeMaintenanceWork },
+      scheduler,
+    );
+
+    coordinator.handleBackendEvent("narrative-maintenance:epoch-rotated", {
+      projectId: "rotated-project",
+    });
+    await vi.runAllTimersAsync();
+
+    expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
+      "semantic-epoch-rotated",
+    );
+    coordinator.dispose();
+  });
+
   it("clears a completed restore chain before the next ordinary open", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi

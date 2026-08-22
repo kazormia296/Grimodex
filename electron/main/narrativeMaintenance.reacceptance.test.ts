@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   createNarrativeMaintenanceScheduler,
+  NARRATIVE_MAINTENANCE_MAX_RETRIES,
   type NarrativeMaintenanceCycleResult,
   type NarrativeMaintenanceRequest,
 } from "./narrativeMaintenance.js";
@@ -31,6 +32,10 @@ function verify(projectId: string, suffix: string): NarrativeMaintenanceRequest 
 
 function accepted(hasMore = false): NarrativeMaintenanceCycleResult {
   return { status: "accepted", hasMore };
+}
+
+function binding(authorityId: string, generation: number) {
+  return { authorityId, generation };
 }
 
 describe("narrative maintenance reacceptance boundaries", () => {
@@ -179,6 +184,79 @@ describe("narrative maintenance reacceptance boundaries", () => {
     expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toMatchObject({
       workspaceBinding: binding,
     });
+    scheduler.dispose();
+  });
+
+  it("gives a replacement authority a fresh work retry budget for the same key", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(new Error("temporary A/B failure"));
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+    const work = backfill("same-project", "same-key");
+
+    scheduler.requestWithBinding(work, binding("authority-a", 1));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    // Keep A's failed work pending while the replacement authority arrives.
+    scheduler.requestWithBinding(work, binding("authority-b", 2));
+    await vi.advanceTimersByTimeAsync(
+      ERROR_RETRY_DELAY_MS * (NARRATIVE_MAINTENANCE_MAX_RETRIES + 1),
+    );
+
+    const callsFor = (authorityId: string) =>
+      runNarrativeMaintenanceCycle.mock.calls.filter(
+        ([payload]) => payload.workspaceBinding?.authorityId === authorityId,
+      );
+    expect(callsFor("authority-a")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(callsFor("authority-b")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(callsFor("authority-b")[0]?.[0].workspaceBinding).toEqual(
+      binding("authority-b", 2),
+    );
+    scheduler.dispose();
+  });
+
+  it("gives a replacement authority a fresh durable-wake retry budget for the same project", async () => {
+    const runNarrativeMaintenanceCycle = vi.fn().mockImplementation(
+      async (payload: { workspaceBinding?: { authorityId: string }; work: readonly unknown[] }) => {
+        if (payload.work.length > 0) return accepted(true);
+        throw new Error("temporary durable wake failure");
+      },
+    );
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+    const work = backfill("same-project", "same-key");
+
+    scheduler.requestWithBinding(work, binding("authority-a", 1));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    // A hasMore response creates an A-scoped durable wake. Let it fail once,
+    // then enqueue the same durable key from the replacement authority.
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    scheduler.requestWithBinding(work, binding("authority-b", 2));
+    await vi.advanceTimersByTimeAsync(
+      ERROR_RETRY_DELAY_MS * (NARRATIVE_MAINTENANCE_MAX_RETRIES + 1) +
+        BACKLOG_DELAY_MS * 4,
+    );
+
+    const wakeCallsFor = (authorityId: string) =>
+      runNarrativeMaintenanceCycle.mock.calls.filter(
+        ([payload]) =>
+          payload.workspaceBinding?.authorityId === authorityId &&
+          payload.work.length === 0,
+      );
+    expect(wakeCallsFor("authority-a")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
+    expect(wakeCallsFor("authority-b")).toHaveLength(
+      NARRATIVE_MAINTENANCE_MAX_RETRIES + 1,
+    );
     scheduler.dispose();
   });
 });
