@@ -578,6 +578,34 @@ mod tests {
         );
     }
 
+    #[test]
+    fn narrative_recovery_gate_is_authority_identity_scoped() {
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let first = gate.binding_for_authority("authority-one");
+        let key = "narrative-maintenance:v1/backfill/project/key";
+
+        assert_eq!(
+            gate.mode_for_binding(&first, key),
+            RecoveryMode::StartupRecovery
+        );
+        gate.mark_recovered_for_binding(&first, key);
+        assert_eq!(gate.mode_for_binding(&first, key), RecoveryMode::SameProcessLive);
+
+        let second = gate.binding_for_authority("authority-two");
+        assert_ne!(first, second);
+        assert_eq!(
+            gate.mode_for_binding(&second, key),
+            RecoveryMode::StartupRecovery,
+            "an old authority ACK must not recover the replacement authority"
+        );
+        gate.mark_recovered_for_binding(&first, key);
+        assert_eq!(
+            gate.mode_for_binding(&second, key),
+            RecoveryMode::StartupRecovery,
+            "late old-authority ACK must remain harmless"
+        );
+    }
+
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。
     fn uuid_like() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};
