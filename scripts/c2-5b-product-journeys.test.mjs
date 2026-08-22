@@ -9,16 +9,27 @@ import {
 } from "../electron/scripts/product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_FAULTS,
+  NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES,
+  NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER,
+  NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
   NARRATIVE_MAINTENANCE_INTERRUPTED_CODE,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+  NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
   NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS,
   NARRATIVE_MAINTENANCE_SEAM_CONTRACT,
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
+  assertForegroundRunMarker,
+  assertTerminalFailureEvidence,
+  assertTransientAttemptEvidence,
+  foregroundMarkedRuns,
+  terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
+  NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
   PRODUCT_DOMAIN_RULES,
@@ -77,34 +88,150 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
     "c2-5b-product-journey-owner-v1",
   );
   assert.equal(
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_BARRIER_ENV,
+    "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID",
+  );
+  assert.equal(
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CORRELATION_ENV,
+    "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_CORRELATION",
+  );
+  assert.equal(
     NARRATIVE_MAINTENANCE_SEAM_CONTRACT.jsDigestAuthority,
     "durable native outcome skipEvidence fields",
+  );
+  assert.equal(NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER, "workspace-opened");
+  assert.deepEqual(NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER, [
+    "trigger",
+    "canonicalWorkKey",
+    "authorityId",
+    "generation",
+    "productJourneyBarrierId",
+    "correlation",
+  ]);
+});
+
+test("foreground marker selects one native Run by immutable barrier, not row order", () => {
+  const expected = {
+    barrierId: "barrier-unique",
+    correlation: "correlation-unique",
+    trigger: "workspace-opened",
+  };
+  const unrelatedFreshness = {
+    id: "freshness-unrelated",
+    projectId: "project-1",
+    runKind: "freshness-evaluation",
+    workKey: "incremental-freshness",
+    semanticEpochId: "epoch-1",
+    status: "running",
+    specJson: JSON.stringify({ domain: "freshness" }),
+  };
+  const markedRun = {
+    id: "marked-run",
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-1",
+    status: "running",
+    specJson: JSON.stringify({
+      systemWork: {
+        trigger: "workspace-opened",
+        canonicalWorkKey:
+          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1",
+        authorityId: "authority-1",
+        generation: 7,
+        productJourneyBarrierId: expected.barrierId,
+        correlation: expected.correlation,
+      },
+    }),
+  };
+  const selected = foregroundMarkedRuns(
+    [unrelatedFreshness, markedRun],
+    [],
+    expected,
+  );
+  assert.deepEqual(selected.map((run) => run.id), ["marked-run"]);
+  assert.equal(
+    assertForegroundRunMarker(markedRun, expected).marker.authorityId,
+    "authority-1",
+  );
+  assert.throws(
+    () =>
+      assertForegroundRunMarker(
+        {
+          ...markedRun,
+          specJson: JSON.stringify({
+            systemWork: {
+              ...JSON.parse(markedRun.specJson).systemWork,
+              productJourneyBarrierId: "wrong-barrier",
+            },
+          }),
+        },
+        expected,
+      ),
+    /productJourneyBarrierId/,
+  );
+});
+
+test("transient and terminal validators reject fallback and same-millisecond false greens", () => {
+  assert.throws(
+    () =>
+      assertTransientAttemptEvidence({
+        terminalReasonCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+        lastAttemptStatus: "failed",
+        lastAttemptFailureCode: null,
+        attemptCount: 2,
+        maxAttemptNumber: 2,
+      }),
+    /exact NEX_MAINTENANCE_TRANSIENT/,
+  );
+  assert.throws(
+    () =>
+      assertTerminalFailureEvidence({
+        status: "failed",
+        terminalReasonCode: NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+        completedAt: null,
+      }),
+    /completedAt/,
+  );
+  const failed = {
+    id: "failed-run",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+  };
+  assert.deepEqual(
+    terminalRetryCandidates(
+      [
+        failed,
+        { ...failed, id: "same-ms-retry" },
+        {
+          ...failed,
+          id: "other-work",
+          workKey: "different-work",
+        },
+      ],
+      failed,
+    ).map((run) => run.id),
+    ["same-ms-retry"],
   );
 });
 
 test("every actual C2-5B Electron launch phase is registered for diagnostics", () => {
-  const requiredPhases = [
-    "c2-5b-schema-backfill-verify/open",
-    "c2-5b-restore-verify-rebuild-verify/open",
-    "c2-5b-graph-digest-no-skip/baseline",
-    "c2-5b-graph-digest-no-skip/changed",
-    "c2-5b-rule-digest-no-skip/baseline",
-    "c2-5b-rule-digest-no-skip/changed",
-    "c2-5b-producer-generation-no-skip/baseline",
-    "c2-5b-producer-generation-no-skip/changed",
-    "c2-5b-transient-bounded-retry/open",
-    "c2-5b-terminal-failure-inbox/open",
-    "c2-5b-terminal-failure-inbox/reopened",
-    "c2-5b-interrupted-run-recovery/interrupted",
-    "c2-5b-interrupted-run-recovery/recovered",
-    "c2-5b-no-automatic-repair/open",
-    "c2-5b-foreground-write-workspace-wake/authoring",
-    "c2-5b-incremental-liveness/before-restart",
-    "c2-5b-incremental-liveness/after-restart",
-  ];
-  for (const phase of requiredPhases) {
+  assert.equal(
+    new Set(NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES).size,
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.length,
+    "C2-5B launch phases must be unique",
+  );
+  for (const phase of NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES) {
     assert.ok(PRODUCT_JOURNEY_ELECTRON_PHASES.includes(phase), phase);
   }
+  const registeredC2Phases = PRODUCT_JOURNEY_ELECTRON_PHASES.filter((phase) =>
+    phase.startsWith("c2-5b-"),
+  );
+  assert.deepEqual(
+    registeredC2Phases,
+    NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES,
+    "C2-5B launch phase registry must stay in parity with the runner",
+  );
 });
 
 test("c2-5b runner IDs are wired to the central catalog and impact selector", () => {
@@ -152,23 +279,28 @@ test("maintenance source changes select the executable C2-5B journey subset", ()
 });
 
 test("C2-5B runtime/semantic impact is direct for every launch owner path", async () => {
-  const impactMap = parseImpactMap(
-    await readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
-  );
+  const [impactSource, qualityManifest] = await Promise.all([
+    readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const impactMap = parseImpactMap(impactSource);
   const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
     (journey) => journey.id,
   );
   const ownerPaths = [
-    "electron/main/index.ts",
-    "electron/main/narrativeMaintenance.ts",
-    "electron/main/narrativeMaintenance.test.ts",
-    "electron/main/narrativeMaintenanceTriggers.ts",
-    "electron/main/narrativeMaintenanceTriggers.test.ts",
+    ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
     "src-tauri/crates/grimodex-db/src/migrate.rs",
     "src-tauri/crates/grimodex-core/src/workspace_schema.rs",
     "src-tauri/crates/grimodex-db/src/backup_restore.rs",
   ];
   for (const changedPath of ownerPaths) {
+    assert.ok(
+      qualityManifest.includes(`- ${changedPath}`),
+      `${changedPath} must remain traceable in the quality manifest`,
+    );
     const productSelection = selectProductJourneys({
       catalog: PRODUCT_JOURNEY_CATALOG,
       domainRules: PRODUCT_DOMAIN_RULES,

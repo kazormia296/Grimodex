@@ -221,6 +221,11 @@ requirements:
       - electron/main/index.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
@@ -475,6 +480,11 @@ requirements:
       - electron/main/index.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
+      - electron/main/narrativeMaintenance.phase1.test.ts
+      - electron/main/narrativeMaintenance.followup.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.test.ts
+      - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
+      - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - scripts/quality/validate-execution-state-authority.mjs

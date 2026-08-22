@@ -276,6 +276,25 @@ export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
 ]);
 
 /**
+ * Every main-process maintenance owner is a direct C2-5B impact source.  The
+ * trigger and reacceptance paths are listed even when their production seam is
+ * still landing on the integration branch, so an isolated change cannot fall
+ * through to an unrelated/default selector.
+ */
+export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
+  "electron/main/index.ts",
+  "electron/main/narrativeMaintenance.ts",
+  "electron/main/narrativeMaintenance.test.ts",
+  "electron/main/narrativeMaintenance.phase1.test.ts",
+  "electron/main/narrativeMaintenance.followup.test.ts",
+  "electron/main/narrativeMaintenance.reacceptance.test.ts",
+  "electron/main/narrativeMaintenance.reacceptance.wire.test.ts",
+  "electron/main/narrativeMaintenance.wiring.test.ts",
+  "electron/main/narrativeMaintenanceTriggers.ts",
+  "electron/main/narrativeMaintenanceTriggers.test.ts",
+]);
+
+/**
  * Rules are deliberately explicit. A path is safe to skip only when it
  * matches a neutral rule; every unknown path falls back to the full catalog.
  */
@@ -322,11 +341,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "scripts/product-journey-phase1.test.mjs",
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
-      "electron/main/index.ts",
-      "electron/main/narrativeMaintenance.ts",
-      "electron/main/narrativeMaintenance.test.ts",
-      "electron/main/narrativeMaintenanceTriggers.ts",
-      "electron/main/narrativeMaintenanceTriggers.test.ts",
+      ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
       "electron/native/grimodex-node/**",
       "src-tauri/crates/grimodex-db/src/migrate.rs",
       "src-tauri/crates/grimodex-db/src/backup_restore.rs",
