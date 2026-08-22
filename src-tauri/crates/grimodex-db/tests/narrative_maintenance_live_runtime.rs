@@ -118,7 +118,7 @@ fn startup_cycle_recovers_an_interrupted_run_before_reusing_work_identity() {
 }
 
 #[test]
-fn verify_and_rebuild_are_deferred_without_dispatching_adapters() {
+fn verify_and_rebuild_return_typed_deferred_without_dispatching_adapters() {
     let db = fixture_db();
     let request: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
         "work": [
@@ -143,7 +143,7 @@ fn verify_and_rebuild_are_deferred_without_dispatching_adapters() {
 
     let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
         .expect("deferred maintenance cycle");
-    assert_eq!(result, MaintenanceCycleResult::accepted(false));
+    assert_eq!(result, MaintenanceCycleResult::deferred(true));
     let run_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
