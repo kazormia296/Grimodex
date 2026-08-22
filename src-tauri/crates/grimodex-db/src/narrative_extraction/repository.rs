@@ -403,23 +403,39 @@ fn next_system_run_timestamp(conn: &Connection, project_id: &str) -> anyhow::Res
     let now_millis = DateTime::<Utc>::from_timestamp_millis(now.timestamp_millis())
         .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: current clock"))?;
     let mut statement = conn.prepare(
-        "SELECT COALESCE(completed_at, started_at, created_at)
+        "SELECT created_at, started_at, completed_at
            FROM narrative_extraction_runs
           WHERE project_id = ?1
             AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')",
     )?;
-    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
+    let rows = statement.query_map(params![project_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    })?;
     let mut latest = None;
     for row in rows {
-        let value = row?;
+        let (created_at, started_at, completed_at) = row?;
         // A malformed terminal row cannot be a reusable marker and must not
-        // prevent a fresh system Run from being created. Discovery performs
-        // the strict maximal-candidate check after trusted coordinates are
-        // filtered; this monotonic timestamp helper only needs valid rows.
-        let Ok(parsed) = parse_maintenance_instant(&value) else {
-            continue;
-        };
-        latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
+        // prevent a fresh system Run from being created. Preserve every
+        // independently valid lifecycle component, though: a malformed
+        // completed_at must not hide a valid future created_at/started_at
+        // authority used to keep system timestamps monotonic.
+        for value in [
+            Some(created_at.as_str()),
+            started_at.as_deref(),
+            completed_at.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let Ok(parsed) = parse_maintenance_instant(value) else {
+                continue;
+            };
+            latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
+        }
     }
     let next = latest
         .map(|latest| {

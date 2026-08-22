@@ -4,10 +4,14 @@
 //! commit: they pin the review fixes before the runtime implementation moves
 //! again.
 
-use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
-    run_system_work_cycle, AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleResult,
-    MaintenanceCycleStatus, RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
+    discover_durable_maintenance_work, run_system_work_cycle, AutomaticRunKind,
+    MaintenanceCycleRequest, MaintenanceCycleResult, MaintenanceCycleStatus, RecoveryMode,
+    LEGACY_BACKFILL_WORK_KEY,
+};
+use grimodex_db::narrative_extraction::{
+    bootstrap_legacy_dependency_backfill_for_project, ensure_test_schema,
+    LegacyBackfillBootstrapOutcome,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -71,6 +75,26 @@ fn seed_completed_backfill(db: &Database) {
         Ok(())
     })
     .expect("seed completed Backfill boundary");
+}
+
+fn seed_future_malformed_backfill(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at,
+                 outcome_summary_json, run_kind, semantic_epoch_id, work_key)
+             VALUES ('future-malformed-completed-at', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
+                     'not-an-instant',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+            params![PROJECT_ID, EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed future Backfill with malformed completed_at");
 }
 
 #[test]
@@ -311,6 +335,46 @@ fn malformed_completed_backfill_timestamp_is_not_reused_and_cycle_is_bounded() {
         assert_eq!(run_count, 2);
         assert_eq!(valid_completed_count, 1);
     }
+}
+
+#[test]
+fn malformed_completed_at_does_not_hide_a_future_backfill_lifecycle() {
+    let db = Arc::new(fixture_db());
+    seed_future_malformed_backfill(&db);
+
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
+        .expect("future malformed Backfill must complete one bounded cycle");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert!(!result.has_more);
+
+    let fresh_lifecycle: (String, String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT created_at, started_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill'
+                    AND id != 'future-malformed-completed-at'
+                  ORDER BY created_at DESC LIMIT 1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read fresh Backfill lifecycle");
+    assert!(fresh_lifecycle.0.as_str() > "2099-01-01T00:00:00.000Z");
+    assert!(fresh_lifecycle.1.as_str() > "2099-01-01T00:00:00.000Z");
+
+    let discovery_db = fixture_db();
+    seed_future_malformed_backfill(&discovery_db);
+    assert!(matches!(
+        bootstrap_legacy_dependency_backfill_for_project(&discovery_db, PROJECT_ID)
+            .expect("rerun malformed future Backfill"),
+        LegacyBackfillBootstrapOutcome::Ran { .. }
+    ));
+    let next = discover_durable_maintenance_work(&discovery_db, PROJECT_ID, "durable-wake")
+        .expect("discover after future Backfill")
+        .expect("future Backfill must hand off to Verify");
+    assert_eq!(next.run_kind, AutomaticRunKind::Verify);
+    assert_eq!(next.semantic_epoch_id.as_deref(), Some(EPOCH_ID));
 }
 
 #[test]

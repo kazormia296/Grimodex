@@ -363,7 +363,6 @@ struct DurableMaintenanceRun {
     completed_at: Option<String>,
     created_at_raw: String,
     started_at_raw: Option<String>,
-    lifecycle_at_raw: String,
 }
 
 fn load_durable_maintenance_runs(
@@ -405,12 +404,6 @@ fn load_durable_maintenance_runs(
             started_at,
             completed_at,
         ) = row?;
-        let lifecycle_at_raw = completed_at
-            .clone()
-            .as_deref()
-            .or(started_at.as_deref())
-            .unwrap_or(created_at_raw.as_str())
-            .to_string();
         let run = DurableMaintenanceRun {
             run_id,
             run_kind,
@@ -422,7 +415,6 @@ fn load_durable_maintenance_runs(
             completed_at,
             created_at_raw,
             started_at_raw: started_at,
-            lifecycle_at_raw,
         };
         validate_active_maintenance_run(&run)?;
         runs.push(run);
@@ -527,34 +519,26 @@ fn select_latest_relevant_run(
     // participate in this ordering.
     let mut temporal = Vec::with_capacity(relevant.len());
     for run in relevant {
-        let (lifecycle_at, lifecycle_timestamp_invalid) =
-            match parse_maintenance_instant(&run.lifecycle_at_raw) {
-                Ok(lifecycle_at) => (
-                    lifecycle_at,
-                    run.status == "completed" && run.completed_at.is_none(),
-                ),
-                Err(_error)
-                    if run.run_kind == "backfill"
-                        && run.status == "completed"
-                        && run.completed_at.is_some() =>
-                {
-                    // A malformed Backfill completion is not a reusable
-                    // marker. Keep a parseable creation/start instant only
-                    // long enough to order it against a fresh rerun; if it
-                    // remains maximal, fail closed below instead of letting a
-                    // bad timestamp select or skip work.
-                    let fallback_raw = run
-                        .started_at_raw
-                        .as_deref()
-                        .unwrap_or(run.created_at_raw.as_str());
-                    let fallback_at = parse_maintenance_instant(fallback_raw)?;
-                    (fallback_at, true)
-                }
-                Err(error) => {
-                    return Err(error);
-                }
-            };
         let created_at = parse_maintenance_instant(&run.created_at_raw)?;
+        let mut lifecycle_instants = vec![created_at];
+        let mut lifecycle_timestamp_invalid = false;
+        if let Some(completed_at) = run.completed_at.as_deref() {
+            match parse_maintenance_instant(completed_at) {
+                Ok(completed_at) => lifecycle_instants.push(completed_at),
+                Err(_) => lifecycle_timestamp_invalid = true,
+            }
+        } else if run.status == "completed" {
+            lifecycle_timestamp_invalid = true;
+        }
+        if let Some(started_at) = run.started_at_raw.as_deref() {
+            if let Ok(started_at) = parse_maintenance_instant(started_at) {
+                lifecycle_instants.push(started_at);
+            }
+        }
+        let lifecycle_at = lifecycle_instants
+            .into_iter()
+            .max()
+            .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
         temporal.push((lifecycle_at, created_at, run, lifecycle_timestamp_invalid));
     }
     let max_lifecycle = temporal
@@ -578,9 +562,11 @@ fn select_latest_relevant_run(
         max_lifecycle.0.to_rfc3339()
     );
     if let Some((run, true)) = maximal.iter().find(|(_, invalid)| *invalid) {
-        parse_maintenance_instant(&run.lifecycle_at_raw)?;
+        if let Some(completed_at) = run.completed_at.as_deref() {
+            parse_maintenance_instant(completed_at)?;
+        }
         anyhow::bail!(
-            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: completed Backfill Run '{}' has no supported completed_at",
+            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: Run '{}' has no supported completed_at",
             run.run_id
         );
     }
