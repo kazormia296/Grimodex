@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
@@ -29,6 +29,7 @@ import {
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
+  NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   PRODUCT_JOURNEY_CATALOG,
@@ -334,6 +335,80 @@ test("C2-5B runtime/semantic impact is direct for every launch owner path", asyn
     assert.ok(
       qualitySelection.suiteIds.includes("narrative-semantic-contract"),
       changedPath,
+    );
+  }
+});
+
+test("future narrativeMaintenance files route directly without safe-all fallback", async () => {
+  const impactMap = parseImpactMap(
+    await readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
+  );
+  const changedPath =
+    "electron/main/narrativeMaintenance.futureRegression.test.ts";
+  const expectedIds = NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
+    (journey) => journey.id,
+  );
+  const productSelection = selectProductJourneys({
+    catalog: PRODUCT_JOURNEY_CATALOG,
+    domainRules: PRODUCT_DOMAIN_RULES,
+    changedPaths: [changedPath],
+    mode: "affected",
+  });
+  assert.deepEqual(productSelection.journeyIds, expectedIds);
+  assert.equal(productSelection.fallback, false);
+  assert.equal(productSelection.allSelected, false);
+  assert.ok(
+    productSelection.matchedRuleIds.includes(
+      "narrative-maintenance-product-journeys",
+    ),
+  );
+  const qualitySelection = selectImpact(impactMap, [changedPath]);
+  assert.equal(qualitySelection.fallback, false);
+  assert.ok(
+    qualitySelection.matchedRuleIds.includes("narrative-runtime-authority"),
+  );
+  assert.ok(
+    qualitySelection.matchedRuleIds.includes("narrative-semantic-contract"),
+  );
+  assert.ok(qualitySelection.suiteIds.includes("narrative-runtime"));
+  assert.ok(
+    qualitySelection.suiteIds.includes("narrative-semantic-contract"),
+  );
+  assert.ok(
+    PRODUCT_DOMAIN_RULES.find(
+      (rule) => rule.id === "narrative-maintenance-product-journeys",
+    )?.paths.includes(NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB),
+  );
+});
+
+test("current narrativeMaintenance inventory remains explicit in the quality manifest", async () => {
+  const [entries, qualityManifest] = await Promise.all([
+    readdir(new URL("../electron/main/", import.meta.url), {
+      withFileTypes: true,
+    }),
+    readFile(
+      new URL("../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const currentInventory = entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        entry.name.startsWith("narrativeMaintenance") &&
+        entry.name.endsWith(".ts"),
+    )
+    .map((entry) => `electron/main/${entry.name}`)
+    .sort();
+  assert.ok(currentInventory.length > 0);
+  for (const path of currentInventory) {
+    assert.ok(
+      NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS.includes(path),
+      `${path} must be represented by the explicit maintenance owner inventory`,
+    );
+    assert.ok(
+      qualityManifest.includes(`- ${path}`),
+      `${path} must remain an explicit quality-manifest implementation path`,
     );
   }
 });

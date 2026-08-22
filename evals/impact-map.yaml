@@ -225,6 +225,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/main/index.ts
+      - electron/main/narrativeMaintenance*.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts
@@ -395,6 +396,7 @@ rules:
       - scripts/quality/validate-execution-state-authority.test.mjs
       - src/features/narrative-extraction/**
       - electron/main/index.ts
+      - electron/main/narrativeMaintenance*.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts

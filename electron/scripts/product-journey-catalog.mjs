@@ -293,6 +293,8 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
 ]);
+export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB =
+  "electron/main/narrativeMaintenance*.ts";
 
 /**
  * Rules are deliberately explicit. A path is safe to skip only when it
@@ -341,6 +343,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "scripts/product-journey-phase1.test.mjs",
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
+      NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
       ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
       "electron/native/grimodex-node/**",
       "src-tauri/crates/grimodex-db/src/migrate.rs",
