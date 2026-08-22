@@ -427,6 +427,11 @@ pub struct AppState {
     /// Workspace-generation-scoped startup-recovery gate for the main-only
     /// narrative maintenance cycle.
     pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// Serializes the two N-API mutation adapters that may rotate a
+    /// Narrative Semantic Epoch. The lock covers the idempotency preflight
+    /// and the shared-Rust transaction so exactly one first execution emits
+    /// the observer-only main wake; replays/no-ops do not emit it.
+    pub narrative_maintenance_mutation_lock: Mutex<()>,
 }
 
 impl AppState {
@@ -505,6 +510,7 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_mutation_lock: Mutex::new(()),
         })
     }
 }

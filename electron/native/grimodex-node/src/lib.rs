@@ -17,6 +17,7 @@
 mod convert;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
+mod narrative_maintenance;
 mod post_effect_runtime;
 mod state;
 #[cfg(test)]
@@ -62,11 +63,11 @@ use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
     ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
-    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -106,9 +107,58 @@ use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
 
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
+}
+
+fn narrative_maintenance_binding_for_authority(
+    state: &AppState,
+    authority: &PinnedWorkspaceDb,
+) -> MaintenanceWorkspaceBinding {
+    state
+        .narrative_maintenance_recovery_gate
+        .binding_for_authority(&narrative_authority_id(authority))
+}
+
+fn idempotency_receipt_exists(
+    db: &Database,
+    domain: &str,
+    request_id: &str,
+) -> anyhow::Result<bool> {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM idempotency_requests
+                 WHERE domain = ?1 AND request_id = ?2
+            )",
+            [domain, request_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0)
+    })
+}
+
+fn emit_narrative_epoch_rotated(
+    state: &AppState,
+    binding: &MaintenanceWorkspaceBinding,
+    project_id: &str,
+    operation: &str,
+) {
+    state.events.emit(
+        NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT,
+        serde_json::json!({
+            "projectId": project_id,
+            "operation": operation,
+            "reason": "semantic-epoch-rotated",
+            "authorityId": binding.authority_id,
+            "generation": binding.generation,
+        }),
+    );
+}
+
+fn should_emit_narrative_epoch_rotated(replayed: bool, changed: bool) -> bool {
+    !replayed && changed
 }
 
 fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
@@ -1680,6 +1730,73 @@ impl Backend {
             .map_err(|error| napi::Error::from_reason(error.to_string()))
     }
 
+    /// Main-process-only workspace-wide maintenance discovery.
+    ///
+    /// The active `WorkspaceAuthority` is pinned once for the complete
+    /// enumeration and planner pass. The returned binding is the recovery
+    /// generation paired with that exact authority; callers must pass it back
+    /// unchanged to `run_narrative_maintenance_cycle`. Renderer/preload never
+    /// receives this method or supplies project/path/phase data.
+    #[napi]
+    pub async fn discover_narrative_maintenance_work(&self, reason: String) -> Result<String> {
+        let wake_reason = narrative_maintenance::WakeReason::parse(&reason)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let authority_id = narrative_authority_id(&snapshot.authority);
+            let binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&authority_id);
+            // The binding gate and workspace state are separate locks. Re-pin
+            // the active snapshot after binding so a swap in that interval
+            // cannot return an old authority paired with a new generation.
+            // Fail closed; main will park the wake and rediscover after open.
+            let current_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-snapshot-changed",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let current_binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&current_snapshot.authority));
+            if !Arc::ptr_eq(&snapshot.authority, &current_snapshot.authority)
+                || binding != current_binding
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            let discovery =
+                narrative_maintenance::discover_all(snapshot.authority.db(), binding, wake_reason)
+                    .map_err(AppError::Anyhow)?;
+            serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
+        })
+        .await
+    }
+
     /// Electron main-only serialized system-work cycle.
     ///
     /// The request is validated in shared Rust, then executed against one
@@ -2346,11 +2463,30 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: ApplyProjectSnapshotRestorePayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
-                Ok(serde_json::to_string(
-                    &project_snapshots::apply_project_snapshot_restore(db, payload)?,
-                )?)
-            })
+            let project_id = payload.project_id.clone();
+            let request_id = payload.request_id.clone();
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let authority = active_database(&state.ws)?;
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let (result, replayed) = {
+                let db = authority.db();
+                let replayed =
+                    idempotency_receipt_exists(db, "project_snapshot_restore", &request_id)?;
+                let result = project_snapshots::apply_project_snapshot_restore(db, payload)?;
+                (result, replayed)
+            };
+            if should_emit_narrative_epoch_rotated(replayed, !result.no_op) {
+                emit_narrative_epoch_rotated(
+                    &state,
+                    &binding,
+                    &project_id,
+                    "project-snapshot-restore",
+                );
+            }
+            Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -3243,10 +3379,28 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let payload: RepairIntegrityPayload = from_wire("payload", payload)?;
-            with_db_state(&state.ws, |db| {
+            let project_id = payload.project_id.clone();
+            let request_id = payload.request_id.clone();
+            let _mutation_guard = state
+                .narrative_maintenance_mutation_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let authority = active_database(&state.ws)?;
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let (report, replayed) = {
+                let db = authority.db();
+                let replayed = idempotency_receipt_exists(db, "repair_integrity", &request_id)?;
                 let report = db.repair_integrity(payload)?;
-                Ok(serde_json::to_string(&report)?)
-            })
+                (report, replayed)
+            };
+            let changed = report.codex_sources_fixed > 0
+                || report.snippet_sources_fixed > 0
+                || report.snippet_scenes_fixed > 0
+                || report.change_event_uid.is_some();
+            if should_emit_narrative_epoch_rotated(replayed, changed) {
+                emit_narrative_epoch_rotated(&state, &binding, &project_id, "integrity-repair");
+            }
+            Ok(serde_json::to_string(&report).map_err(anyhow::Error::from)?)
         })
         .await
     }
@@ -7393,5 +7547,18 @@ mod semantic_reranker_lane_tests {
 
         drop(backend);
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod narrative_maintenance_epoch_event_tests {
+    use super::should_emit_narrative_epoch_rotated;
+
+    #[test]
+    fn emission_requires_a_first_successful_changed_mutation() {
+        assert!(should_emit_narrative_epoch_rotated(false, true));
+        assert!(!should_emit_narrative_epoch_rotated(true, true));
+        assert!(!should_emit_narrative_epoch_rotated(false, false));
+        assert!(!should_emit_narrative_epoch_rotated(true, false));
     }
 }

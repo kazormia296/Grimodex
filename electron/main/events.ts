@@ -20,6 +20,10 @@ import {
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 
+/** Native completion signal consumed by main only; never broadcast to a window. */
+export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
+  "narrative-maintenance:epoch-rotated";
+
 /** 全窓（送信元含む）へ 1 イベントを配信する。 */
 export function broadcastEvent(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -115,7 +119,11 @@ function handleBackendEvent(
   payloadJson: unknown,
   observer?: (channel: string, payload: unknown) => void,
 ): void {
-  if (typeof channel !== "string" || !isAllowedBackendEventChannel(channel)) {
+  const observerOnly = channel === NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT;
+  if (
+    typeof channel !== "string" ||
+    (!observerOnly && !isAllowedBackendEventChannel(channel))
+  ) {
     console.warn(
       `[backend:event] dropped non-allowlisted channel: ${String(channel)}`,
     );
@@ -138,6 +146,7 @@ function handleBackendEvent(
       `[backend:event] observer failed on ${channel}: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
+  if (observerOnly) return;
   broadcastEvent(channel, payload);
 }
 

@@ -49,6 +49,11 @@ export declare class Backend {
   /** Main-only enqueue snapshot for serialized maintenance work. */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
   /**
+   * Main-process-only workspace-wide discovery. The returned page is bound to
+   * one pinned authority generation and is never registered as renderer IPC.
+   */
+  discoverNarrativeMaintenanceWork(reason: string): Promise<string>
+  /**
    * Electron main-only serialized system-work cycle. The payload is the
    * coalesced project-scoped work DTO; renderer/preload never receives this
    * method and the native implementation executes only on the live workspace
