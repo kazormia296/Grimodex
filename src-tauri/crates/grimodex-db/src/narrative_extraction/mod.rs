@@ -126,7 +126,7 @@ pub use c2z_preparation::{
     RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
     WorkspaceCutoverReadiness, APPLICATION_CONSUMER_KIND, REQUIRED_VERIFY_CHECKS,
 };
-pub use inbox_read_model::{build_maintenance_inbox, InboxEntry};
+pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
     IncrementalFreshnessCycleOutcome,

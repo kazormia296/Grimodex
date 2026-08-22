@@ -114,11 +114,22 @@ use super::attention::{
 use super::consumer_identity::consumer_finding_key;
 use super::evaluator::{BuildAction, EvidenceFreshness};
 use super::finding_observation::{
-    latest_finding_lifecycle_for_identity, list_observations_for_epoch,
+    latest_finding_lifecycle_for_identity, latest_terminal_failure_lifecycle_for_identity,
+    latest_terminal_failure_observation_order, list_observations_for_epoch,
     list_terminal_failure_finding_keys_for_epoch, FindingLifecycleState, FindingObservationRow,
 };
 use super::semantic_epoch::get_current_epoch;
 use super::terminal_failure::TERMINAL_FAILURE_CONSUMER_KIND;
+
+/// Identifies which read authority produced an Inbox entry. Terminal failure
+/// entries are Observation/lifecycle projections, not Consumer Freshness
+/// rows, so they deliberately carry no freshness or build-action value.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InboxEntryKind {
+    ConsumerFreshness,
+    TerminalFailure,
+}
 
 /// One `narrative_consumer_freshness` row exactly as stored -- the current
 /// Freshness authority (see module docs). A pure read; this function never
@@ -201,10 +212,11 @@ pub(crate) fn list_consumer_freshness(
 /// N-API binding (C2-T1).
 #[derive(Debug, Clone, Eq, PartialEq, Serialize)]
 pub struct InboxEntry {
+    pub entry_kind: InboxEntryKind,
     pub consumer_kind: String,
     pub consumer_key: String,
-    pub evidence_freshness: String,
-    pub build_action: String,
+    pub evidence_freshness: Option<String>,
+    pub build_action: Option<String>,
     pub finding_key: String,
     pub latest_observation: Option<FindingObservationRow>,
     pub attention: Option<AttentionRow>,
@@ -232,7 +244,8 @@ fn active_finding_observations<'a>(
     bool,
     Option<&'a FindingObservationRow>,
 )> {
-    let mut latest_by_identity = BTreeMap::new();
+    let mut observations_by_identity: BTreeMap<String, Vec<&FindingObservationRow>> =
+        BTreeMap::new();
     let mut has_unresolved_identity = false;
 
     for observation in observations {
@@ -240,15 +253,71 @@ fn active_finding_observations<'a>(
             has_unresolved_identity = true;
             continue;
         };
-        // Observations are ordered oldest first, so the final row inserted for
-        // an identity is its freshest current-epoch evidence.
-        latest_by_identity.insert(finding_identity.to_string(), observation);
+        observations_by_identity
+            .entry(finding_identity.to_string())
+            .or_default()
+            .push(observation);
     }
 
-    let mut active_observations = Vec::with_capacity(latest_by_identity.len());
-    for (finding_identity, observation) in latest_by_identity {
-        let latest_lifecycle =
-            latest_finding_lifecycle_for_identity(conn, project_id, &finding_identity)?;
+    let mut active_observations = Vec::with_capacity(observations_by_identity.len());
+    for (finding_identity, candidates) in observations_by_identity {
+        let is_terminal = candidates.iter().any(|observation| {
+            observation.rule_id == super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_ID
+        });
+        let observation = if is_terminal {
+            anyhow::ensure!(
+                candidates.iter().all(|candidate| {
+                    candidate.rule_id
+                        == super::finding_identity::MAINTENANCE_FAILURE_FINDING_RULE_ID
+                }),
+                "NEX_FINDING_OBSERVATION_RULE_COLLISION: terminal identity has a non-terminal observation"
+            );
+            let candidate = candidates[0];
+            let Some((latest_observed_at, latest_basis)) =
+                latest_terminal_failure_observation_order(
+                    conn,
+                    project_id,
+                    &candidate.semantic_epoch_id,
+                    &finding_identity,
+                    &candidate.finding_key,
+                    &candidate.rule_id,
+                    candidate.rule_version,
+                )?
+            else {
+                anyhow::bail!(
+                    "NEX_FINDING_OBSERVATION_ORDER_MISSING: terminal identity has no durable latest observation"
+                );
+            };
+            candidates
+                .into_iter()
+                .find(|candidate| {
+                    candidate.observed_at == latest_observed_at
+                        && candidate.material_basis_digest == latest_basis
+                })
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_FINDING_OBSERVATION_ORDER_MISSING: latest terminal observation is not in the read model"
+                    )
+                })?
+        } else {
+            // Edge-scoped observations retain the existing diagnostic ordering
+            // contract; only terminal failures require strict timestamp
+            // uniqueness because their code is a durable Inbox fact.
+            candidates.last().copied().ok_or_else(|| {
+                anyhow::anyhow!("NEX_FINDING_OBSERVATION_MISSING: identity has no observation")
+            })?
+        };
+        let latest_lifecycle = if is_terminal {
+            latest_terminal_failure_lifecycle_for_identity(
+                conn,
+                project_id,
+                &finding_identity,
+                &observation.finding_key,
+                &observation.semantic_epoch_id,
+            )?
+        } else {
+            latest_finding_lifecycle_for_identity(conn, project_id, &finding_identity)?
+        };
         let is_proven_resolved = latest_lifecycle.as_ref().is_some_and(|row| {
             row.state == FindingLifecycleState::Resolved
                 && row.semantic_epoch_id == observation.semantic_epoch_id
@@ -357,10 +426,11 @@ pub fn build_maintenance_inbox(
         }
 
         entries.push(InboxEntry {
+            entry_kind: InboxEntryKind::ConsumerFreshness,
             consumer_kind: row.consumer_kind,
             consumer_key: row.consumer_key,
-            evidence_freshness: row.evidence_freshness.as_str().to_string(),
-            build_action: row.build_action.as_str().to_string(),
+            evidence_freshness: Some(row.evidence_freshness.as_str().to_string()),
+            build_action: Some(row.build_action.as_str().to_string()),
             finding_key,
             latest_observation,
             attention,
@@ -412,10 +482,11 @@ pub fn build_maintenance_inbox(
             })?
             .to_string();
         entries.push(InboxEntry {
+            entry_kind: InboxEntryKind::TerminalFailure,
             consumer_kind: TERMINAL_FAILURE_CONSUMER_KIND.to_string(),
             consumer_key,
-            evidence_freshness: EvidenceFreshness::Unknown.as_str().to_string(),
-            build_action: BuildAction::Manual.as_str().to_string(),
+            evidence_freshness: None,
+            build_action: None,
             finding_key,
             latest_observation: Some(latest_observation),
             attention,
@@ -599,8 +670,8 @@ mod tests {
             let entry = &entries[0];
             assert_eq!(entry.consumer_kind, "proposal");
             assert_eq!(entry.consumer_key, "proposal-1");
-            assert_eq!(entry.evidence_freshness, "fresh");
-            assert_eq!(entry.build_action, "none");
+            assert_eq!(entry.evidence_freshness.as_deref(), Some("fresh"));
+            assert_eq!(entry.build_action.as_deref(), Some("none"));
             assert_eq!(entry.finding_key, "proposal:proposal-1");
             assert!(entry.latest_observation.is_none());
             assert!(entry.attention.is_none());

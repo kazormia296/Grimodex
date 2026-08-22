@@ -4055,10 +4055,7 @@ mod tests {
                         "UPDATE narrative_extraction_runs
                             SET terminal_reason_code = ?1
                           WHERE id = ?2",
-                        params![
-                            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
-                            run_id
-                        ],
+                        params!["NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION", run_id],
                     )?;
                     Ok(run_id)
                 })
