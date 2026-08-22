@@ -1,36 +1,67 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { describe, expect, it } from "vitest";
+import {
+  createNarrativeMaintenanceScheduler,
+  NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS,
+  type NarrativeMaintenanceRequest,
+} from "./narrativeMaintenance.js";
 
-const mainDirectory = dirname(fileURLToPath(import.meta.url));
-const mainIndexSource = readFileSync(join(mainDirectory, "index.ts"), "utf8");
-const maintenanceSource = readFileSync(
-  join(mainDirectory, "narrativeMaintenance.ts"),
-  "utf8",
-);
-const preloadSource = readFileSync(
-  join(mainDirectory, "../preload/index.ts"),
-  "utf8",
-);
+function backfill(reason = "workspace-open"): NarrativeMaintenanceRequest {
+  return {
+    projectId: "phase1-project",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    reason,
+  };
+}
 
-describe("C2-5B Phase 1 main-only integration contract", () => {
-  it("turns workspace opened and restored events into a main scheduler wake", () => {
-    const eventWiring = mainIndexSource.slice(
-      mainIndexSource.indexOf("registerEventBus(backend"),
-    );
+describe("C2-5B Phase 1 main-only integration behavior", () => {
+  beforeEach(() => vi.useFakeTimers());
 
-    expect(eventWiring).toMatch(/workspace:opened/);
-    expect(eventWiring).toMatch(/workspace:(?:restored|restore)/);
-    expect(eventWiring).toMatch(/narrativeMaintenance\.(?:request|enqueue)/);
-    expect(eventWiring).toMatch(/project/i);
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("keeps the workspace wake and retry/failure contract outside renderer IPC", () => {
-    expect(preloadSource).not.toMatch(/narrativeMaintenance/i);
-    expect(mainIndexSource).not.toMatch(/preload.*narrativeMaintenance/i);
-    expect(maintenanceSource).toMatch(/terminalReasonCode/);
-    expect(maintenanceSource).toMatch(/failureClass/);
+  it("delivers an automatic workspace wake as a typed main cycle", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(backfill());
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledWith({
+      work: [
+        {
+          projectId: "phase1-project",
+          runKind: "backfill",
+          workKey: "legacy-dependency-backfill:v2",
+          semanticEpochId: null,
+          reasons: ["workspace-open"],
+        },
+      ],
+      wakeProjectIds: [],
+    });
+    scheduler.dispose();
+  });
+
+  it("rejects a human-only Repair wake at the executable scheduler boundary", () => {
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle: vi.fn(),
+    });
+
+    expect(() =>
+      scheduler.request({
+        ...backfill("must-not-repair"),
+        runKind: "dependency-repair" as NarrativeMaintenanceRequest["runKind"],
+      }),
+    ).toThrow(/automatic|Repair|runKind/i);
+    scheduler.dispose();
   });
 });

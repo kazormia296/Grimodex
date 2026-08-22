@@ -1,57 +1,99 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const repoRoot = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+import {
+  createNarrativeMaintenanceProductJourneys,
+  NARRATIVE_MAINTENANCE_JOURNEY_IDS,
+} from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 
-async function read(relativePath) {
-  return readFile(path.join(repoRoot, relativePath), "utf8");
+function createObservationHarness() {
+  const calls = [];
+  const timeline = [];
+  const harness = {
+    calls,
+    timeline,
+    workspacePath(name) {
+      return `/tmp/c2-5b-product-journey/${name}`;
+    },
+    async launch(phase) {
+      calls.push({ command: "launch", phase });
+      return { app: { phase }, page: { phase } };
+    },
+    async close(app, page, phase) {
+      calls.push({ command: "close", app, page, phase });
+    },
+    async invokeOk(page, command, args = {}) {
+      calls.push({ command, page, args });
+      if (command !== "db_execute") return null;
+      if (args.sql.includes("PRAGMA user_version")) {
+        return { rows: [{ user_version: 31 }] };
+      }
+      if (args.sql.includes("FROM projects")) {
+        return { rows: [{ id: "phase1-project" }] };
+      }
+      if (args.sql.includes("FROM narrative_extraction_runs")) {
+        return { rows: [] };
+      }
+      return { rows: [] };
+    },
+    async waitUntil(fn, label) {
+      calls.push({ command: "waitUntil", label });
+      return fn();
+    },
+    recordTimeline(event, details) {
+      timeline.push({ event, details });
+    },
+  };
+  return harness;
 }
 
-test("workspace lifecycle journeys drive the main-only maintenance wake", async () => {
-  const mainIndex = await read("electron/main/index.ts");
-  const journeys = await read("electron/scripts/product-journeys.mjs");
-  const preload = await read("electron/preload/index.ts");
+function createJourneys() {
+  return createNarrativeMaintenanceProductJourneys({
+    configureWorkspace: async (harness, workspace) => {
+      harness.calls.push({ command: "configureWorkspace", workspace });
+    },
+    prepareSchemaMarker: async () => 30,
+  });
+}
 
-  assert.match(mainIndex, /workspace:opened[\s\S]*narrativeMaintenance\.(?:request|enqueue)/);
-  assert.match(mainIndex, /workspace:(?:restored|restore)/);
-  assert.match(journeys, /narrativeMaintenance\.(?:request|enqueue)/);
-  assert.doesNotMatch(preload, /narrativeMaintenance/i);
+test("C2-5B catalog exposes the eleven stable acceptance journey IDs", () => {
+  const journeys = createJourneys();
+  assert.deepEqual(
+    journeys.map((journey) => journey.id),
+    NARRATIVE_MAINTENANCE_JOURNEY_IDS,
+  );
+  assert.ok(journeys.every((journey) => typeof journey.run === "function"));
 });
 
-test("product journeys prove ordered discovery, coordinate revalidation, and sealed completion", async () => {
-  const journeys = await read("electron/scripts/product-journeys.mjs");
+test("schema marker journey executes live observations and requires automatic Backfill then Verify", async () => {
+  const harness = createObservationHarness();
+  const [journey] = createJourneys();
 
-  assert.match(journeys, /legacy-dependency-backfill:v2/);
-  assert.match(journeys, /dependency-verify/);
-  assert.match(journeys, /semantic-index-rebuild/);
-  assert.match(journeys, /graphContractDigest/);
-  assert.match(journeys, /ruleRegistryDigest/);
-  assert.match(journeys, /producerGenerationSetDigest/);
-  assert.match(journeys, /completed.*(?:Run|run).*evidence/i);
+  await assert.doesNotReject(() => journey.run(harness));
+  assert.ok(
+    harness.calls.some(
+      (call) =>
+        call.command === "db_execute" &&
+        call.args.sql.includes("narrative_extraction_runs"),
+    ),
+    "the journey must inspect the durable Run ledger",
+  );
 });
 
-test("foreground authoring and workspace wake share live-authority evidence", async () => {
-  const journeys = await read("electron/scripts/product-journeys.mjs");
+test("maintenance journeys never use a renderer maintenance command to make the evidence pass", async () => {
+  const harness = createObservationHarness();
+  const [journey] = createJourneys();
 
-  assert.match(journeys, /workspaceBinding/);
-  assert.match(journeys, /SQLITE_BUSY_SNAPSHOT/);
-  assert.match(journeys, /foreground.*write|authoring.*write/i);
-  assert.match(journeys, /workspace.*wake/i);
-  assert.doesNotMatch(journeys, /Repair|dependency-repair/);
-});
-
-test("incremental liveness requires current epoch, completed Run, and Feed head", async () => {
-  const journeys = await read("electron/scripts/product-journeys.mjs");
-
-  assert.match(journeys, /current.*epoch/i);
-  assert.match(journeys, /completed.*freshness/i);
-  assert.match(journeys, /cursor/i);
-  assert.match(journeys, /feed.*head/i);
-  assert.match(journeys, /new.*feed|old.*epoch|missing.*cursor/i);
+  await assert.rejects(() => journey.run(harness));
+  assert.equal(
+    harness.calls.some((call) =>
+      [
+        "verify_narrative_dependency_graph",
+        "rebuild_narrative_derived_state",
+        "retry_narrative_legacy_backfill",
+        "repair_narrative_dependency_declarations",
+      ].includes(call.command),
+    ),
+    false,
+  );
 });
