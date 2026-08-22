@@ -5,16 +5,14 @@
 //! machine. Electron only wakes this owner and supplies the pinned live
 //! `Database`; Repair remains a human/manual path.
 
-use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::legacy_backfill::{
-    is_valid_completed_backfill_marker, CompletedBackfillMarker,
+    is_valid_completed_backfill_marker, parse_maintenance_instant, CompletedBackfillMarker,
     LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
@@ -362,22 +360,10 @@ struct DurableMaintenanceRun {
     semantic_epoch_id: Option<String>,
     work_key: Option<String>,
     outcome_summary_json: Option<String>,
-    created_at: DateTime<Utc>,
-    lifecycle_at: DateTime<Utc>,
-}
-
-fn parse_maintenance_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
-    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
-        return Ok(parsed.with_timezone(&Utc));
-    }
-    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
-        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
-        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
-            )
-        })
+    completed_at: Option<String>,
+    created_at_raw: String,
+    started_at_raw: Option<String>,
+    lifecycle_at_raw: String,
 }
 
 fn load_durable_maintenance_runs(
@@ -419,12 +405,13 @@ fn load_durable_maintenance_runs(
             started_at,
             completed_at,
         ) = row?;
-        let lifecycle_raw = completed_at
+        let lifecycle_at_raw = completed_at
+            .clone()
             .as_deref()
             .or(started_at.as_deref())
-            .unwrap_or(created_at_raw.as_str());
-        let created_at = parse_maintenance_instant(&created_at_raw)?;
-        runs.push(DurableMaintenanceRun {
+            .unwrap_or(created_at_raw.as_str())
+            .to_string();
+        let run = DurableMaintenanceRun {
             run_id,
             run_kind,
             status,
@@ -432,15 +419,52 @@ fn load_durable_maintenance_runs(
             semantic_epoch_id,
             work_key,
             outcome_summary_json,
-            created_at,
-            lifecycle_at: parse_maintenance_instant(lifecycle_raw)?,
-        });
+            completed_at,
+            created_at_raw,
+            started_at_raw: started_at,
+            lifecycle_at_raw,
+        };
+        validate_active_maintenance_run(&run)?;
+        runs.push(run);
     }
-    runs.sort_by_key(|run| Reverse(run.lifecycle_at));
     Ok(runs)
 }
 
+fn validate_active_maintenance_run(run: &DurableMaintenanceRun) -> anyhow::Result<()> {
+    if run.run_kind != VERIFY_RUN_KIND || !matches!(run.status.as_str(), "pending" | "running") {
+        return Ok(());
+    }
+    let epoch_id = run
+        .semantic_epoch_id
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    anyhow::ensure!(
+        epoch_id.is_some(),
+        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' has no Semantic Epoch",
+        run.run_id
+    );
+    let work_key = run.work_key.as_deref().filter(|value| !value.is_empty());
+    anyhow::ensure!(
+        work_key.is_some(),
+        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' has no workKey",
+        run.run_id
+    );
+    let expected = format!("{VERIFY_WORK_KEY_PREFIX}{}", epoch_id.unwrap_or_default());
+    anyhow::ensure!(
+        work_key == Some(expected.as_str()),
+        "NEX_MAINTENANCE_ACTIVE_LEDGER_INVALID: Verify Run '{}' workKey does not match its Semantic Epoch",
+        run.run_id
+    );
+    Ok(())
+}
+
 fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
+    if !matches!(
+        run.status.as_str(),
+        "pending" | "running" | "completed" | "failed" | "cancelled"
+    ) {
+        return false;
+    }
     match run.run_kind.as_str() {
         "backfill" => run.work_key.as_deref() == Some(LEGACY_BACKFILL_WORK_KEY),
         VERIFY_RUN_KIND => run
@@ -448,9 +472,14 @@ fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
             .as_deref()
             .zip(run.work_key.as_deref())
             .is_some_and(|(epoch_id, work_key)| {
-                work_key == format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}")
+                !epoch_id.is_empty() && work_key == format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}")
             }),
-        "semantic-index-rebuild" => run.work_key.as_deref() == Some(REBUILD_DERIVED_WORK_KEY),
+        "semantic-index-rebuild" => {
+            run.semantic_epoch_id
+                .as_deref()
+                .is_some_and(|epoch_id| !epoch_id.is_empty())
+                && run.work_key.as_deref() == Some(REBUILD_DERIVED_WORK_KEY)
+        }
         _ => false,
     }
 }
@@ -463,6 +492,7 @@ fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
 fn select_latest_relevant_run(
     runs: &[DurableMaintenanceRun],
     current_epoch_id: Option<&str>,
+    allow_historical_fallback: bool,
     predicate: impl Fn(&DurableMaintenanceRun) -> bool,
 ) -> anyhow::Result<Option<DurableMaintenanceRun>> {
     let candidates: Vec<&DurableMaintenanceRun> = runs
@@ -481,27 +511,65 @@ fn select_latest_relevant_run(
                 .collect()
         })
         .unwrap_or_default();
-    let relevant = if current_candidates.is_empty() {
+    let relevant = if current_candidates.is_empty()
+        && (allow_historical_fallback || current_epoch_id.is_none())
+    {
         candidates
     } else {
         current_candidates
     };
+    if relevant.is_empty() {
+        return Ok(None);
+    }
     // Terminal recovery can finish an interrupted row and create its fresh
     // replacement within one millisecond. Use the row's creation instant as
     // causal chronology before declaring a genuine lifecycle tie; UUIDs never
     // participate in this ordering.
-    let max_lifecycle = relevant
+    let mut temporal = Vec::with_capacity(relevant.len());
+    for run in relevant {
+        let (lifecycle_at, lifecycle_timestamp_invalid) =
+            match parse_maintenance_instant(&run.lifecycle_at_raw) {
+                Ok(lifecycle_at) => (
+                    lifecycle_at,
+                    run.status == "completed" && run.completed_at.is_none(),
+                ),
+                Err(_error)
+                    if run.run_kind == "backfill"
+                        && run.status == "completed"
+                        && run.completed_at.is_some() =>
+                {
+                    // A malformed Backfill completion is not a reusable
+                    // marker. Keep a parseable creation/start instant only
+                    // long enough to order it against a fresh rerun; if it
+                    // remains maximal, fail closed below instead of letting a
+                    // bad timestamp select or skip work.
+                    let fallback_raw = run
+                        .started_at_raw
+                        .as_deref()
+                        .unwrap_or(run.created_at_raw.as_str());
+                    let fallback_at = parse_maintenance_instant(fallback_raw)?;
+                    (fallback_at, true)
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            };
+        let created_at = parse_maintenance_instant(&run.created_at_raw)?;
+        temporal.push((lifecycle_at, created_at, run, lifecycle_timestamp_invalid));
+    }
+    let max_lifecycle = temporal
         .iter()
-        .map(|run| (run.lifecycle_at, run.created_at))
+        .map(|(lifecycle_at, created_at, _, _)| (*lifecycle_at, *created_at))
         .max()
         .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
-    let maximal: Vec<&DurableMaintenanceRun> = relevant
+    let maximal: Vec<(&DurableMaintenanceRun, bool)> = temporal
         .into_iter()
-        .filter(|run| (run.lifecycle_at, run.created_at) == max_lifecycle)
+        .filter(|(lifecycle_at, created_at, _, _)| (*lifecycle_at, *created_at) == max_lifecycle)
+        .map(|(_, _, run, lifecycle_timestamp_invalid)| (run, lifecycle_timestamp_invalid))
         .collect();
     let maximal_ids = maximal
         .iter()
-        .map(|run| run.run_id.as_str())
+        .map(|(run, _)| run.run_id.as_str())
         .collect::<Vec<_>>();
     anyhow::ensure!(
         maximal.len() == 1,
@@ -509,7 +577,14 @@ fn select_latest_relevant_run(
         maximal_ids,
         max_lifecycle.0.to_rfc3339()
     );
-    Ok(maximal.first().map(|run| (*run).clone()))
+    if let Some((run, true)) = maximal.iter().find(|(_, invalid)| *invalid) {
+        parse_maintenance_instant(&run.lifecycle_at_raw)?;
+        anyhow::bail!(
+            "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: completed Backfill Run '{}' has no supported completed_at",
+            run.run_id
+        );
+    }
+    Ok(maximal.first().map(|(run, _)| (*run).clone()))
 }
 
 fn is_completed_backfill_marker(
@@ -526,6 +601,7 @@ fn is_completed_backfill_marker(
             spec_json: run.spec_json.as_deref(),
             semantic_epoch_id: run.semantic_epoch_id.as_deref(),
             work_key: run.work_key.as_deref(),
+            completed_at: run.completed_at.as_deref(),
             outcome_summary_json: run.outcome_summary_json.as_deref(),
         },
     )
@@ -546,10 +622,6 @@ pub fn discover_durable_maintenance_work(
         let current_epoch_id =
             super::semantic_epoch::get_current_epoch(conn, &project_id)?.map(|epoch| epoch.id);
         let runs = load_durable_maintenance_runs(conn, &project_id)?;
-        let active = select_latest_relevant_run(&runs, current_epoch_id.as_deref(), |run| {
-            matches!(run.status.as_str(), "pending" | "running")
-        })?;
-        let latest = select_latest_relevant_run(&runs, current_epoch_id.as_deref(), |_| true)?;
         let mut completed_backfill = None;
         for run in &runs {
             if is_completed_backfill_marker(conn, &project_id, run)? {
@@ -557,6 +629,19 @@ pub fn discover_durable_maintenance_work(
                 break;
             }
         }
+        let active = select_latest_relevant_run(&runs, current_epoch_id.as_deref(), true, |run| {
+            matches!(run.status.as_str(), "pending" | "running")
+        })?;
+        // Once a current epoch exists, a current Backfill marker is the
+        // deterministic boundary. Historical Verify/Rebuild rows are not a
+        // fallback state machine for that new epoch. Before that boundary,
+        // still inspect canonical non-Backfill rows so a malformed maximal
+        // Verify candidate fails closed; malformed Backfill rows themselves
+        // are intentionally rerunnable.
+        let latest =
+            select_latest_relevant_run(&runs, current_epoch_id.as_deref(), false, |run| {
+                completed_backfill.is_some() || run.run_kind != "backfill"
+            })?;
         Ok((current_epoch_id, latest, active, completed_backfill))
     })?;
 
@@ -945,6 +1030,11 @@ fn recover_cycle_work(
     item: &DesiredWork,
     mode: RecoveryMode,
 ) -> anyhow::Result<RecoveryAction> {
+    // Validate every persisted active Verify row before the requested WorkKey
+    // is used for recovery. A malformed row must not disappear merely because
+    // its work key fails canonical filtering and thereby permit a duplicate
+    // adapter dispatch.
+    db.with_conn(|conn| load_durable_maintenance_runs(conn, &item.project_id).map(|_| ()))?;
     let current_epoch = db
         .with_conn(|conn| super::semantic_epoch::get_current_epoch(conn, &item.project_id))?
         .map(|epoch| epoch.id);
@@ -1522,22 +1612,41 @@ pub fn read_run_ledger_for_epoch(
                 started_at,
                 completed_at,
             ) = row?;
+            if !matches!(
+                status.as_str(),
+                "pending" | "running" | "completed" | "failed" | "cancelled"
+            ) {
+                continue;
+            }
+            let epoch_matches = expected_semantic_epoch_id
+                .map(|expected| row_epoch_id.as_deref() == Some(expected))
+                .unwrap_or(true);
+            if !epoch_matches {
+                if matches!(status.as_str(), "pending" | "running") {
+                    stale_active_runs.push(StaleActiveRun {
+                        run_id: id,
+                        semantic_epoch_id: row_epoch_id,
+                    });
+                }
+                continue;
+            }
             let lifecycle_raw = completed_at
                 .as_deref()
                 .or(started_at.as_deref())
                 .unwrap_or(created_at.as_str());
-            let lifecycle_at = parse_maintenance_instant(lifecycle_raw)?;
-            let epoch_matches = expected_semantic_epoch_id
-                .map(|expected| row_epoch_id.as_deref() == Some(expected))
-                .unwrap_or(true);
-            if epoch_matches {
-                current_rows.push((lifecycle_at, id, status, terminal_reason_code));
-            } else if matches!(status.as_str(), "pending" | "running") {
-                stale_active_runs.push(StaleActiveRun {
-                    run_id: id,
-                    semantic_epoch_id: row_epoch_id,
-                });
-            }
+            let lifecycle_at = match parse_maintenance_instant(lifecycle_raw) {
+                Ok(lifecycle_at) => lifecycle_at,
+                Err(_error)
+                    if work.run_kind == AutomaticRunKind::Backfill && status == "completed" =>
+                {
+                    let fallback_raw = started_at.as_deref().unwrap_or(created_at.as_str());
+                    parse_maintenance_instant(fallback_raw)?
+                }
+                Err(error) => {
+                    return Err(error);
+                }
+            };
+            current_rows.push((lifecycle_at, id, status, terminal_reason_code));
         }
 
         let latest_completed_key = current_rows
@@ -1610,7 +1719,7 @@ fn has_valid_completed_backfill_marker(
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
             "SELECT run_kind, status, spec_json, semantic_epoch_id, work_key,
-                    outcome_summary_json
+                    completed_at, outcome_summary_json
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
                 AND status = 'completed'",
@@ -1625,11 +1734,13 @@ fn has_valid_completed_backfill_marker(
                     row.get::<_, Option<String>>(3)?,
                     row.get::<_, Option<String>>(4)?,
                     row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
                 ))
             },
         )?;
         for row in rows {
-            let (run_kind, status, spec_json, epoch_id, work_key, outcome_json) = row?;
+            let (run_kind, status, spec_json, epoch_id, work_key, completed_at, outcome_json) =
+                row?;
             if expected_semantic_epoch_id
                 .is_some_and(|expected| epoch_id.as_deref() != Some(expected))
             {
@@ -1644,6 +1755,7 @@ fn has_valid_completed_backfill_marker(
                     spec_json: spec_json.as_deref(),
                     semantic_epoch_id: epoch_id.as_deref(),
                     work_key: work_key.as_deref(),
+                    completed_at: completed_at.as_deref(),
                     outcome_summary_json: outcome_json.as_deref(),
                 },
             )? {

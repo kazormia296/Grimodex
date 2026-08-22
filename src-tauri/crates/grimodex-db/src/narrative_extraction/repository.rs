@@ -1,7 +1,7 @@
 //! SQL persistence for narrative extraction runs, tasks, and proposals.
 
 use anyhow::Context;
-use chrono::{DateTime, Datelike, Duration, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -10,6 +10,7 @@ use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
     PROPOSAL_REVISION_CONSUMER_KIND,
 };
+use super::legacy_backfill::parse_maintenance_instant;
 
 /// Generation of the current Proposal Revision dependency declaration writer.
 /// This is paired with the bundled producer registry; bump both when the
@@ -411,18 +412,13 @@ fn next_system_run_timestamp(conn: &Connection, project_id: &str) -> anyhow::Res
     let mut latest = None;
     for row in rows {
         let value = row?;
-        let parsed = DateTime::parse_from_rfc3339(&value)
-            .map(|instant| instant.with_timezone(&Utc))
-            .or_else(|_| {
-                NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S%.f")
-                    .or_else(|_| NaiveDateTime::parse_from_str(&value, "%Y-%m-%d %H:%M:%S"))
-                    .map(|instant| DateTime::<Utc>::from_naive_utc_and_offset(instant, Utc))
-            })
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
-                )
-            })?;
+        // A malformed terminal row cannot be a reusable marker and must not
+        // prevent a fresh system Run from being created. Discovery performs
+        // the strict maximal-candidate check after trusted coordinates are
+        // filtered; this monotonic timestamp helper only needs valid rows.
+        let Ok(parsed) = parse_maintenance_instant(&value) else {
+            continue;
+        };
         latest = Some(latest.map_or(parsed, |current: DateTime<Utc>| current.max(parsed)));
     }
     let next = latest

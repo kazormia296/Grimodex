@@ -71,6 +71,7 @@
 //! rows. `contributions_created`/`edges_created` in the returned summary
 //! both report 0 on that second run.
 
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use serde_json::json;
@@ -136,7 +137,25 @@ pub(crate) struct CompletedBackfillMarker<'a> {
     pub(crate) spec_json: Option<&'a str>,
     pub(crate) semantic_epoch_id: Option<&'a str>,
     pub(crate) work_key: Option<&'a str>,
+    pub(crate) completed_at: Option<&'a str>,
     pub(crate) outcome_summary_json: Option<&'a str>,
+}
+
+/// Parse the timestamp formats used by both current system Runs and legacy
+/// SQLite rows. Marker reuse must use this same supported-instant contract as
+/// discovery/recovery instead of trusting a non-empty arbitrary string.
+pub(crate) fn parse_maintenance_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: lifecycle timestamp '{value}' is not a supported instant"
+            )
+        })
 }
 
 pub(crate) fn is_valid_completed_backfill_marker(
@@ -148,6 +167,16 @@ pub(crate) fn is_valid_completed_backfill_marker(
         || marker.status != "completed"
         || marker.work_key != Some(LEGACY_BACKFILL_WORK_KEY)
     {
+        return Ok(false);
+    }
+    let Some(completed_at) = marker
+        .completed_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(false);
+    };
+    if parse_maintenance_instant(completed_at).is_err() {
         return Ok(false);
     }
     let Some(epoch_id) = marker.semantic_epoch_id.filter(|value| !value.is_empty()) else {
@@ -396,7 +425,7 @@ fn find_valid_completed_backfill_run_id(
 ) -> anyhow::Result<Option<String>> {
     let mut statement = conn.prepare(
         "SELECT id, run_kind, status, spec_json, semantic_epoch_id, work_key,
-                outcome_summary_json
+                completed_at, outcome_summary_json
            FROM narrative_extraction_runs
           WHERE project_id = ?1 AND run_kind = 'backfill'
             AND work_key = ?2 AND status = 'completed'
@@ -411,10 +440,12 @@ fn find_valid_completed_backfill_run_id(
             row.get::<_, Option<String>>(4)?,
             row.get::<_, Option<String>>(5)?,
             row.get::<_, Option<String>>(6)?,
+            row.get::<_, Option<String>>(7)?,
         ))
     })?;
     for row in rows {
-        let (run_id, run_kind, status, spec_json, epoch_id, work_key, outcome_json) = row?;
+        let (run_id, run_kind, status, spec_json, epoch_id, work_key, completed_at, outcome_json) =
+            row?;
         if is_valid_completed_backfill_marker(
             conn,
             project_id,
@@ -424,6 +455,7 @@ fn find_valid_completed_backfill_run_id(
                 spec_json: spec_json.as_deref(),
                 semantic_epoch_id: epoch_id.as_deref(),
                 work_key: work_key.as_deref(),
+                completed_at: completed_at.as_deref(),
                 outcome_summary_json: outcome_json.as_deref(),
             },
         )? {
@@ -1793,6 +1825,47 @@ mod tests {
             })
             .expect("count backfill runs");
         assert_eq!(run_count, 1, "exactly one backfill run must ever exist");
+    }
+
+    #[test]
+    fn bootstrap_requires_a_supported_completed_at_for_marker_reuse() {
+        for completed_at in [None, Some("not-a-supported-instant")] {
+            let db = test_db();
+            db.with_conn(|conn| {
+                seed_project(conn, "project-1");
+                Ok(())
+            })
+            .expect("seed project");
+
+            let first_run_id =
+                match bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+                    .expect("initial bootstrap")
+                {
+                    LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+                    LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                        panic!("initial bootstrap must create a Run")
+                    }
+                };
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET completed_at = ?1 WHERE id = ?2",
+                    params![completed_at, first_run_id],
+                )?;
+                Ok(())
+            })
+            .expect("corrupt completed timestamp");
+
+            let second = bootstrap_legacy_dependency_backfill_for_project(&db, "project-1")
+                .expect("timestamp-invalid marker must be rerunnable");
+            let second_run_id = match second {
+                LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+                LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                    panic!("timestamp-invalid marker must not be reused")
+                }
+            };
+            assert_ne!(second_run_id, first_run_id);
+        }
     }
 
     #[test]
