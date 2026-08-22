@@ -69,5 +69,11 @@ describe("Chronicle stage execution identity", () => {
         parentStageExecutionId: "",
       }),
     ).toBe(false);
+    expect(
+      isStageExecutionContext({
+        ...parent,
+        unratified: "hidden",
+      }),
+    ).toBe(false);
   });
 });

@@ -3,25 +3,34 @@ import {
   type NarrativeStageExecutionContext,
 } from "@/features/narrative-extraction/reconciler/stageExecution";
 import { CHRONICLE_CONTEXT_SET_VERSION } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
+  assertChronicleStageTerminalReceiptV1,
+  createStageModelExecutionBindingFromRoute,
+  createStageModelExecutionBindingV1,
+  digestStageModelExecutionBinding,
+  buildChronicleStageTerminalReceiptV1,
+  type ChronicleStageParseStatus,
+  type ChronicleStageTerminalStatus,
+  type ChronicleStageTerminalReceiptV1,
+  type StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 import { sha256Digest } from "@/features/narrative-extraction/source/digest";
 import type { Sha256Digest } from "@/features/narrative-extraction/source/types";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
-import type { AiAuditTransportContext } from "@/features/ai-audit/transportContext";
+import type {
+  AiAuditResolvedRouteSnapshot,
+  AiAuditTransportContext,
+} from "@/features/ai-audit/transportContext";
 
-export const CHRONICLE_STAGE_AUDIT_VERSION = 1 as const;
+export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;
 
-export type ChronicleParseStatus = "parsed" | "invalid" | "not-attempted";
-export type ChronicleTerminalStatus =
-  | "succeeded"
-  | "failed"
-  | "cancelled"
-  | "skipped";
-
-const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+export type ChronicleParseStatus = ChronicleStageParseStatus;
+export type ChronicleTerminalStatus = ChronicleStageTerminalStatus;
 
 export interface ChronicleStageAuditDigests {
   readonly contextSetDigest: Sha256Digest;
   readonly componentContractDigest: Sha256Digest;
+  /** Deliberately request-only; model identity is a sidecar field. */
   readonly finalRequestDigest: Sha256Digest;
 }
 
@@ -33,11 +42,13 @@ export interface ChronicleStageAuditMetadata {
   readonly contextSetDigest: Sha256Digest;
   readonly componentContractDigest: Sha256Digest;
   readonly finalRequestDigest: Sha256Digest;
-  readonly responseDigest?: Sha256Digest;
+  readonly modelExecutionBinding: StageModelExecutionBindingV1;
+  readonly modelBindingDigest: Sha256Digest;
+  readonly responseDigest?: Sha256Digest | null;
   readonly parseStatus?: ChronicleParseStatus;
   readonly terminalStatus?: ChronicleTerminalStatus;
-  readonly repairParentStageExecutionId?: string;
-  readonly repairChildStageExecutionId?: string | null;
+  /** Present only for terminal v2 metadata. */
+  readonly stageExecutionReceiptDigest?: Sha256Digest;
 }
 
 export type ChronicleStageAuditTransportBase = Pick<
@@ -51,6 +62,15 @@ export type ChronicleStageAuditTransportBase = Pick<
     >
   >;
 
+const UNRESOLVED_MODEL_BINDING = createStageModelExecutionBindingV1({
+  resolutionStatus: "unresolved",
+  generationMode: "provider-default",
+});
+
+/** Stable digest for the fixed unresolved binding used by injected transports. */
+const UNRESOLVED_MODEL_BINDING_DIGEST =
+  "sha256:1a5d21f727f13c3243548c408f624ad6dcef0d3f5563e90d7be04d8d8d4c71a7" as const;
+
 function operationIdForStage(
   stageExecution: NarrativeStageExecutionContext,
 ): string {
@@ -61,15 +81,33 @@ function operationIdForStage(
   ].join(":");
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isChronicleStageMetadata(
+  value: unknown,
+): value is ChronicleStageAuditMetadata {
+  return (
+    isRecord(value) &&
+    value.kind === "chronicle-stage" &&
+    value.version === CHRONICLE_STAGE_AUDIT_VERSION &&
+    isRecord(value.modelExecutionBinding) &&
+    typeof value.modelBindingDigest === "string"
+  );
+}
+
 function stageMetadata(
   stageExecution: NarrativeStageExecutionContext,
   digests: ChronicleStageAuditDigests,
+  modelExecutionBinding: StageModelExecutionBindingV1 = UNRESOLVED_MODEL_BINDING,
+  modelBindingDigest: Sha256Digest = UNRESOLVED_MODEL_BINDING_DIGEST,
   terminal?: Pick<
     ChronicleStageAuditMetadata,
     | "responseDigest"
     | "parseStatus"
     | "terminalStatus"
-    | "repairChildStageExecutionId"
+    | "stageExecutionReceiptDigest"
   >,
 ): ChronicleStageAuditMetadata {
   assertStageExecutionContext(stageExecution);
@@ -82,6 +120,7 @@ function stageMetadata(
     digests.finalRequestDigest,
     "Chronicle Stage finalRequestDigest",
   );
+  assertDigest(modelBindingDigest, "Chronicle Stage modelBindingDigest");
   return {
     kind: "chronicle-stage",
     version: CHRONICLE_STAGE_AUDIT_VERSION,
@@ -90,11 +129,8 @@ function stageMetadata(
     contextSetDigest: digests.contextSetDigest,
     componentContractDigest: digests.componentContractDigest,
     finalRequestDigest: digests.finalRequestDigest,
-    ...(stageExecution.parentStageExecutionId !== undefined
-      ? {
-          repairParentStageExecutionId: stageExecution.parentStageExecutionId,
-        }
-      : {}),
+    modelExecutionBinding,
+    modelBindingDigest,
     ...(terminal?.responseDigest === undefined
       ? {}
       : { responseDigest: terminal.responseDigest }),
@@ -104,9 +140,9 @@ function stageMetadata(
     ...(terminal?.terminalStatus === undefined
       ? {}
       : { terminalStatus: terminal.terminalStatus }),
-    ...(terminal?.repairChildStageExecutionId === undefined
+    ...(terminal?.stageExecutionReceiptDigest === undefined
       ? {}
-      : { repairChildStageExecutionId: terminal.repairChildStageExecutionId }),
+      : { stageExecutionReceiptDigest: terminal.stageExecutionReceiptDigest }),
   };
 }
 
@@ -114,19 +150,42 @@ function assertDigest(
   value: unknown,
   label: string,
 ): asserts value is Sha256Digest {
-  if (typeof value !== "string" || !SHA256_DIGEST_PATTERN.test(value)) {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/u.test(value)) {
     throw new TypeError(`${label} must be a sha256 digest`);
   }
 }
 
+function chronicleMetadataFrom(
+  metadata: AiAuditJsonObject | undefined,
+): ChronicleStageAuditMetadata | undefined {
+  const stage = metadata?.chronicleStage;
+  return isChronicleStageMetadata(stage) ? stage : undefined;
+}
+
+function mergeMetadata(
+  base: AiAuditJsonObject | undefined,
+  stage: ChronicleStageAuditMetadata,
+): AiAuditJsonObject {
+  const existing = chronicleMetadataFrom(base);
+  return {
+    ...(base ?? {}),
+    chronicleStage: {
+      ...(existing ?? {}),
+      ...stage,
+    } as unknown as AiAuditJsonObject,
+  };
+}
+
 /**
- * Bind a pure Chronicle Stage identity to the existing AI Audit transport
- * correlation fields. No new route or persistence schema is introduced.
+ * Bind a pure Stage identity to the existing audit transport correlation
+ * fields. The returned route callback seals one model binding before audit
+ * begin; transports that omit the callback remain unresolved.
  */
 export function bindChronicleStageAuditContext(
   base: ChronicleStageAuditTransportBase,
   stageExecution: NarrativeStageExecutionContext,
   digests: ChronicleStageAuditDigests,
+  onBindingResolved?: (binding: StageModelExecutionBindingV1) => void,
 ): AiAuditTransportContext {
   assertStageExecutionContext(stageExecution);
   if (base.projectId !== stageExecution.projectId) {
@@ -134,18 +193,48 @@ export function bindChronicleStageAuditContext(
       "Chronicle Stage audit projectId must match stage execution projectId",
     );
   }
-  const metadata = stageMetadata(stageExecution, digests);
-  return {
+  let sealedBinding = UNRESOLVED_MODEL_BINDING;
+  let sealedBindingDigest: Sha256Digest = UNRESOLVED_MODEL_BINDING_DIGEST;
+  const initialMetadata = stageMetadata(
+    stageExecution,
+    digests,
+    sealedBinding,
+    sealedBindingDigest,
+  );
+  const onResolvedRouteMetadata = async (
+    route: AiAuditResolvedRouteSnapshot,
+    args: Readonly<Record<string, unknown>>,
+  ): Promise<AiAuditJsonObject> => {
+    const candidate = createStageModelExecutionBindingFromRoute(route, args);
+    const candidateDigest = await digestStageModelExecutionBinding(candidate);
+    if (
+      sealedBindingDigest !== UNRESOLVED_MODEL_BINDING_DIGEST &&
+      sealedBindingDigest !== candidateDigest
+    ) {
+      throw new TypeError("Chronicle Stage model binding was resolved twice");
+    }
+    sealedBinding = candidate;
+    sealedBindingDigest = candidateDigest;
+    onBindingResolved?.(sealedBinding);
+    return {
+      chronicleStage: stageMetadata(
+        stageExecution,
+        digests,
+        sealedBinding,
+        sealedBindingDigest,
+      ) as unknown as AiAuditJsonObject,
+    };
+  };
+  const context: AiAuditTransportContext = {
     ...base,
     projectId: stageExecution.projectId,
     operationId: operationIdForStage(stageExecution),
     executionId: stageExecution.stageExecutionId,
     parentExecutionId: stageExecution.parentStageExecutionId ?? null,
-    metadata: {
-      ...(base.metadata ?? {}),
-      chronicleStage: metadata as unknown as AiAuditJsonObject,
-    },
+    metadata: mergeMetadata(base.metadata, initialMetadata),
+    onResolvedRouteMetadata,
   };
+  return context;
 }
 
 export interface BuildChronicleStageAuditTerminalInput extends ChronicleStageAuditDigests {
@@ -154,18 +243,160 @@ export interface BuildChronicleStageAuditTerminalInput extends ChronicleStageAud
   readonly responseText: string;
   readonly parseStatus: ChronicleParseStatus;
   readonly terminalStatus: ChronicleTerminalStatus;
-  readonly repairChildStageExecutionId?: string | null;
+  /** Exact binding sealed by the route callback, or unresolved when omitted. */
+  readonly modelExecutionBinding?: StageModelExecutionBindingV1;
+  /** Optional non-authoritative observation seam for shadow/C1 harnesses. */
+  readonly onReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
 }
 
-/** Build terminal provenance metadata while retaining only a response digest. */
+export interface BuildChronicleStageAuditNoResponseInput extends ChronicleStageAuditDigests {
+  readonly stageExecution: NarrativeStageExecutionContext;
+  /** Terminal path closed without receiving a provider response. */
+  readonly terminalStatus: "failed" | "cancelled" | "skipped";
+  /** Exact binding sealed by the route callback, or unresolved when omitted. */
+  readonly modelExecutionBinding?: StageModelExecutionBindingV1;
+  /** Optional non-authoritative observation seam for shadow/C1 harnesses. */
+  readonly onReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
+}
+
+/** Build v2 terminal metadata and the sealed v1 terminal receipt atomically. */
 export async function buildChronicleStageAuditTerminal(
   input: BuildChronicleStageAuditTerminalInput,
 ): Promise<ChronicleStageAuditMetadata> {
   const responseDigest = await sha256Digest(input.responseText);
-  return stageMetadata(input.stageExecution, input, {
+  const modelExecutionBinding =
+    input.modelExecutionBinding ?? UNRESOLVED_MODEL_BINDING;
+  const modelBindingDigest = await digestStageModelExecutionBinding(
+    modelExecutionBinding,
+  );
+  const receipt = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: input.stageExecution,
+    contextSetVersion: CHRONICLE_CONTEXT_SET_VERSION,
+    contextSetDigest: input.contextSetDigest,
+    componentContractDigest: input.componentContractDigest,
+    finalRequestDigest: input.finalRequestDigest,
+    modelExecutionBinding,
+    modelBindingDigest,
     responseDigest,
     parseStatus: input.parseStatus,
     terminalStatus: input.terminalStatus,
-    repairChildStageExecutionId: input.repairChildStageExecutionId,
   });
+  await assertChronicleStageTerminalReceiptV1(receipt);
+  await input.onReceipt?.(receipt);
+  return stageMetadata(
+    input.stageExecution,
+    input,
+    modelExecutionBinding,
+    modelBindingDigest,
+    {
+      responseDigest,
+      parseStatus: input.parseStatus,
+      terminalStatus: input.terminalStatus,
+      stageExecutionReceiptDigest: receipt.stageExecutionReceiptDigest,
+    },
+  );
 }
+
+/** Build a terminal v2 receipt for a durable no-response path. */
+export async function buildChronicleStageAuditNoResponseTerminal(
+  input: BuildChronicleStageAuditNoResponseInput,
+): Promise<ChronicleStageAuditMetadata> {
+  const modelExecutionBinding =
+    input.modelExecutionBinding ?? UNRESOLVED_MODEL_BINDING;
+  const modelBindingDigest = await digestStageModelExecutionBinding(
+    modelExecutionBinding,
+  );
+  const receipt = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: input.stageExecution,
+    contextSetVersion: CHRONICLE_CONTEXT_SET_VERSION,
+    contextSetDigest: input.contextSetDigest,
+    componentContractDigest: input.componentContractDigest,
+    finalRequestDigest: input.finalRequestDigest,
+    modelExecutionBinding,
+    modelBindingDigest,
+    responseDigest: null,
+    parseStatus: "not-attempted",
+    terminalStatus: input.terminalStatus,
+  });
+  await assertChronicleStageTerminalReceiptV1(receipt);
+  await input.onReceipt?.(receipt);
+  return stageMetadata(
+    input.stageExecution,
+    input,
+    modelExecutionBinding,
+    modelBindingDigest,
+    {
+      responseDigest: null,
+      parseStatus: "not-attempted",
+      terminalStatus: input.terminalStatus,
+      stageExecutionReceiptDigest: receipt.stageExecutionReceiptDigest,
+    },
+  );
+}
+
+/** Extract the exact binding from durable begin metadata for terminal sealing. */
+export function stageModelBindingFromAuditMetadata(
+  metadata: AiAuditJsonObject | undefined,
+): StageModelExecutionBindingV1 | undefined {
+  const stage = chronicleMetadataFrom(metadata);
+  if (!stage) return undefined;
+  return stage.modelExecutionBinding;
+}
+
+/** Ensure a transport terminal hook and the ai_usage mirror emit one receipt. */
+export function createChronicleStageReceiptEmitter(
+  onReceipt:
+    | ((
+        receipt: import("@/features/narrative-extraction/reconciler/stageProvenance").ChronicleStageTerminalReceiptV1,
+      ) => void | Promise<void>)
+    | undefined,
+): (
+  receipt: import("@/features/narrative-extraction/reconciler/stageProvenance").ChronicleStageTerminalReceiptV1,
+) => Promise<void> {
+  let emitted = false;
+  let emittedReceiptDigest: string | undefined;
+  let inFlight: Promise<void> | undefined;
+  let inFlightReceiptDigest: string | undefined;
+  return async (receipt) => {
+    if (emitted) {
+      if (
+        emittedReceiptDigest !== undefined &&
+        emittedReceiptDigest !== receipt.stageExecutionReceiptDigest
+      ) {
+        throw new TypeError(
+          "Chronicle Stage receipt emitter received a conflicting receipt",
+        );
+      }
+      return;
+    }
+    if (inFlight !== undefined) {
+      if (inFlightReceiptDigest !== receipt.stageExecutionReceiptDigest) {
+        throw new TypeError(
+          "Chronicle Stage receipt emitter received a conflicting receipt",
+        );
+      }
+      await inFlight;
+      return;
+    }
+    inFlightReceiptDigest = receipt.stageExecutionReceiptDigest;
+    inFlight = (async () => {
+      await onReceipt?.(receipt);
+      emitted = true;
+      emittedReceiptDigest = receipt.stageExecutionReceiptDigest;
+    })();
+    try {
+      await inFlight;
+    } finally {
+      if (!emitted) {
+        inFlight = undefined;
+        inFlightReceiptDigest = undefined;
+      }
+    }
+  };
+}
+
+export const chronicleStageAuditUnresolvedBinding = UNRESOLVED_MODEL_BINDING;

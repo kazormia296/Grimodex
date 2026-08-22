@@ -28,7 +28,7 @@
       "authority": "source-identity",
       "authoritative": true,
       "storage": "source-revision-and-canonical-text",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "stage-execution",
@@ -36,7 +36,7 @@
       "authority": "none",
       "authoritative": false,
       "storage": "narrative-extraction-run-task-stage-identity",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "raw-model-response",
@@ -44,7 +44,7 @@
       "authority": "none",
       "authoritative": false,
       "storage": "provider-response-buffer",
-      "retention": {"default": "not-retained", "scope": "request-scoped"}
+      "retention": { "default": "not-retained", "scope": "request-scoped" }
     },
     {
       "id": "response-digest",
@@ -52,7 +52,7 @@
       "authority": "none",
       "authoritative": false,
       "storage": "stage-execution-response-digest",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "extraction-artifact",
@@ -60,7 +60,31 @@
       "authority": "none",
       "authoritative": false,
       "storage": "narrative_extraction_artifacts",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
+    },
+    {
+      "id": "stage-model-execution-binding",
+      "lifecycle": "durable",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "ai-audit-begin-terminal-metadata",
+      "retention": { "default": "retained", "scope": "project-scoped" }
+    },
+    {
+      "id": "stage-terminal-receipt",
+      "lifecycle": "durable",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "ai-audit-terminal-receipts",
+      "retention": { "default": "retained", "scope": "project-scoped" }
+    },
+    {
+      "id": "stage-provenance-closure",
+      "lifecycle": "ephemeral",
+      "authority": "none",
+      "authoritative": false,
+      "storage": "application-memory-pure-sidecar",
+      "retention": { "default": "not-retained", "scope": "request-scoped" }
     },
     {
       "id": "narrative-ir-revision",
@@ -68,7 +92,7 @@
       "authority": "immutable-interpretation",
       "authoritative": true,
       "storage": "narrative_proposal_revisions",
-      "retention": {"default": "retained", "scope": "while-project-exists"}
+      "retention": { "default": "retained", "scope": "while-project-exists" }
     },
     {
       "id": "review-decision",
@@ -76,7 +100,7 @@
       "authority": "review",
       "authoritative": true,
       "storage": "decision-ledger",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "consumer-freshness",
@@ -84,7 +108,7 @@
       "authority": "evidence-freshness",
       "authoritative": true,
       "storage": "narrative_consumer_freshness",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "projection-application",
@@ -92,7 +116,7 @@
       "authority": "projection-execution",
       "authoritative": true,
       "storage": "application-and-commit-ledger",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "application-contribution",
@@ -100,7 +124,7 @@
       "authority": "application-contribution",
       "authoritative": true,
       "storage": "narrative_application_contributions",
-      "retention": {"default": "retained", "scope": "project-scoped"}
+      "retention": { "default": "retained", "scope": "project-scoped" }
     },
     {
       "id": "semantic-index",
@@ -108,7 +132,7 @@
       "authority": "rebuildable-acceleration",
       "authoritative": false,
       "storage": "semantic-index-and-metadata",
-      "retention": {"default": "reconstructable", "scope": "project-scoped"}
+      "retention": { "default": "reconstructable", "scope": "project-scoped" }
     },
     {
       "id": "renderer-state",
@@ -116,7 +140,7 @@
       "authority": "none",
       "authoritative": false,
       "storage": "renderer-memory",
-      "retention": {"default": "not-retained", "scope": "window-scoped"}
+      "retention": { "default": "not-retained", "scope": "window-scoped" }
     }
   ],
   "rawResponsePolicy": {
@@ -220,13 +244,9 @@
         "pattern": "\\b(?:[A-Za-z_$][A-Za-z0-9_$]*Stale(?:Store|Cache|ReadModel|Flag|State|Map|Index)|stale(?:Store|Cache|ReadModel|Flag|State|Map|Index))\\b"
       }
     ],
-    "fixtures": [
-      "policies/narrative/fixtures/artifact-authority.json"
-    ]
+    "fixtures": ["policies/narrative/fixtures/artifact-authority.json"]
   },
-  "fixtures": [
-    "policies/narrative/fixtures/artifact-authority.json"
-  ],
+  "fixtures": ["policies/narrative/fixtures/artifact-authority.json"],
   "implementationStatus": {
     "state": "wired",
     "productionEntryPoints": [

@@ -27,7 +27,15 @@ import {
 import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
+  buildChronicleStageAuditNoResponseTerminal,
+  createChronicleStageReceiptEmitter,
+  stageModelBindingFromAuditMetadata,
+  type ChronicleStageAuditMetadata,
 } from "./chronicleStageAudit";
+import type {
+  ChronicleStageTerminalReceiptV1,
+  StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 
 export const NARRATIVE_OBSERVATION_EXTRACT_PATH =
   "narrative_observation_extract" as const;
@@ -63,6 +71,10 @@ export interface RunObservationExtractionTaskInput {
   readonly createStageExecutionId?: () => string;
   /** Optional transport injection for the inline structured-repair child. */
   readonly repairSend?: StructuredRepairSend;
+  /** Non-authoritative receipt observation seam for shadow/C1 harnesses. */
+  readonly onStageReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
 }
 
 const OBSERVATION_COMPONENT_CONTRACT = {
@@ -113,18 +125,30 @@ async function recordObservationStageAudit(
     readonly tokensIn?: number;
     readonly tokensOut?: number;
   },
-  repairChildStageExecutionId?: string | null,
+  modelExecutionBinding?: StageModelExecutionBindingV1,
+  onStageReceipt?: RunObservationExtractionTaskInput["onStageReceipt"],
+  capturedTerminalMetadata?: ChronicleStageAuditMetadata,
+  capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
-  const terminal = await buildChronicleStageAuditTerminal({
-    stageExecution: input.stageExecution,
-    ...digests,
-    responseText,
-    parseStatus,
-    terminalStatus,
-    repairChildStageExecutionId,
-  });
+  const terminal =
+    capturedTerminalMetadata ??
+    (await buildChronicleStageAuditTerminal({
+      stageExecution: input.stageExecution,
+      ...digests,
+      responseText,
+      parseStatus,
+      terminalStatus,
+      modelExecutionBinding,
+      onReceipt: onStageReceipt,
+    }));
+  if (
+    capturedTerminalMetadata !== undefined &&
+    capturedStageReceipt !== undefined
+  ) {
+    await onStageReceipt?.(capturedStageReceipt);
+  }
   void recordAiUsage({
     surface: "narrative_observation_extract",
     model: usage.model,
@@ -224,14 +248,26 @@ export async function runObservationExtractionTask(
     projectId,
     pathId: NARRATIVE_OBSERVATION_EXTRACT_PATH,
   } as const;
+  let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
+  let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
+  let capturedStageReceipt: ChronicleStageTerminalReceiptV1 | undefined;
+  const emitStageReceipt = createChronicleStageReceiptEmitter(
+    input.onStageReceipt,
+  );
   const auditContext = input.stageExecution
     ? {
         ...bindChronicleStageAuditContext(
           baseAuditContext,
           input.stageExecution,
           promptDigests,
+          (binding) => {
+            sealedModelBinding = binding;
+          },
         ),
-        onTerminalMetadata: async (responseText: string) => {
+        onTerminalMetadata: async (
+          responseText: string,
+          metadata?: AiAuditJsonObject,
+        ) => {
           const parseStatus = observationParseStatus(responseText);
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
@@ -239,10 +275,42 @@ export async function runObservationExtractionTask(
             responseText,
             parseStatus,
             terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
           });
+          capturedTerminalMetadata = terminal;
           return {
             chronicleStage: terminal as unknown as AiAuditJsonObject,
           };
+        },
+        onNoResponseTerminalMetadata: async (
+          terminalStatus: "failed" | "cancelled" | "skipped",
+          metadata?: AiAuditJsonObject,
+        ) => {
+          const terminal = await buildChronicleStageAuditNoResponseTerminal({
+            stageExecution: input.stageExecution!,
+            ...promptDigests,
+            terminalStatus,
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
+          });
+          capturedTerminalMetadata = terminal;
+          return {
+            chronicleStage: terminal as unknown as AiAuditJsonObject,
+          };
+        },
+        onAuditCompleted: async () => {
+          if (capturedStageReceipt !== undefined) {
+            await emitStageReceipt(capturedStageReceipt);
+          }
         },
       }
     : baseAuditContext;
@@ -298,6 +366,10 @@ export async function runObservationExtractionTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return first.observations;
@@ -317,6 +389,10 @@ export async function runObservationExtractionTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return [];
@@ -340,6 +416,7 @@ export async function runObservationExtractionTask(
       ? { responseValidator: observationParseStatus }
       : {}),
     send: input.repairSend,
+    onStageReceipt: input.onStageReceipt,
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");
@@ -356,7 +433,10 @@ export async function runObservationExtractionTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
-        repairStageExecution?.stageExecutionId,
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return [];
@@ -380,7 +460,10 @@ export async function runObservationExtractionTask(
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
       },
-      repairStageExecution?.stageExecutionId,
+      sealedModelBinding,
+      emitStageReceipt,
+      capturedTerminalMetadata,
+      capturedStageReceipt,
     );
   }
   return parsed?.observations ?? [];

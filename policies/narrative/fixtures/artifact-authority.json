@@ -6,21 +6,57 @@
       "id": "raw-model-response-durable-rejected",
       "kind": "artifact-lifecycle",
       "target": "raw-model-response",
-      "claim": {"lifecycle": "durable"},
+      "claim": { "lifecycle": "durable" },
       "expected": "reject"
     },
     {
       "id": "raw-model-response-retained-rejected",
       "kind": "artifact-retention",
       "target": "raw-model-response",
-      "claim": {"retention": "retained"},
+      "claim": { "retention": "retained" },
       "expected": "reject"
+    },
+    {
+      "id": "stage-model-execution-binding-durable",
+      "kind": "artifact-lifecycle",
+      "target": "stage-model-execution-binding",
+      "claim": {
+        "lifecycle": "durable",
+        "authority": "none",
+        "authoritative": false
+      },
+      "expected": "accept"
+    },
+    {
+      "id": "stage-terminal-receipt-durable",
+      "kind": "artifact-lifecycle",
+      "target": "stage-terminal-receipt",
+      "claim": {
+        "lifecycle": "durable",
+        "authority": "none",
+        "authoritative": false
+      },
+      "expected": "accept"
+    },
+    {
+      "id": "stage-provenance-closure-ephemeral",
+      "kind": "artifact-lifecycle",
+      "target": "stage-provenance-closure",
+      "claim": {
+        "lifecycle": "ephemeral",
+        "authority": "none",
+        "authoritative": false,
+        "storage": "application-memory-pure-sidecar",
+        "retention": "not-retained",
+        "scope": "request-scoped"
+      },
+      "expected": "accept"
     },
     {
       "id": "semantic-index-authority-rejected",
       "kind": "authority-classification",
       "target": "semantic-index",
-      "claim": {"authoritative": true},
+      "claim": { "authoritative": true },
       "expected": "reject"
     },
     {

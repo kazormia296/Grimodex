@@ -69,7 +69,9 @@ requirements:
       - src-tauri/crates/grimodex-semantic/src/reranker.rs
       - src-tauri/crates/grimodex-semantic/src/runtime.rs
       - src/features/chat/singleShotTransport.ts
+      - src/features/ai-audit/transportContext.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
       - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
       - src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts
       - src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts
@@ -93,6 +95,7 @@ requirements:
       - src/features/ai-audit/legacyEvidence.test.ts
       - src/features/ai-verification/aiPathRegistry.test.ts
       - src/features/chat/singleShotTransport.audit.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/chat/chatApi.audit.test.ts
@@ -406,6 +409,7 @@ requirements:
       - policies/narrative/semantic-core-authorities.json
       - policies/narrative/narrative-artifact-authority.json
       - policies/narrative/fixtures/artifact-authority.json
+      - policies/narrative/narrative-ir-contract.json
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
@@ -418,6 +422,7 @@ requirements:
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
+      - policies/narrative/schemas/narrative-ir-contract.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
       - src/features/narrative-semantic-core/contracts/scopeV2.ts
       - src/features/narrative-semantic-core/contracts/narrativeIr.ts
@@ -428,7 +433,10 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
+      - scripts/quality/validate-narrative-ir-contract.mjs
+      - docs/plans/narrative-ir-nir0-implementation-plan.md
       - src/features/narrative-extraction/reconciler/stageExecution.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
       - src/features/narrative-extraction/reconciler/types.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.ts
       - src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts
@@ -440,6 +448,7 @@ requirements:
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
+      - scripts/quality/validate-narrative-ir-contract.test.mjs
       - src/features/narrative-semantic-core/contracts/mutationAuthority.test.ts
       - src/features/narrative-semantic-core/contracts/stateVocabulary.test.ts
       - src/features/narrative-semantic-core/contracts/assertionState.test.ts
@@ -456,6 +465,7 @@ requirements:
       - src-tauri/crates/grimodex-core/tests/narrative_ir.rs
       - src-tauri/crates/grimodex-core/tests/narrative_dependency.rs
       - src/features/narrative-extraction/reconciler/stageExecution.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts

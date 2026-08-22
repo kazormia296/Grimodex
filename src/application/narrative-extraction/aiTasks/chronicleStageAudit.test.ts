@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   bindChronicleStageAuditContext,
+  buildChronicleStageAuditNoResponseTerminal,
   buildChronicleStageAuditTerminal,
+  chronicleStageAuditUnresolvedBinding,
 } from "./chronicleStageAudit";
+import { digestStageModelExecutionBinding } from "@/features/narrative-extraction/reconciler/stageProvenance";
 import {
   createChildStageExecutionContext,
   createStageExecutionContext,
@@ -26,7 +29,7 @@ const digests = {
 };
 
 describe("Chronicle Stage AI Audit binding", () => {
-  it("maps stage identity to existing audit correlation fields", () => {
+  it("maps stage identity to existing audit correlation fields", async () => {
     const bound = bindChronicleStageAuditContext(
       {
         projectId: parent.projectId,
@@ -45,11 +48,50 @@ describe("Chronicle Stage AI Audit binding", () => {
     });
     expect(bound.metadata).toMatchObject({
       chronicleStage: {
-        version: 1,
+        version: 2,
         stageExecution: parent,
         contextSetDigest: digests.contextSetDigest,
         componentContractDigest: digests.componentContractDigest,
         finalRequestDigest: digests.finalRequestDigest,
+        modelExecutionBinding: {
+          resolutionStatus: "unresolved",
+          provider: null,
+          requestedModel: null,
+          effectiveModel: null,
+        },
+        modelBindingDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      },
+    });
+    expect(
+      (bound.metadata?.chronicleStage as Record<string, unknown>)
+        .modelBindingDigest,
+    ).toBe(
+      await digestStageModelExecutionBinding(
+        chronicleStageAuditUnresolvedBinding,
+      ),
+    );
+    const resolvedMetadata = await bound.onResolvedRouteMetadata?.(
+      {
+        provider: "ollama",
+        model: "qwen3:8b",
+        apiVariant: "chat-completions",
+        endpointId: null,
+        endpointOrigin: "http://127.0.0.1:11434",
+        authority: "turn-snapshot",
+        transportResolutionLimitations: [],
+      },
+      { provider: "ollama", model: "qwen3:8b" },
+    );
+    expect(resolvedMetadata).toMatchObject({
+      chronicleStage: {
+        version: 2,
+        modelExecutionBinding: {
+          resolutionStatus: "requested-only",
+          provider: "ollama",
+          requestedModel: "qwen3:8b",
+          effectiveModel: null,
+        },
+        modelBindingDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
       },
     });
   });
@@ -76,9 +118,14 @@ describe("Chronicle Stage AI Audit binding", () => {
     });
     expect(bound.metadata).toMatchObject({
       chronicleStage: {
-        repairParentStageExecutionId: "stage-execution-1",
+        stageExecution: {
+          parentStageExecutionId: "stage-execution-1",
+        },
       },
     });
+    expect(bound.metadata?.chronicleStage).not.toHaveProperty(
+      "repairParentStageExecutionId",
+    );
   });
 
   it("records terminal digests and statuses without retaining response text", async () => {
@@ -88,18 +135,23 @@ describe("Chronicle Stage AI Audit binding", () => {
       responseText: '{"observations":[]}',
       parseStatus: "parsed",
       terminalStatus: "succeeded",
-      repairChildStageExecutionId: null,
     });
 
     expect(terminal).toMatchObject({
-      version: 1,
+      version: 2,
       contextSetDigest: digests.contextSetDigest,
       componentContractDigest: digests.componentContractDigest,
       finalRequestDigest: digests.finalRequestDigest,
       responseDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       parseStatus: "parsed",
       terminalStatus: "succeeded",
-      repairChildStageExecutionId: null,
+      modelExecutionBinding: {
+        resolutionStatus: "unresolved",
+      },
+      modelBindingDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+      stageExecutionReceiptDigest: expect.stringMatching(
+        /^sha256:[0-9a-f]{64}$/,
+      ),
     });
     expect(terminal).not.toHaveProperty("responseText");
     expect(JSON.stringify(terminal)).not.toContain("observations");
@@ -130,5 +182,22 @@ describe("Chronicle Stage AI Audit binding", () => {
         terminalStatus: "succeeded",
       }),
     ).rejects.toThrow(/digest/i);
+  });
+
+  it("builds a null-response terminal receipt for a durable pre-response failure", async () => {
+    const terminal = await buildChronicleStageAuditNoResponseTerminal({
+      stageExecution: parent,
+      ...digests,
+      terminalStatus: "failed",
+    });
+
+    expect(terminal).toMatchObject({
+      responseDigest: null,
+      parseStatus: "not-attempted",
+      terminalStatus: "failed",
+      stageExecutionReceiptDigest: expect.stringMatching(
+        /^sha256:[0-9a-f]{64}$/,
+      ),
+    });
   });
 });

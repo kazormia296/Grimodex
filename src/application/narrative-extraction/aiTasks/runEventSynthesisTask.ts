@@ -28,7 +28,15 @@ import {
 import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
+  buildChronicleStageAuditNoResponseTerminal,
+  createChronicleStageReceiptEmitter,
+  stageModelBindingFromAuditMetadata,
+  type ChronicleStageAuditMetadata,
 } from "./chronicleStageAudit";
+import type {
+  ChronicleStageTerminalReceiptV1,
+  StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 
 export const NARRATIVE_EVENT_SYNTHESIZE_PATH =
   "narrative_event_synthesize" as const;
@@ -60,6 +68,10 @@ export interface RunEventSynthesisTaskInput {
   readonly createStageExecutionId?: () => string;
   /** Optional transport injection for the inline structured-repair child. */
   readonly repairSend?: StructuredRepairSend;
+  /** Non-authoritative receipt observation seam for shadow/C1 harnesses. */
+  readonly onStageReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
 }
 
 const EVENT_COMPONENT_CONTRACT = {
@@ -124,18 +136,30 @@ async function recordEventStageAudit(
     readonly tokensIn?: number;
     readonly tokensOut?: number;
   },
-  repairChildStageExecutionId?: string | null,
+  modelExecutionBinding?: StageModelExecutionBindingV1,
+  onStageReceipt?: RunEventSynthesisTaskInput["onStageReceipt"],
+  capturedTerminalMetadata?: ChronicleStageAuditMetadata,
+  capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
-  const terminal = await buildChronicleStageAuditTerminal({
-    stageExecution: input.stageExecution,
-    ...digests,
-    responseText,
-    parseStatus,
-    terminalStatus,
-    repairChildStageExecutionId,
-  });
+  const terminal =
+    capturedTerminalMetadata ??
+    (await buildChronicleStageAuditTerminal({
+      stageExecution: input.stageExecution,
+      ...digests,
+      responseText,
+      parseStatus,
+      terminalStatus,
+      modelExecutionBinding,
+      onReceipt: onStageReceipt,
+    }));
+  if (
+    capturedTerminalMetadata !== undefined &&
+    capturedStageReceipt !== undefined
+  ) {
+    await onStageReceipt?.(capturedStageReceipt);
+  }
   void recordAiUsage({
     surface: "narrative_event_synthesize",
     model: usage.model,
@@ -231,14 +255,26 @@ export async function runEventSynthesisTask(
     projectId,
     pathId: NARRATIVE_EVENT_SYNTHESIZE_PATH,
   } as const;
+  let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
+  let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
+  let capturedStageReceipt: ChronicleStageTerminalReceiptV1 | undefined;
+  const emitStageReceipt = createChronicleStageReceiptEmitter(
+    input.onStageReceipt,
+  );
   const auditContext = input.stageExecution
     ? {
         ...bindChronicleStageAuditContext(
           baseAuditContext,
           input.stageExecution,
           promptDigests,
+          (binding) => {
+            sealedModelBinding = binding;
+          },
         ),
-        onTerminalMetadata: async (responseText: string) => {
+        onTerminalMetadata: async (
+          responseText: string,
+          metadata?: AiAuditJsonObject,
+        ) => {
           const parseStatus = synthesisParseStatus(responseText);
           const terminal = await buildChronicleStageAuditTerminal({
             stageExecution: input.stageExecution!,
@@ -246,10 +282,42 @@ export async function runEventSynthesisTask(
             responseText,
             parseStatus,
             terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
           });
+          capturedTerminalMetadata = terminal;
           return {
             chronicleStage: terminal as unknown as AiAuditJsonObject,
           };
+        },
+        onNoResponseTerminalMetadata: async (
+          terminalStatus: "failed" | "cancelled" | "skipped",
+          metadata?: AiAuditJsonObject,
+        ) => {
+          const terminal = await buildChronicleStageAuditNoResponseTerminal({
+            stageExecution: input.stageExecution!,
+            ...promptDigests,
+            terminalStatus,
+            modelExecutionBinding:
+              stageModelBindingFromAuditMetadata(metadata) ??
+              sealedModelBinding,
+            onReceipt: (receipt) => {
+              capturedStageReceipt = receipt;
+            },
+          });
+          capturedTerminalMetadata = terminal;
+          return {
+            chronicleStage: terminal as unknown as AiAuditJsonObject,
+          };
+        },
+        onAuditCompleted: async () => {
+          if (capturedStageReceipt !== undefined) {
+            await emitStageReceipt(capturedStageReceipt);
+          }
         },
       }
     : baseAuditContext;
@@ -301,6 +369,10 @@ export async function runEventSynthesisTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return first.hypotheses;
@@ -320,6 +392,10 @@ export async function runEventSynthesisTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return [];
@@ -342,6 +418,7 @@ export async function runEventSynthesisTask(
       ? { responseValidator: synthesisParseStatus }
       : {}),
     send: input.repairSend,
+    onStageReceipt: input.onStageReceipt,
   });
   if (!repaired) {
     input.onParseStatus?.("invalid");
@@ -358,7 +435,10 @@ export async function runEventSynthesisTask(
           tokensIn: response.inputTokens,
           tokensOut: response.outputTokens,
         },
-        repairStageExecution?.stageExecutionId,
+        sealedModelBinding,
+        emitStageReceipt,
+        capturedTerminalMetadata,
+        capturedStageReceipt,
       );
     }
     return [];
@@ -378,7 +458,10 @@ export async function runEventSynthesisTask(
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
       },
-      repairStageExecution?.stageExecutionId,
+      sealedModelBinding,
+      emitStageReceipt,
+      capturedTerminalMetadata,
+      capturedStageReceipt,
     );
   }
   return parsed?.hypotheses ?? [];

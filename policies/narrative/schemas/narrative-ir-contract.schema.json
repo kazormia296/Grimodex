@@ -12,6 +12,7 @@
     "vocabularies",
     "v1ProducerMapping",
     "envelope",
+    "stageProvenance",
     "monotonicity",
     "chroniclePilot",
     "humanDerived",
@@ -77,10 +78,7 @@
         },
         "portableExport": {
           "type": "object",
-          "required": [
-            "requiredClosure",
-            "originalProjectAvailability"
-          ],
+          "required": ["requiredClosure", "originalProjectAvailability"],
           "properties": {
             "requiredClosure": {
               "const": "referenced-closure"
@@ -148,9 +146,7 @@
       ],
       "properties": {
         "assertionKinds": {
-          "const": [
-            "scene-event@1"
-          ]
+          "const": ["scene-event@1"]
         },
         "assertionModalities": {
           "const": [
@@ -165,11 +161,7 @@
           ]
         },
         "assertionPolarities": {
-          "const": [
-            "affirmative",
-            "negative",
-            "uncertain"
-          ]
+          "const": ["affirmative", "negative", "uncertain"]
         },
         "producerKinds": {
           "const": [
@@ -192,31 +184,17 @@
           ]
         },
         "changeKinds": {
-          "const": [
-            "add",
-            "revise",
-            "retract",
-            "merge",
-            "split"
-          ]
+          "const": ["add", "revise", "retract", "merge", "split"]
         },
         "contextExposures": {
-          "const": [
-            "deterministic-stage",
-            "author-supplied",
-            "model-visible"
-          ]
+          "const": ["deterministic-stage", "author-supplied", "model-visible"]
         }
       },
       "additionalProperties": false
     },
     "v1ProducerMapping": {
       "type": "object",
-      "required": [
-        "producerKind",
-        "producerIdSource",
-        "producerVersionSource"
-      ],
+      "required": ["producerKind", "producerIdSource", "producerVersionSource"],
       "properties": {
         "producerKind": {
           "const": "reconciler-proposal"
@@ -278,21 +256,13 @@
               ]
             },
             "scopeDigest": {
-              "const": [
-                "canonicalNarrativeScopeV2"
-              ]
+              "const": ["canonicalNarrativeScopeV2"]
             },
             "assertionDigest": {
-              "const": [
-                "assertionCoreDigest",
-                "scopeDigest"
-              ]
+              "const": ["assertionCoreDigest", "scopeDigest"]
             },
             "disclosureFieldsExcludedFromAssertionCore": {
-              "const": [
-                "secret",
-                "revealDocumentRef"
-              ]
+              "const": ["secret", "revealDocumentRef"]
             }
           }
         },
@@ -341,6 +311,481 @@
         },
         "reviewFreshnessProjectionOutsideRevision": {
           "const": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "stageProvenance": {
+      "type": "object",
+      "required": [
+        "auditVersion",
+        "modelBindingDigestDomain",
+        "terminalReceiptDigestDomain",
+        "closureDigestDomain",
+        "requestDigestExcludesModel",
+        "bindingContract",
+        "terminalReceiptContract",
+        "c1Completeness",
+        "closureContract",
+        "sourceLiteralPins",
+        "generationMode",
+        "taskCoordinateReachability",
+        "envelopeChange",
+        "persistence",
+        "forbidden"
+      ],
+      "properties": {
+        "auditVersion": { "const": 2 },
+        "modelBindingDigestDomain": {
+          "const": "chronicle-stage-model-binding/1"
+        },
+        "terminalReceiptDigestDomain": {
+          "const": "chronicle-stage-terminal-receipt/1"
+        },
+        "closureDigestDomain": {
+          "const": "chronicle-stage-provenance-closure/1"
+        },
+        "requestDigestExcludesModel": { "const": true },
+        "bindingContract": {
+          "type": "object",
+          "required": [
+            "fields",
+            "endpointBinding",
+            "credentialShape",
+            "statusMatrix"
+          ],
+          "properties": {
+            "fields": {
+              "const": [
+                "provider",
+                "endpointBindingId",
+                "requestedModel",
+                "effectiveModel",
+                "modelFingerprint",
+                "apiVariant",
+                "reasoningMode",
+                "generationMode",
+                "resolutionStatus"
+              ]
+            },
+            "endpointBinding": { "const": "stable-id-or-sha256-digest-only" },
+            "credentialShape": {
+              "const": "reject-credential-shaped-values-before-digest"
+            },
+            "statusMatrix": {
+              "type": "object",
+              "required": [
+                "fingerprinted",
+                "provider-reported",
+                "requested-only",
+                "unresolved"
+              ],
+              "properties": {
+                "fingerprinted": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": {
+                      "const": [
+                        "provider",
+                        "modelFingerprint",
+                        "requestedOrEffectiveModel"
+                      ]
+                    },
+                    "forbidden": { "const": [] }
+                  },
+                  "additionalProperties": false
+                },
+                "provider-reported": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": { "const": ["provider", "effectiveModel"] },
+                    "forbidden": { "const": ["modelFingerprint"] }
+                  },
+                  "additionalProperties": false
+                },
+                "requested-only": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": { "const": ["provider", "requestedModel"] },
+                    "forbidden": {
+                      "const": ["effectiveModel", "modelFingerprint"]
+                    }
+                  },
+                  "additionalProperties": false
+                },
+                "unresolved": {
+                  "type": "object",
+                  "required": ["required", "forbidden"],
+                  "properties": {
+                    "required": {
+                      "const": [
+                        "all-route-model-fields-null",
+                        "generationMode=provider-default"
+                      ]
+                    },
+                    "forbidden": {
+                      "const": [
+                        "provider",
+                        "endpointBindingId",
+                        "requestedModel",
+                        "effectiveModel",
+                        "modelFingerprint",
+                        "apiVariant",
+                        "reasoningMode"
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "terminalReceiptContract": {
+          "type": "object",
+          "required": [
+            "statusMatrix",
+            "beginTerminalSeal",
+            "modelBindingDigestCoherence",
+            "exactlyOnce",
+            "fullTerminalPaths"
+          ],
+          "properties": {
+            "statusMatrix": {
+              "const": [
+                {
+                  "terminalStatus": "succeeded",
+                  "parseStatus": "parsed",
+                  "responseDigest": "required"
+                },
+                {
+                  "terminalStatus": "failed",
+                  "parseStatus": "invalid",
+                  "responseDigest": "required"
+                },
+                {
+                  "terminalStatus": "failed",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                },
+                {
+                  "terminalStatus": "cancelled",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                },
+                {
+                  "terminalStatus": "skipped",
+                  "parseStatus": "not-attempted",
+                  "responseDigest": "null"
+                }
+              ]
+            },
+            "beginTerminalSeal": {
+              "const": "protected-identity-and-digests-structurally-equal"
+            },
+            "modelBindingDigestCoherence": {
+              "const": "digest-binding-before-begin-and-terminal"
+            },
+            "exactlyOnce": {
+              "const": "one-full-terminal-receipt-per-stage-execution"
+            },
+            "fullTerminalPaths": {
+              "const": [
+                "success",
+                "response-parse-failure",
+                "provider-dispatch-failure",
+                "cli-skip",
+                "cancelled"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "c1Completeness": {
+          "type": "object",
+          "required": [
+            "requiredStages",
+            "ownerStage",
+            "successfulPath",
+            "ownerDigestFields",
+            "ownerDigestsMatchExecution",
+            "repairLineage"
+          ],
+          "properties": {
+            "requiredStages": {
+              "const": [
+                "narrative_observation_extract",
+                "narrative_event_synthesize"
+              ]
+            },
+            "ownerStage": { "const": "narrative_event_synthesize" },
+            "successfulPath": {
+              "const": "parsed-success-root-or-parsed-successful-repair-child"
+            },
+            "ownerDigestFields": {
+              "const": [
+                "contextSetDigest",
+                "componentContractDigest",
+                "finalRequestDigest"
+              ]
+            },
+            "ownerDigestsMatchExecution": { "const": true },
+            "repairLineage": {
+              "type": "object",
+              "required": [
+                "childStage",
+                "parentMustBe",
+                "sameTaskAndAttempt",
+                "parentPointer"
+              ],
+              "properties": {
+                "childStage": { "const": "narrative_structured_repair" },
+                "parentMustBe": {
+                  "const": "failed-invalid-observation-or-synthesis"
+                },
+                "sameTaskAndAttempt": { "const": true },
+                "parentPointer": { "const": "immutable-parentStageExecutionId" }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "closureContract": {
+          "type": "object",
+          "required": [
+            "receiptOrder",
+            "receiptRefs",
+            "selfDigest",
+            "membership",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "retention",
+            "scope"
+          ],
+          "properties": {
+            "receiptOrder": {
+              "const": "stageExecutionId-then-stageExecutionReceiptDigest"
+            },
+            "receiptRefs": {
+              "const": "exact-recomputed-from-canonical-receipts"
+            },
+            "selfDigest": {
+              "const": "digest-excludes-stageProvenanceClosureDigest-and-must-recompute"
+            },
+            "membership": {
+              "const": "caller-supplied-request-scoped-receipt-set"
+            },
+            "lifecycle": { "const": "ephemeral" },
+            "authority": { "const": "none" },
+            "authoritative": { "const": false },
+            "storage": { "const": "application-memory-pure-sidecar" },
+            "retention": { "const": "not-retained" },
+            "scope": { "const": "request-scoped" }
+          },
+          "additionalProperties": false
+        },
+        "sourceLiteralPins": {
+          "type": "object",
+          "required": ["auditVersion", "digestDomains", "implementationPins"],
+          "properties": {
+            "auditVersion": {
+              "type": "object",
+              "required": ["path", "literal"],
+              "properties": {
+                "path": {
+                  "const": "src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts"
+                },
+                "literal": {
+                  "const": "export const CHRONICLE_STAGE_AUDIT_VERSION = 2 as const;"
+                }
+              },
+              "additionalProperties": false
+            },
+            "digestDomains": {
+              "const": [
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-model-binding/1"
+                },
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-terminal-receipt/1"
+                },
+                {
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literal": "chronicle-stage-provenance-closure/1"
+                }
+              ]
+            },
+            "implementationPins": {
+              "const": [
+                {
+                  "id": "binding-status-matrix",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "case \"fingerprinted\":",
+                    "case \"provider-reported\":",
+                    "case \"requested-only\":",
+                    "case \"unresolved\":"
+                  ]
+                },
+                {
+                  "id": "begin-terminal-seal",
+                  "path": "src/features/chat/singleShotTransport.ts",
+                  "literals": [
+                    "CHRONICLE_BEGIN_PROTECTED_FIELDS",
+                    "Chronicle Stage terminal changed protected field",
+                    "assertChronicleBindingCoherence"
+                  ]
+                },
+                {
+                  "id": "exactly-once-observation-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runObservationExtractionTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "exactly-once-event-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runEventSynthesisTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "exactly-once-repair-emitter",
+                  "path": "src/application/narrative-extraction/aiTasks/runStructuredRepairTask.ts",
+                  "literals": [
+                    "onNoResponseTerminalMetadata",
+                    "onAuditCompleted",
+                    "emitStageReceipt(capturedStageReceipt)"
+                  ]
+                },
+                {
+                  "id": "c1-completeness",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "assertChronicleStageC1ClosureCompleteness",
+                    "C1 owner synthesis receipt digests or terminal path",
+                    "C1 stage provenance closure requires a successful"
+                  ]
+                },
+                {
+                  "id": "repair-lineage",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "Structured repair receipt requires a parent receipt",
+                    "Stage provenance repair parent must be failed invalid observation or synthesis",
+                    "parentStageExecutionId"
+                  ]
+                },
+                {
+                  "id": "owner-digest-reachability",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "assertChronicleStageProvenanceReachability",
+                    "Stage provenance closure does not reach stage execution owner",
+                    "stageProvenanceClosureDigest"
+                  ]
+                },
+                {
+                  "id": "canonical-closure-self-digest",
+                  "path": "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+                  "literals": [
+                    "closureDigestPayload",
+                    "Stage provenance closure receipt refs mismatch",
+                    "Stage provenance closure digest mismatch"
+                  ]
+                }
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "generationMode": {
+          "type": "object",
+          "required": ["providerDefault", "explicitWhen"],
+          "properties": {
+            "providerDefault": { "const": "provider/model-selection-only" },
+            "explicitWhen": {
+              "const": [
+                "reasoningMode",
+                "thinking",
+                "effort",
+                "reasoningEnabled",
+                "reasoningEffort",
+                "requestMaxOutputTokens"
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
+        "taskCoordinateReachability": {
+          "type": "object",
+          "required": [
+            "revisionBasisOwner",
+            "sidecarKey",
+            "upstreamReceipts",
+            "repairParentChild"
+          ],
+          "properties": {
+            "revisionBasisOwner": { "const": "revisionBasis.runId+taskId" },
+            "sidecarKey": {
+              "const": "projectId+runId+taskId+stageProvenanceClosureDigest"
+            },
+            "upstreamReceipts": { "const": "same-project-and-run-allowed" },
+            "repairParentChild": { "const": "same-task-and-attempt" }
+          },
+          "additionalProperties": false
+        },
+        "envelopeChange": {
+          "const": "stageProvenanceClosureDigest-forbidden"
+        },
+        "persistence": {
+          "type": "object",
+          "required": [
+            "owner",
+            "status",
+            "lifecycle",
+            "authority",
+            "authoritative",
+            "storage",
+            "retention",
+            "scope",
+            "membership"
+          ],
+          "properties": {
+            "owner": { "const": "C2A atomic task output/artifact persistence" },
+            "status": { "const": "deferred" },
+            "lifecycle": { "const": "ephemeral" },
+            "authority": { "const": "none" },
+            "authoritative": { "const": false },
+            "storage": { "const": "application-memory-pure-sidecar" },
+            "retention": { "const": "not-retained" },
+            "scope": { "const": "request-scoped" },
+            "membership": { "const": "caller-supplied-receipt-set" }
+          },
+          "additionalProperties": false
+        },
+        "forbidden": {
+          "const": [
+            "credentials",
+            "raw-url-or-origin",
+            "profile-dependent-prompt-or-significance",
+            "evaluation-contract-v2"
+          ]
         }
       },
       "additionalProperties": false
@@ -429,17 +874,10 @@
           "const": "scene-event@1"
         },
         "productWiredChangeKinds": {
-          "const": [
-            "add"
-          ]
+          "const": ["add"]
         },
         "declaredOrReservedChangeKinds": {
-          "const": [
-            "revise",
-            "retract",
-            "merge",
-            "split"
-          ]
+          "const": ["revise", "retract", "merge", "split"]
         },
         "existingProjectionRevisionStatus": {
           "const": "requires-separately-ratified-proposal-kind-and-apply-path"
@@ -509,15 +947,10 @@
           ]
         },
         "contextExposureAllowed": {
-          "const": [
-            "deterministic-stage",
-            "author-supplied"
-          ]
+          "const": ["deterministic-stage", "author-supplied"]
         },
         "contextExposureForbidden": {
-          "const": [
-            "model-visible"
-          ]
+          "const": ["model-visible"]
         },
         "classification": {
           "type": "object",
@@ -541,10 +974,7 @@
               ],
               "properties": {
                 "projectionOnly": {
-                  "const": [
-                    "/title",
-                    "/note"
-                  ]
+                  "const": ["/title", "/note"]
                 },
                 "scopeAffecting": {
                   "const": [
@@ -574,15 +1004,10 @@
               ],
               "properties": {
                 "projectionOnly": {
-                  "const": [
-                    "projection-only"
-                  ]
+                  "const": ["projection-only"]
                 },
                 "scopeOverride": {
-                  "const": [
-                    "projection-only",
-                    "scope-affecting"
-                  ]
+                  "const": ["projection-only", "scope-affecting"]
                 },
                 "assertionOverride": {
                   "const": []
@@ -605,11 +1030,7 @@
               "uniqueItems": true,
               "items": {
                 "type": "object",
-                "required": [
-                  "id",
-                  "changedPaths",
-                  "expectedDisposition"
-                ],
+                "required": ["id", "changedPaths", "expectedDisposition"],
                 "properties": {
                   "id": {
                     "type": "string",
@@ -644,10 +1065,7 @@
                     }
                   },
                   "expectedDisposition": {
-                    "enum": [
-                      "accept",
-                      "reject"
-                    ]
+                    "enum": ["accept", "reject"]
                   }
                 },
                 "additionalProperties": false,
@@ -659,9 +1077,7 @@
                           "const": "accept"
                         }
                       },
-                      "required": [
-                        "expectedDisposition"
-                      ]
+                      "required": ["expectedDisposition"]
                     },
                     "then": {
                       "required": [
@@ -677,11 +1093,7 @@
         },
         "invariants": {
           "type": "object",
-          "required": [
-            "projectionOnly",
-            "scopeOverride",
-            "clientCannotSupply"
-          ],
+          "required": ["projectionOnly", "scopeOverride", "clientCannotSupply"],
           "additionalProperties": false,
           "properties": {
             "projectionOnly": {
@@ -760,18 +1172,11 @@
     },
     "staleValidation": {
       "type": "object",
-      "required": [
-        "interpretation",
-        "humanDerived",
-        "fixtures"
-      ],
+      "required": ["interpretation", "humanDerived", "fixtures"],
       "properties": {
         "interpretation": {
           "type": "object",
-          "required": [
-            "requireLiveSourceTokenEquality",
-            "staleRefusal"
-          ],
+          "required": ["requireLiveSourceTokenEquality", "staleRefusal"],
           "additionalProperties": false,
           "properties": {
             "requireLiveSourceTokenEquality": {
@@ -840,11 +1245,7 @@
           "uniqueItems": true,
           "items": {
             "type": "object",
-            "required": [
-              "id",
-              "basis",
-              "expected"
-            ],
+            "required": ["id", "basis", "expected"],
             "additionalProperties": false,
             "properties": {
               "id": {
@@ -854,10 +1255,7 @@
                 ]
               },
               "basis": {
-                "enum": [
-                  "interpretation",
-                  "human-derived"
-                ]
+                "enum": ["interpretation", "human-derived"]
               },
               "expected": {
                 "enum": [
@@ -995,11 +1393,7 @@
           "const": []
         },
         "scanRoots": {
-          "const": [
-            "src",
-            "electron",
-            "src-tauri"
-          ]
+          "const": ["src", "electron", "src-tauri"]
         },
         "productionMarkers": {
           "const": [
@@ -1055,11 +1449,7 @@
           "const": "narrative-ir-contract"
         },
         "lifecycleStates": {
-          "const": [
-            "declared",
-            "shadow",
-            "wired"
-          ]
+          "const": ["declared", "shadow", "wired"]
         },
         "capabilities": {
           "type": "object",
@@ -1097,10 +1487,7 @@
           "const": false
         },
         "disclosureAdmissionProductionEntryPoint": {
-          "type": [
-            "string",
-            "null"
-          ],
+          "type": ["string", "null"],
           "const": null
         }
       },

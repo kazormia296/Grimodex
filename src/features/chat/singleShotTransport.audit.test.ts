@@ -60,6 +60,13 @@ vi.mock("@/features/ai-audit/api", () => ({
 }));
 
 import { testAiConnection } from "./api";
+import { digestStageModelExecutionBinding } from "@/features/narrative-extraction/reconciler/stageProvenance";
+import type { AiAuditJsonObject } from "@/features/ai-audit/types";
+import { bindChronicleStageAuditContext } from "@/application/narrative-extraction/aiTasks/chronicleStageAudit";
+import {
+  createStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
 import {
   chatAuditRouteCoverage,
   invokeSingleShotChat,
@@ -196,6 +203,269 @@ describe("single-shot AI audit contracts", () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
+  it("rejects Chronicle v2 begin metadata when protected fields are missing", async () => {
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "missing seal" }] },
+        {
+          projectId: "project-1",
+          pathId: "narrative_observation_extract",
+          metadata: { chronicleStage: { kind: "chronicle-stage", version: 2 } },
+        },
+      ),
+    ).rejects.toThrow(/Chronicle Stage begin .*required/i);
+    expect(beginMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    const partialStage = {
+      kind: "chronicle-stage",
+      version: 2,
+      modelExecutionBinding: {
+        kind: "chronicle-stage-model-binding" as const,
+        version: 1 as const,
+        provider: "anthropic",
+        endpointBindingId: null,
+        requestedModel: "claude-4.6-sonnet",
+        effectiveModel: null,
+        modelFingerprint: null,
+        apiVariant: null,
+        reasoningMode: null,
+        generationMode: "explicit" as const,
+        resolutionStatus: "requested-only" as const,
+      },
+    };
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "partial seal" }] },
+        {
+          projectId: "project-1",
+          pathId: "narrative_observation_extract",
+          metadata: { chronicleStage: partialStage },
+        },
+      ),
+    ).rejects.toThrow(/Chronicle Stage begin .*required/i);
+    expect(beginMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    const completeContext = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      createStageExecutionContext({
+        projectId: "project-1",
+        runId: "run-missing-binding",
+        taskId: "task-missing-binding",
+        attemptId: "attempt-missing-binding",
+        stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+        stageExecutionId: "stage-missing-binding",
+      }),
+      {
+        contextSetDigest: `sha256:${"5".repeat(64)}`,
+        componentContractDigest: `sha256:${"6".repeat(64)}`,
+        finalRequestDigest: `sha256:${"7".repeat(64)}`,
+      },
+    );
+    const completeStage = completeContext.metadata?.chronicleStage as Record<
+      string,
+      unknown
+    >;
+    const missingDigest = { ...completeStage };
+    delete missingDigest.modelBindingDigest;
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "missing digest" }] },
+        {
+          ...completeContext,
+          metadata: {
+            chronicleStage: missingDigest as unknown as AiAuditJsonObject,
+          },
+          onResolvedRouteMetadata: undefined,
+        },
+      ),
+    ).rejects.toThrow(/modelBindingDigest.*required/i);
+
+    const missingBinding = { ...completeStage };
+    delete missingBinding.modelExecutionBinding;
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "missing binding" }] },
+        {
+          ...completeContext,
+          metadata: {
+            chronicleStage: missingBinding as unknown as AiAuditJsonObject,
+          },
+          onResolvedRouteMetadata: undefined,
+        },
+      ),
+    ).rejects.toThrow(/modelExecutionBinding.*required/i);
+    expect(beginMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("awaits route metadata before begin and carries the sealed metadata to terminal", async () => {
+    const order: string[] = [];
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-route-seal",
+      taskId: "task-route-seal",
+      attemptId: "attempt-route-seal",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-route-seal",
+    });
+    const boundContext = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: `sha256:${"1".repeat(64)}`,
+        componentContractDigest: `sha256:${"2".repeat(64)}`,
+        finalRequestDigest: `sha256:${"3".repeat(64)}`,
+      },
+    );
+    const initialStage = boundContext.metadata?.chronicleStage as Record<
+      string,
+      unknown
+    >;
+    let resolvedStage: Record<string, unknown> = initialStage;
+    const onResolvedRouteMetadata = vi.fn(async () => {
+      order.push("route-metadata");
+      const modelExecutionBinding = {
+        kind: "chronicle-stage-model-binding" as const,
+        version: 1 as const,
+        provider: "anthropic",
+        endpointBindingId: null,
+        requestedModel: "claude-4.6-sonnet",
+        effectiveModel: null,
+        modelFingerprint: null,
+        apiVariant: null,
+        reasoningMode: null,
+        generationMode: "explicit" as const,
+        resolutionStatus: "requested-only" as const,
+      };
+      resolvedStage = {
+        ...initialStage,
+        modelExecutionBinding,
+        modelBindingDigest: await digestStageModelExecutionBinding(
+          modelExecutionBinding,
+        ),
+      };
+      return {
+        chronicleStage: resolvedStage as unknown as AiAuditJsonObject,
+      };
+    });
+    const onTerminalMetadata = vi.fn(async () => {
+      order.push("terminal-hook");
+      return {
+        chronicleStage: {
+          ...resolvedStage,
+          parseStatus: "parsed",
+          terminalStatus: "succeeded",
+          stageExecutionReceiptDigest: `sha256:${"4".repeat(64)}`,
+        } as unknown as AiAuditJsonObject,
+        chronicleTerminal: true,
+      };
+    });
+    const onAuditCompleted = vi.fn(async () => {
+      order.push("audit-completed-hook");
+    });
+
+    await invokeSingleShotChat(
+      {
+        messages: [{ role: "user", content: "exact prompt" }],
+        provider: "anthropic",
+        model: "claude-4.6-sonnet",
+      },
+      {
+        ...boundContext,
+        onResolvedRouteMetadata,
+        onTerminalMetadata,
+        onAuditCompleted,
+      },
+    );
+
+    expect(order).toEqual([
+      "route-metadata",
+      "terminal-hook",
+      "audit-completed-hook",
+    ]);
+    expect(onAuditCompleted).toHaveBeenCalledOnce();
+    expect(beginMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          chronicleStage: expect.objectContaining({
+            version: 2,
+            modelExecutionBinding: expect.objectContaining({
+              resolutionStatus: "requested-only",
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(completeMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ chronicleTerminal: true }),
+      }),
+    );
+  });
+
+  it("fails the Chronicle execution when its terminal provenance hook fails", async () => {
+    const hookError = new Error("receipt construction failed");
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-hook-failure",
+      taskId: "task-hook-failure",
+      attemptId: "attempt-hook-failure",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-hook-failure",
+    });
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: `sha256:${"8".repeat(64)}`,
+        componentContractDigest: `sha256:${"9".repeat(64)}`,
+        finalRequestDigest: `sha256:${"a".repeat(64)}`,
+      },
+    );
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "must not be accepted" }] },
+        {
+          ...base,
+          onTerminalMetadata: async () => {
+            throw hookError;
+          },
+        },
+      ),
+    ).rejects.toBe(hookError);
+    expect(failMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        error: expect.objectContaining({ message: hookError.message }),
+      }),
+    );
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
+  it("does not publish a Chronicle receipt when durable audit completion fails", async () => {
+    const receipts: unknown[] = [];
+    completeMock.mockRejectedValueOnce(new Error("audit terminal unavailable"));
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "no orphan" }] },
+        {
+          projectId: "project-1",
+          pathId: "narrative_observation_extract",
+          onTerminalMetadata: async () => ({
+            chronicleTerminal: true,
+          }),
+          onAuditCompleted: async () => {
+            receipts.push("receipt");
+          },
+        },
+      ),
+    ).rejects.toThrow("audit terminal unavailable");
+    expect(receipts).toEqual([]);
+  });
+
   it("durably records unsupported CLI single-shot as skipped before throwing", async () => {
     useAiSettingsStore.setState({
       settings: {
@@ -208,11 +478,26 @@ describe("single-shot AI audit contracts", () => {
     await expect(
       invokeSingleShotChat(
         { messages: [{ role: "user", content: "must not dispatch" }] },
-        { projectId: "project-1", pathId: "summarization" },
+        {
+          projectId: "project-1",
+          pathId: "summarization",
+          onNoResponseTerminalMetadata: async () => {
+            callOrder.push("no-response-hook");
+            return { chronicleTerminal: { responseDigest: null } };
+          },
+          onAuditCompleted: async () => {
+            callOrder.push("audit-completed-hook");
+          },
+        },
       ),
     ).rejects.toMatchObject({ code: "AI_SINGLE_SHOT_CLI_UNSUPPORTED" });
 
-    expect(callOrder).toEqual(["audit-begin", "audit-skipped"]);
+    expect(callOrder).toEqual([
+      "audit-begin",
+      "no-response-hook",
+      "audit-skipped",
+      "audit-completed-hook",
+    ]);
     expect(skipMock).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -221,6 +506,80 @@ describe("single-shot AI audit contracts", () => {
       }),
     );
     expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("closes provider dispatch failure through the no-response hook before rethrowing", async () => {
+    const order: string[] = [];
+    const providerError = new Error("provider unavailable");
+    invokeMock.mockRejectedValueOnce(providerError);
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "no response" }] },
+        {
+          projectId: "project-1",
+          pathId: "narrative_observation_extract",
+          onNoResponseTerminalMetadata: async () => {
+            order.push("no-response-hook");
+            return { chronicleTerminal: { responseDigest: null } };
+          },
+          onAuditCompleted: async () => {
+            order.push("audit-completed-hook");
+          },
+        },
+      ),
+    ).rejects.toBe(providerError);
+    expect(order).toEqual(["no-response-hook", "audit-completed-hook"]);
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          chronicleTerminal: { responseDigest: null },
+        }),
+      }),
+    );
+  });
+
+  it("rejects a Chronicle terminal Context Set digest swap before completion", async () => {
+    const stageExecution = createStageExecutionContext({
+      projectId: "project-1",
+      runId: "run-seal",
+      taskId: "task-seal",
+      attemptId: "attempt-seal",
+      stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+      stageExecutionId: "stage-seal",
+    });
+    const base = bindChronicleStageAuditContext(
+      { projectId: "project-1", pathId: "narrative_observation_extract" },
+      stageExecution,
+      {
+        contextSetDigest: `sha256:${"1".repeat(64)}`,
+        componentContractDigest: `sha256:${"2".repeat(64)}`,
+        finalRequestDigest: `sha256:${"3".repeat(64)}`,
+      },
+    );
+    const beginStage = base.metadata?.chronicleStage as Record<string, unknown>;
+    await expect(
+      invokeSingleShotChat(
+        { messages: [{ role: "user", content: "sealed" }] },
+        {
+          ...base,
+          onResolvedRouteMetadata: undefined,
+          onTerminalMetadata: async () => ({
+            chronicleStage: {
+              ...beginStage,
+              contextSetDigest: `sha256:${"4".repeat(64)}`,
+              responseDigest: `sha256:${"5".repeat(64)}`,
+              parseStatus: "parsed",
+              terminalStatus: "succeeded",
+              stageExecutionReceiptDigest: `sha256:${"6".repeat(64)}`,
+            },
+          }),
+        },
+      ),
+    ).rejects.toThrow(/protected field.*contextSetDigest/i);
+    expect(completeMock).not.toHaveBeenCalled();
+    expect(failMock).toHaveBeenCalled();
   });
 
   it("AI audit path: ai_connection_test", async () => {

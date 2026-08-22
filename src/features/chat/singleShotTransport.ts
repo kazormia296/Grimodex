@@ -16,6 +16,11 @@ import {
   type AiAuditTransportContext,
 } from "@/features/ai-audit/transportContext";
 import type { AiAuditJsonObject } from "@/features/ai-audit/types";
+import { stableJsonStringify } from "@/features/narrative-extraction/source/digest";
+import {
+  assertStageModelExecutionBindingV1,
+  digestStageModelExecutionBinding,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 import { useAiSettingsStore } from "./store";
 import { getOpenaiCompatibleEndpoints } from "./types";
 import { isAinoveristV1Model } from "./aiNovelist";
@@ -94,6 +99,123 @@ function isJsonObject(value: unknown): value is AiAuditJsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+const CHRONICLE_BEGIN_PROTECTED_FIELDS = [
+  "kind",
+  "version",
+  "contextSetVersion",
+  "stageExecution",
+  "contextSetDigest",
+  "componentContractDigest",
+  "finalRequestDigest",
+  "modelExecutionBinding",
+  "modelBindingDigest",
+] as const;
+
+function chronicleStageFromMetadata(
+  metadata: AiAuditJsonObject | undefined,
+): Record<string, unknown> | undefined {
+  const stage = metadata?.chronicleStage;
+  return isJsonObject(stage) ? stage : undefined;
+}
+
+function hasChronicleBindingSeal(stage: Record<string, unknown>): boolean {
+  return stage.kind === "chronicle-stage" && stage.version === 2;
+}
+
+async function assertChronicleBindingCoherence(
+  stage: Record<string, unknown>,
+  label: string,
+): Promise<void> {
+  if (!hasChronicleBindingSeal(stage)) return;
+  for (const field of CHRONICLE_BEGIN_PROTECTED_FIELDS) {
+    if (!Object.hasOwn(stage, field)) {
+      throw new TypeError(`${label} ${field} is required`);
+    }
+  }
+  if (!isJsonObject(stage.modelExecutionBinding)) {
+    throw new TypeError(`${label} modelExecutionBinding is required`);
+  }
+  assertStageModelExecutionBindingV1(stage.modelExecutionBinding);
+  if (typeof stage.modelBindingDigest !== "string") {
+    throw new TypeError(`${label} modelBindingDigest is required`);
+  }
+  const expectedDigest = await digestStageModelExecutionBinding(
+    stage.modelExecutionBinding,
+  );
+  if (stage.modelBindingDigest !== expectedDigest) {
+    throw new TypeError(`${label} modelBindingDigest does not match binding`);
+  }
+}
+
+/** Validate the Chronicle begin/terminal seal before any durable terminal append. */
+async function assertChronicleTerminalSeal(
+  beginMetadata: AiAuditJsonObject | undefined,
+  terminalMetadata: AiAuditJsonObject | undefined,
+  expectedResponseDigest?: string | null,
+): Promise<void> {
+  const beginStage = chronicleStageFromMetadata(beginMetadata);
+  if (beginStage === undefined || !hasChronicleBindingSeal(beginStage)) return;
+  await assertChronicleBindingCoherence(beginStage, "Chronicle Stage begin");
+  const terminalStage = chronicleStageFromMetadata(terminalMetadata);
+  if (terminalStage === undefined) {
+    throw new TypeError("Chronicle Stage terminal metadata is missing");
+  }
+  for (const field of CHRONICLE_BEGIN_PROTECTED_FIELDS) {
+    if (!Object.hasOwn(beginStage, field)) continue;
+    if (
+      !Object.hasOwn(terminalStage, field) ||
+      stableJsonStringify(terminalStage[field]) !==
+        stableJsonStringify(beginStage[field])
+    ) {
+      throw new TypeError(
+        `Chronicle Stage terminal changed protected field '${field}'`,
+      );
+    }
+  }
+  await assertChronicleBindingCoherence(
+    terminalStage,
+    "Chronicle Stage terminal",
+  );
+  if (
+    expectedResponseDigest !== undefined &&
+    (!Object.hasOwn(terminalStage, "responseDigest") ||
+      stableJsonStringify(terminalStage.responseDigest) !==
+        stableJsonStringify(expectedResponseDigest))
+  ) {
+    throw new TypeError(
+      "Chronicle Stage terminal responseDigest does not match response",
+    );
+  }
+  const fullChronicleStage = hasChronicleBindingSeal(beginStage);
+  if (
+    fullChronicleStage &&
+    (!Object.hasOwn(terminalStage, "parseStatus") ||
+      !Object.hasOwn(terminalStage, "terminalStatus") ||
+      !Object.hasOwn(terminalStage, "stageExecutionReceiptDigest"))
+  ) {
+    throw new TypeError(
+      "Chronicle Stage terminal receipt fields are incomplete",
+    );
+  }
+}
+
+async function buildNoResponseTerminalMetadata(
+  auditContext: AiAuditTransportContext,
+  terminalStatus: "failed" | "cancelled" | "skipped",
+  durableMetadata: AiAuditJsonObject | undefined,
+): Promise<AiAuditJsonObject | undefined> {
+  const terminalMetadata = await auditContext.onNoResponseTerminalMetadata?.(
+    terminalStatus,
+    durableMetadata,
+  );
+  const completionMetadata = mergeAuditMetadata(
+    withChronicleTerminalStatus(durableMetadata, terminalStatus),
+    terminalMetadata,
+  );
+  await assertChronicleTerminalSeal(durableMetadata, completionMetadata, null);
+  return completionMetadata;
+}
+
 function withChronicleResponseDigest(
   metadata: AiAuditJsonObject | undefined,
   responseDigest: string,
@@ -134,7 +256,7 @@ function mergeAuditMetadata(
 
 function withChronicleTerminalStatus(
   metadata: AiAuditJsonObject | undefined,
-  terminalStatus: "failed" | "succeeded",
+  terminalStatus: "failed" | "succeeded" | "cancelled" | "skipped",
 ): AiAuditJsonObject | undefined {
   if (metadata === undefined) return undefined;
   const chronicleStage = metadata.chronicleStage;
@@ -144,7 +266,9 @@ function withChronicleTerminalStatus(
     chronicleStage: {
       ...chronicleStage,
       terminalStatus,
-      ...(terminalStatus === "failed" ? { parseStatus: "not-attempted" } : {}),
+      ...(terminalStatus !== "succeeded"
+        ? { parseStatus: "not-attempted", responseDigest: null }
+        : {}),
     },
   };
 }
@@ -338,8 +462,24 @@ export async function invokeSingleShotChat(
 ): Promise<ChatResponsePayload> {
   const provider = typeof args.provider === "string" ? args.provider : null;
   const route = resolveChatAuditRoute(args);
+  // Route metadata is resolved exactly once and sealed into the durable begin
+  // event before dispatch. The callback is non-persistent application state;
+  // only its returned, allowlisted metadata enters the audit ledger.
+  const resolvedRouteMetadata = await auditContext.onResolvedRouteMetadata?.(
+    route,
+    args,
+  );
+  const durableMetadata = mergeAuditMetadata(
+    auditContext.metadata,
+    resolvedRouteMetadata,
+  );
+  await assertChronicleBindingCoherence(
+    chronicleStageFromMetadata(durableMetadata) ?? {},
+    "Chronicle Stage begin",
+  );
   const audit = await beginAiAuditExecution({
     ...auditContext,
+    metadata: durableMetadata,
     request: auditRequestFromChatArgs(args, route),
     ...chatAuditRouteCoverage(route),
   });
@@ -347,13 +487,39 @@ export async function invokeSingleShotChat(
     assertSingleShotTransportSupported(provider);
   } catch (error) {
     if (!(error instanceof SingleShotCliUnsupportedError)) throw error;
-    await skipAiAuditExecution(audit, {
-      reason: error.code,
-      metadata: {
-        transport: "single-shot-http",
-        unsupportedProvider: "cli",
-      },
-    });
+    let terminalized = false;
+    try {
+      const completionMetadata = await buildNoResponseTerminalMetadata(
+        auditContext,
+        "skipped",
+        durableMetadata,
+      );
+      await skipAiAuditExecution(audit, {
+        reason: error.code,
+        metadata: mergeAuditMetadata(completionMetadata, {
+          transport: "single-shot-http",
+          unsupportedProvider: "cli",
+        }),
+      });
+      terminalized = true;
+      await auditContext.onAuditCompleted?.(completionMetadata);
+    } catch {
+      // Preserve the actionable unsupported-provider error. If the Chronicle
+      // hook or terminal append failed, no receipt is published.
+      if (!terminalized) {
+        try {
+          await skipAiAuditExecution(audit, {
+            reason: error.code,
+            metadata: {
+              transport: "single-shot-http",
+              unsupportedProvider: "cli",
+            },
+          });
+        } catch {
+          // The audit API already records the persistence failure boundary.
+        }
+      }
+    }
     throw error;
   }
   args.auditContext = nativeAiAuditContext(audit);
@@ -365,10 +531,33 @@ export async function invokeSingleShotChat(
   try {
     response = await invoke<ChatResponsePayload>("send_chat_message", args);
   } catch (error) {
-    await failAiAuditExecution(audit, {
-      error: auditErrorSnapshot(error),
-      metadata: withChronicleTerminalStatus(auditContext.metadata, "failed"),
-    });
+    let terminalized = false;
+    try {
+      const completionMetadata = await buildNoResponseTerminalMetadata(
+        auditContext,
+        "failed",
+        durableMetadata,
+      );
+      await failAiAuditExecution(audit, {
+        error: auditErrorSnapshot(error),
+        metadata: completionMetadata,
+      });
+      terminalized = true;
+      await auditContext.onAuditCompleted?.(completionMetadata);
+    } catch {
+      // Preserve the provider error. A failed terminal append never emits a
+      // Chronicle receipt and remains visible through the audit failure path.
+      if (!terminalized) {
+        try {
+          await failAiAuditExecution(audit, {
+            error: auditErrorSnapshot(error),
+            metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
+          });
+        } catch {
+          // The audit API already records the persistence failure boundary.
+        }
+      }
+    }
     throw error;
   }
   const responseText = response.blocks
@@ -378,14 +567,54 @@ export async function invokeSingleShotChat(
   const responseDigest = await sha256ResponseDigest(responseText);
   let terminalMetadata: AiAuditJsonObject | undefined;
   try {
-    terminalMetadata = await auditContext.onTerminalMetadata?.(responseText);
+    terminalMetadata = await auditContext.onTerminalMetadata?.(
+      responseText,
+      durableMetadata,
+    );
   } catch (error) {
+    const chronicleStage = durableMetadata?.chronicleStage;
+    if (
+      isJsonObject(chronicleStage) &&
+      chronicleStage.kind === "chronicle-stage"
+    ) {
+      // Chronicle provenance is part of the stage's acceptance boundary. Close
+      // the already-dispatched audit as failed and do not return an output that
+      // has no sealed terminal receipt.
+      await failAiAuditExecution(audit, {
+        error: auditErrorSnapshot(error),
+        metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
+      });
+      throw error;
+    }
     // A provenance helper must not strand the already-dispatched execution
     // without its existing terminal audit events. The response digest below
     // remains durable even when an optional Chronicle status hook fails.
     terminalMetadata = {
       chronicleStageMetadataError: { ...auditErrorSnapshot(error) },
     };
+  }
+  const completionMetadata = mergeAuditMetadata(
+    withChronicleResponseDigest(durableMetadata, responseDigest),
+    terminalMetadata,
+  );
+  try {
+    await assertChronicleTerminalSeal(
+      durableMetadata,
+      completionMetadata,
+      responseDigest,
+    );
+  } catch (error) {
+    const chronicleStage = durableMetadata?.chronicleStage;
+    if (
+      isJsonObject(chronicleStage) &&
+      chronicleStage.kind === "chronicle-stage"
+    ) {
+      await failAiAuditExecution(audit, {
+        error: auditErrorSnapshot(error),
+        metadata: withChronicleTerminalStatus(durableMetadata, "failed"),
+      });
+    }
+    throw error;
   }
   await completeAiAuditExecution(audit, {
     response: response as unknown as AiAuditJsonObject,
@@ -394,10 +623,20 @@ export async function invokeSingleShotChat(
       outputTokens: response.outputTokens ?? null,
       stopReason: response.stopReason,
     },
-    metadata: mergeAuditMetadata(
-      withChronicleResponseDigest(auditContext.metadata, responseDigest),
-      terminalMetadata,
-    ),
+    metadata: completionMetadata,
   });
+  try {
+    await auditContext.onAuditCompleted?.(completionMetadata);
+  } catch (error) {
+    const chronicleStage = completionMetadata?.chronicleStage;
+    if (
+      isJsonObject(chronicleStage) &&
+      chronicleStage.kind === "chronicle-stage"
+    ) {
+      // The durable audit terminal is closed, but a Chronicle Stage without
+      // its required provenance receipt is not an acceptable Stage result.
+      throw error;
+    }
+  }
   return response;
 }

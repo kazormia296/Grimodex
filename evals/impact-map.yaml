@@ -55,6 +55,9 @@ rules:
       - src/features/chat/modelRouting.test.ts
       - src/features/chat/turn/**
       - src/features/chat/types.ts
+      - src/features/ai-audit/transportContext.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
     requirements:
       - GDX-ROUTE-001
       - GDX-AI-AUDIT-001
@@ -67,6 +70,8 @@ rules:
     reason: AI audit event ownership, pre-dispatch durability, and terminal capture must remain complete across every transport.
     paths:
       - src/features/ai-audit/**
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/chat/singleShotTransport.ts
       - src/features/chat/chatApi.ts
       - src/features/chat/chatStreamTransport.ts
@@ -199,6 +204,9 @@ rules:
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.ts
+      - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
+      - src/features/ai-audit/transportContext.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts

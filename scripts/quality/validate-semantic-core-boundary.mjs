@@ -249,6 +249,9 @@ const REQUIRED_ARTIFACT_IDS = Object.freeze([
   "raw-model-response",
   "response-digest",
   "extraction-artifact",
+  "stage-model-execution-binding",
+  "stage-terminal-receipt",
+  "stage-provenance-closure",
   "narrative-ir-revision",
   "review-decision",
   "consumer-freshness",
@@ -318,6 +321,33 @@ const REQUIRED_ARTIFACT_AUTHORITY_ROWS = Object.freeze([
     storage: "narrative_extraction_artifacts",
     retentionDefault: "retained",
     retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "stage-model-execution-binding",
+    lifecycle: "durable",
+    authority: "none",
+    authoritative: false,
+    storage: "ai-audit-begin-terminal-metadata",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "stage-terminal-receipt",
+    lifecycle: "durable",
+    authority: "none",
+    authoritative: false,
+    storage: "ai-audit-terminal-receipts",
+    retentionDefault: "retained",
+    retentionScope: "project-scoped",
+  }),
+  Object.freeze({
+    id: "stage-provenance-closure",
+    lifecycle: "ephemeral",
+    authority: "none",
+    authoritative: false,
+    storage: "application-memory-pure-sidecar",
+    retentionDefault: "not-retained",
+    retentionScope: "request-scoped",
   }),
   Object.freeze({
     id: "narrative-ir-revision",
@@ -466,6 +496,9 @@ const REQUIRED_INTERPRETER_FRESHNESS_PATTERNS = Object.freeze({
 const REQUIRED_ARTIFACT_FIXTURES = Object.freeze([
   "raw-model-response-durable-rejected",
   "raw-model-response-retained-rejected",
+  "stage-model-execution-binding-durable",
+  "stage-terminal-receipt-durable",
+  "stage-provenance-closure-ephemeral",
   "semantic-index-authority-rejected",
   "interpreter-sql-import-rejected",
   "interpreter-typed-writer-rejected",
@@ -489,6 +522,39 @@ const REQUIRED_ARTIFACT_FIXTURE_ORACLES = Object.freeze({
     target: "raw-model-response",
     claim: Object.freeze({ retention: "retained" }),
     expected: "reject",
+  }),
+  "stage-model-execution-binding-durable": Object.freeze({
+    kind: "artifact-lifecycle",
+    target: "stage-model-execution-binding",
+    claim: Object.freeze({
+      lifecycle: "durable",
+      authority: "none",
+      authoritative: false,
+    }),
+    expected: "accept",
+  }),
+  "stage-terminal-receipt-durable": Object.freeze({
+    kind: "artifact-lifecycle",
+    target: "stage-terminal-receipt",
+    claim: Object.freeze({
+      lifecycle: "durable",
+      authority: "none",
+      authoritative: false,
+    }),
+    expected: "accept",
+  }),
+  "stage-provenance-closure-ephemeral": Object.freeze({
+    kind: "artifact-lifecycle",
+    target: "stage-provenance-closure",
+    claim: Object.freeze({
+      lifecycle: "ephemeral",
+      authority: "none",
+      authoritative: false,
+      storage: "application-memory-pure-sidecar",
+      retention: "not-retained",
+      scope: "request-scoped",
+    }),
+    expected: "accept",
   }),
   "semantic-index-authority-rejected": Object.freeze({
     kind: "authority-classification",
@@ -625,7 +691,8 @@ function listSourceFiles(repoRoot, relativeRoot) {
       if (entry.name === "node_modules" || entry.name === ".git") continue;
       const absolute = path.join(current, entry.name);
       if (entry.isDirectory()) visit(absolute);
-      else if (/\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|rs)$/.test(entry.name)) files.push(absolute);
+      else if (/\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx|rs)$/.test(entry.name))
+        files.push(absolute);
     }
   };
   visit(absoluteRoot);
@@ -661,7 +728,9 @@ function sameAllowlistImports(actual, expected) {
         mode: entry?.mode,
       }))
       .sort((left, right) => String(left.id).localeCompare(String(right.id)));
-  return JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected));
+  return (
+    JSON.stringify(normalize(actual)) === JSON.stringify(normalize(expected))
+  );
 }
 
 function validateImplementationStatus(repoRoot, label, status, errors) {
@@ -1251,7 +1320,10 @@ function validateRegexRule(rule, label, errors) {
   const patterns = Array.isArray(rule.patterns)
     ? rule.patterns
     : [rule.pattern];
-  if (patterns.length === 0 || patterns.some((pattern) => !isNonEmptyString(pattern))) {
+  if (
+    patterns.length === 0 ||
+    patterns.some((pattern) => !isNonEmptyString(pattern))
+  ) {
     errors.push(`${label} must declare non-empty regex patterns`);
     return false;
   }
@@ -1345,6 +1417,8 @@ function evaluateArtifactAuthorityFixtureClaim(contract, fixtureCase, errors) {
     let actual;
     if (field === "retention") {
       actual = artifact.retention?.default;
+    } else if (field === "scope") {
+      actual = artifact.retention?.scope;
     } else if (Object.prototype.hasOwnProperty.call(artifact, field)) {
       actual = artifact[field];
     } else {
@@ -1352,7 +1426,9 @@ function evaluateArtifactAuthorityFixtureClaim(contract, fixtureCase, errors) {
       continue;
     }
     if (actual !== expected) {
-      mismatches.push(`${field} expected ${String(expected)} got ${String(actual)}`);
+      mismatches.push(
+        `${field} expected ${String(expected)} got ${String(actual)}`,
+      );
     }
   }
 
@@ -1485,7 +1561,8 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
   if (
     !fixture ||
     fixture.schemaVersion !== 1 ||
-    fixture.fixtureKind !== "narrative-artifact-authority-negative-and-positive" ||
+    fixture.fixtureKind !==
+      "narrative-artifact-authority-negative-and-positive" ||
     !Array.isArray(fixture.cases)
   ) {
     errors.push(
@@ -1500,11 +1577,15 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
   for (const fixtureCase of fixture.cases) {
     const fixtureId = fixtureCase?.id;
     if (!isNonEmptyString(fixtureId)) {
-      errors.push("narrative artifact authority fixture cases must have unique non-empty ids");
+      errors.push(
+        "narrative artifact authority fixture cases must have unique non-empty ids",
+      );
       continue;
     }
     if (seenCaseIds.has(fixtureId)) {
-      errors.push(`duplicate narrative artifact authority fixture case: ${fixtureId}`);
+      errors.push(
+        `duplicate narrative artifact authority fixture case: ${fixtureId}`,
+      );
       continue;
     }
     seenCaseIds.add(fixtureId);
@@ -1546,7 +1627,9 @@ function validateArtifactAuthorityFixtures(repoRoot, contract, errors) {
 
 export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
   if (!isObject(contract) || contract.schemaVersion !== 1) {
-    errors.push("narrative artifact authority contract schemaVersion must be 1");
+    errors.push(
+      "narrative artifact authority contract schemaVersion must be 1",
+    );
     return;
   }
   if (contract.contract !== "narrative-artifact-authority") {
@@ -1574,7 +1657,9 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
       "narrative artifact authority lifecycle classes must be durable, ephemeral, and rebuildable",
     );
   }
-  if (!sameStringSet(contract.authorityKinds, REQUIRED_ARTIFACT_AUTHORITY_KINDS)) {
+  if (
+    !sameStringSet(contract.authorityKinds, REQUIRED_ARTIFACT_AUTHORITY_KINDS)
+  ) {
     errors.push(
       `narrative artifact authority kinds must match ratified set: ${REQUIRED_ARTIFACT_AUTHORITY_KINDS.join(", ")}`,
     );
@@ -1582,9 +1667,7 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
   const authorityKinds = new Set(
     Array.isArray(contract.authorityKinds) ? contract.authorityKinds : [],
   );
-  const artifacts = Array.isArray(contract.artifacts)
-    ? contract.artifacts
-    : [];
+  const artifacts = Array.isArray(contract.artifacts) ? contract.artifacts : [];
   if (artifacts.length === 0) {
     errors.push("narrative artifact authority contract must list artifacts");
     return;
@@ -1606,37 +1689,67 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
       continue;
     }
     if (artifactById.has(artifact.id)) {
-      errors.push(`duplicate narrative artifact authority entry: ${artifact.id}`);
+      errors.push(
+        `duplicate narrative artifact authority entry: ${artifact.id}`,
+      );
     }
     artifactById.set(artifact.id, artifact);
-    if (!new Set(["durable", "ephemeral", "rebuildable"]).has(artifact.lifecycle)) {
-      errors.push(`narrative artifact ${artifact.id} has unknown lifecycle: ${String(artifact.lifecycle)}`);
+    if (
+      !new Set(["durable", "ephemeral", "rebuildable"]).has(artifact.lifecycle)
+    ) {
+      errors.push(
+        `narrative artifact ${artifact.id} has unknown lifecycle: ${String(artifact.lifecycle)}`,
+      );
     }
     if (!authorityKinds.has(artifact.authority)) {
-      errors.push(`narrative artifact ${artifact.id} has unknown authority: ${String(artifact.authority)}`);
+      errors.push(
+        `narrative artifact ${artifact.id} has unknown authority: ${String(artifact.authority)}`,
+      );
     }
-    if (!isObject(artifact.retention) || !isNonEmptyString(artifact.retention.default)) {
-      errors.push(`narrative artifact ${artifact.id} must declare retention.default`);
+    if (
+      !isObject(artifact.retention) ||
+      !isNonEmptyString(artifact.retention.default)
+    ) {
+      errors.push(
+        `narrative artifact ${artifact.id} must declare retention.default`,
+      );
     }
     if (!isNonEmptyString(artifact.storage)) {
       errors.push(`narrative artifact ${artifact.id} must declare storage`);
     }
-    if (artifact.lifecycle === "durable" && artifact.retention?.default !== "retained") {
+    if (
+      artifact.lifecycle === "durable" &&
+      artifact.retention?.default !== "retained"
+    ) {
       errors.push(`durable narrative artifact ${artifact.id} must be retained`);
     }
-    if (artifact.lifecycle === "ephemeral" && artifact.retention?.default === "reconstructable") {
-      errors.push(`ephemeral narrative artifact ${artifact.id} cannot be reconstructable`);
+    if (
+      artifact.lifecycle === "ephemeral" &&
+      artifact.retention?.default === "reconstructable"
+    ) {
+      errors.push(
+        `ephemeral narrative artifact ${artifact.id} cannot be reconstructable`,
+      );
     }
-    if (artifact.lifecycle === "rebuildable" && artifact.authoritative !== false) {
-      errors.push(`rebuildable narrative artifact ${artifact.id} must not be authoritative`);
+    if (
+      artifact.lifecycle === "rebuildable" &&
+      artifact.authoritative !== false
+    ) {
+      errors.push(
+        `rebuildable narrative artifact ${artifact.id} must not be authoritative`,
+      );
     }
     if (artifact.authoritative === true && artifact.lifecycle === "ephemeral") {
-      errors.push(`ephemeral narrative artifact ${artifact.id} cannot be authoritative`);
+      errors.push(
+        `ephemeral narrative artifact ${artifact.id} cannot be authoritative`,
+      );
     }
   }
   for (const artifactId of REQUIRED_ARTIFACT_IDS) {
     if (!artifactById.has(artifactId)) {
-      errors.push(`narrative artifact authority contract is missing artifact: ${artifactId}`);
+      errors.push(
+        `narrative artifact authority contract is missing artifact: ${artifactId}`,
+      );
     }
   }
   const expectedArtifactRows = new Map(
@@ -1656,11 +1769,7 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
         artifact.retention?.default,
         expected.retentionDefault,
       ],
-      [
-        "retention.scope",
-        artifact.retention?.scope,
-        expected.retentionScope,
-      ],
+      ["retention.scope", artifact.retention?.scope, expected.retentionScope],
     ]) {
       if (actual !== ratified) {
         errors.push(
@@ -1707,8 +1816,13 @@ export function validateArtifactAuthorityContract(repoRoot, contract, errors) {
     );
   }
   const rendererState = artifactById.get("renderer-state");
-  if (rendererState?.authority === "evidence-freshness" || rendererState?.authoritative === true) {
-    errors.push("renderer-state must not claim Freshness or semantic authority");
+  if (
+    rendererState?.authority === "evidence-freshness" ||
+    rendererState?.authoritative === true
+  ) {
+    errors.push(
+      "renderer-state must not claim Freshness or semantic authority",
+    );
   }
   const rawResponsePolicy = contract.rawResponsePolicy;
   if (
@@ -1765,11 +1879,14 @@ function removeAllowlistedTypeOnlyImports(source, allowlistedImports) {
   return source.replace(
     /^\s*import\s+type[\s\S]*?from\s+["']([^"']+)["']\s*;?\s*$/gm,
     (statement, moduleSpecifier) =>
-      compiled.some((pattern) => pattern.test(moduleSpecifier)) ? "" : statement,
+      compiled.some((pattern) => pattern.test(moduleSpecifier))
+        ? ""
+        : statement,
   );
 }
 
-const INTERPRETER_AST_SOURCE_EXTENSIONS = /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
+const INTERPRETER_AST_SOURCE_EXTENSIONS =
+  /\.(?:ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const REQUIRED_DB_MUTATION_METHODS = new Set([
   "execute",
   "exec",
@@ -1889,9 +2006,7 @@ function createStaticStringResolver(sourceFile) {
       const kind = isConst ? "const" : "mutable";
       const lexicalScope = scopeByNode.get(node);
       const scope =
-        !isConst && !isLet
-          ? nearestVariableScope(lexicalScope)
-          : lexicalScope;
+        !isConst && !isLet ? nearestVariableScope(lexicalScope) : lexicalScope;
       collectBindingIdentifiers(node.name, (identifier) =>
         registerBinding(scope, identifier, kind, node),
       );
@@ -1933,12 +2048,7 @@ function createStaticStringResolver(sourceFile) {
       ts.isModuleDeclaration(node)
     ) {
       if (node.name) {
-        registerBinding(
-          scopeByNode.get(node.parent),
-          node.name,
-          "other",
-          node,
-        );
+        registerBinding(scopeByNode.get(node.parent), node.name, "other", node);
       }
       return;
     }
@@ -1998,7 +2108,10 @@ function createStaticStringResolver(sourceFile) {
       }
       return;
     }
-    if (ts.isObjectBindingPattern(unwrapped) || ts.isArrayBindingPattern(unwrapped)) {
+    if (
+      ts.isObjectBindingPattern(unwrapped) ||
+      ts.isArrayBindingPattern(unwrapped)
+    ) {
       for (const element of unwrapped.elements) {
         if (ts.isBindingElement(element)) markWriteTarget(element.name);
       }
@@ -2006,7 +2119,10 @@ function createStaticStringResolver(sourceFile) {
   };
 
   const markWrites = (node) => {
-    if (ts.isBinaryExpression(node) && ts.isAssignmentOperator(node.operatorToken.kind)) {
+    if (
+      ts.isBinaryExpression(node) &&
+      ts.isAssignmentOperator(node.operatorToken.kind)
+    ) {
       markWriteTarget(node.left);
     }
     if (ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node)) {
@@ -2311,12 +2427,7 @@ function invocationMetadataAlternatives(value, pluralKey, singularKey) {
   return alternatives;
 }
 
-function invocationMetadataSetsEqual(
-  left,
-  right,
-  pluralKey,
-  singularKey,
-) {
+function invocationMetadataSetsEqual(left, right, pluralKey, singularKey) {
   const leftAlternatives = invocationMetadataAlternatives(
     left,
     pluralKey,
@@ -2347,10 +2458,15 @@ function localCallMetadataEqual(left, right) {
   ) {
     return false;
   }
-  if (!invocationArgumentListsEqual(left.boundArguments, right.boundArguments)) {
+  if (
+    !invocationArgumentListsEqual(left.boundArguments, right.boundArguments)
+  ) {
     return false;
   }
-  if (left.boundInvocation !== undefined || right.boundInvocation !== undefined) {
+  if (
+    left.boundInvocation !== undefined ||
+    right.boundInvocation !== undefined
+  ) {
     if (
       left.boundInvocation === undefined ||
       right.boundInvocation === undefined ||
@@ -2422,14 +2538,17 @@ function mergeLocalCallMetadata(left, right) {
   if (
     left.method !== right.method ||
     left.thisArgument !== right.thisArgument ||
-    left.thisValue !== undefined &&
-    right.thisValue !== undefined &&
-    left.thisValue !== right.thisValue ||
+    (left.thisValue !== undefined &&
+      right.thisValue !== undefined &&
+      left.thisValue !== right.thisValue) ||
     !invocationArgumentListsEqual(left.boundArguments, right.boundArguments)
   ) {
     return undefined;
   }
-  if (left.boundInvocation !== undefined || right.boundInvocation !== undefined) {
+  if (
+    left.boundInvocation !== undefined ||
+    right.boundInvocation !== undefined
+  ) {
     if (
       left.boundInvocation === undefined ||
       right.boundInvocation === undefined ||
@@ -2444,10 +2563,7 @@ function mergeLocalCallMetadata(left, right) {
     thisValue: left.thisValue ?? right.thisValue,
     boundArguments: left.boundArguments ?? right.boundArguments,
     boundInvocation: left.boundInvocation ?? right.boundInvocation,
-    callables: new Set([
-      ...(left.callables ?? []),
-      ...(right.callables ?? []),
-    ]),
+    callables: new Set([...(left.callables ?? []), ...(right.callables ?? [])]),
   };
 }
 
@@ -2456,17 +2572,13 @@ function mergeInvocationCapabilities(left, right) {
   if (!right) return left;
   const metadataMatches = reflectCapabilityMetadataEqual(left, right);
   const ambiguous = left.ambiguous === true || right.ambiguous === true;
-  if (
-    metadataMatches &&
-    !ambiguous
-  ) {
+  if (metadataMatches && !ambiguous) {
     return left;
   }
   if (left.kind === "reflect" && right.kind === "reflect") {
     return {
       kind: "reflect",
-      method:
-        left.method === right.method ? left.method : undefined,
+      method: left.method === right.method ? left.method : undefined,
       via: left.via === right.via ? left.via : undefined,
       mode: left.mode === right.mode ? left.mode : undefined,
       boundArguments: invocationArgumentListsEqual(
@@ -2579,10 +2691,13 @@ function mergeInvocationValues(left, right) {
     classConstructors.size === 1 ? [...classConstructors][0] : undefined;
   const accessor = accessors.size === 1 ? [...accessors][0] : undefined;
   const localCallAlternatives = mergeLocalCallMetadataAlternatives(left, right);
-  const mergedLocalCall = mergeLocalCallMetadata(left.localCall, right.localCall);
+  const mergedLocalCall = mergeLocalCallMetadata(
+    left.localCall,
+    right.localCall,
+  );
   const localCall =
     localCallAlternatives.length === 1
-      ? mergedLocalCall ?? localCallAlternatives[0]
+      ? (mergedLocalCall ?? localCallAlternatives[0])
       : undefined;
   const localCallAlternativeSet =
     localCallAlternatives.length > 1
@@ -2598,8 +2713,7 @@ function mergeInvocationValues(left, right) {
     return {
       tainted: left.tainted || right.tainted,
       source: left.tainted ? left.source : right.source,
-      defined:
-        left.defined === right.defined ? left.defined : undefined,
+      defined: left.defined === right.defined ? left.defined : undefined,
       capability: mergeInvocationCapabilities(
         left.capability,
         right.capability,
@@ -2656,10 +2770,7 @@ function mergeInvocationValues(left, right) {
     tainted: left.tainted || right.tainted,
     source: left.tainted ? left.source : right.source,
     defined: left.defined === right.defined ? left.defined : undefined,
-    capability: mergeInvocationCapabilities(
-      left.capability,
-      right.capability,
-    ),
+    capability: mergeInvocationCapabilities(left.capability, right.capability),
     container,
     callables,
     localCall,
@@ -2728,7 +2839,11 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
     seen.set(left.container, new WeakSet([right.container]));
   }
   if (
-    !invocationValuesEqual(left.container.unknown, right.container.unknown, seen)
+    !invocationValuesEqual(
+      left.container.unknown,
+      right.container.unknown,
+      seen,
+    )
   ) {
     return false;
   }
@@ -2750,7 +2865,11 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
   return true;
 }
 
-function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticString) {
+function createInvocationTaintResolver(
+  sourceFile,
+  lookupBinding,
+  foldStaticString,
+) {
   const bindingValues = new Map();
   const literalContainers = new WeakMap();
   const classValues = new WeakMap();
@@ -2983,13 +3102,18 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     if (baseExpression) {
       const baseValue = expressionValue(baseExpression);
       for (const baseMetadata of classMetadataAlternatives(baseValue)) {
-        for (const [key, memberValue] of baseMetadata.instanceContainer.entries) {
+        for (const [key, memberValue] of baseMetadata.instanceContainer
+          .entries) {
           instanceContainer.entries.set(
             key,
-            mergeInvocationValues(instanceContainer.entries.get(key), memberValue),
+            mergeInvocationValues(
+              instanceContainer.entries.get(key),
+              memberValue,
+            ),
           );
         }
-        for (const [key, initializer] of baseMetadata.instanceInitializers ?? []) {
+        for (const [key, initializer] of baseMetadata.instanceInitializers ??
+          []) {
           classMetadata.instanceInitializers.set(key, initializer);
         }
       }
@@ -3100,17 +3224,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       if (container.entries.has(key)) {
         selectedValue = mergeInvocationValues(
           selectedValue,
-          mergeInvocationValues(
-            container.entries.get(key),
-            container.unknown,
-          ),
+          mergeInvocationValues(container.entries.get(key), container.unknown),
         );
       } else if (container.unknown !== undefined) {
         found = false;
-        selectedValue = mergeInvocationValues(
-          selectedValue,
-          container.unknown,
-        );
+        selectedValue = mergeInvocationValues(selectedValue, container.unknown);
       } else {
         found = false;
       }
@@ -3135,10 +3253,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     targets.add(container);
     for (const target of targets) {
       if (key === undefined) {
-        target.unknown = mergeInvocationValues(
-          target.unknown,
-          propertyValue,
-        );
+        target.unknown = mergeInvocationValues(target.unknown, propertyValue);
         if (target.kind === "array") {
           target.length = undefined;
           target.uncertain = true;
@@ -3511,7 +3626,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             : taintedInvocationValue(receiver.source ?? "computed");
       }
       const selected = readContainerProperty(receiver, key);
-      if (!selected.found && !receiver.container && REQUIRED_DB_MUTATION_METHODS.has(key)) {
+      if (
+        !selected.found &&
+        !receiver.container &&
+        REQUIRED_DB_MUTATION_METHODS.has(key)
+      ) {
         return taintedInvocationValue("sensitive");
       }
       return selected.value;
@@ -3641,11 +3760,17 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         { tainted: false, container: evaluatedContainer, callables: new Set() },
         0,
       );
-      if (evaluatedContainer.uncertain || evaluatedContainer.length === undefined) {
+      if (
+        evaluatedContainer.uncertain ||
+        evaluatedContainer.length === undefined
+      ) {
         container.length = undefined;
         container.uncertain = true;
       } else if (!container.uncertain) {
-        container.length = Math.max(container.length ?? 0, evaluatedContainer.length);
+        container.length = Math.max(
+          container.length ?? 0,
+          evaluatedContainer.length,
+        );
       }
       return {
         tainted: false,
@@ -3725,7 +3850,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           }
         }
       }
-      mergeContainer(container, { tainted: false, container: evaluatedContainer });
+      mergeContainer(container, {
+        tainted: false,
+        container: evaluatedContainer,
+      });
       return {
         tainted: false,
         defined: true,
@@ -3750,7 +3878,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         return expressionValue(unwrapped.right, seenBindings, depth + 1);
       }
       if (
-        unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        unwrapped.operatorToken.kind ===
+          ts.SyntaxKind.AmpersandAmpersandToken ||
         unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
         unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
       ) {
@@ -3786,7 +3915,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           "bind",
           "bound",
           isBoundCallWrapper
-            ? boundCapability.boundArguments ?? []
+            ? (boundCapability.boundArguments ?? [])
             : unwrapped.arguments.slice(1),
           calleeValue.capability.ambiguous,
           boundCapability,
@@ -3939,7 +4068,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       current = unwrapExpression(current.left);
     }
     if (current && ts.isIdentifier(current)) {
-      return assignIdentifier(current, taintedInvocationValue("analysis-depth"));
+      return assignIdentifier(
+        current,
+        taintedInvocationValue("analysis-depth"),
+      );
     }
     if (
       current &&
@@ -3948,8 +4080,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       let changed = false;
       collectBindingIdentifiers(current, (identifier) => {
         changed =
-          assignIdentifier(identifier, taintedInvocationValue("analysis-depth")) ||
-          changed;
+          assignIdentifier(
+            identifier,
+            taintedInvocationValue("analysis-depth"),
+          ) || changed;
       });
       return changed;
     }
@@ -3992,7 +4126,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           );
         }
         changed =
-          bindingPatternValue(element.name, selectedValue, depth + 1) || changed;
+          bindingPatternValue(element.name, selectedValue, depth + 1) ||
+          changed;
       }
       return changed;
     }
@@ -4026,7 +4161,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           );
         }
         changed =
-          bindingPatternValue(element.name, selectedValue, depth + 1) || changed;
+          bindingPatternValue(element.name, selectedValue, depth + 1) ||
+          changed;
         index += 1;
       }
       return changed;
@@ -4058,11 +4194,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       ts.isElementAccessExpression(receiver)
     ) {
       const receiverValue = expressionValue(receiver);
-      const updatedReceiver = writeContainerProperty(
-        receiverValue,
-        key,
-        value,
-      );
+      const updatedReceiver = writeContainerProperty(receiverValue, key, value);
       return assignMemberTarget(receiver, updatedReceiver, depth + 1);
     }
     return false;
@@ -4079,7 +4211,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     ) {
       return assignTarget(unwrapped.left, value, depth + 1);
     }
-    if (ts.isObjectBindingPattern(unwrapped) || ts.isArrayBindingPattern(unwrapped)) {
+    if (
+      ts.isObjectBindingPattern(unwrapped) ||
+      ts.isArrayBindingPattern(unwrapped)
+    ) {
       return bindingPatternValue(unwrapped, value, depth + 1);
     }
     if (ts.isObjectLiteralExpression(unwrapped)) {
@@ -4098,7 +4233,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
               expressionValue(property.objectAssignmentInitializer),
             );
           }
-          changed = assignTarget(property.name, selectedValue, depth + 1) || changed;
+          changed =
+            assignTarget(property.name, selectedValue, depth + 1) || changed;
           excludedKeys.push(property.name.text);
         } else if (ts.isPropertyAssignment(property)) {
           const key = staticPropertyKey(property.name);
@@ -4117,7 +4253,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
               expressionValue(property.initializer.right),
             );
           }
-          changed = assignTarget(property.initializer, selected, depth + 1) || changed;
+          changed =
+            assignTarget(property.initializer, selected, depth + 1) || changed;
           if (key !== undefined) excludedKeys.push(key);
         } else if (ts.isSpreadAssignment(property)) {
           changed =
@@ -4139,7 +4276,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           continue;
         }
         if (ts.isSpreadElement(element)) {
-          changed = assignTarget(element.expression, restContainerValue(value, [], index), depth + 1) || changed;
+          changed =
+            assignTarget(
+              element.expression,
+              restContainerValue(value, [], index),
+              depth + 1,
+            ) || changed;
           continue;
         }
         const selected = readContainerProperty(value, String(index));
@@ -4154,12 +4296,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             expressionValue(element.right),
           );
         }
-        changed =
-          assignTarget(
-            element,
-            selectedValue,
-            depth + 1,
-          ) || changed;
+        changed = assignTarget(element, selectedValue, depth + 1) || changed;
         index += 1;
       }
       return changed;
@@ -4176,16 +4313,28 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   const operations = [];
   const collectOperations = (node) => {
     if (ts.isVariableDeclaration(node) && node.initializer) {
-      operations.push({ position: node.pos, target: node.name, value: node.initializer });
+      operations.push({
+        position: node.pos,
+        target: node.name,
+        value: node.initializer,
+      });
     }
     if (ts.isParameter(node) && node.initializer) {
-      operations.push({ position: node.pos, target: node.name, value: node.initializer });
+      operations.push({
+        position: node.pos,
+        target: node.name,
+        value: node.initializer,
+      });
     }
     if (
       ts.isBinaryExpression(node) &&
       ts.isAssignmentOperator(node.operatorToken.kind)
     ) {
-      operations.push({ position: node.pos, target: node.left, value: node.right });
+      operations.push({
+        position: node.pos,
+        target: node.left,
+        value: node.right,
+      });
     }
     if (ts.isForOfStatement(node) || ts.isForInStatement(node)) {
       if (!ts.isVariableDeclarationList(node.initializer)) {
@@ -4274,8 +4423,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       : [];
     let targetExpression = node.arguments[0];
     if (callee.capability.mode === "bound") {
-      targetExpression =
-        boundArguments[0] ?? node.arguments[0];
+      targetExpression = boundArguments[0] ?? node.arguments[0];
     } else if (
       callee.capability.mode === "indirect" &&
       callee.capability.via === "call"
@@ -4335,8 +4483,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
   const invocationValueIsTainted = (value) =>
     Boolean(
       value?.tainted ||
-        isBoundReflectTargetTainted(value?.capability) ||
-        isAmbiguousReflectCapability(value?.capability),
+      isBoundReflectTargetTainted(value?.capability) ||
+      isAmbiguousReflectCapability(value?.capability),
     );
 
   const cleanLocalResult = (returnValue = cleanInvocationValue()) => ({
@@ -4384,7 +4532,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     }
     const localCall = value?.localCall;
     const callableNodes = new Set(
-      localCall?.callables?.size ? localCall.callables : value?.callables ?? [],
+      localCall?.callables?.size
+        ? localCall.callables
+        : (value?.callables ?? []),
     );
     if (callableNodes.size > 0) {
       return [...callableNodes].map((node) => ({
@@ -4409,7 +4559,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       }));
   };
 
-  function evaluateLocalExpression(expression, environment, activeFunctions, depth) {
+  function evaluateLocalExpression(
+    expression,
+    environment,
+    activeFunctions,
+    depth,
+  ) {
     if (!expression) {
       return cleanLocalResult();
     }
@@ -4434,7 +4589,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         unwrapped,
         environment,
       );
-      if (environmentValue.found) return cleanLocalResult(environmentValue.value);
+      if (environmentValue.found)
+        return cleanLocalResult(environmentValue.value);
       return cleanLocalResult(expressionValue(unwrapped));
     }
     if (ts.isCallExpression(unwrapped)) {
@@ -4472,18 +4628,14 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       if (localResult !== undefined) {
         return mergeLocalResults(
           {
-          consumed:
-              calleeResult.consumed ||
-              taintedCallee,
+            consumed: calleeResult.consumed || taintedCallee,
             returnValue: fallbackValue,
           },
           localResult,
         );
       }
       return {
-        consumed:
-          calleeResult.consumed ||
-          taintedCallee,
+        consumed: calleeResult.consumed || taintedCallee,
         returnValue: fallbackValue,
       };
     }
@@ -4529,7 +4681,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         );
       }
       if (
-        unwrapped.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        unwrapped.operatorToken.kind ===
+          ts.SyntaxKind.AmpersandAmpersandToken ||
         unwrapped.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
         unwrapped.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken
       ) {
@@ -4628,7 +4781,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             (container) => container.unknown !== undefined,
           )
             ? fallbackValue
-            : selected.value ?? fallbackValue,
+            : (selected.value ?? fallbackValue),
       };
     }
     if (ts.isArrayLiteralExpression(unwrapped)) {
@@ -4656,7 +4809,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         consumed ||= elementResult.consumed;
         if (ts.isSpreadElement(element)) {
           mergeContainer(container, elementResult.returnValue, index);
-          index += knownSpreadLength(element.expression, elementResult.returnValue) ?? 1;
+          index +=
+            knownSpreadLength(element.expression, elementResult.returnValue) ??
+            1;
         } else {
           container.entries.set(String(index), elementResult.returnValue);
           index += 1;
@@ -4699,7 +4854,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             depth + 1,
           );
           consumed ||= shorthandResult.consumed;
-          container.entries.set(property.name.text, shorthandResult.returnValue);
+          container.entries.set(
+            property.name.text,
+            shorthandResult.returnValue,
+          );
           continue;
         }
         if (
@@ -4711,7 +4869,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             ? getterInvocationValue(property)
             : callableInvocationValue(property);
           if (key === undefined) {
-            container.unknown = mergeInvocationValues(container.unknown, methodValue);
+            container.unknown = mergeInvocationValues(
+              container.unknown,
+              methodValue,
+            );
           } else {
             container.entries.set(
               key,
@@ -4799,8 +4960,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           depth + 1,
         );
         return {
-          consumed:
-            constructorResult.consumed || Boolean(callResult?.consumed),
+          consumed: constructorResult.consumed || Boolean(callResult?.consumed),
           returnValue: instanceValue,
         };
       }
@@ -4973,7 +5133,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             ? { found: false, value: unknownContainerValue(value) }
             : readContainerProperty(value, key);
         let selectedValue = selected.value;
-        if ((!selected.found || selectedValue.defined !== true) && defaultExpression) {
+        if (
+          (!selected.found || selectedValue.defined !== true) &&
+          defaultExpression
+        ) {
           const defaultResult = evaluateLocalExpression(
             defaultExpression,
             environment,
@@ -5033,7 +5196,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         }
         const selected = readContainerProperty(value, String(index));
         let selectedValue = selected.value;
-        if ((!selected.found || selectedValue.defined !== true) && defaultExpression) {
+        if (
+          (!selected.found || selectedValue.defined !== true) &&
+          defaultExpression
+        ) {
           const defaultResult = evaluateLocalExpression(
             defaultExpression,
             environment,
@@ -5063,7 +5229,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return cleanLocalResult();
   }
 
-  function evaluateLocalFunction(functionNode, environment, activeFunctions, depth) {
+  function evaluateLocalFunction(
+    functionNode,
+    environment,
+    activeFunctions,
+    depth,
+  ) {
     if (!functionNode?.body) {
       return cleanLocalResult();
     }
@@ -5217,10 +5388,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           };
     const calleeValue = calleeResult.returnValue;
     const localCallAlternatives = localCallMetadataAlternatives(calleeValue);
-    if (
-      calleeValueOverride === undefined &&
-      localCallAlternatives.length > 1
-    ) {
+    if (calleeValueOverride === undefined && localCallAlternatives.length > 1) {
       let result;
       for (const localCallAlternative of localCallAlternatives) {
         result = mergeLocalResults(
@@ -5274,8 +5442,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       if (length === undefined) {
         return [unknownContainerValue(value)];
       }
-      return Array.from({ length }, (_, index) =>
-        readContainerProperty(value, String(index)).value,
+      return Array.from(
+        { length },
+        (_, index) => readContainerProperty(value, String(index)).value,
       );
     };
 
@@ -5312,7 +5481,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       const targetCallables = new Set(
         targetValue?.localCall?.callables?.size
           ? targetValue.localCall.callables
-          : targetValue?.callables ?? [],
+          : (targetValue?.callables ?? []),
       );
       if (targetCallables.size > 0) {
         return [...targetCallables].map((candidateNode) => ({
@@ -5366,12 +5535,8 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           : [];
         targetExpression = boundArguments[0] ?? node.arguments[0];
         thisExpression = boundArguments[1] ?? node.arguments[1];
-        argumentContainerExpression =
-          boundArguments[2] ?? node.arguments[2];
-      } else if (
-        capability.mode === "indirect" &&
-        capability.via === "call"
-      ) {
+        argumentContainerExpression = boundArguments[2] ?? node.arguments[2];
+      } else if (capability.mode === "indirect" && capability.via === "call") {
         const callLayerCount = reflectCallLayerCount(capability);
         const outerReceiver = unwrapExpression(node.arguments[0]);
         const outerReceiverIsNullish =
@@ -5391,10 +5556,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         targetExpression = combinedArguments[0];
         thisExpression = combinedArguments[1];
         argumentContainerExpression = combinedArguments[2];
-      } else if (
-        capability.mode === "indirect" &&
-        capability.via === "apply"
-      ) {
+      } else if (capability.mode === "indirect" && capability.via === "apply") {
         const indirectArgumentResult = node.arguments[1]
           ? evaluateLocalExpression(
               node.arguments[1],
@@ -5431,7 +5593,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         thisExpression = undefined;
         argumentContainerExpression =
           capability.mode === "bound"
-            ? capability.boundArguments?.[1] ?? node.arguments[1]
+            ? (capability.boundArguments?.[1] ?? node.arguments[1])
             : node.arguments[1];
       }
       const thisResult = thisExpression
@@ -5501,7 +5663,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           )
         : cleanLocalResult();
       return {
-        consumed: calleeResult.consumed || boundResult.result.consumed || thisResult.consumed,
+        consumed:
+          calleeResult.consumed ||
+          boundResult.result.consumed ||
+          thisResult.consumed,
         returnValue: localBoundCallableValue(
           localCall.callables,
           boundThis,
@@ -5534,10 +5699,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         thisExpression = boundInvocationArguments[0] ?? node.arguments[0];
         argumentExpressions =
           boundInvocationArguments.length > 0
-            ? [
-                ...boundInvocationArguments.slice(1),
-                ...node.arguments,
-              ]
+            ? [...boundInvocationArguments.slice(1), ...node.arguments]
             : node.arguments.slice(1);
       } else if (boundInvocation.method === "apply") {
         const combinedArguments = [
@@ -5637,7 +5799,9 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             }));
       }
       if (
-        effectiveArgumentValues?.some((value) => invocationValueIsTainted(value)) &&
+        effectiveArgumentValues?.some((value) =>
+          invocationValueIsTainted(value),
+        ) &&
         candidates.some((candidate) =>
           localFunctionInvokesParameter(candidate.node),
         )
@@ -5740,7 +5904,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
             ...argumentValuesFromContainer(argumentContainerResult.returnValue),
           ];
         } else {
-          argumentResult = mergeLocalResults(thisResult, argumentContainerResult);
+          argumentResult = mergeLocalResults(
+            thisResult,
+            argumentContainerResult,
+          );
           receiverValue = thisResult.returnValue;
           effectiveArgumentValues = argumentValuesFromContainer(
             argumentContainerResult.returnValue,
@@ -5772,8 +5939,12 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         ];
       }
       if (effectiveArgumentValues === undefined) {
-        const evaluatedArguments = evaluateArgumentExpressions(argumentExpressions);
-        argumentResult = mergeLocalResults(argumentResult, evaluatedArguments.result);
+        const evaluatedArguments =
+          evaluateArgumentExpressions(argumentExpressions);
+        argumentResult = mergeLocalResults(
+          argumentResult,
+          evaluatedArguments.result,
+        );
         effectiveArgumentValues = evaluatedArguments.values;
       }
       candidates = localFunctionsForCallee(
@@ -5808,7 +5979,11 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         if (parameter.dotDotDotToken) {
           const argumentContainer = createInvocationContainer("array");
           let restIndex = 0;
-          for (; argumentIndex < effectiveArgumentValues.length; argumentIndex += 1) {
+          for (
+            ;
+            argumentIndex < effectiveArgumentValues.length;
+            argumentIndex += 1
+          ) {
             argumentContainer.entries.set(
               String(restIndex),
               effectiveArgumentValues[argumentIndex],
@@ -5889,10 +6064,7 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       let changed = false;
       for (const operation of operations) {
         const value = operation.iteration
-          ? iterationValue(
-              expressionValue(operation.value),
-              operation.forIn,
-            )
+          ? iterationValue(expressionValue(operation.value), operation.forIn)
           : expressionValue(operation.value);
         changed = assignTarget(operation.target, value) || changed;
       }
@@ -5922,17 +6094,29 @@ function foldStaticStringExpression(
     return expression.text;
   }
   if (ts.isParenthesizedExpression(expression)) {
-    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
+    return foldStaticStringExpression(
+      expression.expression,
+      resolveIdentifier,
+      seenBindings,
+    );
   }
   if (
     ts.isAsExpression(expression) ||
     ts.isTypeAssertionExpression(expression) ||
     ts.isNonNullExpression(expression)
   ) {
-    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
+    return foldStaticStringExpression(
+      expression.expression,
+      resolveIdentifier,
+      seenBindings,
+    );
   }
   if (ts.isSatisfiesExpression(expression)) {
-    return foldStaticStringExpression(expression.expression, resolveIdentifier, seenBindings);
+    return foldStaticStringExpression(
+      expression.expression,
+      resolveIdentifier,
+      seenBindings,
+    );
   }
   if (ts.isIdentifier(expression)) {
     return resolveIdentifier(expression, seenBindings);
@@ -5941,8 +6125,16 @@ function foldStaticStringExpression(
     ts.isBinaryExpression(expression) &&
     expression.operatorToken.kind === ts.SyntaxKind.PlusToken
   ) {
-    const left = foldStaticStringExpression(expression.left, resolveIdentifier, seenBindings);
-    const right = foldStaticStringExpression(expression.right, resolveIdentifier, seenBindings);
+    const left = foldStaticStringExpression(
+      expression.left,
+      resolveIdentifier,
+      seenBindings,
+    );
+    const right = foldStaticStringExpression(
+      expression.right,
+      resolveIdentifier,
+      seenBindings,
+    );
     return left === undefined || right === undefined ? undefined : left + right;
   }
   if (ts.isTemplateExpression(expression)) {
@@ -6126,11 +6318,13 @@ function scanInterpreterSourceWithAst(file, source) {
       if (method !== undefined) addNormalizedIdentifierFindings(method);
     }
     if (ts.isCallExpression(node)) {
-      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isDynamicImport =
+        node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequireCall =
         ts.isIdentifier(node.expression) && node.expression.text === "require";
       if (isDynamicImport || isRequireCall) {
-        const argument = node.arguments.length === 1 ? node.arguments[0] : undefined;
+        const argument =
+          node.arguments.length === 1 ? node.arguments[0] : undefined;
         const moduleSpecifier = readStaticLoaderSpecifier(argument);
         if (moduleSpecifier === undefined) {
           findings.add("non-literal-dynamic-import");
@@ -6141,19 +6335,15 @@ function scanInterpreterSourceWithAst(file, source) {
       const callee = unwrapExpression(node.expression);
       if (ts.isElementAccessExpression(callee)) {
         const method = staticStringResolver.fold(callee.argumentExpression);
-        if (
-          method === undefined ||
-          REQUIRED_DB_MUTATION_METHODS.has(method)
-        ) {
+        if (method === undefined || REQUIRED_DB_MUTATION_METHODS.has(method)) {
           findings.add("db-mutation");
         }
       }
       const invocationTainted = staticStringResolver.isInvocationTainted(
         node.expression,
       );
-      const reflectTainted = staticStringResolver.isReflectInvocationTainted(
-        node,
-      );
+      const reflectTainted =
+        staticStringResolver.isReflectInvocationTainted(node);
       const localTainted = staticStringResolver.isLocalCallTainted(node);
       if (invocationTainted || reflectTainted || localTainted) {
         findings.add("db-mutation");
@@ -6213,7 +6403,12 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
       `Interpreter allowlist files do not match ratified Interpreter allowlist files: ${REQUIRED_INTERPRETER_ALLOWLIST_FILES.join(", ") || "(none)"}`,
     );
   }
-  if (!sameAllowlistImports(allowlist.imports, REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS)) {
+  if (
+    !sameAllowlistImports(
+      allowlist.imports,
+      REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS,
+    )
+  ) {
     errors.push(
       `Interpreter allowlist imports do not match ratified Interpreter allowlist import entries: ${REQUIRED_INTERPRETER_ALLOWLIST_IMPORTS.map((entry) => entry.id).join(", ")}`,
     );
@@ -6226,29 +6421,49 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   const allowlistedImports = Array.isArray(allowlist.imports)
     ? allowlist.imports
     : [];
-  if (!Array.isArray(boundary.forbiddenDependencies) || boundary.forbiddenDependencies.length === 0) {
+  if (
+    !Array.isArray(boundary.forbiddenDependencies) ||
+    boundary.forbiddenDependencies.length === 0
+  ) {
     errors.push("Interpreter boundary must declare forbidden dependencies");
   }
   if (
     !Array.isArray(boundary.forbiddenFreshnessAuthorityPatterns) ||
     boundary.forbiddenFreshnessAuthorityPatterns.length === 0
   ) {
-    errors.push("Interpreter boundary must declare freshness authority patterns");
+    errors.push(
+      "Interpreter boundary must declare freshness authority patterns",
+    );
   }
   for (const relativeFile of allowlistedFiles) {
-    if (path.isAbsolute(relativeFile) || relativeFile.split(/[\\/]/).includes("..")) {
-      errors.push(`Interpreter boundary allowlist file must be repository-relative: ${relativeFile}`);
+    if (
+      path.isAbsolute(relativeFile) ||
+      relativeFile.split(/[\\/]/).includes("..")
+    ) {
+      errors.push(
+        `Interpreter boundary allowlist file must be repository-relative: ${relativeFile}`,
+      );
     } else if (!existsSync(path.join(repoRoot, relativeFile))) {
-      errors.push(`Interpreter boundary allowlist file is missing: ${relativeFile}`);
+      errors.push(
+        `Interpreter boundary allowlist file is missing: ${relativeFile}`,
+      );
     }
   }
   for (const [index, entry] of allowlistedImports.entries()) {
-    if (!isObject(entry) || !isNonEmptyString(entry.id) || !isNonEmptyString(entry.pattern)) {
-      errors.push(`Interpreter boundary allowlist import ${index} must declare id and pattern`);
+    if (
+      !isObject(entry) ||
+      !isNonEmptyString(entry.id) ||
+      !isNonEmptyString(entry.pattern)
+    ) {
+      errors.push(
+        `Interpreter boundary allowlist import ${index} must declare id and pattern`,
+      );
       continue;
     }
     if (!new Set(["type-only", "exact-file"]).has(entry.mode)) {
-      errors.push(`Interpreter boundary allowlist import ${entry.id} has unknown mode: ${String(entry.mode)}`);
+      errors.push(
+        `Interpreter boundary allowlist import ${entry.id} has unknown mode: ${String(entry.mode)}`,
+      );
     }
     try {
       new RegExp(entry.pattern);
@@ -6262,26 +6477,39 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   const dependencyRules = Array.isArray(boundary.forbiddenDependencies)
     ? boundary.forbiddenDependencies
     : [];
-  const freshnessRules = Array.isArray(boundary.forbiddenFreshnessAuthorityPatterns)
+  const freshnessRules = Array.isArray(
+    boundary.forbiddenFreshnessAuthorityPatterns,
+  )
     ? boundary.forbiddenFreshnessAuthorityPatterns
     : [];
   const dependencyRuleIds = new Set();
   for (const rule of dependencyRules) {
-    validateRegexRule(rule, `Interpreter forbidden dependency rule ${rule?.id ?? "unknown"}`, errors);
+    validateRegexRule(
+      rule,
+      `Interpreter forbidden dependency rule ${rule?.id ?? "unknown"}`,
+      errors,
+    );
     if (isNonEmptyString(rule?.id)) {
       if (dependencyRuleIds.has(rule.id)) {
-        errors.push(`Interpreter boundary duplicates forbidden dependency rule: ${rule.id}`);
+        errors.push(
+          `Interpreter boundary duplicates forbidden dependency rule: ${rule.id}`,
+        );
       }
       dependencyRuleIds.add(rule.id);
     }
   }
   for (const requiredRule of REQUIRED_INTERPRETER_DEPENDENCY_RULES) {
     if (!dependencyRuleIds.has(requiredRule)) {
-      errors.push(`Interpreter boundary is missing forbidden dependency rule: ${requiredRule}`);
+      errors.push(
+        `Interpreter boundary is missing forbidden dependency rule: ${requiredRule}`,
+      );
       continue;
     }
-    const rule = dependencyRules.find((candidate) => candidate?.id === requiredRule);
-    const requiredPatterns = REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS[requiredRule];
+    const rule = dependencyRules.find(
+      (candidate) => candidate?.id === requiredRule,
+    );
+    const requiredPatterns =
+      REQUIRED_INTERPRETER_DEPENDENCY_PATTERNS[requiredRule];
     if (!sameStringSet(rule?.patterns, requiredPatterns)) {
       errors.push(
         `Interpreter boundary ratified forbidden dependency patterns do not match: ${requiredRule}`,
@@ -6290,21 +6518,33 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   }
   const freshnessRuleIds = new Set();
   for (const rule of freshnessRules) {
-    validateRegexRule(rule, `Interpreter Freshness authority rule ${rule?.id ?? "unknown"}`, errors);
+    validateRegexRule(
+      rule,
+      `Interpreter Freshness authority rule ${rule?.id ?? "unknown"}`,
+      errors,
+    );
     if (isNonEmptyString(rule?.id)) {
       if (freshnessRuleIds.has(rule.id)) {
-        errors.push(`Interpreter boundary duplicates Freshness authority rule: ${rule.id}`);
+        errors.push(
+          `Interpreter boundary duplicates Freshness authority rule: ${rule.id}`,
+        );
       }
       freshnessRuleIds.add(rule.id);
     }
   }
   for (const requiredRule of REQUIRED_FRESHNESS_AUTHORITY_RULES) {
     if (!freshnessRuleIds.has(requiredRule)) {
-      errors.push(`Interpreter boundary is missing freshness authority rule: ${requiredRule}`);
+      errors.push(
+        `Interpreter boundary is missing freshness authority rule: ${requiredRule}`,
+      );
       continue;
     }
-    const rule = freshnessRules.find((candidate) => candidate?.id === requiredRule);
-    if (rule?.pattern !== REQUIRED_INTERPRETER_FRESHNESS_PATTERNS[requiredRule]) {
+    const rule = freshnessRules.find(
+      (candidate) => candidate?.id === requiredRule,
+    );
+    if (
+      rule?.pattern !== REQUIRED_INTERPRETER_FRESHNESS_PATTERNS[requiredRule]
+    ) {
       errors.push(
         `Interpreter boundary ratified Freshness authority pattern does not match: ${requiredRule}`,
       );
@@ -6318,7 +6558,9 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   }
   for (const fixture of boundaryFixtures) {
     if (!isNonEmptyString(fixture) || path.isAbsolute(fixture)) {
-      errors.push(`Interpreter boundary fixture must be repository-relative: ${String(fixture)}`);
+      errors.push(
+        `Interpreter boundary fixture must be repository-relative: ${String(fixture)}`,
+      );
     } else if (!existsSync(path.join(repoRoot, fixture))) {
       errors.push(`Interpreter boundary fixture is missing: ${fixture}`);
     }
@@ -6327,7 +6569,7 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   const compiledDependencies = dependencyRules.flatMap((rule) =>
     (Array.isArray(rule?.patterns) ? rule.patterns : []).flatMap((pattern) => {
       try {
-        return [{id: rule.id, expression: new RegExp(pattern)}];
+        return [{ id: rule.id, expression: new RegExp(pattern) }];
       } catch {
         return [];
       }
@@ -6335,14 +6577,16 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
   );
   const compiledFreshness = freshnessRules.flatMap((rule) => {
     try {
-      return [{id: rule.id, expression: new RegExp(rule.pattern)}];
+      return [{ id: rule.id, expression: new RegExp(rule.pattern) }];
     } catch {
       return [];
     }
   });
   for (const root of roots) {
     if (!isNonEmptyString(root) || path.isAbsolute(root)) {
-      errors.push(`Interpreter boundary root must be repository-relative: ${String(root)}`);
+      errors.push(
+        `Interpreter boundary root must be repository-relative: ${String(root)}`,
+      );
       continue;
     }
     if (root.split(/[\\/]/).includes("..")) {
@@ -6369,10 +6613,7 @@ export function validateInterpreterBoundary(repoRoot, contract, errors) {
       )
         ? ""
         : removeAllowlistedTypeOnlyImports(source, allowlistedImports);
-      const astScan = scanInterpreterSourceWithAst(
-        file,
-        dependencySource,
-      );
+      const astScan = scanInterpreterSourceWithAst(file, dependencySource);
       if (astScan.parseDiagnostics.length > 0) {
         const diagnostics = astScan.parseDiagnostics
           .slice(0, 3)
@@ -7097,7 +7338,11 @@ export function validateDependencyRoleContract(
       "narrative dependency role contract must point to its representative fixture file",
     );
   } else {
-    validateDependencyRoleContractFixture(repoRoot, contract.fixtureFile, errors);
+    validateDependencyRoleContractFixture(
+      repoRoot,
+      contract.fixtureFile,
+      errors,
+    );
   }
 
   const fixtures = new Set(
@@ -7222,7 +7467,10 @@ function validateDependencyRoleContractFixture(repoRoot, fixturePath, errors) {
   ]);
   for (const [fixtureId, errorCode] of rejectExpectations) {
     const fixtureCase = cases.get(fixtureId);
-    if (fixtureCase?.expected !== "reject" || fixtureCase?.error !== errorCode) {
+    if (
+      fixtureCase?.expected !== "reject" ||
+      fixtureCase?.error !== errorCode
+    ) {
       errors.push(
         `narrative dependency fixture ${fixtureId} must fail closed with ${errorCode}`,
       );
@@ -7285,10 +7533,7 @@ function validatePolicySchemas(repoRoot, errors) {
       "narrative-scope-relation-contract.schema.json",
       "narrative-scope-relation-contract.json",
     ],
-    [
-      "narrative-ir-contract.schema.json",
-      "narrative-ir-contract.json",
-    ],
+    ["narrative-ir-contract.schema.json", "narrative-ir-contract.json"],
     [
       "narrative-dependency-role-registry.schema.json",
       "narrative-dependency-role-registry.json",
@@ -7357,8 +7602,7 @@ export function validateSemanticCoreBoundary({
   routeRegistryPath = "policies/narrative/mutation-authority-routes.json",
   stateVocabularyPath = "policies/narrative/semantic-state-vocabulary.json",
   authorityMatrixPath = "policies/narrative/semantic-core-authorities.json",
-  artifactAuthorityContractPath =
-    "policies/narrative/narrative-artifact-authority.json",
+  artifactAuthorityContractPath = "policies/narrative/narrative-artifact-authority.json",
   disclosurePolicyPath = "policies/narrative/retrieval-disclosure.json",
   consumerContractPath = "policies/narrative/narrative-consumer-contract.json",
   findingContractPath = "policies/narrative/narrative-finding-contract.json",
@@ -7456,11 +7700,7 @@ export function validateSemanticCoreBoundary({
   validatePolicySchemas(repoRoot, errors);
   validateArchitectureImports(repoRoot, writerManifest, errors);
   const interpreterBoundaryErrorsBefore = errors.length;
-  validateInterpreterBoundary(
-    repoRoot,
-    artifactAuthorityContract,
-    errors,
-  );
+  validateInterpreterBoundary(repoRoot, artifactAuthorityContract, errors);
   const interpreterBoundaryValid =
     errors.length === interpreterBoundaryErrorsBefore;
   validateMutationCommandInventory(repoRoot, writerManifest, errors);

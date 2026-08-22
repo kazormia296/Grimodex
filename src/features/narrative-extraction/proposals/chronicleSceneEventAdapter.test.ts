@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import goldenCorpus from "../../../../policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json";
 import type { ChronicleExistingMatch } from "@/features/chronicle/extraction/existingEventMatcher";
@@ -12,6 +12,20 @@ import type {
 } from "@/features/narrative-extraction/reconciler/types";
 import type { CreateChronicleEventProposalPayloadV1 } from "./chronicleEventProposal";
 import {
+  buildChronicleStageProvenanceBindingV1,
+  buildChronicleStageProvenanceClosureV1,
+  buildChronicleStageTerminalReceiptV1,
+  createStageModelExecutionBindingV1,
+  type ChronicleStageProvenanceBindingV1,
+  type ChronicleStageProvenanceClosureV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+import {
+  createChildStageExecutionContext,
+  createStageExecutionContext,
+  NARRATIVE_STAGE_IDS,
+} from "@/features/narrative-extraction/reconciler/stageExecution";
+import { digestChronicleContextSet } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
+import {
   buildChronicleSceneEventV2,
   classifyChronicleSceneEventChanges,
   deriveChronicleSceneEventScope,
@@ -21,8 +35,6 @@ import {
 } from "./chronicleSceneEventAdapter";
 
 const DIGEST = `sha256:${"a".repeat(64)}` as const;
-const CONTEXT_SET_DIGEST =
-  "sha256:60f2af4ce9d437ea3a6f5416924b23f661bdf34815abf1f45c4c9de28a861cfc" as const;
 
 const nonSecretCase = goldenCorpus.cases.find(
   (entry) => entry.id === "non-secret-event",
@@ -94,9 +106,9 @@ const sourceBasis: SourceBasis = [
 
 const contextManifests: readonly ContextSetEntry[] = [
   {
-    contextId: "context:observation",
+    contextId: "context:event-synthesis",
     inputRef: "source:scene:1",
-    stageId: "narrative_observation_extract",
+    stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
     exposure: "model-visible",
     selector: { kind: "whole-source" },
   },
@@ -106,7 +118,7 @@ const dependencyDeclarations: readonly DependencySetEntry[] = [
   {
     dependencyId: "dependency:evidence",
     inputRef: "source:scene:1",
-    contextIds: ["context:observation"],
+    contextIds: ["context:event-synthesis"],
     role: "direct-evidence",
     selector: { kind: "whole-source" },
   },
@@ -115,11 +127,13 @@ const dependencyDeclarations: readonly DependencySetEntry[] = [
 const existingEventMatch: ChronicleExistingMatch = { status: "none" };
 
 const execution = {
+  projectId: "project:chronicle",
   runId: "run:chronicle",
   taskId: "task:event-synthesis",
+  attemptId: "attempt:1",
   reconcilerId: "chronicle.reconciler",
   reconcilerVersion: "1",
-  contextSetDigest: CONTEXT_SET_DIGEST,
+  contextSetDigest: DIGEST,
   componentContractDigest: DIGEST,
   finalRequestDigest: DIGEST,
 };
@@ -145,7 +159,100 @@ const adapterInput: ChronicleSceneEventAdapterInput = {
   dependencyDeclarations,
   revealBasis: nonSecretCase.input
     .revealBasis as ChronicleSceneEventScopeInput["revealBasis"],
+  stageProvenanceClosure:
+    undefined as unknown as ChronicleStageProvenanceClosureV1,
+  provenanceBinding: undefined as unknown as ChronicleStageProvenanceBindingV1,
 };
+
+beforeAll(async () => {
+  Object.assign(execution, {
+    contextSetDigest: await digestChronicleContextSet(
+      contextManifests,
+      NARRATIVE_STAGE_IDS.eventSynthesis,
+    ),
+  });
+  const observationStageExecution = createStageExecutionContext({
+    projectId: execution.projectId,
+    runId: execution.runId,
+    taskId: "task:observation",
+    attemptId: "attempt:observation",
+    stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+    stageExecutionId: "stage:observation",
+  });
+  const stageExecution = createStageExecutionContext({
+    projectId: execution.projectId,
+    runId: execution.runId,
+    taskId: execution.taskId,
+    attemptId: execution.attemptId,
+    stageId: NARRATIVE_STAGE_IDS.eventSynthesis,
+    stageExecutionId: "stage:event-synthesis",
+  });
+  const observationReceipt = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: observationStageExecution,
+    contextSetVersion: "chronicle.context-set/1",
+    contextSetDigest: execution.contextSetDigest,
+    componentContractDigest: execution.componentContractDigest,
+    finalRequestDigest: execution.finalRequestDigest,
+    modelExecutionBinding: createStageModelExecutionBindingV1({
+      provider: "ollama",
+      requestedModel: "qwen3:8b",
+      resolutionStatus: "requested-only",
+    }),
+    responseDigest: DIGEST,
+    parseStatus: "parsed",
+    terminalStatus: "succeeded",
+  });
+  const terminalReceipt = await buildChronicleStageTerminalReceiptV1({
+    stageExecution,
+    contextSetVersion: "chronicle.context-set/1",
+    contextSetDigest: execution.contextSetDigest,
+    componentContractDigest: execution.componentContractDigest,
+    finalRequestDigest: execution.finalRequestDigest,
+    modelExecutionBinding: createStageModelExecutionBindingV1({
+      provider: "ollama",
+      requestedModel: "qwen3:8b",
+      resolutionStatus: "requested-only",
+    }),
+    responseDigest: DIGEST,
+    parseStatus: "invalid",
+    terminalStatus: "failed",
+  });
+  const repairReceipt = await buildChronicleStageTerminalReceiptV1({
+    stageExecution: createChildStageExecutionContext(
+      stageExecution,
+      NARRATIVE_STAGE_IDS.structuredRepair,
+      "stage:repair",
+    ),
+    contextSetVersion: "chronicle.context-set/1",
+    contextSetDigest: execution.contextSetDigest,
+    componentContractDigest: execution.componentContractDigest,
+    finalRequestDigest: execution.finalRequestDigest,
+    modelExecutionBinding: createStageModelExecutionBindingV1({
+      provider: "ollama",
+      requestedModel: "repair-model",
+      resolutionStatus: "requested-only",
+    }),
+    responseDigest: DIGEST,
+    parseStatus: "parsed",
+    terminalStatus: "succeeded",
+  });
+  const closure = await buildChronicleStageProvenanceClosureV1({
+    projectId: execution.projectId,
+    runId: execution.runId,
+    ownerTaskId: execution.taskId,
+    ownerAttemptId: execution.attemptId,
+    receipts: [observationReceipt, terminalReceipt, repairReceipt],
+  });
+  Object.assign(adapterInput, {
+    stageProvenanceClosure: closure,
+    provenanceBinding: buildChronicleStageProvenanceBindingV1({
+      projectId: execution.projectId,
+      runId: execution.runId,
+      taskId: execution.taskId,
+      closure,
+    }),
+  });
+});
 
 function cloneObservation(
   source: RawChronicleEventObservation,
@@ -175,12 +282,57 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
       "revealDocumentRef",
     );
     expect(result.envelope.revisionBasis).toMatchObject({
-      contextSetDigest: CONTEXT_SET_DIGEST,
+      contextSetDigest: execution.contextSetDigest,
+    });
+    expect(result.envelope.revisionBasis).not.toHaveProperty(
+      "stageProvenanceClosureDigest",
+    );
+    expect(result.provenanceBinding).toMatchObject({
+      projectId: execution.projectId,
+      runId: execution.runId,
+      taskId: execution.taskId,
+      stageProvenanceClosureDigest:
+        adapterInput.provenanceBinding.stageProvenanceClosureDigest,
     });
     expect(result.existingEventMatch).toEqual(existingEventMatch);
     expect(validateChronicleSceneEventV2(result.envelope)).toEqual({
       valid: true,
     });
+  });
+
+  it("requires a sealed C1 provenance sidecar and rejects owner/tampered closure input", async () => {
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        execution: { ...execution, taskId: "task:other" },
+      }),
+    ).rejects.toThrow(/owner|task|reach/i);
+
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        stageProvenanceClosure: {
+          ...adapterInput.stageProvenanceClosure,
+          receipts: [],
+        },
+      }),
+    ).rejects.toThrow(/receipt|terminal|empty/i);
+
+    const receipt = adapterInput.stageProvenanceClosure.receipts[0]!;
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        stageProvenanceClosure: {
+          ...adapterInput.stageProvenanceClosure,
+          receipts: [
+            {
+              ...receipt,
+              responseDigest: `sha256:${"b".repeat(64)}`,
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/digest|tamper/i);
   });
 
   it("rejects a merged observation that forges content under an original local ID", async () => {
@@ -444,6 +596,20 @@ describe("Chronicle scene-event@1 pure Adapter", () => {
         ],
       }),
     ).rejects.toThrow(/context.?set.*digest/i);
+  });
+
+  it("rejects an Observation-stage Context Set at the Event Synthesis adapter boundary", async () => {
+    await expect(
+      buildChronicleSceneEventV2({
+        ...adapterInput,
+        contextManifests: [
+          {
+            ...contextManifests[0]!,
+            stageId: NARRATIVE_STAGE_IDS.observationExtraction,
+          },
+        ],
+      }),
+    ).rejects.toThrow(/expected.*narrative_event_synthesize|Context Set/i);
   });
 
   it("accepts an empty Chronicle Proposal note as a string", async () => {

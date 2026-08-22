@@ -19,7 +19,15 @@ import {
 import {
   bindChronicleStageAuditContext,
   buildChronicleStageAuditTerminal,
+  buildChronicleStageAuditNoResponseTerminal,
+  createChronicleStageReceiptEmitter,
+  stageModelBindingFromAuditMetadata,
+  type ChronicleStageAuditMetadata,
 } from "./chronicleStageAudit";
+import type {
+  ChronicleStageTerminalReceiptV1,
+  StageModelExecutionBindingV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
 
 export const NARRATIVE_STRUCTURED_REPAIR_PATH =
   "narrative_structured_repair" as const;
@@ -34,6 +42,10 @@ export interface RunStructuredRepairTaskInput {
   readonly responseValidator?: StructuredRepairResponseValidator;
   /** Live eval / tests may inject the child-stage transport. */
   readonly send?: StructuredRepairSend;
+  /** Non-authoritative receipt observation seam for shadow/C1 harnesses. */
+  readonly onStageReceipt?: (
+    receipt: ChronicleStageTerminalReceiptV1,
+  ) => void | Promise<void>;
 }
 
 export type StructuredRepairParseStatus = "parsed" | "invalid";
@@ -167,16 +179,30 @@ async function recordStructuredRepairStageAudit(
     readonly tokensIn?: number;
     readonly tokensOut?: number;
   },
+  modelExecutionBinding?: StageModelExecutionBindingV1,
+  onStageReceipt?: RunStructuredRepairTaskInput["onStageReceipt"],
+  capturedTerminalMetadata?: ChronicleStageAuditMetadata,
+  capturedStageReceipt?: ChronicleStageTerminalReceiptV1,
 ): Promise<void> {
   if (!input.stageExecution) return;
   const digests = await buildChroniclePromptDigests(promptArtifact);
-  const terminal = await buildChronicleStageAuditTerminal({
-    stageExecution: input.stageExecution,
-    ...digests,
-    responseText,
-    parseStatus,
-    terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
-  });
+  const terminal =
+    capturedTerminalMetadata ??
+    (await buildChronicleStageAuditTerminal({
+      stageExecution: input.stageExecution,
+      ...digests,
+      responseText,
+      parseStatus,
+      terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+      modelExecutionBinding,
+      onReceipt: onStageReceipt,
+    }));
+  if (
+    capturedTerminalMetadata !== undefined &&
+    capturedStageReceipt !== undefined
+  ) {
+    await onStageReceipt?.(capturedStageReceipt);
+  }
   void recordAiUsage({
     surface: "narrative_structured_repair",
     model: usage.model,
@@ -239,6 +265,12 @@ export async function runStructuredRepairTask(
     projectId,
     pathId: NARRATIVE_STRUCTURED_REPAIR_PATH,
   } as const;
+  let sealedModelBinding: StageModelExecutionBindingV1 | undefined;
+  let capturedTerminalMetadata: ChronicleStageAuditMetadata | undefined;
+  let capturedStageReceipt: ChronicleStageTerminalReceiptV1 | undefined;
+  const emitStageReceipt = createChronicleStageReceiptEmitter(
+    input.onStageReceipt,
+  );
   const auditContext =
     input.stageExecution && promptDigests
       ? {
@@ -246,8 +278,14 @@ export async function runStructuredRepairTask(
             baseAuditContext,
             input.stageExecution,
             promptDigests,
+            (binding) => {
+              sealedModelBinding = binding;
+            },
           ),
-          onTerminalMetadata: async (responseText: string) => {
+          onTerminalMetadata: async (
+            responseText: string,
+            metadata?: AiAuditJsonObject,
+          ) => {
             const parseStatus = resolveStructuredRepairParseStatus(
               input,
               responseText,
@@ -258,10 +296,42 @@ export async function runStructuredRepairTask(
               responseText,
               parseStatus,
               terminalStatus: parseStatus === "parsed" ? "succeeded" : "failed",
+              modelExecutionBinding:
+                stageModelBindingFromAuditMetadata(metadata) ??
+                sealedModelBinding,
+              onReceipt: (receipt) => {
+                capturedStageReceipt = receipt;
+              },
             });
+            capturedTerminalMetadata = terminal;
             return {
               chronicleStage: terminal as unknown as AiAuditJsonObject,
             };
+          },
+          onNoResponseTerminalMetadata: async (
+            terminalStatus: "failed" | "cancelled" | "skipped",
+            metadata?: AiAuditJsonObject,
+          ) => {
+            const terminal = await buildChronicleStageAuditNoResponseTerminal({
+              stageExecution: input.stageExecution!,
+              ...promptDigests,
+              terminalStatus,
+              modelExecutionBinding:
+                stageModelBindingFromAuditMetadata(metadata) ??
+                sealedModelBinding,
+              onReceipt: (receipt) => {
+                capturedStageReceipt = receipt;
+              },
+            });
+            capturedTerminalMetadata = terminal;
+            return {
+              chronicleStage: terminal as unknown as AiAuditJsonObject,
+            };
+          },
+          onAuditCompleted: async () => {
+            if (capturedStageReceipt !== undefined) {
+              await emitStageReceipt(capturedStageReceipt);
+            }
           },
         }
       : baseAuditContext;
@@ -300,6 +370,10 @@ export async function runStructuredRepairTask(
         tokensIn: response.inputTokens,
         tokensOut: response.outputTokens,
       },
+      sealedModelBinding,
+      emitStageReceipt,
+      capturedTerminalMetadata,
+      capturedStageReceipt,
     );
   } else {
     void recordAiUsage({

@@ -27,6 +27,14 @@ import type {
   SourceBasis,
 } from "@/features/narrative-extraction/reconciler/types";
 import {
+  assertChronicleStageProvenanceReachability,
+  assertChronicleStageC1ClosureCompleteness,
+  assertChronicleStageProvenanceBindingV1,
+  type ChronicleStageProvenanceBindingV1,
+  type ChronicleStageProvenanceClosureV1,
+} from "@/features/narrative-extraction/reconciler/stageProvenance";
+import { NARRATIVE_STAGE_IDS } from "@/features/narrative-extraction/reconciler/stageExecution";
+import {
   canonicalizeChronicleContextSet,
   digestChronicleContextSet,
 } from "@/features/narrative-extraction/reconciler/chroniclePromptBuilder";
@@ -84,8 +92,10 @@ export interface ChronicleSceneEventSemanticPayloadV1 {
 }
 
 export interface ChronicleSceneEventExecutionInput {
+  readonly projectId: string;
   readonly runId: string;
   readonly taskId: string;
+  readonly attemptId: string;
   readonly reconcilerId: string;
   readonly reconcilerVersion: string;
   /** Audited E2 Context Set digest; C1 never derives an independent domain. */
@@ -138,6 +148,9 @@ export interface ChronicleSceneEventScopeInput {
 
 export interface ChronicleSceneEventAdapterInput {
   readonly execution: ChronicleSceneEventExecutionInput;
+  /** Sealed C1 sidecar; the Envelope remains unchanged. */
+  readonly stageProvenanceClosure: ChronicleStageProvenanceClosureV1;
+  readonly provenanceBinding: ChronicleStageProvenanceBindingV1;
   readonly sceneRef: string;
   readonly proposalPayload: CreateChronicleEventProposalPayloadV1;
   readonly hypothesis: EventHypothesis;
@@ -167,6 +180,8 @@ export interface ChronicleSceneEventAdapterResult {
   readonly scope: NarrativeScopeV2;
   readonly canonicalScopeJson: string;
   readonly existingEventMatch: ChronicleExistingMatch;
+  readonly stageProvenanceClosure: ChronicleStageProvenanceClosureV1;
+  readonly provenanceBinding: ChronicleStageProvenanceBindingV1;
 }
 
 export type ChronicleSceneEventChangeClassification =
@@ -879,9 +894,23 @@ function assertMaterialBasis(input: ChronicleSceneEventAdapterInput): void {
   }
 }
 
-function assertAdapterInput(input: ChronicleSceneEventAdapterInput): void {
+async function assertAdapterInput(
+  input: ChronicleSceneEventAdapterInput,
+): Promise<void> {
+  await assertChronicleStageC1ClosureCompleteness(
+    input.stageProvenanceClosure,
+    input.execution,
+  );
+  assertChronicleStageProvenanceBindingV1(input.provenanceBinding);
+  await assertChronicleStageProvenanceReachability({
+    execution: input.execution,
+    closure: input.stageProvenanceClosure,
+    provenanceBinding: input.provenanceBinding,
+  });
+  assertNonEmpty(input.execution.projectId, "Adapter projectId");
   assertNonEmpty(input.execution.runId, "Adapter runId");
   assertNonEmpty(input.execution.taskId, "Adapter taskId");
+  assertNonEmpty(input.execution.attemptId, "Adapter attemptId");
   assertNonEmpty(input.execution.reconcilerId, "Adapter reconcilerId");
   assertNonEmpty(
     input.execution.reconcilerVersion,
@@ -1213,7 +1242,7 @@ export function assertChronicleSceneEventV2(
 export async function buildChronicleSceneEventV2(
   input: ChronicleSceneEventAdapterInput,
 ): Promise<ChronicleSceneEventAdapterResult> {
-  assertAdapterInput(input);
+  await assertAdapterInput(input);
   const scopeResult = await deriveChronicleSceneEventScope({
     sceneRef: input.sceneRef,
     proposalPayload: input.proposalPayload,
@@ -1225,9 +1254,12 @@ export async function buildChronicleSceneEventV2(
   );
   const canonicalContextSet = canonicalizeChronicleContextSet(
     input.contextManifests,
+    NARRATIVE_STAGE_IDS.eventSynthesis,
   );
-  const computedContextSetDigest =
-    await digestChronicleContextSet(canonicalContextSet);
+  const computedContextSetDigest = await digestChronicleContextSet(
+    canonicalContextSet,
+    NARRATIVE_STAGE_IDS.eventSynthesis,
+  );
   if (computedContextSetDigest !== input.execution.contextSetDigest) {
     throw new TypeError(
       "Adapter contextSetDigest does not match the canonical E2 Context Set",
@@ -1312,6 +1344,12 @@ export async function buildChronicleSceneEventV2(
     projectionBinding,
   };
   assertChronicleSceneEventV2(envelope);
+  await assertChronicleStageProvenanceReachability({
+    execution: input.execution,
+    closure: input.stageProvenanceClosure,
+    provenanceBinding: input.provenanceBinding,
+    envelope,
+  });
   return {
     envelope,
     proposalPayload: input.proposalPayload,
@@ -1319,6 +1357,8 @@ export async function buildChronicleSceneEventV2(
     scope: scopeResult.scope,
     canonicalScopeJson: scopeResult.canonicalJson,
     existingEventMatch: input.existingEventMatch,
+    stageProvenanceClosure: input.stageProvenanceClosure,
+    provenanceBinding: input.provenanceBinding,
   };
 }
 

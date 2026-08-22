@@ -169,10 +169,7 @@ test("Narrative Extraction changes select every Narrative semantic requirement",
 
 test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async () => {
   const [impactSource, manifestSource] = await Promise.all([
-    readFile(
-      new URL("../../evals/impact-map.yaml", import.meta.url),
-      "utf8",
-    ),
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
     readFile(
       new URL("../../evals/quality-manifest.yaml", import.meta.url),
       "utf8",
@@ -248,7 +245,9 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
 
   for (const relativePath of [
     ...implementations,
-    ...tests.filter((relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs"),
+    ...tests.filter(
+      (relativePath) => relativePath !== "scripts/quality/impact-map.test.mjs",
+    ),
   ]) {
     const selection = selectImpact(map, [relativePath]);
     assert.ok(
@@ -289,6 +288,37 @@ test("NIR-0 Wave 1 contracts remain traceable to the semantic Light gate", async
     );
     assert.equal(selection.fallback, false, relativePath);
   }
+});
+
+test("isolated Chronicle stage provenance changes select semantic and AI audit/routing gates", async () => {
+  const source = await readFile(
+    new URL("../../evals/impact-map.yaml", import.meta.url),
+    "utf8",
+  );
+  const map = parseImpactMap(source);
+  for (const changedPath of [
+    "src/features/narrative-extraction/reconciler/stageProvenance.ts",
+    "src/features/narrative-extraction/reconciler/stageProvenance.test.ts",
+  ]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.matchedRuleIds.includes("ai-audit-runtime"));
+    assert.ok(selection.matchedRuleIds.includes("ai-routing"));
+    assert.ok(
+      selection.requirementIds.includes("GDX-NARR-SEMANTIC-CONTRACT-001"),
+    );
+    assert.ok(selection.requirementIds.includes("GDX-AI-AUDIT-001"));
+    assert.ok(selection.requirementIds.includes("GDX-ROUTE-001"));
+    assert.ok(selection.suiteIds.includes("narrative-semantic-contract"));
+    assert.ok(selection.suiteIds.includes("ai-routing"));
+    assert.equal(selection.fallback, false);
+  }
+  const transportSelection = selectImpact(map, [
+    "src/features/ai-audit/transportContext.ts",
+  ]);
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-routing"));
+  assert.ok(transportSelection.matchedRuleIds.includes("ai-audit-runtime"));
+  assert.ok(transportSelection.requirementIds.includes("GDX-AI-AUDIT-001"));
 });
 
 test("Temporal IR, adapter, and Calendar changes select the Temporal requirement", async () => {

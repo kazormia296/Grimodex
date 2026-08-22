@@ -4,7 +4,7 @@
 
 - **Lifecycle:** Active implementation plan
 - **Milestone:** NIR-0 — Shared contract adoption
-- **Last updated:** 2026-08-21
+- **Last updated:** 2026-08-22
 - **Stacked base at creation:** PR #551, `codex/c2-parallel-foundations` at `eb428bd75a3ff08936526eaeb82ae58ff7e76146`
 - **Contract PR:** `NIR0-00: Narrative Revision Semantics, Native-Verified Human Derivation, Material-Basis Inheritance, Monotonicity, and Project-Scoped Identity Contract`
 - **Pilot:** Chronicle `scene-event@1`
@@ -20,6 +20,11 @@ This document fixes the implementation order and cross-PR ownership for NIR-0. I
 6. This plan owns the detailed NIR-0 work breakdown, activation gates, hot-file ownership, and acceptance criteria.
 
 Pull request descriptions and chat history are implementation evidence, not architectural authority.
+
+NIR0-00 is contract-only. E2.1 is the explicitly ratified additive exception
+for the Chronicle AI-audit stage seam: it may carry durable audit metadata and
+an ephemeral request-scoped pure sidecar, but it does not add V2 persistence,
+a database schema/migration, or product activation.
 
 ---
 
@@ -194,12 +199,7 @@ interface NarrativeRevisionEnvelopeV2<TPayload> {
   };
 
   readonly changeIntent: {
-    readonly changeKind:
-      | "add"
-      | "revise"
-      | "retract"
-      | "merge"
-      | "split";
+    readonly changeKind: "add" | "revise" | "retract" | "merge" | "split";
     readonly targetProjectionRef?: string;
   };
 
@@ -762,6 +762,64 @@ parsed structured result
 
 Full raw-response retention requires a separate privacy, capacity, and audit contract.
 
+### 9.1 E2.1 per-Stage model binding and C1 provenance sidecar
+
+E2.1 ratifies the pure, externally carried provenance contract without thawing
+`InterpretationRevisionBasisV2` and without adding a field to the Narrative IR
+Envelope. The frozen `revisionBasis.runId + taskId` remains the closure-owner
+coordinate. A `ChronicleStageProvenanceBindingV1` sidecar binds that coordinate
+to `stageProvenanceClosureDigest` for C1; C2A owns later atomic persistence of
+the task output and extraction artifact.
+
+The model-binding digest domain is:
+
+```text
+chronicle-stage-model-binding/1
+```
+
+Terminal Stage receipts and the v2 Chronicle audit metadata use:
+
+```text
+chronicle-stage-terminal-receipt/1
+CHRONICLE_STAGE_AUDIT_VERSION = 2
+```
+
+The canonical closure domain is:
+
+```text
+chronicle-stage-provenance-closure/1
+```
+
+`finalRequestDigest` remains request-only and excludes model identity. Model
+provider, requested/effective model, endpoint binding ID, API/reasoning mode,
+generation mode, and resolution status live in the separately digested model
+binding. Endpoint bindings accept only a stable ID or digest; credentials,
+origins, and raw URLs are forbidden. Selecting or overriding a provider/model
+does not by itself change generation mode: it remains `provider-default` until
+a generation-control argument such as thinking, effort, reasoning, or
+output-token budget is explicit. Current transport normally records
+`requested-only`; it never infers `effectiveModel` as provider-reported.
+
+Each Observation, Event Synthesis, and Structured Repair Stage has its own
+binding and terminal receipt. Repair lineage is represented only by the child
+Stage's immutable `parentStageExecutionId`; a mutable parent-child pointer is
+not closure authority. The C1 closure includes observation and synthesis
+receipts from the same Project/Run even when their upstream Task/Attempt differs
+from the owner, while a repair parent and child must share Task/Attempt and the
+parent must be a failed invalid Observation or Synthesis receipt.
+
+C1 verifies the closure and sidecar against the execution coordinate and the
+Envelope's existing `revisionBasis.runId + taskId`. The Envelope remains
+unchanged. Model bindings and terminal receipts are durable, non-authoritative
+AI-audit metadata; `stage-provenance-closure` is an ephemeral, request-scoped,
+non-authoritative application-memory pure sidecar with caller-supplied
+membership and no retention. It is not labelled rebuildable until a
+deterministic membership selector exists. C2A later owns durable
+closure/task-output and extraction-artifact persistence, which is explicitly
+deferred here.
+Profile/work-profile semantics and Evaluation Contract v2/scorer work remain
+out of scope.
+
 ---
 
 ## 10. C2 sub-gate dependencies
@@ -869,6 +927,7 @@ K2 Rust validator and cross-runtime golden parity
 E0 Chronicle Stage execution identity
 E1 Envelope V2 pure types and V1 adapter
 E2 Context-only Prompt Builder and AI Audit binding
+E2.1 Per-Stage Model Execution Binding, terminal receipts, and pure C1 closure sidecar
 ```
 
 #### Lane C — boundaries and pure pilot
@@ -942,29 +1001,29 @@ implementationStatus updated atomically
 
 ## 12. Hot-file ownership
 
-| File or area | Exclusive owner while active |
-|---|---|
-| `docs/plans/narrative-semantic-core-roadmap.md` authority/adoption sections | NIR0-00 |
-| Roadmap C2 status table | C2-5B / C2-ZB / C2-ZC |
-| Roadmap NIR completion evidence | NIR0-CERT |
-| ADR 009 and Scope policy/schema | NIR0-00, then Scope lane |
-| `reconciler/types.ts` / Envelope V2 pure contract | E1 |
-| shared Rust canonical JSON | K0 |
-| Narrative IR TS registry/schema | K1 |
-| Narrative IR Rust validator | K2 |
-| Chronicle pure Adapter | C1 |
-| Chronicle AI task identity plumbing | E0/E2 |
-| Chronicle review API | C3 |
-| `migrate.rs` / `workspace_schema.rs` | C2 through ZB, then D1/C2A |
-| `src/db/schema.ts` / generated schema contract | D1/C2A |
-| `repository.rs` | C2A/C2B |
-| `reconciliation_envelope.rs` | C2A |
-| `evaluator.rs` | D2 |
-| `publish_runtime.rs` | D2 |
-| `incremental_freshness.rs` | D2 |
-| `restore_rebuild.rs` | D2 |
-| semantic boundary validator runtime scans | G2 |
-| central quality/impact manifests | NIR0-CERT |
+| File or area                                                                | Exclusive owner while active |
+| --------------------------------------------------------------------------- | ---------------------------- |
+| `docs/plans/narrative-semantic-core-roadmap.md` authority/adoption sections | NIR0-00                      |
+| Roadmap C2 status table                                                     | C2-5B / C2-ZB / C2-ZC        |
+| Roadmap NIR completion evidence                                             | NIR0-CERT                    |
+| ADR 009 and Scope policy/schema                                             | NIR0-00, then Scope lane     |
+| `reconciler/types.ts` / Envelope V2 pure contract                           | E1                           |
+| shared Rust canonical JSON                                                  | K0                           |
+| Narrative IR TS registry/schema                                             | K1                           |
+| Narrative IR Rust validator                                                 | K2                           |
+| Chronicle pure Adapter                                                      | C1                           |
+| Chronicle AI task identity plumbing                                         | E0/E2                        |
+| Chronicle review API                                                        | C3                           |
+| `migrate.rs` / `workspace_schema.rs`                                        | C2 through ZB, then D1/C2A   |
+| `src/db/schema.ts` / generated schema contract                              | D1/C2A                       |
+| `repository.rs`                                                             | C2A/C2B                      |
+| `reconciliation_envelope.rs`                                                | C2A                          |
+| `evaluator.rs`                                                              | D2                           |
+| `publish_runtime.rs`                                                        | D2                           |
+| `incremental_freshness.rs`                                                  | D2                           |
+| `restore_rebuild.rs`                                                        | D2                           |
+| semantic boundary validator runtime scans                                   | G2                           |
+| central quality/impact manifests                                            | NIR0-CERT                    |
 
 Branches must not edit another active lane's hot files without explicitly re-serializing the dependency graph.
 
@@ -1047,6 +1106,12 @@ NIR-0 is complete only when all of the following are true.
 32. Raw response retention is not falsely claimed.
 33. Interpreter modules cannot import or call SQL, DB mutation, Prepared Commit, Typed Writer, Agent Writer, or generic MCP SQL paths.
 34. Static validation detects a new unauthorized Freshness authority in code, not only a policy declaration.
+    34a. Stage Model Execution Binding V1 fails closed for unresolved, requested-only, provider-reported, and fingerprinted states; endpoint URLs and credentials never enter the binding.
+    34b. The v2 Chronicle audit begin and terminal metadata carry the same sealed model binding, model-binding digest, and terminal receipt digest; a Chronicle terminal-hook failure rejects the Stage output.
+    34c. Observation, Synthesis, and Repair each emit an independent terminal receipt exactly once; repair lineage is only the child `parentStageExecutionId` and uses the same Task/Attempt as its failed parent.
+    34d. A C1 closure is canonical, self-digested, tamper-evident, and reaches the existing Envelope `revisionBasis.runId + taskId` through an external sidecar without changing Envelope V2.
+    34e. C1 accepts same-Project/Run upstream Observation and Synthesis receipts with distinct Task/Attempt coordinates, requires both stages, and includes any repair children.
+    34f. Model bindings and terminal receipts are durable, non-authoritative AI-audit metadata; `stage-provenance-closure` remains ephemeral, request-scoped, non-authoritative application-memory pure-sidecar material with no retention. It is not rebuildable without a deterministic membership selector. Atomic closure/task-output/artifact persistence is owned by C2A and deferred.
 
 ### Scope adoption
 

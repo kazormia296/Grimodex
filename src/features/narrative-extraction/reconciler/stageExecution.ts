@@ -100,6 +100,16 @@ export function isStageExecutionContext(
 ): value is NarrativeStageExecutionContext {
   if (value === null || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
+  const allowedKeys = new Set([
+    "projectId",
+    "runId",
+    "taskId",
+    "attemptId",
+    "stageId",
+    "stageExecutionId",
+    "parentStageExecutionId",
+  ]);
+  if (Object.keys(record).some((key) => !allowedKeys.has(key))) return false;
   const requiredKeys = [
     "projectId",
     "runId",
