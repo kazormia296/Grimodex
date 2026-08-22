@@ -2367,6 +2367,55 @@ function localCallMetadataEqual(left, right) {
   );
 }
 
+function localCallMetadataAlternatives(value) {
+  const alternatives = [];
+  const addAlternative = (metadata) => {
+    if (
+      metadata !== undefined &&
+      !alternatives.some((candidate) =>
+        localCallMetadataEqual(candidate, metadata),
+      )
+    ) {
+      alternatives.push(metadata);
+    }
+  };
+  for (const metadata of value?.localCallAlternatives ?? []) {
+    addAlternative(metadata);
+  }
+  addAlternative(value?.localCall);
+  return alternatives;
+}
+
+function localCallMetadataSetsEqual(left, right) {
+  const leftAlternatives = localCallMetadataAlternatives(left);
+  const rightAlternatives = localCallMetadataAlternatives(right);
+  return (
+    leftAlternatives.length === rightAlternatives.length &&
+    leftAlternatives.every((leftMetadata) =>
+      rightAlternatives.some((rightMetadata) =>
+        localCallMetadataEqual(leftMetadata, rightMetadata),
+      ),
+    )
+  );
+}
+
+function mergeLocalCallMetadataAlternatives(left, right) {
+  const alternatives = [];
+  for (const metadata of [
+    ...localCallMetadataAlternatives(left),
+    ...localCallMetadataAlternatives(right),
+  ]) {
+    if (
+      !alternatives.some((candidate) =>
+        localCallMetadataEqual(candidate, metadata),
+      )
+    ) {
+      alternatives.push(metadata);
+    }
+  }
+  return alternatives;
+}
+
 function mergeLocalCallMetadata(left, right) {
   if (!left) return right;
   if (!right) return left;
@@ -2486,7 +2535,7 @@ function mergeInvocationValues(left, right) {
     !left.capability &&
     !left.container &&
     !left.callables?.size &&
-    !left.localCall &&
+    localCallMetadataAlternatives(left).length === 0 &&
     invocationMetadataAlternatives(
       left,
       "classConstructors",
@@ -2499,7 +2548,7 @@ function mergeInvocationValues(left, right) {
     !right.capability &&
     !right.container &&
     !right.callables?.size &&
-    !right.localCall &&
+    localCallMetadataAlternatives(right).length === 0 &&
     invocationMetadataAlternatives(
       right,
       "classConstructors",
@@ -2529,6 +2578,16 @@ function mergeInvocationValues(left, right) {
   const classConstructor =
     classConstructors.size === 1 ? [...classConstructors][0] : undefined;
   const accessor = accessors.size === 1 ? [...accessors][0] : undefined;
+  const localCallAlternatives = mergeLocalCallMetadataAlternatives(left, right);
+  const mergedLocalCall = mergeLocalCallMetadata(left.localCall, right.localCall);
+  const localCall =
+    localCallAlternatives.length === 1
+      ? mergedLocalCall ?? localCallAlternatives[0]
+      : undefined;
+  const localCallAlternativeSet =
+    localCallAlternatives.length > 1
+      ? new Set(localCallAlternatives)
+      : undefined;
   if (leftIsNeutral) return right;
   if (rightIsNeutral) return left;
   if (left.container && left.container === right.container) {
@@ -2547,7 +2606,8 @@ function mergeInvocationValues(left, right) {
       ),
       container: left.container,
       callables,
-      localCall: mergeLocalCallMetadata(left.localCall, right.localCall),
+      localCall,
+      localCallAlternatives: localCallAlternativeSet,
       classConstructor,
       classConstructors,
       accessor,
@@ -2602,7 +2662,8 @@ function mergeInvocationValues(left, right) {
     ),
     container,
     callables,
-    localCall: mergeLocalCallMetadata(left.localCall, right.localCall),
+    localCall,
+    localCallAlternatives: localCallAlternativeSet,
     classConstructor,
     classConstructors,
     accessor,
@@ -2623,7 +2684,7 @@ function invocationValuesEqual(left, right, seen = new WeakMap()) {
     left.source !== right.source ||
     left.defined !== right.defined ||
     !reflectCapabilityMetadataEqual(left.capability, right.capability) ||
-    !localCallMetadataEqual(left.localCall, right.localCall) ||
+    !localCallMetadataSetsEqual(left, right) ||
     !invocationMetadataSetsEqual(
       left,
       right,
@@ -3085,6 +3146,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       container,
       callables: new Set(value?.callables ?? []),
       localCall: value?.localCall,
+      localCallAlternatives:
+        value?.localCallAlternatives?.size > 0
+          ? new Set(value.localCallAlternatives)
+          : undefined,
       classConstructor: value?.classConstructor,
       classConstructors: new Set(
         invocationMetadataAlternatives(
@@ -3212,6 +3277,10 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       container,
       callables: new Set(value.callables ?? []),
       localCall: value.localCall,
+      localCallAlternatives:
+        value.localCallAlternatives?.size > 0
+          ? new Set(value.localCallAlternatives)
+          : undefined,
       classConstructor: value.classConstructor,
       classConstructors: new Set(
         invocationMetadataAlternatives(
@@ -3347,25 +3416,31 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       );
       const key = staticElementAccessKey(unwrapped.argumentExpression);
       if (key !== undefined && INVOCATION_ALIAS_METHODS.has(key)) {
-        const boundMetadata =
-          receiver.localCall?.method === "bound"
-            ? receiver.localCall
-            : undefined;
-        const boundInvocation =
-          key === "bind" &&
-          (receiver.localCall?.method === "call" ||
-            receiver.localCall?.method === "apply")
-            ? receiver.localCall
-            : undefined;
-        const callableValue = localCallableMethodValue(
-          receiver.callables,
-          key,
-          boundMetadata?.thisArgument,
-          boundMetadata?.boundArguments,
-          boundMetadata?.thisValue,
-          boundInvocation,
-        );
-        if (callableValue.callables.size > 0) return callableValue;
+        const receiverLocalCalls = localCallMetadataAlternatives(receiver);
+        const localCallAlternatives =
+          receiverLocalCalls.length > 0 ? receiverLocalCalls : [undefined];
+        let callableValue;
+        for (const localCall of localCallAlternatives) {
+          const boundMetadata =
+            localCall?.method === "bound" ? localCall : undefined;
+          const boundInvocation =
+            key === "bind" &&
+            (localCall?.method === "call" || localCall?.method === "apply")
+              ? localCall
+              : undefined;
+          callableValue = mergeInvocationValues(
+            callableValue,
+            localCallableMethodValue(
+              receiver.callables,
+              key,
+              boundMetadata?.thisArgument,
+              boundMetadata?.boundArguments,
+              boundMetadata?.thisValue,
+              boundInvocation,
+            ),
+          );
+        }
+        if (callableValue?.callables.size > 0) return callableValue;
       }
       if (
         key !== undefined &&
@@ -3440,25 +3515,31 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
         );
       }
       if (INVOCATION_ALIAS_METHODS.has(unwrapped.name.text)) {
-        const boundMetadata =
-          receiver.localCall?.method === "bound"
-            ? receiver.localCall
-            : undefined;
-        const boundInvocation =
-          unwrapped.name.text === "bind" &&
-          (receiver.localCall?.method === "call" ||
-            receiver.localCall?.method === "apply")
-            ? receiver.localCall
-            : undefined;
-        const callableValue = localCallableMethodValue(
-          receiver.callables,
-          unwrapped.name.text,
-          boundMetadata?.thisArgument,
-          boundMetadata?.boundArguments,
-          boundMetadata?.thisValue,
-          boundInvocation,
-        );
-        if (callableValue.callables.size > 0) return callableValue;
+        const receiverLocalCalls = localCallMetadataAlternatives(receiver);
+        const localCallAlternatives =
+          receiverLocalCalls.length > 0 ? receiverLocalCalls : [undefined];
+        let callableValue;
+        for (const localCall of localCallAlternatives) {
+          const boundMetadata =
+            localCall?.method === "bound" ? localCall : undefined;
+          const boundInvocation =
+            unwrapped.name.text === "bind" &&
+            (localCall?.method === "call" || localCall?.method === "apply")
+              ? localCall
+              : undefined;
+          callableValue = mergeInvocationValues(
+            callableValue,
+            localCallableMethodValue(
+              receiver.callables,
+              unwrapped.name.text,
+              boundMetadata?.thisArgument,
+              boundMetadata?.boundArguments,
+              boundMetadata?.thisValue,
+              boundInvocation,
+            ),
+          );
+        }
+        if (callableValue?.callables.size > 0) return callableValue;
       }
       if (receiver.tainted) {
         if (invocationContainerAlternatives(receiver).length > 0) {
@@ -3694,41 +3775,96 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           depth,
         );
       }
-      if (calleeValue.localCall?.method === "bind") {
+      const localCallAlternatives = localCallMetadataAlternatives(calleeValue);
+      if (localCallAlternatives.length > 1) {
+        let localResult;
+        for (const localCall of localCallAlternatives) {
+          if (localCall.method === "bind") {
+            const hasExistingBound =
+              localCall.boundArguments !== undefined ||
+              localCall.thisValue !== undefined;
+            const boundThis = hasExistingBound
+              ? localCall.thisArgument
+              : unwrapped.arguments[0];
+            const boundArguments = [
+              ...(localCall.boundArguments ?? []),
+              ...unwrapped.arguments.slice(1),
+            ];
+            localResult = mergeInvocationValues(
+              localResult,
+              localBoundCallableValue(
+                localCall.callables,
+                boundThis,
+                boundArguments,
+                localCall.thisValue,
+                localCall.boundInvocation
+                  ? {
+                      ...localCall.boundInvocation,
+                      thisArgument:
+                        unwrapped.arguments[0] ??
+                        localCall.boundInvocation.thisArgument,
+                      boundArguments: [
+                        ...(localCall.boundInvocation.boundArguments ?? []),
+                        ...unwrapped.arguments.slice(1),
+                      ],
+                      thisValue: localCall.thisValue,
+                    }
+                  : undefined,
+              ),
+            );
+          } else if (
+            localCall.method === "call" ||
+            localCall.method === "apply" ||
+            localCall.method === "bound"
+          ) {
+            localResult = mergeInvocationValues(
+              localResult,
+              cleanInvocationValue(),
+            );
+          }
+        }
+        if (localResult !== undefined) return localResult;
+      }
+      const localCall =
+        calleeValue.localCall ??
+        (localCallAlternatives.length === 1
+          ? localCallAlternatives[0]
+          : undefined);
+      if (localCall?.method === "bind") {
         const hasExistingBound =
-          calleeValue.localCall.boundArguments !== undefined ||
-          calleeValue.localCall.thisValue !== undefined;
+          localCall.boundArguments !== undefined ||
+          localCall.thisValue !== undefined;
         const boundThis = hasExistingBound
-          ? calleeValue.localCall.thisArgument
+          ? localCall.thisArgument
           : unwrapped.arguments[0];
         const boundArguments = [
-          ...(calleeValue.localCall.boundArguments ?? []),
+          ...(localCall.boundArguments ?? []),
           ...unwrapped.arguments.slice(1),
         ];
         return localBoundCallableValue(
-          calleeValue.localCall.callables,
+          localCall.callables,
           boundThis,
           boundArguments,
-          calleeValue.localCall.thisValue,
-          calleeValue.localCall.boundInvocation
+          localCall.thisValue,
+          localCall.boundInvocation
             ? {
-                ...calleeValue.localCall.boundInvocation,
+                ...localCall.boundInvocation,
                 thisArgument:
                   unwrapped.arguments[0] ??
-                  calleeValue.localCall.boundInvocation.thisArgument,
+                  localCall.boundInvocation.thisArgument,
                 boundArguments: [
-                  ...(calleeValue.localCall.boundInvocation.boundArguments ?? []),
+                  ...(localCall.boundInvocation.boundArguments ?? []),
                   ...unwrapped.arguments.slice(1),
                 ],
-                thisValue: calleeValue.localCall.thisValue,
+                thisValue: localCall.thisValue,
               }
             : undefined,
         );
       }
       if (
-        calleeValue.localCall?.method === "call" ||
-        calleeValue.localCall?.method === "apply" ||
-        calleeValue.localCall?.method === "bound"
+        localCall?.method === "call" ||
+        localCall?.method === "apply" ||
+        localCall?.method === "bound"
       ) {
         return cleanInvocationValue();
       }
@@ -4346,25 +4482,33 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
           ? { found: false, value: unknownContainerValue(receiver.returnValue) }
           : readContainerProperty(receiver.returnValue, key);
       if (key !== undefined && INVOCATION_ALIAS_METHODS.has(key)) {
-        const boundMetadata =
-          receiver.returnValue.localCall?.method === "bound"
-            ? receiver.returnValue.localCall
-            : undefined;
-        const boundInvocation =
-          key === "bind" &&
-          (receiver.returnValue.localCall?.method === "call" ||
-            receiver.returnValue.localCall?.method === "apply")
-            ? receiver.returnValue.localCall
-            : undefined;
-        const callableValue = localCallableMethodValue(
-          receiver.returnValue.callables,
-          key,
-          boundMetadata?.thisArgument,
-          boundMetadata?.boundArguments,
-          boundMetadata?.thisValue,
-          boundInvocation,
+        const receiverLocalCalls = localCallMetadataAlternatives(
+          receiver.returnValue,
         );
-        if (callableValue.callables.size > 0) {
+        const localCallAlternatives =
+          receiverLocalCalls.length > 0 ? receiverLocalCalls : [undefined];
+        let callableValue;
+        for (const localCall of localCallAlternatives) {
+          const boundMetadata =
+            localCall?.method === "bound" ? localCall : undefined;
+          const boundInvocation =
+            key === "bind" &&
+            (localCall?.method === "call" || localCall?.method === "apply")
+              ? localCall
+              : undefined;
+          callableValue = mergeInvocationValues(
+            callableValue,
+            localCallableMethodValue(
+              receiver.returnValue.callables,
+              key,
+              boundMetadata?.thisArgument,
+              boundMetadata?.boundArguments,
+              boundMetadata?.thisValue,
+              boundInvocation,
+            ),
+          );
+        }
+        if (callableValue?.callables.size > 0) {
           return {
             consumed: receiver.consumed,
             returnValue: callableValue,
@@ -4923,7 +5067,14 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
     return result;
   }
 
-  function evaluateLocalCall(node, environment, activeFunctions, depth) {
+  function evaluateLocalCall(
+    node,
+    environment,
+    activeFunctions,
+    depth,
+    calleeValueOverride = undefined,
+    calleeConsumedOverride = false,
+  ) {
     if (!node) return undefined;
     const isConstructorCall = ts.isNewExpression(node);
     if (
@@ -4933,14 +5084,49 @@ function createInvocationTaintResolver(sourceFile, lookupBinding, foldStaticStri
       if (depth > LOCAL_CALL_MAX_DEPTH) return boundedLocalResult();
       return undefined;
     }
-    const calleeResult = evaluateLocalExpression(
-      node.expression,
-      environment,
-      activeFunctions,
-      depth + 1,
-    );
+    const calleeResult =
+      calleeValueOverride === undefined
+        ? evaluateLocalExpression(
+            node.expression,
+            environment,
+            activeFunctions,
+            depth + 1,
+          )
+        : {
+            consumed: calleeConsumedOverride,
+            returnValue: calleeValueOverride,
+          };
     const calleeValue = calleeResult.returnValue;
-    const localCall = calleeValue.localCall;
+    const localCallAlternatives = localCallMetadataAlternatives(calleeValue);
+    if (
+      calleeValueOverride === undefined &&
+      localCallAlternatives.length > 1
+    ) {
+      let result;
+      for (const localCallAlternative of localCallAlternatives) {
+        result = mergeLocalResults(
+          result,
+          evaluateLocalCall(
+            node,
+            environment,
+            activeFunctions,
+            depth + 1,
+            {
+              ...calleeValue,
+              localCall: localCallAlternative,
+              localCallAlternatives: undefined,
+            },
+            calleeResult.consumed,
+          ),
+        );
+      }
+      return result ?? cleanLocalResult();
+    }
+    const localCall =
+      calleeValue.localCall ??
+      (localCallAlternatives.length === 1
+        ? localCallAlternatives[0]
+        : undefined);
     const capability = calleeValue.capability;
     let effectiveArgumentValues;
     let argumentResult = cleanLocalResult();

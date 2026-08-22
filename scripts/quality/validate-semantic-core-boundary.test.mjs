@@ -2687,6 +2687,61 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("retains local callable metadata across conditional bound alternatives", () => {
+    const unsafeSources = [
+      [
+        "function consume(fn) { fn(); }",
+        "const safeBound = consume.bind(null, () => true);",
+        "const unsafeBound = consume.bind(null, database[key]);",
+        "const invoke = flag ? safeBound : unsafeBound;",
+        "invoke();",
+      ].join("\n"),
+      [
+        "function consume(fn) { fn(); }",
+        "const safeBound = consume.bind(null, () => true);",
+        "const unsafeBound = consume.bind(null, database[key]);",
+        "const invoke = flag ? unsafeBound : safeBound;",
+        "invoke();",
+      ].join("\n"),
+    ];
+    for (const [index, source] of unsafeSources.entries()) {
+      const filename = `local-bound-alternative-order-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `conditional bound alternative ${index} must reject a tainted callable flow: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const safeSources = [
+      [
+        "function consume(fn) { fn(); }",
+        "const first = consume.bind(null, () => true);",
+        "const second = consume.bind(null, () => false);",
+        "const invoke = flag ? first : second;",
+        "invoke();",
+      ].join("\n"),
+      [
+        "function consume(fn) { fn(); }",
+        "const first = consume.bind(null, () => true);",
+        "const second = consume.bind(null, () => false);",
+        "const invoke = flag ? second : first;",
+        "invoke();",
+      ].join("\n"),
+    ];
+    for (const [index, source] of safeSources.entries()) {
+      const errors = validateInterpreterSourceFixture(
+        `local-bound-alternative-controls-${index}.mts`,
+        source,
+      );
+      assert.deepEqual(
+        errors,
+        [],
+        `all-safe conditional bound alternative ${index} must remain allowed: ${JSON.stringify(errors)}`,
+      );
+    }
+  });
+
   it("composes bound wrappers, inherited receivers, and bounded local depth", () => {
     const sensitiveCases = [
       {
@@ -2710,6 +2765,15 @@ describe("validate-semantic-core-boundary", () => {
           "function consume(label, fn) { fn(); }",
           "const bound = consume.call.bind(consume, null);",
           "bound(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "nested safe.call.bind wrapper",
+        source: [
+          "function safe(fn) { fn(); }",
+          "function consume(fn) { fn(); }",
+          "const invoke = safe.call.bind(consume, null);",
+          "invoke(database[key]);",
         ].join("\n"),
       },
       {
@@ -2797,6 +2861,9 @@ describe("validate-semantic-core-boundary", () => {
         "function consume(label, fn) { fn(); }",
         "const safeCall = consume.call.bind(consume, null);",
         "safeCall(() => true);",
+        "function safe(fn) { fn(); }",
+        "const safeNestedCall = safe.call.bind(consume, null);",
+        "safeNestedCall(() => true);",
         "const safeApplyBound = Reflect.apply.bind(null);",
         "safeApplyBound.call(null, invoke, null, [() => true]);",
         "const safeApi = { consume(fn) { fn(); }, get invoke() { return this.consume.bind(this); } };",
@@ -2857,6 +2924,13 @@ describe("validate-semantic-core-boundary", () => {
         ].join("\n"),
       },
       {
+        name: "Reflect.apply nested call.call composition",
+        source: [
+          "function consume(fn) { fn(); }",
+          "Reflect.apply.bind(null, consume).call.call(null, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
         name: "Reflect.apply fully bound target call",
         source: [
           "function consume(fn) { fn(); }",
@@ -2887,6 +2961,7 @@ describe("validate-semantic-core-boundary", () => {
         "const fullyBoundApply = Reflect.apply.bind(null, consume, null, [() => true]);",
         "fullyBoundApply.apply(null, []);",
         "Reflect.apply.call.bind(Reflect.apply, Reflect)(consume, null, [() => true]);",
+        "Reflect.apply.bind(null, consume).call.call(null, null, [() => true]);",
         "Reflect.apply.bind(null, consume, null, [() => true]).call(null);",
       ].join("\n"),
     );
