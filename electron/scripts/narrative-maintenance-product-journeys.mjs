@@ -127,18 +127,22 @@ const RUN_COLUMNS = `
   registry_digest AS registryDigest,
   (SELECT COUNT(*)
      FROM narrative_extraction_attempts a
-    WHERE a.run_id = r.id) AS attemptCount,
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id) AS attemptCount,
   (SELECT MAX(a.attempt_number)
      FROM narrative_extraction_attempts a
-    WHERE a.run_id = r.id) AS maxAttemptNumber,
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id) AS maxAttemptNumber,
   (SELECT a.status
      FROM narrative_extraction_attempts a
-    WHERE a.run_id = r.id
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
     LIMIT 1) AS lastAttemptStatus,
   (SELECT a.failure_code
      FROM narrative_extraction_attempts a
-    WHERE a.run_id = r.id
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
     LIMIT 1) AS lastAttemptFailureCode`;
 

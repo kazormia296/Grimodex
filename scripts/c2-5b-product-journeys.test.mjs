@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
+import initSqlJs from "sql.js/dist/sql-asm.js";
 
 import {
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
@@ -44,6 +45,165 @@ import {
   parseImpactMap,
   selectImpact,
 } from "./quality/impact-map.mjs";
+
+test("Run ledger scopes attempt evidence through task and Run ownership", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const runColumns = source.match(/const RUN_COLUMNS = `([\s\S]*?)`;/)?.[1];
+  assert.ok(runColumns, "RUN_COLUMNS must remain a SQL projection contract");
+
+  const SQL = await initSqlJs();
+  const database = new SQL.Database();
+  database.run(`
+    CREATE TABLE narrative_extraction_runs (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      run_kind TEXT,
+      work_key TEXT,
+      status TEXT,
+      semantic_epoch_id TEXT,
+      consumer_id TEXT,
+      created_at TEXT NOT NULL,
+      started_at TEXT,
+      completed_at TEXT,
+      spec_json TEXT,
+      terminal_reason_code TEXT,
+      outcome_summary_json TEXT,
+      spec_digest TEXT,
+      catalog_digest TEXT,
+      registry_digest TEXT
+    );
+    CREATE TABLE narrative_extraction_tasks (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL
+    );
+    CREATE TABLE narrative_extraction_attempts (
+      id TEXT PRIMARY KEY,
+      task_id TEXT NOT NULL,
+      attempt_number INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      started_at TEXT NOT NULL,
+      failure_code TEXT
+    );
+  `);
+
+  const attemptsColumns = database.exec(
+    "PRAGMA table_info(narrative_extraction_attempts)",
+  )[0].values;
+  assert.equal(
+    attemptsColumns.some((column) => column[1] === "run_id"),
+    false,
+    "attempts must remain owned by task_id, not gain a run_id column",
+  );
+
+  const insert = (sql, params) => database.run(sql, params);
+  insert(
+    "INSERT INTO narrative_extraction_runs (id, project_id, created_at) VALUES (?, ?, ?)",
+    ["run-1", "project-1", "2026-08-23T00:00:00.000Z"],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_runs (id, project_id, created_at) VALUES (?, ?, ?)",
+    ["run-2", "project-1", "2026-08-23T00:00:01.000Z"],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
+    ["task-1", "run-1"],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_tasks (id, run_id) VALUES (?, ?)",
+    ["task-2", "run-2"],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      "attempt-1",
+      "task-1",
+      1,
+      "failed",
+      "2026-08-23T00:00:02.000Z",
+      "older-code",
+    ],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      "attempt-2a",
+      "task-1",
+      2,
+      "failed",
+      "2026-08-23T00:00:03.000Z",
+      "not-the-latest-code",
+    ],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      "attempt-2b",
+      "task-1",
+      2,
+      "failed",
+      "2026-08-23T00:00:03.000Z",
+      NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    ],
+  );
+  insert(
+    "INSERT INTO narrative_extraction_attempts (id, task_id, attempt_number, status, started_at, failure_code) VALUES (?, ?, ?, ?, ?, ?)",
+    [
+      "attempt-foreign",
+      "task-2",
+      9,
+      "failed",
+      "2026-08-23T00:00:04.000Z",
+      "foreign-run-code",
+    ],
+  );
+
+  const result = database.exec(`
+    SELECT ${runColumns}
+      FROM narrative_extraction_runs r
+     WHERE r.project_id = 'project-1'
+     ORDER BY created_at
+  `);
+  const [ledger] = result;
+  assert.ok(ledger, "the Run ledger query must return rows");
+  const rows = ledger.values.map((values) =>
+    Object.fromEntries(
+      ledger.columns.map((column, index) => [column, values[index]]),
+    ),
+  );
+  assert.deepEqual(
+    rows.map((row) => ({
+      id: row.id,
+      attemptCount: row.attemptCount,
+      maxAttemptNumber: row.maxAttemptNumber,
+      lastAttemptStatus: row.lastAttemptStatus,
+      lastAttemptFailureCode: row.lastAttemptFailureCode,
+    })),
+    [
+      {
+        id: "run-1",
+        attemptCount: 3,
+        maxAttemptNumber: 2,
+        lastAttemptStatus: "failed",
+        lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+      },
+      {
+        id: "run-2",
+        attemptCount: 1,
+        maxAttemptNumber: 9,
+        lastAttemptStatus: "failed",
+        lastAttemptFailureCode: "foreign-run-code",
+      },
+    ],
+    "attempts from another task/Run must not contaminate any Run evidence",
+  );
+  database.close();
+});
 
 test("c2-5b runner set is explicit and preserves stable order", () => {
   const selected = resolveProductJourneySet("c2-5b");
