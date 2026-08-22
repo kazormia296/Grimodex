@@ -65,7 +65,7 @@ export declare class Backend {
   /** Main-only exact pre-response claim for the foreground maintenance Run. */
   claimNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
   /** Main-only post-response release of the exact foreground maintenance Run. */
-  releaseNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
+  releaseNarrativeMaintenanceForegroundBarrier(projectId: string, expectedRunId: string): Promise<string>
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`

@@ -19,6 +19,7 @@ describe("C2-5B foreground barrier release", () => {
     scheduleNarrativeMaintenanceForegroundRelease(
       backend,
       "project-1",
+      "run-1",
       schedule,
     );
 
@@ -27,7 +28,7 @@ describe("C2-5B foreground barrier release", () => {
     scheduled?.();
     await Promise.resolve();
     expect(release).toHaveBeenCalledOnce();
-    expect(release).toHaveBeenCalledWith("project-1");
+    expect(release).toHaveBeenCalledWith("project-1", "run-1");
   });
 
   it("keeps the exact Run observable as running through the response grace window", async () => {
@@ -43,6 +44,7 @@ describe("C2-5B foreground barrier release", () => {
       scheduleNarrativeMaintenanceForegroundRelease(
         { releaseNarrativeMaintenanceForegroundBarrier: release },
         "project-1",
+        "run-1",
       );
       await patchResponse;
       expect(runStatus).toBe("running");
@@ -57,6 +59,7 @@ describe("C2-5B foreground barrier release", () => {
       await vi.advanceTimersByTimeAsync(1);
       await Promise.resolve();
       expect(release).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledWith("project-1", "run-1");
       expect(runStatus).toBe("completed");
     } finally {
       vi.useRealTimers();
@@ -70,8 +73,18 @@ describe("C2-5B foreground barrier release", () => {
       releaseNarrativeMaintenanceForegroundBarrier: release,
     };
 
-    scheduleNarrativeMaintenanceForegroundRelease(backend, "", schedule);
-    scheduleNarrativeMaintenanceForegroundRelease(backend, "   ", schedule);
+    scheduleNarrativeMaintenanceForegroundRelease(
+      backend,
+      "",
+      "run-1",
+      schedule,
+    );
+    scheduleNarrativeMaintenanceForegroundRelease(
+      backend,
+      "project-1",
+      "",
+      schedule,
+    );
 
     expect(schedule).not.toHaveBeenCalled();
     expect(release).not.toHaveBeenCalled();
@@ -88,6 +101,7 @@ describe("C2-5B foreground barrier release", () => {
     scheduleNarrativeMaintenanceForegroundRelease(
       backend,
       "project-1",
+      "run-1",
       (callback) => {
         scheduled = callback;
       },
@@ -96,10 +110,50 @@ describe("C2-5B foreground barrier release", () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(release).toHaveBeenCalledOnce();
+    expect(release).toHaveBeenCalledWith("project-1", "run-1");
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("foreground barrier release"),
       expect.any(Error),
     );
     warn.mockRestore();
+  });
+
+  it("does not let a duplicate A timer release same-marker Run B", async () => {
+    let phase: "a" | "b" = "a";
+    const release = vi.fn(async (_projectId: string, expectedRunId: string) => {
+      if (expectedRunId === "run-a" && phase === "a") {
+        phase = "b";
+        return '{"status":"completed","runId":"run-a"}';
+      }
+      return '{"status":"not-held"}';
+    });
+    const callbacks: Array<() => void> = [];
+    const schedule = (callback: () => void) => callbacks.push(callback);
+
+    scheduleNarrativeMaintenanceForegroundRelease(
+      { releaseNarrativeMaintenanceForegroundBarrier: release },
+      "project-1",
+      "run-a",
+      schedule,
+    );
+    scheduleNarrativeMaintenanceForegroundRelease(
+      { releaseNarrativeMaintenanceForegroundBarrier: release },
+      "project-1",
+      "run-a",
+      schedule,
+    );
+    expect(callbacks).toHaveLength(2);
+
+    callbacks[0]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(phase).toBe("b");
+
+    callbacks[1]?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(phase).toBe("b");
+    expect(release).toHaveBeenNthCalledWith(1, "project-1", "run-a");
+    expect(release).toHaveBeenNthCalledWith(2, "project-1", "run-a");
   });
 });

@@ -1657,7 +1657,7 @@ describe("registerIpcRouter fail-soft logging", () => {
       await vi.advanceTimersByTimeAsync(1);
       await Promise.resolve();
       expect(release).toHaveBeenCalledOnce();
-      expect(release).toHaveBeenCalledWith("p1");
+      expect(release).toHaveBeenCalledWith("p1", "run-1");
     } finally {
       vi.useRealTimers();
     }
@@ -1728,7 +1728,7 @@ describe("registerIpcRouter fail-soft logging", () => {
       );
       await vi.runOnlyPendingTimersAsync();
       expect(release).toHaveBeenCalledOnce();
-      expect(release).toHaveBeenCalledWith("p1");
+      expect(release).toHaveBeenCalledWith("p1", "run-1");
     } finally {
       vi.useRealTimers();
     }

@@ -7941,6 +7941,7 @@ mod narrative_maintenance_foreground_release_tests {
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::NarrativeMaintenanceCiTrigger;
     use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
+    use rusqlite::params;
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -8078,6 +8079,36 @@ mod narrative_maintenance_foreground_release_tests {
             .expect("run status")
     }
 
+    fn duplicate_running_foreground_run(
+        authority: &PinnedWorkspaceDb,
+        source_run_id: &str,
+        duplicate_run_id: &str,
+    ) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         snapshot_digest, catalog_digest, registry_digest, status, coverage_json,
+                         outcome_summary_json, created_at, started_at, completed_at, version,
+                         run_kind, consumer_id, semantic_epoch_id, work_key, terminal_reason_code,
+                         superseded_by_run_id, request_id, idempotency_domain,
+                         request_payload_digest, actor_id)
+                     SELECT ?1, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                            snapshot_digest, catalog_digest, registry_digest, 'running', coverage_json,
+                            outcome_summary_json, created_at, started_at, NULL, version,
+                            run_kind, consumer_id, semantic_epoch_id, work_key, NULL,
+                            NULL, request_id, idempotency_domain, request_payload_digest, actor_id
+                       FROM narrative_extraction_runs
+                      WHERE id = ?2",
+                    params![duplicate_run_id, source_run_id],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("duplicate exact foreground marker Run");
+    }
+
     fn run_terminal_reason(authority: &PinnedWorkspaceDb, run_id: &str) -> Option<String> {
         authority
             .db()
@@ -8124,15 +8155,29 @@ mod narrative_maintenance_foreground_release_tests {
             .is_some_and(|generation| { generation > 0 && generation <= ((1u64 << 53) - 1) }));
 
         let unrelated = backend
-            .release_narrative_maintenance_foreground_barrier("project-other".to_string())
+            .release_narrative_maintenance_foreground_barrier(
+                "project-other".to_string(),
+                run_id.clone(),
+            )
             .await
             .expect("unrelated project is ignored");
         let unrelated: Value = serde_json::from_str(&unrelated).expect("unrelated JSON");
         assert_eq!(unrelated["status"], "not-held");
         assert_eq!(run_status(&authority, &run_id), "running");
 
+        let wrong_run = backend
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                "wrong-run".to_string(),
+            )
+            .await
+            .expect("wrong Run id is ignored");
+        let wrong_run: Value = serde_json::from_str(&wrong_run).expect("wrong Run JSON");
+        assert_eq!(wrong_run["status"], "not-held");
+        assert_eq!(run_status(&authority, &run_id), "running");
+
         let completed = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
             .await
             .expect("exact project release");
         let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
@@ -8141,7 +8186,7 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(run_status(&authority, &run_id), "completed");
 
         let duplicate = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
             .await
             .expect("duplicate exact release is idempotent");
         let duplicate: Value = serde_json::from_str(&duplicate).expect("duplicate JSON");
@@ -8175,6 +8220,48 @@ mod narrative_maintenance_foreground_release_tests {
     }
 
     #[tokio::test]
+    async fn napi_duplicate_claim_cannot_release_same_marker_replacement_run() {
+        let (backend, root) = backend_with_workspace("duplicate-claim");
+        let (run_a, authority) = start_foreground_run(&backend).await;
+
+        for _ in 0..2 {
+            let claim = backend
+                .claim_narrative_maintenance_foreground_barrier("project-1".to_string())
+                .await
+                .expect("duplicate exact claim response");
+            let claim: Value = serde_json::from_str(&claim).expect("claim JSON");
+            assert_eq!(claim["status"], "claimed");
+            assert_eq!(claim["runId"], run_a);
+        }
+
+        let completed = backend
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_a.clone(),
+            )
+            .await
+            .expect("first timer completes Run A");
+        let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(run_status(&authority, &run_a), "completed");
+
+        duplicate_running_foreground_run(&authority, &run_a, "run-b");
+        assert_eq!(run_status(&authority, "run-b"), "running");
+
+        let stale_timer = backend
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_a,
+            )
+            .await
+            .expect("second timer must fail closed on the old Run id");
+        let stale_timer: Value = serde_json::from_str(&stale_timer).expect("stale JSON");
+        assert_eq!(stale_timer["status"], "not-held");
+        assert_eq!(run_status(&authority, "run-b"), "running");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn napi_release_rejects_old_binding_after_workspace_replacement() {
         let (backend, root) = backend_with_workspace("swap");
         let (run_id, old_authority) = start_foreground_run(&backend).await;
@@ -8192,7 +8279,7 @@ mod narrative_maintenance_foreground_release_tests {
             Some(ActiveWorkspace::new(new_authority));
 
         let ignored = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id)
             .await
             .expect("old binding is ignored");
         let ignored: Value = serde_json::from_str(&ignored).expect("ignored JSON");
@@ -8216,7 +8303,7 @@ mod narrative_maintenance_foreground_release_tests {
         // must not treat the old durable marker as an overlapping foreground
         // write; StartupRecovery owns it first.
         let before_recovery = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
             .await
             .expect("old marker is not releasable after restart");
         let before_recovery: Value =
@@ -8265,7 +8352,10 @@ mod narrative_maintenance_foreground_release_tests {
         assert_ne!(replacement.run_id, run_id);
 
         let completed = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                replacement.run_id.clone(),
+            )
             .await
             .expect("durable marker rediscovery");
         let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
