@@ -94,7 +94,9 @@ fn durable_transient_failure_is_retried_and_succeeds_after_lock_release() {
                   WHERE project_id = ?1 AND work_key = ?2 ORDER BY rowid",
             )?;
             let rows = statement
-                .query_map(params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY], |row| row.get(0))?
+                .query_map(params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY], |row| {
+                    row.get(0)
+                })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
         })
@@ -122,7 +124,9 @@ fn durable_contract_failure_is_not_redispatched() {
 
     let error = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
         .expect_err("contract failure must require manual intervention");
-    assert!(error.to_string().contains("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"));
+    assert!(error
+        .to_string()
+        .contains("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"));
     let run_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(
