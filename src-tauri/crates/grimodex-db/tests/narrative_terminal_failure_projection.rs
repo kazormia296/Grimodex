@@ -62,14 +62,15 @@ fn insert_run_for_context(
     work_key: Option<&str>,
     terminal_reason_code: Option<&str>,
 ) {
+    let completed_at = (status == "completed").then_some("2026-08-22T00:00:01.000Z");
     db.with_conn(|conn| {
         conn.execute(
             "INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id,
-                 work_key, terminal_reason_code)
+                 work_key, terminal_reason_code, completed_at)
              VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', ?3, '{}',
-                     '2026-08-22T00:00:00.000Z', ?4, ?5, ?6, ?7)",
+                     '2026-08-22T00:00:00.000Z', ?4, ?5, ?6, ?7, ?8)",
             params![
                 run_id,
                 project_id,
@@ -78,6 +79,7 @@ fn insert_run_for_context(
                 semantic_epoch_id,
                 work_key,
                 terminal_reason_code,
+                completed_at,
             ],
         )?;
         Ok(())
@@ -117,13 +119,35 @@ fn observation_count(db: &Database) -> i64 {
     .expect("count observations")
 }
 
+fn set_completed_at(db: &Database, run_id: &str, completed_at: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET completed_at = ?1 WHERE id = ?2",
+            params![completed_at, run_id],
+        )?;
+        Ok(())
+    })
+    .expect("set durable completion timestamp");
+}
+
+fn clear_completed_at(db: &Database, run_id: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs SET completed_at = NULL WHERE id = ?1",
+            params![run_id],
+        )?;
+        Ok(())
+    })
+    .expect("clear durable completion timestamp");
+}
+
 fn lifecycle_state(db: &Database, finding_identity: &str) -> String {
     db.with_conn(|conn| {
         conn.query_row(
             "SELECT lifecycle_state
                FROM narrative_maintenance_finding_lifecycle
               WHERE project_id = ?1 AND finding_identity = ?2
-              ORDER BY observed_at DESC, rowid DESC
+              ORDER BY observed_at DESC, id DESC
               LIMIT 1",
             params![PROJECT_ID, finding_identity],
             |row| row.get(0),
@@ -173,6 +197,36 @@ fn transient_failure_is_not_projected_and_does_not_surface_in_inbox() {
         .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
         .expect("build inbox");
     assert!(entries.is_empty());
+}
+
+#[test]
+fn unclassified_nonretryable_failure_keeps_exact_code_with_explicit_broad_reason_fallback() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-unclassified",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_MAINTENANCE_UNCLASSIFIED"),
+    );
+    project_terminal_failure_for_run(&db, PROJECT_ID, "run-unclassified", "opaque failure")
+        .expect("unclassified terminal failure uses explicit compatibility fallback");
+    let entries = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
+        .expect("build inbox");
+    let observation = entries[0]
+        .latest_observation
+        .as_ref()
+        .expect("terminal observation");
+    assert_eq!(
+        observation.failure_code.as_deref(),
+        Some("NEX_MAINTENANCE_UNCLASSIFIED")
+    );
+    assert_eq!(
+        serde_json::to_string(&observation.reason_code).expect("serialize reason code"),
+        "\"component-incompatible\""
+    );
 }
 
 #[test]
@@ -345,6 +399,7 @@ fn exact_failure_replay_after_resolution_is_a_noop_and_does_not_reopen_finding()
         WORK_KEY,
         None,
     );
+    set_completed_at(&db, "run-replay-success", "2999-01-01T00:00:00.000Z");
     assert!(
         resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-replay-success")
             .expect("resolve failure")
@@ -361,7 +416,10 @@ fn exact_failure_replay_after_resolution_is_a_noop_and_does_not_reopen_finding()
     )
     .expect("replay exact failure");
     assert!(!replay.projected);
-    assert_eq!(lifecycle_count(&db, &first.finding_identity), lifecycle_rows_before_replay);
+    assert_eq!(
+        lifecycle_count(&db, &first.finding_identity),
+        lifecycle_rows_before_replay
+    );
     assert_eq!(lifecycle_state(&db, &first.finding_identity), "resolved");
     assert!(db
         .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T05:00:00.000Z"))
@@ -387,6 +445,21 @@ fn terminal_failure_code_is_immutable_when_run_evidence_changes_or_run_is_delete
         "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: immutable",
     )
     .expect("project failure");
+
+    let (observation_id, observation_digest): (String, String) = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT id, observation_digest
+                   FROM narrative_maintenance_finding_observations
+                  WHERE run_id = 'run-immutable-evidence'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read immutable observation carrier");
+    assert!(observation_id.starts_with("terminal-failure:v1:NEX_"));
+    assert!(observation_digest.starts_with("sha256:"));
 
     let read_failure_code = |db: &Database| {
         db.with_conn(|conn| {
@@ -430,6 +503,21 @@ fn terminal_failure_code_is_immutable_when_run_evidence_changes_or_run_is_delete
     assert_eq!(
         read_failure_code(&db).as_deref(),
         Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
+
+    insert_run(
+        &db,
+        "run-immutable-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(&db, "run-immutable-success", "2999-01-01T00:00:00.000Z");
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-immutable-success")
+            .expect("resolve from immutable Observation after Run deletion")
+            .resolved
     );
 }
 
@@ -546,6 +634,18 @@ fn terminal_failure_is_durable_idempotent_and_visible_without_freshness_or_atten
             .rule_id,
         "narrative.maintenance-contract-failure"
     );
+    let first_observation = entries[0]
+        .latest_observation
+        .as_ref()
+        .expect("terminal observation evidence");
+    assert_eq!(
+        first_observation.failure_code.as_deref(),
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
+    assert_eq!(
+        serde_json::to_string(&first_observation.reason_code).expect("serialize reason code"),
+        "\"component-incompatible\""
+    );
 
     let (freshness, edges, attention): (i64, i64, i64) = db
         .with_conn(|conn| {
@@ -658,6 +758,18 @@ fn stable_identity_repeats_changed_basis_lapses_attention_and_resolves() {
             .material_basis_digest,
         first.material_basis_digest
     );
+    let changed_observation = changed_entries[0]
+        .latest_observation
+        .as_ref()
+        .expect("changed terminal observation");
+    assert_eq!(
+        changed_observation.failure_code.as_deref(),
+        Some("NEX_VERIFY_NO_EPOCH")
+    );
+    assert_eq!(
+        serde_json::to_string(&changed_observation.reason_code).expect("serialize reason code"),
+        "\"source-missing\""
+    );
     assert!(!changed_entries[0].is_snoozed_and_active);
 
     insert_run(
@@ -668,6 +780,7 @@ fn stable_identity_repeats_changed_basis_lapses_attention_and_resolves() {
         WORK_KEY,
         None,
     );
+    set_completed_at(&db, "run-terminal-resolved", "2999-01-01T00:00:00.000Z");
     let resolved = resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-terminal-resolved")
         .expect("resolve terminal failure");
     assert!(resolved.resolved);
@@ -695,8 +808,8 @@ fn stable_identity_repeats_changed_basis_lapses_attention_and_resolves() {
 #[test]
 fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
     let db = fixture_db();
-    // Every fixture Run uses the same created_at value. The canonical
-    // `(created_at, id)` order must still reject an older success.
+    // The terminal observation is time-ordered against the durable success
+    // completion timestamp. Equal Run creation timestamps are irrelevant.
     insert_run(
         &db,
         "run-success-old",
@@ -705,6 +818,7 @@ fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
         WORK_KEY,
         None,
     );
+    set_completed_at(&db, "run-success-old", "2000-01-01T00:00:00.000Z");
     insert_run(
         &db,
         "run-failure",
@@ -787,6 +901,7 @@ fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
         WORK_KEY,
         None,
     );
+    set_completed_at(&db, "run-success-new", "2999-01-01T00:00:00.000Z");
     let new_resolution = resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-success-new")
         .expect("new success resolution");
     assert!(new_resolution.resolved);
@@ -806,6 +921,203 @@ fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
         .expect("read durable run order");
     assert_eq!(old_created_at, failure_created_at);
     assert_eq!(failure_created_at, new_created_at);
+}
+
+#[test]
+fn resolution_requires_completed_run_durable_completion_time() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-missing-completed-at-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let failure = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-missing-completed-at-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: completion contract",
+    )
+    .expect("project failure");
+
+    insert_run(
+        &db,
+        "run-missing-completed-at-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    clear_completed_at(&db, "run-missing-completed-at-success");
+    let error =
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-missing-completed-at-success")
+            .expect_err("missing completed_at must fail closed");
+    assert!(error.to_string().contains("NEX_FINDING_RUN_ORDER_MISSING"));
+    assert_eq!(lifecycle_state(&db, &failure.finding_identity), "new");
+}
+
+#[test]
+fn resolution_fails_closed_when_latest_observation_time_is_ambiguous() {
+    let db = fixture_db();
+    for run_id in ["run-tied-observation-1", "run-tied-observation-2"] {
+        insert_run(
+            &db,
+            run_id,
+            "failed",
+            "backfill",
+            WORK_KEY,
+            Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+        );
+    }
+    let first = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-tied-observation-1",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: tied one",
+    )
+    .expect("project first tied failure");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = '2026-08-22T00:00:00.000Z'
+              WHERE finding_identity = ?1",
+            params![first.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("make lifecycle times distinct before second projection");
+    project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-tied-observation-2",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: tied two",
+    )
+    .expect("project second tied failure");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_observations
+                SET observed_at = '2026-08-22T02:00:00.000Z'
+              WHERE finding_identity = ?1",
+            params![first.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("force equal terminal observation times");
+
+    insert_run(
+        &db,
+        "run-tied-observation-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(
+        &db,
+        "run-tied-observation-success",
+        "2999-01-01T00:00:00.000Z",
+    );
+    let error = resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-tied-observation-success")
+        .expect_err("equal latest observation times must not choose a UUID as chronology");
+    assert!(error
+        .to_string()
+        .contains("NEX_FINDING_OBSERVATION_ORDER_AMBIGUOUS"));
+    let inbox_error = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2999-01-01T00:00:00.000Z"))
+        .expect_err("Inbox must not choose an arbitrary terminal observation on a time tie");
+    assert!(inbox_error
+        .to_string()
+        .contains("NEX_FINDING_OBSERVATION_ORDER_AMBIGUOUS"));
+    assert_eq!(lifecycle_state(&db, &first.finding_identity), "recurring");
+}
+
+#[test]
+fn resolution_fails_closed_when_latest_lifecycle_time_is_ambiguous() {
+    let db = fixture_db();
+    for run_id in ["run-tied-lifecycle-1", "run-tied-lifecycle-2"] {
+        insert_run(
+            &db,
+            run_id,
+            "failed",
+            "backfill",
+            WORK_KEY,
+            Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+        );
+    }
+    let first = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-tied-lifecycle-1",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: lifecycle one",
+    )
+    .expect("project first lifecycle failure");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = '2026-08-22T00:00:00.000Z'
+              WHERE finding_identity = ?1",
+            params![first.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("make lifecycle times distinct before second projection");
+    project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-tied-lifecycle-2",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: lifecycle two",
+    )
+    .expect("project second lifecycle failure");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = '2026-08-22T02:00:00.000Z'
+              WHERE finding_identity = ?1",
+            params![first.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("force equal lifecycle times");
+
+    insert_run(
+        &db,
+        "run-tied-lifecycle-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(
+        &db,
+        "run-tied-lifecycle-success",
+        "2999-01-01T00:00:00.000Z",
+    );
+    let error = resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-tied-lifecycle-success")
+        .expect_err("equal latest lifecycle times must not choose a UUID as chronology");
+    assert!(error
+        .to_string()
+        .contains("NEX_FINDING_LIFECYCLE_ORDER_AMBIGUOUS"));
+    let inbox_error = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2999-01-01T00:00:00.000Z"))
+        .expect_err("Inbox must not choose an arbitrary terminal lifecycle on a time tie");
+    assert!(inbox_error
+        .to_string()
+        .contains("NEX_FINDING_LIFECYCLE_ORDER_AMBIGUOUS"));
+    let resolved_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_maintenance_finding_lifecycle
+                  WHERE finding_identity = ?1 AND lifecycle_state = 'resolved'",
+                params![first.finding_identity],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("count ambiguous lifecycle resolutions");
+    assert_eq!(resolved_count, 0);
 }
 
 #[test]
@@ -834,6 +1146,7 @@ fn resolution_ignores_rowid_reinsert_and_uses_canonical_run_order() {
         WORK_KEY,
         None,
     );
+    set_completed_at(&db, "run-reinsert-success", "2999-01-01T00:00:00.000Z");
 
     db.with_conn(|conn| {
         conn.execute(
