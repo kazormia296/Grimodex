@@ -38,7 +38,7 @@ const BUNDLED_FINDING_CONTRACT: &str = include_str!(concat!(
     "/../../../policies/narrative/narrative-finding-contract.json"
 ));
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FindingRule {
     #[serde(rename = "ruleId")]
     pub rule_id: String,
@@ -85,6 +85,19 @@ impl FindingRuleRegistry {
                     "NEX_FINDING_RULE_UNKNOWN: no bundled Finding rule '{rule_id}' version {version}"
                 )
             })
+    }
+
+    /// Canonical value used by the maintenance contract coordinate. Rules
+    /// are sorted by `(ruleId, version)` so policy file ordering cannot alter
+    /// the digest.
+    pub fn canonical_value(&self) -> anyhow::Result<serde_json::Value> {
+        let mut rules = self.rules.clone();
+        rules.sort_by(|left, right| {
+            left.rule_id
+                .cmp(&right.rule_id)
+                .then(left.version.cmp(&right.version))
+        });
+        Ok(serde_json::to_value(rules)?)
     }
 }
 

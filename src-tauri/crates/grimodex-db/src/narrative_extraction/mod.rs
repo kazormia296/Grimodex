@@ -24,6 +24,7 @@ mod foreshadow_undo;
 mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
+pub mod maintenance_contracts;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub use maintenance_skip_evidence::{
@@ -32,6 +33,11 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
+};
+pub use maintenance_contracts::{
+    bundled_dependency_producer_registry, current_maintenance_coordinates,
+    DependencyProducerEntry, DependencyProducerRegistry, DependencyProducerWriter,
+    MaintenanceContractCoordinates,
 };
 mod models;
 mod phase_operations;

@@ -12,9 +12,9 @@ use grimodex_db::narrative_extraction::maintenance_contracts::{
 fn current_coordinates_are_domain_separated_and_canonical() {
     let coordinates = current_maintenance_coordinates().expect("current coordinates");
     for digest in [
-        coordinates.graph_contract_digest,
-        coordinates.rule_registry_digest,
-        coordinates.producer_generation_set_digest,
+        &coordinates.graph_contract_digest,
+        &coordinates.rule_registry_digest,
+        &coordinates.producer_generation_set_digest,
     ] {
         assert!(digest.starts_with("sha256:"));
         assert_eq!(digest.len(), "sha256:".len() + 64);

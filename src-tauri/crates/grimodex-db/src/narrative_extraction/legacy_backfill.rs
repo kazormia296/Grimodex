@@ -121,7 +121,7 @@ const LEGACY_BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 /// `source_object_identity` are both written in canonical form: a Run
 /// completed under `"1"` left `codex_entry:<id>` Contributions and
 /// double-prefixed Edges, so it is not equivalent to a fresh one.
-const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
+pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
 
 /// Outcome of [`bootstrap_legacy_dependency_backfill_for_project`].
 pub enum LegacyBackfillBootstrapOutcome {

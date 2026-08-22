@@ -10,6 +10,12 @@ use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, validate_run_id,
     PROPOSAL_REVISION_CONSUMER_KIND,
 };
+
+/// Generation of the current Proposal Revision dependency declaration writer.
+/// This is paired with the bundled producer registry; bump both when the
+/// writer's declaration semantics change.
+pub(crate) const PROPOSAL_REVISION_DEPENDENCY_GENERATION: &str =
+    "proposal-revision-dependency/v1";
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
