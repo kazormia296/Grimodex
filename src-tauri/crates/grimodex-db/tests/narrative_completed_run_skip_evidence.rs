@@ -330,17 +330,17 @@ fn every_contract_coordinate_is_a_skip_boundary() {
         ),
         (
             "graph_contract_digest",
-            "sha256:graph-contract-2",
+            "sha256:4444444444444444444444444444444444444444444444444444444444444444",
             CompletedRunSkipReason::GraphContractMismatch,
         ),
         (
             "rule_registry_digest",
-            "sha256:rule-registry-2",
+            "sha256:5555555555555555555555555555555555555555555555555555555555555555",
             CompletedRunSkipReason::RuleRegistryMismatch,
         ),
         (
             "producer_generation_set_digest",
-            "sha256:producer-generations-2",
+            "sha256:6666666666666666666666666666666666666666666666666666666666666666",
             CompletedRunSkipReason::ProducerGenerationMismatch,
         ),
         (
@@ -385,7 +385,7 @@ fn missing_or_non_successful_latest_run_never_falls_back_to_an_older_success() {
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, version, run_kind, semantic_epoch_id,
                  work_key)
-             VALUES ('run-new-failed', ?1, 'maintenance', '{}', '{}', 'spec', 'failed', '{}',
+             VALUES ('run-z-failed', ?1, 'maintenance', '{}', '{}', 'spec', 'failed', '{}',
                      '2026-08-20T00:00:00.000Z', 0, 'dependency-verify', ?2, ?3)",
             params![
                 PROJECT_ID,
