@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://grimodex.dev/schema/narrative/narrative-failure-policy-v1.json",
   "type": "object",
-  "required": ["schemaVersion", "contract", "failureCodePrefix", "retryDispositions", "nextAttemptInvariant", "policies"],
+  "required": ["schemaVersion", "contract", "failureCodePrefix", "retryDispositions", "nextAttemptInvariant", "findingRoutingMatrix", "policies"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "contract": { "const": "narrative-failure-policy" },
@@ -16,7 +16,8 @@
     "nextAttemptInvariant": { "type": "string", "minLength": 1 },
     "findingRoutingMatrix": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 3,
+      "maxItems": 3,
       "uniqueItems": true,
       "items": {
         "type": "object",
@@ -60,26 +61,48 @@
   },
   "allOf": [
     {
-      "if": {
-        "properties": {
-          "policies": {
-            "contains": {
-              "properties": {
-                "failureCode": {
-                  "enum": [
-                    "NEX_MAINTENANCE_TRANSIENT",
-                    "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
-                    "NEX_MAINTENANCE_INTERRUPTED"
-                  ]
-                }
-              },
-              "required": ["failureCode"]
+      "properties": {
+        "policies": {
+          "contains": {
+            "type": "object",
+            "required": ["failureCode"],
+            "properties": {
+              "failureCode": { "const": "NEX_MAINTENANCE_TRANSIENT" }
             }
           }
-        },
-        "required": ["policies"]
+        }
       },
-      "then": { "required": ["findingRoutingMatrix"] }
+      "required": ["policies"]
+    },
+    {
+      "properties": {
+        "policies": {
+          "contains": {
+            "type": "object",
+            "required": ["failureCode"],
+            "properties": {
+              "failureCode": {
+                "const": "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
+              }
+            }
+          }
+        }
+      },
+      "required": ["policies"]
+    },
+    {
+      "properties": {
+        "policies": {
+          "contains": {
+            "type": "object",
+            "required": ["failureCode"],
+            "properties": {
+              "failureCode": { "const": "NEX_MAINTENANCE_INTERRUPTED" }
+            }
+          }
+        }
+      },
+      "required": ["policies"]
     }
   ],
   "additionalProperties": false

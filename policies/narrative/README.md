@@ -1339,11 +1339,13 @@ C2-00 added, on top of the existing C1.5 contracts:
 
 The C2-5B registrations are contract-only tracking at this stage. A
 transient classification permits at most three bounded Attempts and requeues
-the same sealed system work; an interrupted classification may create a new
-Run for that same sealed work after startup terminalizes the old Run/Task/
-Attempt; a contract violation is manual-only with no automatic retry. The
-`next_attempt_at` retryable-only invariant remains independent of JavaScript
-transport retry, and this policy does not claim runtime activation.
+the same sealed system work; an interrupted classification is retryable with
+at most three bounded Attempts and uses
+`nextAttemptPolicy: "requeue-new-run-same-sealed-system-work"` after startup
+terminalizes the old Run/Task/Attempt; a contract violation is manual-only with
+`maxAttempts: 0` and no automatic retry. The `next_attempt_at` retryable-only
+invariant remains independent of JavaScript transport retry, and this policy
+does not claim runtime activation.
 - `narrative-finding-contract.json` — the Finding `reasonCode` registry
   (`fail-closed` on unknown codes) plus the Finding Observation durability
   contract: `rebuildable-derived-state`, epoch-bound, diagnostic-only

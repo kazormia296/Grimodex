@@ -716,6 +716,7 @@ describe("validate-execution-state-authority", () => {
     failurePolicy.policies = failurePolicy.policies.filter(
       (policy) => policy.failureCode !== "NEX_MAINTENANCE_TRANSIENT",
     );
+    assert.equal(validateFailurePolicySchema(failurePolicy).valid, false);
     failurePolicy.findingRoutingMatrix = failurePolicy.findingRoutingMatrix.filter(
       (route) => route.failureCode !== "NEX_MAINTENANCE_TRANSIENT",
     );

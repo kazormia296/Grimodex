@@ -112,7 +112,7 @@
       "retryDisposition": "retryable",
       "maxAttempts": 3,
       "backoffPolicy": "exponential-bounded",
-      "nextAttemptPolicy": "requeue-same-sealed-system-work",
+      "nextAttemptPolicy": "requeue-new-run-same-sealed-system-work",
       "policyVersion": "v1"
     },
     {

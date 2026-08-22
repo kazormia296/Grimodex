@@ -96,10 +96,16 @@ const C25B_FAILURE_POLICY_EXPECTATIONS = Object.freeze({
     retryDisposition: "retryable",
     maxAttempts: 3,
     backoffPolicy: "exponential-bounded",
-    nextAttemptPolicy: "requeue-same-sealed-system-work",
+    nextAttemptPolicy: "requeue-new-run-same-sealed-system-work",
     findingRoute: "none",
   }),
 });
+
+const C25B_FAILURE_CODE_ORDER = Object.freeze([
+  "NEX_MAINTENANCE_TRANSIENT",
+  "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION",
+  "NEX_MAINTENANCE_INTERRUPTED",
+]);
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -284,20 +290,11 @@ function validateFailurePolicy(failurePolicy, errors) {
     }
   }
 
-  // The C2-5B matrix is optional for older fixture contracts, but once any
-  // C2-5B classification is present it becomes a required, exact set. This
-  // preserves the older validator fixtures while making the canonical policy
-  // fail closed if a code or its Finding route drifts.
-  const hasC25BClassification = Object.keys(
-    C25B_FAILURE_POLICY_EXPECTATIONS,
-  ).some((failureCode) => policiesByCode.has(failureCode));
-  if (!hasC25BClassification && failurePolicy.findingRoutingMatrix === undefined) {
-    return;
-  }
-
-  for (const [failureCode, expected] of Object.entries(
-    C25B_FAILURE_POLICY_EXPECTATIONS,
-  )) {
+  // C2-5B is a canonical contract: every policy document, including test
+  // fixtures, must carry all three exact registrations and their ordered
+  // Finding routing matrix. Runtime activation is intentionally out of scope.
+  for (const failureCode of C25B_FAILURE_CODE_ORDER) {
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[failureCode];
     const policy = policiesByCode.get(failureCode);
     if (!policy) {
       errors.push(
@@ -326,6 +323,19 @@ function validateFailurePolicy(failurePolicy, errors) {
     );
     return;
   }
+  const actualOrder = routingMatrix.map((route) =>
+    isObject(route) ? route.failureCode : undefined,
+  );
+  if (
+    actualOrder.length !== C25B_FAILURE_CODE_ORDER.length ||
+    actualOrder.some(
+      (failureCode, index) => failureCode !== C25B_FAILURE_CODE_ORDER[index],
+    )
+  ) {
+    errors.push(
+      `C2-5B findingRoutingMatrix must use the canonical order: ${C25B_FAILURE_CODE_ORDER.join(", ")}`,
+    );
+  }
   const routedCodes = new Set();
   for (const route of routingMatrix) {
     if (!isObject(route) || !isNonEmptyString(route.failureCode)) continue;
@@ -348,9 +358,8 @@ function validateFailurePolicy(failurePolicy, errors) {
       );
     }
   }
-  for (const [failureCode, expected] of Object.entries(
-    C25B_FAILURE_POLICY_EXPECTATIONS,
-  )) {
+  for (const failureCode of C25B_FAILURE_CODE_ORDER) {
+    const expected = C25B_FAILURE_POLICY_EXPECTATIONS[failureCode];
     if (!routedCodes.has(failureCode)) {
       errors.push(
         `C2-5B findingRoutingMatrix is missing the exact route for ${failureCode} (expected '${expected.findingRoute}')`,
