@@ -32,6 +32,7 @@ import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
 import { createNarrativeMaintenanceScheduler } from "./narrativeMaintenance.js";
+import { createNarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -394,11 +395,24 @@ if (!gotSingleInstanceLock) {
       broadcastBackendEvent,
     );
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
-    // Main-only system-work seam. No production trigger is enqueued in this
-    // lane; future C2-5B trigger owners call `request` with a validated work
-    // item, while the scheduler already owns coalescing/project serialization
-    // and durable `hasMore` wake scope.
-    const narrativeMaintenance = createNarrativeMaintenanceScheduler(backend);
+    // Main-only system-work seam. Trigger discovery is owned by this process;
+    // renderer/preload never supplies project scope, paths, or phase data.
+    let narrativeMaintenanceTriggers: ReturnType<
+      typeof createNarrativeMaintenanceTriggerCoordinator
+    > | null = null;
+    const narrativeMaintenance = createNarrativeMaintenanceScheduler(backend, {
+      onWorkspaceBindingMismatch: () => {
+        narrativeMaintenanceTriggers?.requestRediscovery();
+      },
+      onCycleAccepted: () => {
+        narrativeMaintenanceTriggers?.requestRediscovery();
+      },
+    });
+    narrativeMaintenanceTriggers =
+      createNarrativeMaintenanceTriggerCoordinator(
+        backend,
+        narrativeMaintenance,
+      );
     licenseValidation.start();
     narrativeFreshness.start();
     narrativeMaintenance.start();
@@ -409,6 +423,7 @@ if (!gotSingleInstanceLock) {
       updater.dispose();
       licenseValidation.dispose();
       narrativeFreshness.dispose();
+      narrativeMaintenanceTriggers?.dispose();
       narrativeMaintenance.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
@@ -451,7 +466,8 @@ if (!gotSingleInstanceLock) {
     // 登録時に flush される backend:ready は窓生成前のため renderer には
     // 届かない（FE 購読者なしのデバッグチャネル — TSFn 実証は
     // workspace:opened が担う）。
-    registerEventBus(backend, (channel) => {
+    registerEventBus(backend, (channel, payload) => {
+      narrativeMaintenanceTriggers?.handleBackendEvent(channel, payload);
       if (channel === "workspace:opened") {
         void codexApp.handleWorkspaceChanged();
       }

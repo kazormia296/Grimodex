@@ -85,11 +85,29 @@ export interface NarrativeMaintenanceScheduler {
   request(work: NarrativeMaintenanceRequest): void;
   /** Alias for callers that model the queue as an enqueue operation. */
   enqueue(work: NarrativeMaintenanceRequest): void;
+  /**
+   * Queue work discovered from one pinned native authority. The binding is
+   * deliberately supplied by the discovery response so enqueue does not
+   * reacquire a possibly different workspace generation.
+   */
+  requestWithBinding(
+    work: NarrativeMaintenanceRequest,
+    binding: NarrativeMaintenanceWorkspaceBinding,
+  ): void;
+  /** Atomically validate and queue a complete discovery result. */
+  requestManyWithBinding(
+    work: readonly NarrativeMaintenanceRequest[],
+    binding: NarrativeMaintenanceWorkspaceBinding,
+  ): void;
   dispose(): void;
 }
 
 export interface NarrativeMaintenanceSchedulerOptions {
   warn?: (...args: unknown[]) => void;
+  /** Ask the main-only discovery owner to re-read the current authority. */
+  onWorkspaceBindingMismatch?: () => void | Promise<void>;
+  /** Let the main-only discovery owner advance Rust-owned durable phases. */
+  onCycleAccepted?: () => void | Promise<void>;
 }
 
 export const NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS = 250;
@@ -245,10 +263,6 @@ export function coalesceNarrativeMaintenanceWork(
 }
 
 function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
-  // Keep the old JSON wire form readable while the main-only boundary moves
-  // to the explicit status contract.  A raw null is specifically an
-  // unavailable workspace, never a successful drain.
-  if (raw === null) return { status: "workspace-unavailable" };
   if (typeof raw === "string") {
     let parsed: unknown;
     try {
@@ -510,12 +524,11 @@ export function createNarrativeMaintenanceScheduler(
     const batch = chunkCandidates.filter((work) =>
       claimedProjectSet.has(work.projectId),
     );
-    const deferredBatch = batch.filter((work) => work.runKind !== "backfill");
-    const enabledBatch = batch.filter((work) => work.runKind === "backfill");
-    // If the whole batch is deferred, send it through the native typed
-    // deferred seam.  When enabled work is present, hold only the deferred
-    // identities back so another project (or same-project Backfill) can run.
-    const backendBatch = enabledBatch.length > 0 ? enabledBatch : batch;
+    // Forward the complete validated batch. Verify and Rebuild are automatic
+    // dispatch kinds, not JS-side parked work; Rust owns whether a cycle is
+    // accepted/coalesced/deferred. Keeping all kinds in one bounded request
+    // also prevents mixed batches from permanently parking Verify/Rebuild.
+    const backendBatch = batch;
     // Ordinary work and a durable empty wake have separate ACK scopes. Keep
     // the wake pending when a work batch is available and issue it later.
     const sendingWakeProjects =
@@ -547,11 +560,6 @@ export function createNarrativeMaintenanceScheduler(
     }
     for (const work of backendBatch) {
       pending.delete(canonicalNarrativeMaintenanceWorkKey(work));
-    }
-    if (enabledBatch.length > 0) {
-      for (const work of deferredBatch) {
-        deferredWorkKeys.add(canonicalNarrativeMaintenanceWorkKey(work));
-      }
     }
     inFlight = true;
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
@@ -595,18 +603,21 @@ export function createNarrativeMaintenanceScheduler(
           "native maintenance cycle deferred an unenabled adapter",
         );
       }
-      if (
-        deferredBatch.length > 0 &&
-        deferredBatch.length === backendBatch.length
-      ) {
-        // A future/native implementation must not be able to accidentally
-        // ACK a batch whose every item is still deferred. Keep this guard in
-        // main as well as the shared Rust contract so a stale binding cannot
-        // drop Verify/Rebuild identities.
-        deferredCycle = true;
-        throw new Error(
-          "native maintenance cycle acknowledged an unenabled adapter",
-        );
+      if (cycleResult.status === "accepted" && !disposed) {
+        try {
+          const followup = options.onCycleAccepted?.();
+          void Promise.resolve(followup).catch((callbackError: unknown) => {
+            warn(
+              "[narrative-maintenance] accepted-cycle follow-up failed:",
+              callbackError,
+            );
+          });
+        } catch (callbackError) {
+          warn(
+            "[narrative-maintenance] accepted-cycle follow-up failed:",
+            callbackError,
+          );
+        }
       }
       for (const projectId of [
         ...new Set([
@@ -676,6 +687,20 @@ export function createNarrativeMaintenanceScheduler(
           warn(
             "[narrative-maintenance] workspace binding changed; parking trigger until the replacement workspace re-enqueues it",
           );
+          try {
+            const rediscovery = options.onWorkspaceBindingMismatch?.();
+            void Promise.resolve(rediscovery).catch((callbackError: unknown) => {
+              warn(
+                "[narrative-maintenance] authority rediscovery callback failed:",
+                callbackError,
+              );
+            });
+          } catch (callbackError) {
+            warn(
+              "[narrative-maintenance] authority rediscovery callback failed:",
+              callbackError,
+            );
+          }
           // A stale authority must not hot-loop while open/restore is in
           // progress. A replacement-workspace enqueue clears the park.
           shouldSchedule = false;
@@ -756,10 +781,16 @@ export function createNarrativeMaintenanceScheduler(
     }
   };
 
-  const enqueue = (rawWork: NarrativeMaintenanceRequest): void => {
+  const enqueue = (
+    rawWork: NarrativeMaintenanceRequest,
+    explicitBinding?: NarrativeMaintenanceWorkspaceBinding,
+  ): void => {
     if (disposed) return;
     const work = validateRequest(rawWork);
-    const capturedBinding = captureWorkspaceBinding();
+    const capturedBinding =
+      explicitBinding === undefined
+        ? captureWorkspaceBinding()
+        : normalizeWorkspaceBinding(explicitBinding);
     const key = canonicalNarrativeMaintenanceWorkKey(work);
     deferredWorkKeys.delete(key);
     deferredWakeProjects.delete(work.projectId);
@@ -814,6 +845,30 @@ export function createNarrativeMaintenanceScheduler(
 
     request: enqueue,
     enqueue,
+    requestWithBinding(work, binding): void {
+      const normalizedBinding = normalizeWorkspaceBinding(binding);
+      if (normalizedBinding === null) {
+        throw new Error(
+          "native maintenance discovery returned no workspace binding",
+        );
+      }
+      enqueue(work, normalizedBinding);
+    },
+    requestManyWithBinding(workItems, binding): void {
+      const normalizedBinding = normalizeWorkspaceBinding(binding);
+      if (normalizedBinding === null) {
+        throw new Error(
+          "native maintenance discovery returned no workspace binding",
+        );
+      }
+      // Validate the complete native discovery result before the first queue
+      // mutation. A malformed later page/item therefore cannot leave a
+      // partial batch behind.
+      const validatedWork = workItems.map(validateRequest);
+      for (const work of validatedWork) {
+        enqueue(work, normalizedBinding);
+      }
+    },
 
     dispose(): void {
       if (disposed) return;

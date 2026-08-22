@@ -17,6 +17,7 @@
 mod convert;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
+mod narrative_maintenance;
 mod post_effect_runtime;
 mod state;
 #[cfg(test)]
@@ -1678,6 +1679,44 @@ impl Backend {
         serde_json::to_string(&binding)
             .map(Some)
             .map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    /// Main-process-only workspace-wide maintenance discovery.
+    ///
+    /// The active `WorkspaceAuthority` is pinned once for the complete
+    /// enumeration and planner pass. The returned binding is the recovery
+    /// generation paired with that exact authority; callers must pass it back
+    /// unchanged to `run_narrative_maintenance_cycle`. Renderer/preload never
+    /// receives this method or supplies project/path/phase data.
+    #[napi]
+    pub async fn discover_narrative_maintenance_work(&self, reason: String) -> Result<String> {
+        let wake_reason = narrative_maintenance::WakeReason::parse(&reason)
+            .map_err(|error| Error::from_reason(error.to_string()))?;
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            let snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let authority_id = narrative_authority_id(&snapshot.authority);
+            let binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&authority_id);
+            let discovery =
+                narrative_maintenance::discover_all(snapshot.authority.db(), binding, wake_reason)
+                    .map_err(AppError::Anyhow)?;
+            serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
+        })
+        .await
     }
 
     /// Electron main-only serialized system-work cycle.

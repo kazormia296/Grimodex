@@ -64,7 +64,7 @@ describe("narrative maintenance deferred contract", () => {
     scheduler.dispose();
   });
 
-  it("does not let deferred work starve another project's or same project's backfill", async () => {
+  it("dispatches mixed work together once the native lane accepts all automatic kinds", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockResolvedValue({ status: "accepted", hasMore: false });
@@ -105,7 +105,7 @@ describe("narrative maintenance deferred contract", () => {
         }),
       ]),
     );
-    expect(firstRequest?.work).not.toEqual(
+    expect(firstRequest?.work).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           projectId: "project-a",
