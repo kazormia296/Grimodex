@@ -8,7 +8,7 @@
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, project_terminal_failure_for_run, resolve_terminal_failure_for_run,
-    set_attention, AttentionDisposition, SetAttentionRequest,
+    set_attention, AttentionDisposition, InboxEntryKind, SetAttentionRequest,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -131,6 +131,20 @@ fn lifecycle_state(db: &Database, finding_identity: &str) -> String {
         .map_err(Into::into)
     })
     .expect("latest lifecycle state")
+}
+
+fn lifecycle_count(db: &Database, finding_identity: &str) -> i64 {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_maintenance_finding_lifecycle
+              WHERE project_id = ?1 AND finding_identity = ?2",
+            params![PROJECT_ID, finding_identity],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    })
+    .expect("count lifecycle rows")
 }
 
 #[test]
@@ -270,12 +284,24 @@ fn projection_rejects_non_automatic_wrong_project_missing_work_and_missing_epoch
         Some("legacy-dependency-backfill:v3"),
         Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
     );
+    insert_run(
+        &db,
+        "run-wrong-canonical-work",
+        "failed",
+        "backfill",
+        "dependency-rebuild-derived",
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
 
     for (run_id, expected_error) in [
         ("run-non-automatic", "NEX_FINDING_RUN_KIND_INVALID"),
         ("run-wrong-project", "NEX_FINDING_RUN_PROJECT_MISMATCH"),
         ("run-missing-work", "NEX_FINDING_WORK_KEY_MISSING"),
         ("run-missing-epoch", "NEX_FINDING_EPOCH_MISSING"),
+        (
+            "run-wrong-canonical-work",
+            "NEX_FINDING_WORK_KEY_POLICY_MISMATCH",
+        ),
     ] {
         let error = project_terminal_failure_for_run(
             &db,
@@ -290,6 +316,121 @@ fn projection_rejects_non_automatic_wrong_project_missing_work_and_missing_epoch
         );
     }
     assert_eq!(observation_count(&db), 0);
+}
+
+#[test]
+fn exact_failure_replay_after_resolution_is_a_noop_and_does_not_reopen_finding() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-replay-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let first = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-replay-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: replay",
+    )
+    .expect("project failure");
+
+    insert_run(
+        &db,
+        "run-replay-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-replay-success")
+            .expect("resolve failure")
+            .resolved
+    );
+    assert_eq!(lifecycle_state(&db, &first.finding_identity), "resolved");
+    let lifecycle_rows_before_replay = lifecycle_count(&db, &first.finding_identity);
+
+    let replay = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-replay-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: replay",
+    )
+    .expect("replay exact failure");
+    assert!(!replay.projected);
+    assert_eq!(lifecycle_count(&db, &first.finding_identity), lifecycle_rows_before_replay);
+    assert_eq!(lifecycle_state(&db, &first.finding_identity), "resolved");
+    assert!(db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T05:00:00.000Z"))
+        .expect("build inbox")
+        .is_empty());
+}
+
+#[test]
+fn terminal_failure_code_is_immutable_when_run_evidence_changes_or_run_is_deleted() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-immutable-evidence",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-immutable-evidence",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: immutable",
+    )
+    .expect("project failure");
+
+    let read_failure_code = |db: &Database| {
+        db.with_conn(|conn| {
+            let entries = build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T05:00:00.000Z")?;
+            Ok(entries[0]
+                .latest_observation
+                .as_ref()
+                .and_then(|observation| observation.failure_code.clone()))
+        })
+        .expect("read terminal failure code")
+    };
+    assert_eq!(
+        read_failure_code(&db).as_deref(),
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET terminal_reason_code = 'NEX_VERIFY_NO_EPOCH'
+              WHERE id = 'run-immutable-evidence'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("mutate run terminal evidence");
+    assert_eq!(
+        read_failure_code(&db).as_deref(),
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
+
+    db.with_conn(|conn| {
+        let deleted = conn.execute(
+            "DELETE FROM narrative_extraction_runs WHERE id = 'run-immutable-evidence'",
+            [],
+        )?;
+        assert_eq!(deleted, 1, "the observation must outlive its Run row");
+        Ok(())
+    })
+    .expect("delete run ledger row");
+    assert_eq!(
+        read_failure_code(&db).as_deref(),
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
 }
 
 #[test]
@@ -394,8 +535,9 @@ fn terminal_failure_is_durable_idempotent_and_visible_without_freshness_or_atten
         .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
         .expect("build inbox");
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].evidence_freshness, "unknown");
-    assert_eq!(entries[0].build_action, "manual");
+    assert_eq!(entries[0].entry_kind, InboxEntryKind::TerminalFailure);
+    assert!(entries[0].evidence_freshness.is_none());
+    assert!(entries[0].build_action.is_none());
     assert_eq!(
         entries[0]
             .latest_observation
@@ -553,8 +695,8 @@ fn stable_identity_repeats_changed_basis_lapses_attention_and_resolves() {
 #[test]
 fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
     let db = fixture_db();
-    // Every fixture Run uses the same created_at value. The rowid insertion
-    // order is therefore the only durable ordering signal in this test.
+    // Every fixture Run uses the same created_at value. The canonical
+    // `(created_at, id)` order must still reject an older success.
     insert_run(
         &db,
         "run-success-old",
@@ -649,18 +791,73 @@ fn resolution_requires_a_newer_run_and_exact_work_kind_and_epoch() {
         .expect("new success resolution");
     assert!(new_resolution.resolved);
 
-    let (old_rowid, failure_rowid, new_rowid): (i64, i64, i64) = db
+    let (old_created_at, failure_created_at, new_created_at): (String, String, String) = db
         .with_conn(|conn| {
             conn.query_row(
                 "SELECT
-                    (SELECT rowid FROM narrative_extraction_runs WHERE id = 'run-success-old'),
-                    (SELECT rowid FROM narrative_extraction_runs WHERE id = 'run-failure'),
-                    (SELECT rowid FROM narrative_extraction_runs WHERE id = 'run-success-new')",
+                    (SELECT created_at FROM narrative_extraction_runs WHERE id = 'run-success-old'),
+                    (SELECT created_at FROM narrative_extraction_runs WHERE id = 'run-failure'),
+                    (SELECT created_at FROM narrative_extraction_runs WHERE id = 'run-success-new')",
                 [],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .map_err(Into::into)
         })
         .expect("read durable run order");
-    assert!(old_rowid < failure_rowid && failure_rowid < new_rowid);
+    assert_eq!(old_created_at, failure_created_at);
+    assert_eq!(failure_created_at, new_created_at);
+}
+
+#[test]
+fn resolution_ignores_rowid_reinsert_and_uses_canonical_run_order() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-reinsert-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-reinsert-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: restore order",
+    )
+    .expect("project failure");
+    insert_run(
+        &db,
+        "run-reinsert-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "DELETE FROM narrative_extraction_runs WHERE id = 'run-reinsert-failure'",
+            [],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, run_kind, semantic_epoch_id,
+                 work_key, terminal_reason_code)
+             VALUES ('run-reinsert-failure', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'failed', '{}', '2026-08-22T00:00:00.000Z', 'backfill', ?2, ?3,
+                     'NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION')",
+            params![PROJECT_ID, EPOCH_ID, WORK_KEY],
+        )?;
+        Ok(())
+    })
+    .expect("restore failure Run with its durable identity and timestamp");
+
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-reinsert-success")
+            .expect("resolve after logical restore")
+            .resolved,
+        "a rowid-only resolver would mistake the restored failure for the newer Run"
+    );
 }
