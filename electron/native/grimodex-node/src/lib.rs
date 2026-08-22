@@ -63,12 +63,12 @@ use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
     ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceAttentionClearPayload,
-    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
-    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
+    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
+    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -111,6 +111,19 @@ const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_
 const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT: &str = "narrative-maintenance:epoch-rotated";
 
 fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
+    // Workspace metadata survives a process restart, while the recovery gate
+    // generation is unique to the live Backend and still changes for an
+    // in-process authority replacement. A durable foreground marker can be
+    // rediscovered for startup recovery, but cannot be released by a fresh
+    // process merely because it reopened the same workspace path.
+    let metadata_path = authority.path().join(".grimodex/workspace.json");
+    if let Ok(raw) = std::fs::read_to_string(metadata_path) {
+        if let Ok(metadata) = serde_json::from_str::<grimodex_db::workspace::WorkspaceMeta>(&raw) {
+            if !metadata.id.is_empty() && metadata.id == metadata.id.trim() {
+                return format!("workspace:{}", metadata.id);
+            }
+        }
+    }
     format!("authority:{}", authority.identity())
 }
 
@@ -1894,6 +1907,26 @@ impl Backend {
                 },
                 ci_config.as_ref(),
             )?;
+            if matches!(
+                result.status,
+                MaintenanceCycleStatus::Accepted | MaintenanceCycleStatus::Coalesced
+            ) {
+                if let Some(config) = ci_config.as_ref() {
+                    if config.product_journey_barrier_id.is_some() && config.correlation.is_some() {
+                        if let Some(barrier) =
+                            narrative_extraction::find_running_foreground_system_work_run(
+                                authority.db(),
+                                config,
+                                request_binding,
+                            )?
+                        {
+                            state
+                                .narrative_maintenance_foreground_barrier
+                                .remember(barrier)?;
+                        }
+                    }
+                }
+            }
             let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
             // Only a fully validated, serialized, and completed cycle
             // advances the recovery boundary. Invalid wire data or a failed
@@ -1911,6 +1944,149 @@ impl Backend {
                 }
             }
             Ok(json)
+        })
+        .await
+    }
+
+    /// Main-owned post-response release for one exact foreground product
+    /// journey Run. The ordinary tree_node_patch has already committed before
+    /// main schedules this call. A failed transaction leaves the process-local
+    /// barrier pending; a later patch retries it, while a restart can
+    /// rediscover the durable marker from SQLite.
+    #[napi]
+    pub async fn release_narrative_maintenance_foreground_barrier(
+        &self,
+        project_id: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            if project_id.trim().is_empty() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_REQUIRED: projectId is required"
+                )));
+            }
+            let Some(config) = state.narrative_maintenance_ci_seam.config() else {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            };
+            if config.product_journey_barrier_id.is_none() || config.correlation.is_none() {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            }
+            let Some(product_journey_barrier_id) = config.product_journey_barrier_id.as_deref()
+            else {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            };
+            let Some(correlation) = config.correlation.as_deref() else {
+                return Ok(serde_json::json!({ "status": "ignored" }).to_string());
+            };
+            let authority = match active_database(&state.ws) {
+                Ok(authority) => authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let current_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            if !Arc::ptr_eq(&authority, &current_snapshot.authority) {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let pending = state
+                .narrative_maintenance_foreground_barrier
+                .pending_for_project_and_binding(
+                    &project_id,
+                    &binding.authority_id,
+                    binding.generation,
+                    product_journey_barrier_id,
+                    correlation,
+                );
+            let barrier = match pending {
+                Some(barrier) => Some(barrier),
+                None => narrative_extraction::find_running_foreground_system_work_run(
+                    authority.db(),
+                    &config,
+                    &binding,
+                )?
+                .filter(|barrier| barrier.project_id == project_id),
+            };
+            let Some(barrier) = barrier else {
+                return Ok(serde_json::json!({ "status": "not-held" }).to_string());
+            };
+            if barrier.marker.authority_id != binding.authority_id
+                || barrier.marker.generation != binding.generation
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            if barrier.marker.product_journey_barrier_id
+                != product_journey_barrier_id
+                || barrier.marker.correlation != correlation
+            {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: pending marker does not match active product journey"
+                )));
+            }
+            // Re-pin the authority immediately before the terminal write. A
+            // workspace swap that raced the delayed callback must never let a
+            // held Run from the old binding be released through the new one.
+            let latest_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            let latest_binding = state
+                .narrative_maintenance_recovery_gate
+                .binding_for_authority(&narrative_authority_id(&latest_snapshot.authority));
+            if !Arc::ptr_eq(&authority, &latest_snapshot.authority)
+                || latest_binding != binding
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
+            state
+                .narrative_maintenance_foreground_barrier
+                .remember(barrier.clone())?;
+            narrative_extraction::complete_foreground_system_work_run(authority.db(), &barrier)?;
+            state
+                .narrative_maintenance_foreground_barrier
+                .clear_if_run(&barrier.run_id);
+            Ok(serde_json::json!({
+                "status": "completed",
+                "runId": barrier.run_id,
+            })
+            .to_string())
         })
         .await
     }
@@ -7580,5 +7756,319 @@ mod narrative_maintenance_epoch_event_tests {
         assert!(!should_emit_narrative_epoch_rotated(true, true));
         assert!(!should_emit_narrative_epoch_rotated(false, false));
         assert!(!should_emit_narrative_epoch_rotated(true, false));
+    }
+}
+
+#[cfg(test)]
+mod narrative_maintenance_foreground_release_tests {
+    use super::*;
+    use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
+    use grimodex_db::narrative_extraction::NarrativeMaintenanceCiTrigger;
+    use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "grimodex-node-foreground-release-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ))
+    }
+
+    fn backend_with_workspace(label: &str) -> (Backend, PathBuf) {
+        let root = test_root(label);
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": format!("workspace-{label}"),
+                "createdAt": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-1', 'project-1', 0, 'initial',
+                             '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project and epoch");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        // `open_workspace` invokes this hook after publishing the authority;
+        // the fixture mirrors that production initial-open handoff rather
+        // than manufacturing a binding for the release test.
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(Arc::clone(&authority)));
+        (
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+        )
+    }
+
+    fn configure_foreground_seam(backend: &Backend) {
+        backend
+            .state
+            .narrative_maintenance_ci_seam
+            .configure(NarrativeMaintenanceCiConfig {
+                is_packaged: false,
+                ci: "true".to_string(),
+                owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+                fault: None,
+                trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
+                setup: None,
+                product_journey_barrier_id: Some("barrier-test".to_string()),
+                correlation: Some("correlation-test".to_string()),
+            })
+            .expect("configure foreground seam");
+    }
+
+    async fn start_foreground_run(backend: &Backend) -> (String, PinnedWorkspaceDb) {
+        configure_foreground_seam(backend);
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let result: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-1",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-1",
+                        "semanticEpochId": "epoch-1",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("foreground cycle"),
+        )
+        .expect("cycle response JSON");
+        assert_eq!(result["status"], "accepted");
+        let config = backend
+            .state
+            .narrative_maintenance_ci_seam
+            .config()
+            .expect("configured seam");
+        let barrier = narrative_extraction::find_running_foreground_system_work_run(
+            &authority,
+            &config,
+            &narrative_maintenance_binding_for_authority(&backend.state, &authority),
+        )
+        .expect("find persisted barrier")
+        .expect("foreground Run remains running");
+        (barrier.run_id, authority)
+    }
+
+    fn run_status(authority: &PinnedWorkspaceDb, run_id: &str) -> String {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("run status")
+    }
+
+    fn run_terminal_reason(authority: &PinnedWorkspaceDb, run_id: &str) -> Option<String> {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT terminal_reason_code FROM narrative_extraction_runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("run terminal reason")
+    }
+
+    fn backend_from_existing_workspace(root: &std::path::Path) -> Backend {
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("fresh app state");
+        // Same production initial-open handoff as `Backend::open_workspace`:
+        // a fresh process starts a fresh generation before binding the DB.
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
+        Backend {
+            state: Arc::new(state),
+        }
+    }
+
+    #[tokio::test]
+    async fn napi_release_is_exact_for_project_and_duplicate_safe() {
+        let (backend, root) = backend_with_workspace("exact");
+        let (run_id, authority) = start_foreground_run(&backend).await;
+
+        let unrelated = backend
+            .release_narrative_maintenance_foreground_barrier("project-other".to_string())
+            .await
+            .expect("unrelated project is ignored");
+        let unrelated: Value = serde_json::from_str(&unrelated).expect("unrelated JSON");
+        assert_eq!(unrelated["status"], "not-held");
+        assert_eq!(run_status(&authority, &run_id), "running");
+
+        let completed = backend
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("exact project release");
+        let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["runId"], run_id);
+        assert_eq!(run_status(&authority, &run_id), "completed");
+
+        let duplicate = backend
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("duplicate exact release is idempotent");
+        let duplicate: Value = serde_json::from_str(&duplicate).expect("duplicate JSON");
+        assert_eq!(duplicate["status"], "not-held");
+        assert_eq!(run_status(&authority, &run_id), "completed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_release_rejects_old_binding_after_workspace_replacement() {
+        let (backend, root) = backend_with_workspace("swap");
+        let (run_id, old_authority) = start_foreground_run(&backend).await;
+        let new_workspace = root.join("replacement");
+        std::fs::create_dir_all(&new_workspace).expect("replacement directory");
+        let new_database = Database::new(&new_workspace.join("grimodex.db")).expect("new DB");
+        new_database.migrate().expect("new DB migration");
+        let new_authority = WorkspaceAuthority::from_database_for_test(new_database, new_workspace)
+            .expect("new workspace authority");
+        backend
+            .state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *backend.state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(new_authority));
+
+        let ignored = backend
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("old binding is ignored");
+        let ignored: Value = serde_json::from_str(&ignored).expect("ignored JSON");
+        assert_eq!(ignored["status"], "not-held");
+        assert_eq!(run_status(&old_authority, &run_id), "running");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_restart_uses_startup_recovery_before_release_and_creates_new_run() {
+        let (backend, root) = backend_with_workspace("rediscovery");
+        let (run_id, authority) = start_foreground_run(&backend).await;
+        drop(authority);
+        drop(backend);
+        let backend = backend_from_existing_workspace(&root);
+        configure_foreground_seam(&backend);
+        let restarted_authority = active_database(&backend.state.ws).expect("restarted authority");
+
+        // A fresh Backend has a new process-local recovery generation even
+        // though the workspace metadata/authority ID is stable.  Release
+        // must not treat the old durable marker as an overlapping foreground
+        // write; StartupRecovery owns it first.
+        let before_recovery = backend
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("old marker is not releasable after restart");
+        let before_recovery: Value =
+            serde_json::from_str(&before_recovery).expect("pre-recovery JSON");
+        assert_eq!(before_recovery["status"], "not-held");
+        assert_eq!(run_status(&restarted_authority, &run_id), "running");
+
+        let binding =
+            narrative_maintenance_binding_for_authority(&backend.state, &restarted_authority);
+        let cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-1",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-1",
+                        "semanticEpochId": "epoch-1",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("startup recovery cycle"),
+        )
+        .expect("recovery cycle JSON");
+        assert_eq!(cycle["status"], "accepted");
+        assert_eq!(run_status(&restarted_authority, &run_id), "failed");
+        assert_eq!(
+            run_terminal_reason(&restarted_authority, &run_id).as_deref(),
+            Some("NEX_MAINTENANCE_INTERRUPTED")
+        );
+
+        let config = backend
+            .state
+            .narrative_maintenance_ci_seam
+            .config()
+            .expect("configured seam");
+        let replacement = narrative_extraction::find_running_foreground_system_work_run(
+            &restarted_authority,
+            &config,
+            &narrative_maintenance_binding_for_authority(&backend.state, &restarted_authority),
+        )
+        .expect("find replacement marker")
+        .expect("startup recovery creates a new held Run");
+        assert_ne!(replacement.run_id, run_id);
+
+        let completed = backend
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string())
+            .await
+            .expect("durable marker rediscovery");
+        let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
+        assert_eq!(completed["status"], "completed");
+        assert_eq!(completed["runId"], replacement.run_id);
+        assert_eq!(
+            run_status(&restarted_authority, &replacement.run_id),
+            "completed"
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

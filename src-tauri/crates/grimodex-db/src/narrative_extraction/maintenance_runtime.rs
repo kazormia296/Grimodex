@@ -18,7 +18,8 @@ use super::legacy_backfill::{
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
 use super::maintenance_skip_evidence::{
-    evaluate_completed_run_skip, CompletedRunSkipDecision, CompletedRunSkipExpectation,
+    evaluate_completed_run_skip, persist_completed_run_skip_evidence_in_tx,
+    CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
     rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
@@ -524,17 +525,59 @@ pub fn complete_foreground_system_work_run(
                 .optional()?;
             let Some((project_id, run_kind, work_key, epoch_id, spec_json)) = row else {
                 // A duplicate tree_node_patch after the first successful
-                // release is idempotent at the barrier boundary.
-                let status: Option<String> = conn
+                // release is idempotent only for the same immutable marker.
+                // Merely finding a completed row by runId must not allow an
+                // unrelated Run to satisfy this barrier.
+                let completed: Option<(String, String, String, Option<String>, String)> = conn
                     .query_row(
-                        "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                        "SELECT project_id, run_kind, work_key, semantic_epoch_id, spec_json
+                           FROM narrative_extraction_runs
+                          WHERE id = ?1 AND status = 'completed'",
                         params![barrier.run_id],
-                        |row| row.get(0),
+                        |row| {
+                            Ok((
+                                row.get(0)?,
+                                row.get(1)?,
+                                row.get(2)?,
+                                row.get(3)?,
+                                row.get(4)?,
+                            ))
+                        },
                     )
                     .optional()?;
+                let Some((project_id, run_kind, work_key, epoch_id, spec_json)) = completed else {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running"
+                    );
+                };
                 anyhow::ensure!(
-                    status.as_deref() == Some("completed"),
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running"
+                    project_id == barrier.project_id,
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_MISMATCH: exact foreground Run belongs to another project"
+                );
+                let spec: Value = serde_json::from_str(&spec_json)?;
+                let persisted_marker: NarrativeSystemWorkMarker = serde_json::from_value(
+                    spec.get("systemWork")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
+                )?;
+                anyhow::ensure!(
+                    persisted_marker == barrier.marker,
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
+                );
+                let expected_key = canonical_work_key_for_epoch(
+                    &project_id,
+                    match run_kind.as_str() {
+                        "backfill" => AutomaticRunKind::Backfill,
+                        "dependency-verify" => AutomaticRunKind::Verify,
+                        "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
+                        _ => anyhow::bail!("foreground Run has unsupported maintenance kind"),
+                    },
+                    &work_key,
+                    epoch_id.as_deref(),
+                )?;
+                anyhow::ensure!(
+                    persisted_marker.canonical_work_key == expected_key,
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
                 );
                 return Ok(());
             };
@@ -567,6 +610,20 @@ pub fn complete_foreground_system_work_run(
                 persisted_marker.canonical_work_key == expected_key,
                 "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
             );
+            if run_kind != "backfill" {
+                anyhow::ensure!(
+                    epoch_id.is_some(),
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_EPOCH_MISSING: foreground Run is not epoch-bound"
+                );
+            }
+            if let Some(epoch_id) = epoch_id.as_deref() {
+                let current_epoch_id = super::semantic_epoch::get_current_epoch(conn, &project_id)?
+                    .map(|epoch| epoch.id);
+                anyhow::ensure!(
+                    current_epoch_id.as_deref() == Some(epoch_id),
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_STALE_EPOCH: foreground Run is not bound to the current Semantic Epoch"
+                );
+            }
             let mut outcome = match conn
                 .query_row(
                     "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
@@ -601,6 +658,44 @@ pub fn complete_foreground_system_work_run(
                 &barrier.run_id,
                 NarrativeRunStatus::Completed,
             )?;
+            if run_kind == VERIFY_RUN_KIND {
+                let epoch_id = epoch_id.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_EPOCH_MISSING: foreground Verify Run is not epoch-bound"
+                    )
+                })?;
+                let report: DependencyGraphVerifyReport = serde_json::from_value(
+                    outcome
+                        .get("report")
+                        .cloned()
+                        .ok_or_else(|| anyhow::anyhow!("foreground Verify outcome has no report"))?,
+                )?;
+                if report.is_clean() {
+                    let report_digest = outcome
+                        .get("reportDigest")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("foreground Verify outcome has no report digest")
+                        })?;
+                    let coordinates = current_maintenance_coordinates()?;
+                    persist_completed_run_skip_evidence_in_tx(
+                        conn,
+                        &barrier.run_id,
+                        &CompletedRunSkipEvidence {
+                            project_id: project_id.clone(),
+                            run_kind: VERIFY_RUN_KIND.to_string(),
+                            work_key: work_key.clone(),
+                            semantic_epoch_id: epoch_id.clone(),
+                            graph_contract_digest: coordinates.graph_contract_digest,
+                            rule_registry_digest: coordinates.rule_registry_digest,
+                            producer_generation_set_digest: coordinates
+                                .producer_generation_set_digest,
+                            run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
+                            report_digest: report_digest.to_string(),
+                        },
+                    )?;
+                }
+            }
             super::terminal_failure::resolve_terminal_failure_for_run_in_tx(
                 conn,
                 &project_id,
@@ -2816,6 +2911,116 @@ mod tests {
                 .is_none(),
             "a different barrier/correlation must not satisfy the foreground journey"
         );
+    }
+
+    #[test]
+    fn foreground_verify_stays_running_until_exact_release_then_seals_skip_evidence() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed project and current epoch");
+
+        let marker = NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: canonical_work_key_for_epoch(
+                "project-1",
+                AutomaticRunKind::Verify,
+                "dependency-verify:epoch-1",
+                Some("epoch-1"),
+            )
+            .expect("canonical Verify work key"),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-verify".to_string(),
+            correlation: "correlation-verify".to_string(),
+        };
+
+        let outcome = with_system_work_marker(Some(marker.clone()), || {
+            run_dependency_verify_for_project(&db, "project-1")
+        })
+        .expect("foreground Verify should record its real outcome");
+        let status_before_release: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![outcome.run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read held Verify status");
+        assert_eq!(status_before_release, "running");
+
+        let barrier = ForegroundSystemWorkRun {
+            run_id: outcome.run_id.clone(),
+            project_id: "project-1".to_string(),
+            marker,
+        };
+        complete_foreground_system_work_run(&db, &barrier)
+            .expect("exact foreground barrier release");
+
+        let (status_after_release, outcome_json): (String, String) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status, outcome_summary_json
+                       FROM narrative_extraction_runs WHERE id = ?1",
+                    params![outcome.run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read completed Verify outcome");
+        assert_eq!(status_after_release, "completed");
+        let outcome_json: Value = serde_json::from_str(&outcome_json).expect("outcome JSON");
+        assert_eq!(
+            outcome_json
+                .get("foregroundBarrierReleased")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(outcome_json.get("skipEvidence").is_some());
+
+        let coordinates = current_maintenance_coordinates().expect("maintenance coordinates");
+        let expected = CompletedRunSkipExpectation {
+            project_id: "project-1".to_string(),
+            run_kind: VERIFY_RUN_KIND.to_string(),
+            work_key: "dependency-verify:epoch-1".to_string(),
+            semantic_epoch_id: "epoch-1".to_string(),
+            graph_contract_digest: coordinates.graph_contract_digest,
+            rule_registry_digest: coordinates.rule_registry_digest,
+            producer_generation_set_digest: coordinates.producer_generation_set_digest,
+            run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
+            report_digest: Some(outcome.report_digest),
+        };
+        let decision = db
+            .with_conn(|conn| evaluate_completed_run_skip(conn, &expected))
+            .expect("evaluate released Verify evidence");
+        assert!(matches!(
+            decision,
+            CompletedRunSkipDecision::Skip { .. }
+        ));
+
+        complete_foreground_system_work_run(&db, &barrier)
+            .expect("duplicate exact release is idempotent");
+        let mut wrong_project = barrier.clone();
+        wrong_project.project_id = "project-2".to_string();
+        assert!(complete_foreground_system_work_run(&db, &wrong_project).is_err());
+        let mut wrong_authority = barrier.clone();
+        wrong_authority.marker.authority_id = "authority:workspace-2".to_string();
+        assert!(complete_foreground_system_work_run(&db, &wrong_authority).is_err());
     }
 
     #[test]

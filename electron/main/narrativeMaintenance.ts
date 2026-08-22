@@ -118,6 +118,68 @@ export const NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_MAX_RETRIES = 3;
 export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
 
+/**
+ * Main-only post-response owner for the C2-5B foreground maintenance barrier.
+ *
+ * Native owns the durable Run and the exact authority binding. Main owns only
+ * the deterministic response boundary: the release is scheduled after a
+ * successful ordinary tree-node patch has returned to the renderer. This
+ * helper is intentionally kept in this canonical main-only maintenance module
+ * and is never exposed through preload or the renderer IPC contract.
+ */
+interface NarrativeMaintenanceForegroundReleaseBackend {
+  releaseNarrativeMaintenanceForegroundBarrier?(
+    projectId: string,
+  ): Promise<unknown> | unknown;
+}
+
+type ForegroundBarrierReleaseScheduler = (callback: () => void) => unknown;
+
+/**
+ * Gives the renderer/product runner one deterministic ledger observation
+ * after the successful patch response before the native terminal transition.
+ * This is only used by the authorized CI product-journey seam.
+ */
+export const NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS = 100;
+
+const isNonEmptyTrimmedString = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.trim().length > 0 &&
+  value === value.trim();
+
+/**
+ * Schedule the native foreground barrier only after a successful ordinary
+ * tree_node_patch has returned its response to the renderer. A failed native
+ * release is deliberately swallowed at this boundary: Native retains the
+ * durable marker and exact pending Run for retry/recovery.
+ */
+export function scheduleNarrativeMaintenanceForegroundRelease(
+  backend: unknown,
+  projectId: string,
+  schedule: ForegroundBarrierReleaseScheduler = (callback) => {
+    setTimeout(
+      callback,
+      NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+    );
+  },
+): void {
+  if (!isNonEmptyTrimmedString(projectId)) return;
+  const release = (
+    backend as NarrativeMaintenanceForegroundReleaseBackend | null
+  )?.releaseNarrativeMaintenanceForegroundBarrier;
+  if (typeof release !== "function") return;
+  schedule(() => {
+    void Promise.resolve()
+      .then(() => release.call(backend, projectId))
+      .catch((error: unknown) => {
+        console.warn(
+          "[grim:invoke] foreground barrier release failed",
+          error,
+        );
+      });
+  });
+}
+
 const AUTOMATIC_RUN_KINDS = new Set<NarrativeMaintenanceRunKind>([
   "backfill",
   "dependency-verify",

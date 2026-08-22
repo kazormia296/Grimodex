@@ -14,7 +14,8 @@ use tokio::sync::Notify;
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
 use grimodex_db::narrative_extraction::{
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig, RecoveryMode,
+    ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
+    RecoveryMode,
 };
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -118,6 +119,17 @@ pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
 }
 
+// The generation is process-local, but it must not restart at the same value
+// after a fresh Backend is created.  A durable foreground marker from an old
+// process therefore cannot be released merely because the workspace metadata
+// (and hence authority ID) is unchanged; StartupRecovery gets the first say.
+fn fresh_narrative_maintenance_generation() -> u64 {
+    // UUID v4 keeps the process-local generation distinct across an actual
+    // process restart too; a monotonically-reset counter would let a new
+    // process accidentally match an old durable foreground marker.
+    uuid::Uuid::new_v4().as_u128() as u64
+}
+
 /// One-shot native storage for the authorized product-journey configuration.
 /// Main performs the launch gate, while this state validates it again and
 /// rejects every second configuration attempt.
@@ -159,11 +171,75 @@ impl NarrativeMaintenanceCiSeamState {
     }
 }
 
+/// Process-local retry handles for foreground Runs selected by the
+/// product-journey barrier. The durable marker remains the source of truth;
+/// these handles only avoid rediscovery after transient post-response
+/// failures, including an old authority retained across a workspace swap.
+pub struct NarrativeMaintenanceForegroundBarrierState {
+    pending: Mutex<HashMap<String, ForegroundSystemWorkRun>>,
+}
+
+impl Default for NarrativeMaintenanceForegroundBarrierState {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl NarrativeMaintenanceForegroundBarrierState {
+    pub fn remember(&self, barrier: ForegroundSystemWorkRun) -> anyhow::Result<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = pending.get(&barrier.run_id) {
+            anyhow::ensure!(
+                existing == &barrier,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PENDING_CONFLICT: another exact foreground Run is awaiting release"
+            );
+            return Ok(());
+        }
+        pending.insert(barrier.run_id.clone(), barrier);
+        Ok(())
+    }
+
+    pub fn pending_for_project_and_binding(
+        &self,
+        project_id: &str,
+        authority_id: &str,
+        generation: u64,
+        product_journey_barrier_id: &str,
+        correlation: &str,
+    ) -> Option<ForegroundSystemWorkRun> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .find(|barrier| {
+                barrier.project_id == project_id
+                    && barrier.marker.authority_id == authority_id
+                    && barrier.marker.generation == generation
+                    && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
+                    && barrier.marker.correlation == correlation
+            })
+            .cloned()
+    }
+
+    pub fn clear_if_run(&self, run_id: &str) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(run_id);
+    }
+}
+
 impl Default for NarrativeMaintenanceRecoveryGate {
     fn default() -> Self {
         Self {
             state: Mutex::new(NarrativeMaintenanceRecoveryState {
-                workspace_generation: 0,
+                workspace_generation: fresh_narrative_maintenance_generation(),
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
             }),
@@ -473,6 +549,10 @@ pub struct AppState {
     /// One-shot, CI-only product-journey configuration. This is deliberately
     /// not part of the renderer/preload bridge or shared IPC contract.
     pub narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState,
+    /// Exact native-owned foreground Run awaiting the post-response authoring
+    /// write. A failed release remains here for a later retry; a process
+    /// restart can rediscover the same durable marker from SQLite.
+    pub narrative_maintenance_foreground_barrier: NarrativeMaintenanceForegroundBarrierState,
     /// Serializes the two N-API mutation adapters that may rotate a
     /// Narrative Semantic Epoch. The lock covers the idempotency preflight
     /// and the shared-Rust transaction so exactly one first execution emits
@@ -557,6 +637,8 @@ impl AppState {
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
             narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
+            narrative_maintenance_foreground_barrier:
+                NarrativeMaintenanceForegroundBarrierState::default(),
             narrative_maintenance_mutation_lock: Mutex::new(()),
         })
     }
@@ -659,6 +741,78 @@ mod tests {
     }
 
     #[test]
+    fn foreground_barrier_retry_state_is_exact_run_scoped() {
+        let state = NarrativeMaintenanceForegroundBarrierState::default();
+        let marker = grimodex_db::narrative_extraction::NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/dependency-verify/project-1/dependency-verify:epoch-1/epoch/epoch-1".to_string(),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-1".to_string(),
+            correlation: "correlation-1".to_string(),
+        };
+        let barrier = ForegroundSystemWorkRun {
+            run_id: "run-1".to_string(),
+            project_id: "project-1".to_string(),
+            marker,
+        };
+
+        state
+            .remember(barrier.clone())
+            .expect("remember exact barrier");
+        assert_eq!(
+            state
+                .pending_for_project_and_binding(
+                    "project-1",
+                    "authority:workspace-1",
+                    1,
+                    "barrier-1",
+                    "correlation-1",
+                )
+                .expect("pending exact barrier"),
+            barrier
+        );
+        state.clear_if_run("unrelated-run");
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state
+            .remember(barrier.clone())
+            .expect("duplicate exact barrier is idempotent");
+        let mut conflicting = barrier.clone();
+        conflicting.run_id = "run-2".to_string();
+        state
+            .remember(conflicting)
+            .expect("a distinct durable Run is retained independently");
+        state.clear_if_run("run-1");
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state.clear_if_run("run-2");
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+    }
+
+    #[test]
     fn narrative_recovery_gate_is_generation_and_work_key_scoped() {
         let gate = NarrativeMaintenanceRecoveryGate::default();
         let generation_one = gate.current_generation();
@@ -695,6 +849,17 @@ mod tests {
         assert_eq!(
             gate.mode_for(generation_two, key_b),
             RecoveryMode::StartupRecovery
+        );
+    }
+
+    #[test]
+    fn fresh_recovery_gate_does_not_reuse_a_prior_process_generation() {
+        let first_process = NarrativeMaintenanceRecoveryGate::default();
+        let restarted_process = NarrativeMaintenanceRecoveryGate::default();
+        assert_ne!(
+            first_process.current_generation(),
+            restarted_process.current_generation(),
+            "a fresh process must enter StartupRecovery under a new binding"
         );
     }
 

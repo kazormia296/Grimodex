@@ -42,6 +42,8 @@ import {
   hasPanelWindow,
   openPanelWindow,
 } from "./windows.js";
+import { scheduleNarrativeMaintenanceForegroundRelease } from "./narrativeMaintenance.js";
+import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 
 const GENERIC_CANONICAL_WRITER_COMMANDS = new Set([
   "snippet_create",
@@ -1913,6 +1915,7 @@ export function registerIpcRouter(
   extraShellHandlers: ExtraShellHandlers = {},
   secrets?: SecretsResolver,
   broadcast?: (channel: string, payload: unknown) => void,
+  narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
 ): void {
   ipcMain.handle(
     IPC.invoke,
@@ -1956,6 +1959,24 @@ export function registerIpcRouter(
               ),
           },
         );
+        if (
+          narrativeMaintenanceCiSeam.active &&
+          narrativeMaintenanceCiSeam.trigger === "foreground-workspace-wake" &&
+          narrativeMaintenanceCiSeam.productJourneyBarrierId !== null &&
+          narrativeMaintenanceCiSeam.correlation !== null &&
+          envelope.ok &&
+          cmd === "tree_node_patch"
+        ) {
+          const payload = isRecord(boundArgs.payload)
+            ? boundArgs.payload
+            : boundArgs;
+          if (isNonEmptyTrimmedString(payload.projectId)) {
+            scheduleNarrativeMaintenanceForegroundRelease(
+              backend,
+              payload.projectId,
+            );
+          }
+        }
         if (
           envelope.ok &&
           HISTORY_JOURNAL_WRITER_COMMANDS.has(cmd) &&

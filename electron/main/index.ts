@@ -163,11 +163,11 @@ if (!gotSingleInstanceLock) {
     // point: after native initialization, before any scheduler can observe a
     // workspace event. Unauthorized launches return inactive without reading
     // or forwarding the test-only environment values.
-    await configureNarrativeMaintenanceCiSeam(
+    const narrativeMaintenanceCiSeam = await configureNarrativeMaintenanceCiSeam(
       initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
       {
-      isPackaged: app.isPackaged,
-      env: process.env,
+        isPackaged: app.isPackaged,
+        env: process.env,
       },
     );
     const backend = wrapBackendForProductJourneyAi(
@@ -477,6 +477,7 @@ if (!gotSingleInstanceLock) {
       },
       keyStore,
       broadcastBackendEvent,
+      narrativeMaintenanceCiSeam,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には

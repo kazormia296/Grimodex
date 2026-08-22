@@ -58,6 +58,7 @@ grimodex-license = { path = "../../../src-tauri/crates/grimodex-license" }
 serde = "1"
 serde_json = "1"
 anyhow = "1"
+uuid = { version = "1", features = ["v4"] }
 tokio = { version = "1", features = ["sync"] }
 
 [build-dependencies]
