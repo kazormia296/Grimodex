@@ -671,6 +671,236 @@ fn terminal_failure_is_durable_idempotent_and_visible_without_freshness_or_atten
 }
 
 #[test]
+fn same_second_millisecond_order_resolves_and_hides_terminal_failure() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-same-second-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let failure = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-same-second-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: same second",
+    )
+    .expect("project same-second failure");
+
+    // Restored history can carry millisecond timestamps inside one SQLite
+    // second. The success at .900 is newer than the failure at .500 even
+    // though both share the same whole-second prefix.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_observations
+                SET observed_at = '2026-08-22T00:00:00.500Z'
+              WHERE finding_identity = ?1",
+            params![failure.finding_identity],
+        )?;
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = '2026-08-22T00:00:00.500Z'
+              WHERE finding_identity = ?1 AND lifecycle_state = 'new'",
+            params![failure.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("restore millisecond failure history");
+
+    insert_run(
+        &db,
+        "run-same-second-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(&db, "run-same-second-success", "2026-08-22T00:00:00.900Z");
+    let resolved = resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-same-second-success")
+        .expect("resolve same-second failure");
+    assert!(resolved.resolved);
+    assert!(db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T01:00:00.000Z"))
+        .expect("build resolved same-second Inbox")
+        .is_empty());
+}
+
+#[test]
+fn inbox_does_not_hide_failure_when_offset_resolution_is_chronologically_older() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-offset-older-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let failure = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-offset-older-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: offset restore",
+    )
+    .expect("project offset failure");
+    insert_run(
+        &db,
+        "run-offset-older-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(&db, "run-offset-older-success", "2999-01-01T00:00:00.000Z");
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-offset-older-success")
+            .expect("write offset resolution")
+            .resolved
+    );
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_observations
+                SET observed_at = '2026-08-22T00:30:00Z'
+              WHERE finding_identity = ?1",
+            params![failure.finding_identity],
+        )?;
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = CASE lifecycle_state
+                    WHEN 'new' THEN '2026-08-21T23:00:00Z'
+                    WHEN 'resolved' THEN '2026-08-22T01:00:00+01:00'
+                    ELSE observed_at END
+              WHERE finding_identity = ?1",
+            params![failure.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("restore offset history with an older resolution");
+
+    let entries = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T02:00:00Z"))
+        .expect("older offset resolution must not hide failure");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].entry_kind, InboxEntryKind::TerminalFailure);
+}
+
+#[test]
+fn inbox_does_not_hide_failure_when_offset_resolution_time_is_equal() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-offset-tie-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let failure = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-offset-tie-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: offset tie",
+    )
+    .expect("project offset tie failure");
+    insert_run(
+        &db,
+        "run-offset-tie-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(&db, "run-offset-tie-success", "2999-01-01T00:00:00.000Z");
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-offset-tie-success")
+            .expect("write offset tie resolution")
+            .resolved
+    );
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_observations
+                SET observed_at = '2026-08-22T00:00:00Z'
+              WHERE finding_identity = ?1",
+            params![failure.finding_identity],
+        )?;
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = CASE lifecycle_state
+                    WHEN 'new' THEN '2026-08-21T23:00:00Z'
+                    WHEN 'resolved' THEN '2026-08-22T01:00:00+01:00'
+                    ELSE observed_at END
+              WHERE finding_identity = ?1",
+            params![failure.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("restore offset history with an equal resolution");
+
+    let entries = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T02:00:00Z"))
+        .expect("equal offset resolution must not hide failure");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].entry_kind, InboxEntryKind::TerminalFailure);
+}
+
+#[test]
+fn inbox_fails_closed_on_malformed_terminal_lifecycle_timestamp() {
+    let db = fixture_db();
+    insert_run(
+        &db,
+        "run-malformed-inbox-failure",
+        "failed",
+        "backfill",
+        WORK_KEY,
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"),
+    );
+    let failure = project_terminal_failure_for_run(
+        &db,
+        PROJECT_ID,
+        "run-malformed-inbox-failure",
+        "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION: malformed restore",
+    )
+    .expect("project malformed timestamp failure");
+    insert_run(
+        &db,
+        "run-malformed-inbox-success",
+        "completed",
+        "backfill",
+        WORK_KEY,
+        None,
+    );
+    set_completed_at(
+        &db,
+        "run-malformed-inbox-success",
+        "2999-01-01T00:00:00.000Z",
+    );
+    assert!(
+        resolve_terminal_failure_for_run(&db, PROJECT_ID, "run-malformed-inbox-success")
+            .expect("write malformed timestamp resolution")
+            .resolved
+    );
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_maintenance_finding_lifecycle
+                SET observed_at = 'not-a-timestamp'
+              WHERE finding_identity = ?1 AND lifecycle_state = 'resolved'",
+            params![failure.finding_identity],
+        )?;
+        Ok(())
+    })
+    .expect("restore malformed lifecycle timestamp");
+
+    let error = db
+        .with_conn(|conn| build_maintenance_inbox(conn, PROJECT_ID, "2026-08-22T02:00:00Z"))
+        .expect_err("Inbox must fail closed on malformed terminal lifecycle time");
+    assert!(error
+        .to_string()
+        .contains("NEX_FINDING_LIFECYCLE_ORDER_INVALID"));
+}
+
+#[test]
 fn stable_identity_repeats_changed_basis_lapses_attention_and_resolves() {
     let db = fixture_db();
     insert_run(

@@ -536,6 +536,45 @@ mod tests {
     }
 
     #[test]
+    fn run_transition_persists_millisecond_rfc3339_timestamps() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            insert_run(conn, "run-millisecond-clock", "pending");
+            transition_run_status_in_tx(
+                conn,
+                "run-millisecond-clock",
+                NarrativeRunStatus::Running,
+            )?;
+            transition_run_status_in_tx(
+                conn,
+                "run-millisecond-clock",
+                NarrativeRunStatus::Completed,
+            )?;
+            let (started_at, completed_at): (String, String) = conn.query_row(
+                "SELECT started_at, completed_at
+                   FROM narrative_extraction_runs
+                  WHERE id = 'run-millisecond-clock'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            for timestamp in [started_at, completed_at] {
+                assert!(timestamp.ends_with('Z'));
+                let fractional = timestamp
+                    .rsplit_once('.')
+                    .expect("RFC3339 timestamp has fractional seconds")
+                    .1;
+                assert_eq!(
+                    fractional.len(),
+                    4,
+                    "timestamp must retain three millis: {timestamp}"
+                );
+            }
+            Ok(())
+        })
+        .expect("millisecond timestamps are persisted");
+    }
+
+    #[test]
     fn run_transition_completed_to_running_is_fail_closed() {
         let db = open_db();
         db.with_conn(|conn| {
