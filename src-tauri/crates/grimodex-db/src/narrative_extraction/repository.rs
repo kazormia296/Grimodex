@@ -2170,6 +2170,88 @@ mod unit_tests {
         assert_eq!(persisted, 0);
     }
 
+    #[test]
+    fn generic_task_api_rejects_every_runtime_owned_automatic_run_kind() {
+        let db = full_migrated_db();
+        for (index, run_kind) in [
+            "freshness-evaluation",
+            "backfill",
+            "dependency-verify",
+            "semantic-index-rebuild",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let run_id = format!("automatic-run-{index}");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, started_at, run_kind,
+                         semantic_epoch_id, work_key, version)
+                     VALUES (?1, 'project-1', ?2, '{}', '{}', 'digest', 'running', '{}',
+                             '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z', ?2,
+                             NULL, ?1, 0)",
+                    params![run_id, run_kind],
+                )?;
+                let error = ensure_generic_task_api_allowed(conn, &run_id)
+                    .expect_err("generic lifecycle APIs must not own automatic Runs");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("NEX_SYSTEM_RUN_API_FORBIDDEN"),
+                    "unexpected error for {run_kind}: {error}"
+                );
+                Ok(())
+            })
+            .expect("automatic Run authority guard");
+        }
+    }
+
+    #[test]
+    fn generic_cancel_persists_millisecond_timestamp_for_resumable_ordering() {
+        let db = full_migrated_db();
+        create_run(
+            &db,
+            CreateRunPayload {
+                run_id: Some("manual-run-1".to_string()),
+                project_id: "project-1".to_string(),
+                surface_path_id: "chronicle.extract".to_string(),
+                scope_json: json!({}),
+                spec_json: json!({}),
+                spec_digest: "digest-1".to_string(),
+                snapshot_digest: None,
+                catalog_digest: None,
+                registry_digest: None,
+                coverage_json: None,
+                tasks: vec![],
+            },
+        )
+        .expect("create pending manual Run");
+
+        cancel_run(
+            &db,
+            "manual-run-1".to_string(),
+            "project-1".to_string(),
+        )
+        .expect("cancel pending manual Run");
+
+        let completed_at: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT completed_at FROM narrative_extraction_runs WHERE id = 'manual-run-1'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read cancelled Run timestamp");
+        assert!(
+            completed_at.ends_with('Z') && completed_at.contains('.'),
+            "Run lifecycle timestamps must be RFC3339 with milliseconds: {completed_at}"
+        );
+    }
+
     /// Inserts a minimal `tree_nodes` scene row so `scene_body_envelope`
     /// below can build an envelope whose `sourceBasis`/`readSet`
     /// `revisionToken` actually matches what
