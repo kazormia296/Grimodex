@@ -63,4 +63,59 @@ describe("narrative maintenance deferred contract", () => {
 
     scheduler.dispose();
   });
+
+  it("does not let deferred work starve another project's or same project's backfill", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue({ status: "accepted", hasMore: false });
+    const scheduler = createNarrativeMaintenanceScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request({
+      ...work("verify-requested"),
+      projectId: "project-a",
+    });
+    scheduler.request({
+      projectId: "project-b",
+      runKind: "backfill",
+      workKey: "legacy-dependency-backfill:v2",
+      reason: "workspace-opened",
+    });
+    scheduler.request({
+      projectId: "project-a",
+      runKind: "backfill",
+      workKey: "legacy-dependency-backfill:v2",
+      reason: "workspace-opened",
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    const firstRequest = runNarrativeMaintenanceCycle.mock.calls[0]?.[0];
+    expect(firstRequest?.work).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "project-a",
+          runKind: "backfill",
+        }),
+        expect.objectContaining({
+          projectId: "project-b",
+          runKind: "backfill",
+        }),
+      ]),
+    );
+    expect(firstRequest?.work).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          projectId: "project-a",
+          runKind: "dependency-verify",
+        }),
+      ]),
+    );
+
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+    scheduler.dispose();
+  });
 });
