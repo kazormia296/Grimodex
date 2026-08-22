@@ -297,6 +297,10 @@ impl MaintenanceCycleRequest {
             self.work.len() <= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
             "NEX_MAINTENANCE_BATCH_TOO_LARGE: at most {MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE} work items are allowed"
         );
+        anyhow::ensure!(
+            self.wake_project_ids.len() <= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+            "NEX_MAINTENANCE_BATCH_TOO_LARGE: at most {MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE} wake projects are allowed"
+        );
         for project_id in &self.wake_project_ids {
             require_component(project_id.clone(), "projectId")?;
         }

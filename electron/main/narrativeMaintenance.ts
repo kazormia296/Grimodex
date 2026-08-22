@@ -263,7 +263,6 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   }
 
   const value = raw as Record<string, unknown>;
-  const hasStatus = Object.prototype.hasOwnProperty.call(value, "status");
   if (typeof value.status === "string") {
     if (value.status === "accepted" && typeof value.hasMore === "boolean") {
       return { status: "accepted", hasMore: value.hasMore };
@@ -283,11 +282,6 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
       return { status: "deferred", hasMore: value.hasMore };
     }
     throw new Error("native maintenance cycle returned invalid status");
-  }
-
-  // Backward-compatible JSON summary from the pre-status native adapter.
-  if (!hasStatus && typeof value.hasMore === "boolean") {
-    return { status: "accepted", hasMore: value.hasMore };
   }
   throw new Error("native maintenance cycle returned invalid status");
 }
