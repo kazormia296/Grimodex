@@ -2583,6 +2583,238 @@ describe("validate-semantic-core-boundary", () => {
     );
   });
 
+  it("tracks direct constructor calls and order-independent callable alternatives", () => {
+    const constructorCases = [
+      {
+        name: "direct constructor",
+        source: [
+          "class Unsafe { constructor(fn) { fn(); } }",
+          "new Unsafe(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "constructor default",
+        source: [
+          "class Unsafe { constructor(fn = database[key]) { fn(); } }",
+          "new Unsafe();",
+        ].join("\n"),
+      },
+      {
+        name: "constructor rest destructuring",
+        source: [
+          "class Unsafe { constructor(label, ...[fn]) { fn(); } }",
+          'new Unsafe("safe", database[key]);',
+        ].join("\n"),
+      },
+      {
+        name: "constructor object destructuring",
+        source: [
+          "class Unsafe { constructor({ fn }) { fn(); } }",
+          "new Unsafe({ fn: database[key] });",
+        ].join("\n"),
+      },
+      {
+        name: "constructor this forwarding",
+        source: [
+          "class Unsafe { consume(fn) { fn(); } constructor(fn) { this.consume(fn); } }",
+          "new Unsafe(database[key]);",
+        ].join("\n"),
+      },
+    ];
+    for (const [index, testCase] of constructorCases.entries()) {
+      const filename = `local-constructor-flow-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject a tainted constructor flow: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const conditionalSources = [
+      [
+        "class Safe { constructor(fn) {} }",
+        "class Unsafe { constructor(fn) { fn(); } }",
+        "const H = flag ? Safe : Unsafe;",
+        "Reflect.construct(H, [database[key]]);",
+      ].join("\n"),
+      [
+        "class Safe { constructor(fn) {} }",
+        "class Unsafe { constructor(fn) { fn(); } }",
+        "const H = flag ? Unsafe : Safe;",
+        "Reflect.construct(H, [database[key]]);",
+      ].join("\n"),
+      [
+        "const safeGetter = { get invoke() { return (fn) => true; } };",
+        "const unsafeGetter = { get invoke() { return (fn) => fn(); } };",
+        "const api = flag ? safeGetter : unsafeGetter;",
+        "api.invoke(database[key]);",
+      ].join("\n"),
+      [
+        "const safeGetter = { get invoke() { return (fn) => true; } };",
+        "const unsafeGetter = { get invoke() { return (fn) => fn(); } };",
+        "const api = flag ? unsafeGetter : safeGetter;",
+        "api.invoke(database[key]);",
+      ].join("\n"),
+    ];
+    for (const [index, source] of conditionalSources.entries()) {
+      const filename = `local-alternative-order-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `conditional alternative ${index} must reject a tainted callable flow: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const safeErrors = validateInterpreterSourceFixture(
+      "local-constructor-flow-controls.mts",
+      [
+        "class Safe { constructor(fn) { fn(); } }",
+        "new Safe(() => true);",
+        "class SafeDefault { constructor(fn = () => true) { fn(); } }",
+        "new SafeDefault();",
+        "class SafeRest { constructor(label, ...[fn]) { fn(); } }",
+        'new SafeRest("safe", () => true);',
+        "class SafeDestructure { constructor({ fn }) { fn(); } }",
+        "new SafeDestructure({ fn: () => true });",
+        "class SafeThis { consume(fn) { fn(); } constructor(fn) { this.consume(fn); } }",
+        "new SafeThis(() => true);",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      safeErrors,
+      [],
+      `safe constructor flows must remain allowed: ${JSON.stringify(safeErrors)}`,
+    );
+  });
+
+  it("composes bound wrappers, inherited receivers, and bounded local depth", () => {
+    const sensitiveCases = [
+      {
+        name: "nested bind",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "invoke.bind(null, database[key]).bind(null)();",
+        ].join("\n"),
+      },
+      {
+        name: "bound call",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const bound = invoke.bind(null, database[key]);",
+          "bound.call(null);",
+        ].join("\n"),
+      },
+      {
+        name: "bound Function.call wrapper",
+        source: [
+          "function consume(label, fn) { fn(); }",
+          "const bound = consume.call.bind(consume, null);",
+          "bound(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply.call",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "Reflect.apply.call(null, invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "Reflect.apply.apply",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "Reflect.apply.apply(null, [invoke, null, [database[key]]]);",
+        ].join("\n"),
+      },
+      {
+        name: "bound Reflect.apply wrapper",
+        source: [
+          "function invoke(fn) { fn(); }",
+          "const apply = Reflect.apply.bind(null);",
+          "apply.call(null, invoke, null, [database[key]]);",
+        ].join("\n"),
+      },
+      {
+        name: "getter bound this",
+        source: [
+          "const api = { consume(fn) { fn(); }, get invoke() { return this.consume.bind(this); } };",
+          "api.invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class field bound receiver",
+        source: [
+          "class Helper { consume(fn) { fn(); } invoke = this.consume.bind(this); }",
+          "new Helper().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "class field receiver alias",
+        source: [
+          "class Helper { consume(fn) { fn(); } invoke = this.consume; }",
+          "new Helper().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "inherited method",
+        source: [
+          "class Base { invoke(fn) { fn(); } }",
+          "class Derived extends Base {}",
+          "new Derived().invoke(database[key]);",
+        ].join("\n"),
+      },
+      {
+        name: "six-level wrapper",
+        source: [
+          "function one(fn) { two(fn); }",
+          "function two(fn) { three(fn); }",
+          "function three(fn) { four(fn); }",
+          "function four(fn) { five(fn); }",
+          "function five(fn) { six(fn); }",
+          "function six(fn) { fn(); }",
+          "one(database[key]);",
+        ].join("\n"),
+      },
+    ];
+    for (const [index, testCase] of sensitiveCases.entries()) {
+      const filename = `local-wrapper-composition-${index}.mts`;
+      const errors = validateInterpreterSourceFixture(filename, testCase.source);
+      assert.ok(
+        errors.some((error) => new RegExp(`db-mutation.*${filename}`, "i").test(error)),
+        `${testCase.name} must reject a tainted callable flow: ${JSON.stringify(errors)}`,
+      );
+    }
+
+    const safeErrors = validateInterpreterSourceFixture(
+      "local-wrapper-composition-controls.mts",
+      [
+        "function invoke(fn) { fn(); }",
+        "invoke.bind(null, () => true).bind(null)();",
+        "const safeBound = invoke.bind(null, () => true);",
+        "safeBound.call(null);",
+        "Reflect.apply.call(null, invoke, null, [() => true]);",
+        "Reflect.apply.apply(null, [invoke, null, [() => true]]);",
+        "function consume(label, fn) { fn(); }",
+        "const safeCall = consume.call.bind(consume, null);",
+        "safeCall(() => true);",
+        "const safeApplyBound = Reflect.apply.bind(null);",
+        "safeApplyBound.call(null, invoke, null, [() => true]);",
+        "const safeApi = { consume(fn) { fn(); }, get invoke() { return this.consume.bind(this); } };",
+        "safeApi.invoke(() => true);",
+        "class SafeAlias { consume(fn) { fn(); } invoke = this.consume; }",
+        "new SafeAlias().invoke(() => true);",
+        "class SafeBase { invoke(fn) { fn(); } }",
+        "class SafeDerived extends SafeBase {}",
+        "new SafeDerived().invoke(() => true);",
+      ].join("\n"),
+    );
+    assert.deepEqual(
+      safeErrors,
+      [],
+      `safe wrapper composition must remain allowed: ${JSON.stringify(safeErrors)}`,
+    );
+  });
+
   it("rejects an Interpreter boundary with no roots or no deny rules", () => {
     const root = minimalFixtureRoot();
     const contract = JSON.parse(
