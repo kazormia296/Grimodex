@@ -4078,6 +4078,25 @@ mod tests {
         )
         .expect("project prior Verify failure");
         db.with_conn(|conn| {
+            // Resolution is intentionally ordered by the durable timestamps,
+            // not by insertion order.  Move the seeded failure into the past
+            // so this fixture reaches the lifecycle writer; otherwise the
+            // freshly-created Verify Run is correctly a no-op when its
+            // completion time is not strictly newer than a same-millisecond
+            // failure Observation.
+            let prior_observed_at = "2000-01-01T00:00:00.000Z";
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_observations
+                    SET observed_at = ?1
+                  WHERE run_id = ?2",
+                params![prior_observed_at, failure_run_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_maintenance_finding_lifecycle
+                    SET observed_at = ?1
+                  WHERE run_id = ?2 AND lifecycle_state = 'new'",
+                params![prior_observed_at, failure_run_id],
+            )?;
             conn.execute_batch(
                 "CREATE TRIGGER reject_verify_terminal_lifecycle
                    BEFORE INSERT ON narrative_maintenance_finding_lifecycle
