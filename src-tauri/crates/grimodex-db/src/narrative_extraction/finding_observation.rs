@@ -1,10 +1,13 @@
 //! Finding Observation persistence (Gate C2 Lane C).
 //!
-//! A Finding Observation is a rebuildable diagnostic record of what a Run
-//! observed about a dependency edge / Freshness computation at a specific
-//! Semantic Epoch — it is never the current value.
-//! `policies/narrative/narrative-finding-contract.json` fixes
-//! `observationStorageClass: "rebuildable-derived-state"`,
+//! An edge-scoped Finding Observation is a rebuildable diagnostic record of
+//! what a Run observed about a dependency edge / Freshness computation at a
+//! specific Semantic Epoch — it is never the current value. The terminal
+//! maintenance-failure rule is the explicit per-rule exception: its
+//! `observationStorageClass: "durable-derived-history"` preserves immutable
+//! failure evidence across Run deletion and epoch rotation.
+//! `policies/narrative/narrative-finding-contract.json` fixes the contract-wide
+//! default `observationStorageClass: "rebuildable-derived-state"`,
 //! `epochBinding: "required"`, `freshnessSnapshotPolicy: "diagnostic-only"`,
 //! and `currentFreshnessLookup: "narrative-consumer-freshness"`: the durable
 //! Freshness authority lives in `narrative_consumer_freshness` only, and that
@@ -29,8 +32,11 @@ use super::finding_identity::{
 ///
 /// This is history, not state: it is what a specific Run (`run_id`) observed
 /// about `finding_key` as of a specific Semantic Epoch
-/// (`semantic_epoch_id`). It is safe to delete and rebuild from a fresh Run
-/// at any time — `observationStorageClass: "rebuildable-derived-state"`.
+/// (`semantic_epoch_id`). Edge-scoped rows are safe to delete and rebuild
+/// from a fresh Run at any time (`observationStorageClass:
+/// "rebuildable-derived-state"`). Terminal maintenance-failure rows are the
+/// explicitly declared durable-derived-history exception and retain their
+/// immutable failure code after the source Run is deleted.
 /// Never read this as the current Freshness value: that is
 /// `narrative_consumer_freshness` alone (`currentFreshnessLookup`), which
 /// this module does not read or write.

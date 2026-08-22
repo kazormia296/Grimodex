@@ -245,6 +245,18 @@ function validateFindingRuleRegistry(findingContract, errors) {
       );
     }
     seen.add(key);
+    if (rule.identityScope === "maintenance-work") {
+      if (rule.observationStorageClass !== "durable-derived-history") {
+        errors.push(
+          `maintenance-work rule must declare observationStorageClass durable-derived-history: ${key}`,
+        );
+      }
+      if (rule.writerAuthority !== "maintenance-run-finalization-transaction") {
+        errors.push(
+          `maintenance-work rule must declare writerAuthority maintenance-run-finalization-transaction: ${key}`,
+        );
+      }
+    }
   }
 }
 
@@ -299,6 +311,28 @@ function validateAuthorityMatrixLinkage(
     errors.push(
       "maintenance-finding-observation authority writePolicy must be evaluator-publish-only",
     );
+  }
+  const terminalFindingAuthority = byConcern.get(
+    "maintenance-terminal-finding-observation",
+  );
+  if (!terminalFindingAuthority) {
+    errors.push(
+      "semantic-core-authorities.json is missing the maintenance-terminal-finding-observation concern required by C2-5B-C",
+    );
+  } else {
+    if (
+      terminalFindingAuthority.canonicalAuthority !==
+      "maintenance-run-finalization-transaction"
+    ) {
+      errors.push(
+        "maintenance-terminal-finding-observation canonicalAuthority must be maintenance-run-finalization-transaction",
+      );
+    }
+    if (terminalFindingAuthority.writePolicy !== "maintenance-finalization-only") {
+      errors.push(
+        "maintenance-terminal-finding-observation writePolicy must be maintenance-finalization-only",
+      );
+    }
   }
   if (
     isObject(findingContract) &&

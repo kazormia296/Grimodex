@@ -41,6 +41,8 @@
       "ruleId": "narrative.maintenance-contract-failure",
       "version": 1,
       "identityScope": "maintenance-work",
+      "observationStorageClass": "durable-derived-history",
+      "writerAuthority": "maintenance-run-finalization-transaction",
       "observationFields": [
         "stableSubject",
         "failureCode",

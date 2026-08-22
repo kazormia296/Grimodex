@@ -176,6 +176,12 @@ function baseAuthorityMatrix(overrides = {}) {
         writePolicy: "evaluator-publish-only",
       },
       {
+        concern: "maintenance-terminal-finding-observation",
+        canonicalAuthority: "maintenance-run-finalization-transaction",
+        compatibilityMirror: null,
+        writePolicy: "maintenance-finalization-only",
+      },
+      {
         concern: "maintenance-attention",
         canonicalAuthority: "attention-typed-writer",
         compatibilityMirror: null,
@@ -320,6 +326,7 @@ describe("validate-execution-state-authority", () => {
           version: 1,
           identityScope: "maintenance-work",
           observationStorageClass: "durable-derived-history",
+          writerAuthority: "maintenance-run-finalization-transaction",
           observationFields: [
             "stableSubject",
             "failureCode",

@@ -14,6 +14,8 @@ pub const MAINTENANCE_FAILURE_FINDING_RULE_VERSION: u32 = 1;
 
 const EDGE_IDENTITY_SCOPE: &str = "edge";
 const MAINTENANCE_WORK_IDENTITY_SCOPE: &str = "maintenance-work";
+const DURABLE_DERIVED_HISTORY_STORAGE_CLASS: &str = "durable-derived-history";
+const MAINTENANCE_RUN_FINALIZATION_AUTHORITY: &str = "maintenance-run-finalization-transaction";
 const EDGE_REQUIRED_FIELDS: &[&str] =
     &["stableSubject", "edgeId", "reasonCode", "evidenceFreshness"];
 const MAINTENANCE_WORK_REQUIRED_FIELDS: &[&str] = &[
@@ -47,6 +49,17 @@ pub struct FindingRule {
     pub observation_fields: Vec<String>,
     #[serde(rename = "materialBasisFields")]
     pub material_basis_fields: Vec<String>,
+    /// Only the terminal maintenance rule may override the contract-wide
+    /// rebuildable observation default.  Keep this parsed at runtime so a
+    /// malformed bundled policy cannot silently fall back to an unsafe
+    /// default when the JSON schema is bypassed.
+    #[serde(rename = "observationStorageClass")]
+    pub observation_storage_class: Option<String>,
+    /// The terminal rule is written by the maintenance Run finalization
+    /// transaction, not by the evaluator publish authority used by edge
+    /// observations.
+    #[serde(rename = "writerAuthority")]
+    pub writer_authority: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -164,6 +177,40 @@ fn validate_finding_rule(rule: &FindingRule, index: usize) -> anyhow::Result<()>
         required_material_basis_fields,
         "materialBasisFields",
     )?;
+    match rule.identity_scope.as_str() {
+        EDGE_IDENTITY_SCOPE => {
+            anyhow::ensure!(
+                rule.observation_storage_class.is_none(),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: edge rule '{}@{}' must not override observationStorageClass",
+                rule.rule_id,
+                rule.version
+            );
+            anyhow::ensure!(
+                rule.writer_authority.is_none(),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: edge rule '{}@{}' must not override writerAuthority",
+                rule.rule_id,
+                rule.version
+            );
+        }
+        MAINTENANCE_WORK_IDENTITY_SCOPE => {
+            anyhow::ensure!(
+                rule.observation_storage_class.as_deref()
+                    == Some(DURABLE_DERIVED_HISTORY_STORAGE_CLASS),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: maintenance-work rule '{}@{}' must declare observationStorageClass '{}'",
+                rule.rule_id,
+                rule.version,
+                DURABLE_DERIVED_HISTORY_STORAGE_CLASS
+            );
+            anyhow::ensure!(
+                rule.writer_authority.as_deref() == Some(MAINTENANCE_RUN_FINALIZATION_AUTHORITY),
+                "NEX_FINDING_RULE_REGISTRY_INVALID: maintenance-work rule '{}@{}' must declare writerAuthority '{}'",
+                rule.rule_id,
+                rule.version,
+                MAINTENANCE_RUN_FINALIZATION_AUTHORITY
+            );
+        }
+        _ => unreachable!("identity scope validated above"),
+    }
     Ok(())
 }
 
@@ -378,6 +425,38 @@ mod tests {
         let mut duplicate_material = bundled;
         duplicate_material.material_basis_fields[1] = "stableSubject".to_string();
         assert!(validate_finding_rule(&duplicate_material, 0).is_err());
+    }
+
+    #[test]
+    fn bundled_rule_registry_requires_terminal_storage_and_writer_authority_overrides() {
+        let registry = bundled_finding_rule_registry().expect("bundled registry");
+        let maintenance = registry
+            .resolve(
+                MAINTENANCE_FAILURE_FINDING_RULE_ID,
+                MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
+            )
+            .expect("maintenance rule")
+            .clone();
+
+        let mut missing_storage_class = maintenance.clone();
+        missing_storage_class.observation_storage_class = None;
+        assert!(validate_finding_rule(&missing_storage_class, 0).is_err());
+
+        let mut wrong_storage_class = maintenance.clone();
+        wrong_storage_class.observation_storage_class =
+            Some("rebuildable-derived-state".to_string());
+        assert!(validate_finding_rule(&wrong_storage_class, 0).is_err());
+
+        let mut missing_writer_authority = maintenance.clone();
+        missing_writer_authority.writer_authority = None;
+        assert!(validate_finding_rule(&missing_writer_authority, 0).is_err());
+
+        let mut edge = registry
+            .resolve(BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION)
+            .expect("edge rule")
+            .clone();
+        edge.observation_storage_class = Some(DURABLE_DERIVED_HISTORY_STORAGE_CLASS.to_string());
+        assert!(validate_finding_rule(&edge, 0).is_err());
     }
 
     #[test]

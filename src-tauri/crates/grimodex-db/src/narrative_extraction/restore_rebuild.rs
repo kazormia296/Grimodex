@@ -25,6 +25,7 @@ use super::evaluator::{
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+    MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
 use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
@@ -916,10 +917,11 @@ pub struct DependencyGraphVerifyReport {
     /// (restore, migration, integrity repair), which
     /// `dependency-rebuild-derived` should refresh.
     pub edge_state_ids_outside_current_epoch: Vec<String>,
-    /// `narrative_maintenance_finding_observations` row whose
-    /// `semantic_epoch_id` is not the project's current Epoch -- same
-    /// staleness shape as `edge_state_ids_outside_current_epoch`, for the
-    /// Finding Observation history instead of the Edge State snapshot.
+    /// Rebuildable (edge-scoped) `narrative_maintenance_finding_observations`
+    /// row whose `semantic_epoch_id` is not the project's current Epoch.
+    /// Durable terminal-failure history is intentionally excluded: epoch
+    /// rotation does not invalidate the immutable evidence needed to explain
+    /// a terminal Run or resolve it after the Run ledger changes.
     pub finding_observation_ids_outside_current_epoch: Vec<String>,
     /// The concrete `dependency-repair` candidates this Verify found, for
     /// its one implemented repair category (`deactivate-duplicate-edge`):
@@ -1804,12 +1806,19 @@ fn finding_observation_ids_outside_epoch(
         "SELECT id
            FROM narrative_maintenance_finding_observations
           WHERE project_id = ?1 AND semantic_epoch_id != ?2
+            AND NOT (rule_id = ?3 AND rule_version = ?4)
           ORDER BY id ASC",
     )?;
     let rows = statement
-        .query_map(params![project_id, current_epoch_id], |row| {
-            row.get::<_, String>(0)
-        })?
+        .query_map(
+            params![
+                project_id,
+                current_epoch_id,
+                MAINTENANCE_FAILURE_FINDING_RULE_ID,
+                i64::from(MAINTENANCE_FAILURE_FINDING_RULE_VERSION),
+            ],
+            |row| row.get::<_, String>(0),
+        )?
         .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(rows)
 }

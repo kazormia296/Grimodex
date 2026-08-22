@@ -95,6 +95,8 @@
               "ruleId",
               "version",
               "identityScope",
+              "observationStorageClass",
+              "writerAuthority",
               "observationFields",
               "materialBasisFields"
             ],
@@ -102,6 +104,8 @@
               "ruleId": { "type": "string", "pattern": "^[a-z][a-z0-9._-]*$" },
               "version": { "type": "integer", "minimum": 1 },
               "identityScope": { "const": "maintenance-work" },
+              "observationStorageClass": { "const": "durable-derived-history" },
+              "writerAuthority": { "const": "maintenance-run-finalization-transaction" },
               "observationFields": {
                 "type": "array",
                 "minItems": 4,
