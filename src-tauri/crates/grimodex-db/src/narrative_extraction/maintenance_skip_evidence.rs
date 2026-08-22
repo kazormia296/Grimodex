@@ -12,6 +12,7 @@
 //! to a current contract merely because it was previously stored.
 
 use anyhow::{bail, ensure, Context, Result};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -82,6 +83,7 @@ pub struct CompletedRunSkipExpectation {
 #[serde(rename_all = "kebab-case")]
 pub enum CompletedRunSkipReason {
     NoRun,
+    AmbiguousLifecycle,
     LatestRunNotSuccessful,
     WorkKeyMismatch,
     OutcomeMissing,
@@ -124,6 +126,14 @@ struct LatestRun {
     work_key: Option<String>,
     completed_at: Option<String>,
     outcome_summary_json: Option<String>,
+    created_at: String,
+}
+
+enum LatestRunSelection {
+    None,
+    Ambiguous,
+    InvalidTimestamp,
+    Unique(Box<LatestRun>),
 }
 
 type PersistRunRow = (
@@ -137,15 +147,67 @@ type PersistRunRow = (
     i64,
 );
 
-type ReadRunRow = (
-    String,
-    String,
-    String,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-);
+fn parse_run_created_at(value: &str) -> Result<DateTime<Utc>> {
+    if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
+        return Ok(parsed.with_timezone(&Utc));
+    }
+    NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f")
+        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
+        .map(|parsed| DateTime::<Utc>::from_naive_utc_and_offset(parsed, Utc))
+        .with_context(|| {
+            format!(
+                "NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID: created_at '{value}' is not a supported instant"
+            )
+        })
+}
+
+fn select_latest_run(
+    conn: &Connection,
+    project_id: &str,
+    run_kind: &str,
+) -> Result<LatestRunSelection> {
+    let mut statement = conn.prepare(
+        "SELECT id, project_id, run_kind, status, semantic_epoch_id, work_key,
+                completed_at, outcome_summary_json, created_at
+           FROM narrative_extraction_runs
+          WHERE project_id = ?1 AND run_kind = ?2",
+    )?;
+    let rows = statement.query_map(params![project_id, run_kind], |row| {
+        Ok(LatestRun {
+            id: row.get(0)?,
+            project_id: row.get(1)?,
+            run_kind: row.get(2)?,
+            status: row.get(3)?,
+            semantic_epoch_id: row.get(4)?,
+            work_key: row.get(5)?,
+            completed_at: row.get(6)?,
+            outcome_summary_json: row.get(7)?,
+            created_at: row.get(8)?,
+        })
+    })?;
+    let mut candidates = Vec::new();
+    for row in rows {
+        let run = row?;
+        let created_at = match parse_run_created_at(&run.created_at) {
+            Ok(created_at) => created_at,
+            Err(_) => return Ok(LatestRunSelection::InvalidTimestamp),
+        };
+        candidates.push((created_at, run));
+    }
+    let Some(max_created_at) = candidates.iter().map(|(created_at, _)| *created_at).max() else {
+        return Ok(LatestRunSelection::None);
+    };
+    let mut maximal = candidates
+        .into_iter()
+        .filter_map(|(created_at, run)| (created_at == max_created_at).then_some(run));
+    let Some(latest) = maximal.next() else {
+        return Ok(LatestRunSelection::None);
+    };
+    if maximal.next().is_some() {
+        return Ok(LatestRunSelection::Ambiguous);
+    }
+    Ok(LatestRunSelection::Unique(Box::new(latest)))
+}
 
 /// Decide whether the latest Run for the requested project/Run Kind carries
 /// complete, current, successful skip evidence.
@@ -164,34 +226,23 @@ pub fn evaluate_completed_run_skip(
         });
     }
 
-    let latest = conn
-        .query_row(
-            "SELECT id, project_id, run_kind, status, semantic_epoch_id, work_key,
-                    completed_at, outcome_summary_json
-              FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY (julianday(created_at) IS NULL) DESC,
-                       julianday(created_at) DESC, created_at DESC, id DESC
-              LIMIT 1",
-            params![expected.project_id, expected.run_kind],
-            |row| {
-                Ok(LatestRun {
-                    id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    run_kind: row.get(2)?,
-                    status: row.get(3)?,
-                    semantic_epoch_id: row.get(4)?,
-                    work_key: row.get(5)?,
-                    completed_at: row.get(6)?,
-                    outcome_summary_json: row.get(7)?,
-                })
-            },
-        )
-        .optional()?;
-    let Some(latest) = latest else {
-        return Ok(CompletedRunSkipDecision::Rerun {
-            reason: CompletedRunSkipReason::NoRun,
-        });
+    let latest = match select_latest_run(conn, &expected.project_id, &expected.run_kind)? {
+        LatestRunSelection::None => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::NoRun,
+            })
+        }
+        LatestRunSelection::Ambiguous => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::AmbiguousLifecycle,
+            })
+        }
+        LatestRunSelection::InvalidTimestamp => {
+            return Ok(CompletedRunSkipDecision::Rerun {
+                reason: CompletedRunSkipReason::EvidenceMalformed,
+            })
+        }
+        LatestRunSelection::Unique(latest) => *latest,
     };
 
     // A newer failed/running/cancelled Run must not be bypassed by an older
@@ -383,41 +434,22 @@ pub fn read_completed_run_skip_evidence(
     project_id: &str,
     run_kind: &str,
 ) -> Result<Option<CompletedRunSkipEvidence>> {
-    let row: Option<ReadRunRow> = conn
-        .query_row(
-            "SELECT project_id, run_kind, status, semantic_epoch_id, work_key,
-                    completed_at, outcome_summary_json
-               FROM narrative_extraction_runs
-              WHERE project_id = ?1 AND run_kind = ?2
-              ORDER BY (julianday(created_at) IS NULL) DESC,
-                       julianday(created_at) DESC, created_at DESC, id DESC
-              LIMIT 1",
-            params![project_id, run_kind],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
-        )
-        .optional()?;
-    let Some((
-        row_project_id,
-        row_run_kind,
+    let latest = match select_latest_run(conn, project_id, run_kind)? {
+        LatestRunSelection::None
+        | LatestRunSelection::Ambiguous
+        | LatestRunSelection::InvalidTimestamp => return Ok(None),
+        LatestRunSelection::Unique(latest) => *latest,
+    };
+    let LatestRun {
+        project_id: row_project_id,
+        run_kind: row_run_kind,
         status,
-        row_epoch_id,
+        semantic_epoch_id: row_epoch_id,
         work_key,
         completed_at,
-        outcome_json,
-    )) = row
-    else {
-        return Ok(None);
-    };
+        outcome_summary_json: outcome_json,
+        ..
+    } = latest;
     if row_project_id != project_id || row_run_kind != run_kind {
         return Ok(None);
     }

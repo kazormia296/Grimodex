@@ -244,6 +244,7 @@ pub(crate) enum SystemRunWorkKeyReuse {
     /// `dependency-backfill`: an automatic-once trigger firing again while a
     /// prior attempt is still running, or after one already completed, must
     /// not create a second Run.
+    #[allow(dead_code)]
     RunningAndCompleted,
     /// `dependency-verify` / `dependency-rebuild-derived`: a second trigger
     /// while one is already running reuses it; a completed Run does not

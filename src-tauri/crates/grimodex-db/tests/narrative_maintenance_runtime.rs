@@ -534,7 +534,12 @@ fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
                  VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', 'completed', '{}',
                          '2026-08-23T11:00:00.000Z', '2026-08-23T11:00:00.000Z',
                          '2026-08-23T11:00:00.000Z', 'dependency-verify', ?3, ?4)",
-                params![id, PROJECT_ID, EPOCH_ID, "dependency-verify:epoch-c2-5a"],
+                params![
+                    id,
+                    PROJECT_ID,
+                    OLD_EPOCH_ID,
+                    "dependency-verify:epoch-c2-5a-old"
+                ],
             )?;
         }
         Ok(())
@@ -546,6 +551,55 @@ fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
     assert!(error
         .to_string()
         .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"));
+}
+
+#[test]
+fn discovery_ignores_old_epoch_ties_when_the_current_work_candidate_is_unique() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('current-backfill-marker', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+            params![PROJECT_ID, OLD_EPOCH_ID],
+        )?;
+        for id in ["old-tie-a", "old-tie-z"] {
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, created_at, completed_at, outcome_summary_json,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', 'completed', '{}',
+                         '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:01.000Z', '{}',
+                         'dependency-verify', ?3, 'dependency-verify:old-work')",
+                params![id, PROJECT_ID, EPOCH_ID],
+            )?;
+        }
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('current-unique', ?1, 'maintenance', '{}', '{}', 'digest', 'completed', '{}',
+                     '2026-08-23T11:00:00.000Z', '2026-08-23T11:00:01.000Z', '{}',
+                     'dependency-verify', ?2, 'dependency-verify:epoch-c2-5a-old')",
+            params![PROJECT_ID, OLD_EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed old tied and current unique lifecycle candidates");
+
+    let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect("unrelated old lifecycle ties must not block current discovery")
+        .expect("current Verify candidate must remain discoverable");
+    assert_eq!(discovered.run_kind, AutomaticRunKind::Verify);
+    assert_eq!(discovered.semantic_epoch_id.as_deref(), Some(OLD_EPOCH_ID));
 }
 
 #[test]

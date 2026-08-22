@@ -11,6 +11,8 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
 };
 use grimodex_db::Database;
 use rusqlite::params;
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 const PROJECT_ID: &str = "project-c2-5b-followup";
 const EPOCH_ID: &str = "epoch-c2-5b-followup";
@@ -136,6 +138,67 @@ fn a_completed_backfill_does_not_report_a_durable_remaining_page() {
     let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
         .expect("backfill cycle");
     assert_eq!(result, MaintenanceCycleResult::accepted(false));
+}
+
+#[test]
+fn malformed_completed_backfill_is_reexecuted_without_a_rediscovery_loop() {
+    let db = Arc::new(fixture_db());
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('malformed-backfill-completed', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'completed', '{}', '2026-08-22T00:00:00.000Z',
+                     '2026-08-22T00:00:01.000Z', '{}', 'backfill', ?2, ?3)"#,
+            params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
+        )?;
+        Ok(())
+    })
+    .expect("seed malformed completed Backfill");
+
+    let db_for_cycle = Arc::clone(&db);
+    let (result_tx, result_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = run_system_work_cycle(
+            &db_for_cycle,
+            &backfill_request(),
+            RecoveryMode::SameProcessLive,
+        );
+        let _ = result_tx.send(result);
+    });
+    let result = result_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("malformed completed Backfill must terminate its full cycle");
+    let result = result.expect("malformed completed Backfill must be rerunnable");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert!(!result.has_more);
+
+    let (run_count, valid_completed_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*),
+                        SUM(CASE WHEN status = 'completed'
+                                      AND outcome_summary_json LIKE '%backfill-complete%'
+                                 THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill'
+                    AND work_key = ?2",
+                params![PROJECT_ID, LEGACY_BACKFILL_WORK_KEY],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read rerun Backfill ledger");
+    assert_eq!(
+        run_count, 2,
+        "one fresh Backfill execution must replace the malformed marker"
+    );
+    assert_eq!(
+        valid_completed_count, 1,
+        "the rerun must leave one valid completion marker"
+    );
 }
 
 #[test]

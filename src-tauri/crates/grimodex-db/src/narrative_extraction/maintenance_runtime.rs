@@ -14,7 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::legacy_backfill::{
-    LEGACY_BACKFILL_ALGORITHM_VERSION, LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
+    is_valid_completed_backfill_marker, CompletedBackfillMarker,
+    LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
 use super::maintenance_skip_evidence::{
@@ -208,11 +209,12 @@ pub const LEGACY_BACKFILL_WORK_KEY: &str = WRITER_BACKFILL_WORK_KEY;
 pub const REBUILD_DERIVED_WORK_KEY: &str = "dependency-rebuild-derived";
 pub const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 
-/// Maximum number of coalesced work items accepted by one main-process cycle.
-/// A cycle is deliberately bounded so a burst of trigger events cannot turn
-/// one background call into an unbounded writer hold.  Project serialization
-/// remains the main scheduler's responsibility; this bound is the native
-/// boundary's last line of defence for callers that bypass that scheduler.
+/// Maximum number of work items dequeued and recovered by one main-process
+/// cycle. A cycle is deliberately bounded so a burst of trigger events or a
+/// malformed durable row cannot turn one background call into an unbounded
+/// writer hold. Project serialization remains the main scheduler's
+/// responsibility; this bound is the native boundary's last line of defence
+/// for callers that bypass that scheduler.
 pub const MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE: usize = 32;
 
 /// Main-only request DTO for the serialized system-work cycle.  This is not an
@@ -360,6 +362,7 @@ struct DurableMaintenanceRun {
     semantic_epoch_id: Option<String>,
     work_key: Option<String>,
     outcome_summary_json: Option<String>,
+    created_at: DateTime<Utc>,
     lifecycle_at: DateTime<Utc>,
 }
 
@@ -412,14 +415,15 @@ fn load_durable_maintenance_runs(
             semantic_epoch_id,
             work_key,
             outcome_summary_json,
-            created_at,
+            created_at_raw,
             started_at,
             completed_at,
         ) = row?;
         let lifecycle_raw = completed_at
             .as_deref()
             .or(started_at.as_deref())
-            .unwrap_or(created_at.as_str());
+            .unwrap_or(created_at_raw.as_str());
+        let created_at = parse_maintenance_instant(&created_at_raw)?;
         runs.push(DurableMaintenanceRun {
             run_id,
             run_kind,
@@ -428,23 +432,84 @@ fn load_durable_maintenance_runs(
             semantic_epoch_id,
             work_key,
             outcome_summary_json,
+            created_at,
             lifecycle_at: parse_maintenance_instant(lifecycle_raw)?,
         });
     }
     runs.sort_by_key(|run| Reverse(run.lifecycle_at));
-    for pair in runs.windows(2) {
-        let [first, second] = pair else {
-            continue;
-        };
-        anyhow::ensure!(
-            first.lifecycle_at != second.lifecycle_at,
-            "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: runs '{}' and '{}' share lifecycle instant {}",
-            first.run_id,
-            second.run_id,
-            first.lifecycle_at.to_rfc3339()
-        );
-    }
     Ok(runs)
+}
+
+fn is_canonical_maintenance_work(run: &DurableMaintenanceRun) -> bool {
+    match run.run_kind.as_str() {
+        "backfill" => run.work_key.as_deref() == Some(LEGACY_BACKFILL_WORK_KEY),
+        VERIFY_RUN_KIND => run
+            .semantic_epoch_id
+            .as_deref()
+            .zip(run.work_key.as_deref())
+            .is_some_and(|(epoch_id, work_key)| {
+                work_key == format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}")
+            }),
+        "semantic-index-rebuild" => run.work_key.as_deref() == Some(REBUILD_DERIVED_WORK_KEY),
+        _ => false,
+    }
+}
+
+/// Select a unique maximal lifecycle candidate from one discovery window.
+/// When current-epoch rows exist, older epochs are outside that window; they
+/// may still be terminal evidence (for example a historical Backfill marker)
+/// but must not make a unique current candidate ambiguous. If no current-epoch
+/// row exists, the available historical rows form the fallback window.
+fn select_latest_relevant_run(
+    runs: &[DurableMaintenanceRun],
+    current_epoch_id: Option<&str>,
+    predicate: impl Fn(&DurableMaintenanceRun) -> bool,
+) -> anyhow::Result<Option<DurableMaintenanceRun>> {
+    let candidates: Vec<&DurableMaintenanceRun> = runs
+        .iter()
+        .filter(|run| is_canonical_maintenance_work(run) && predicate(run))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let current_candidates: Vec<&DurableMaintenanceRun> = current_epoch_id
+        .map(|epoch_id| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|run| run.semantic_epoch_id.as_deref() == Some(epoch_id))
+                .collect()
+        })
+        .unwrap_or_default();
+    let relevant = if current_candidates.is_empty() {
+        candidates
+    } else {
+        current_candidates
+    };
+    // Terminal recovery can finish an interrupted row and create its fresh
+    // replacement within one millisecond. Use the row's creation instant as
+    // causal chronology before declaring a genuine lifecycle tie; UUIDs never
+    // participate in this ordering.
+    let max_lifecycle = relevant
+        .iter()
+        .map(|run| (run.lifecycle_at, run.created_at))
+        .max()
+        .ok_or_else(|| anyhow::anyhow!("NEX_MAINTENANCE_RUN_ORDER_EMPTY"))?;
+    let maximal: Vec<&DurableMaintenanceRun> = relevant
+        .into_iter()
+        .filter(|run| (run.lifecycle_at, run.created_at) == max_lifecycle)
+        .collect();
+    let maximal_ids = maximal
+        .iter()
+        .map(|run| run.run_id.as_str())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        maximal.len() == 1,
+        "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: runs {:?} share lifecycle instant {} in the relevant discovery window",
+        maximal_ids,
+        max_lifecycle.0.to_rfc3339()
+    );
+    Ok(maximal.first().map(|run| (*run).clone()))
 }
 
 fn is_completed_backfill_marker(
@@ -452,77 +517,18 @@ fn is_completed_backfill_marker(
     project_id: &str,
     run: &DurableMaintenanceRun,
 ) -> anyhow::Result<bool> {
-    if run.run_kind != "backfill"
-        || run.status != "completed"
-        || run.work_key.as_deref() != Some(LEGACY_BACKFILL_WORK_KEY)
-    {
-        return Ok(false);
-    }
-    let Some(epoch_id) = run
-        .semantic_epoch_id
-        .as_deref()
-        .filter(|value| !value.is_empty())
-    else {
-        return Ok(false);
-    };
-    let epoch_belongs_to_project: bool = conn.query_row(
-        "SELECT EXISTS(
-             SELECT 1 FROM narrative_semantic_epochs
-              WHERE id = ?1 AND project_id = ?2
-         )",
-        params![epoch_id, project_id],
-        |row| row.get::<_, i64>(0),
-    )? != 0;
-    if !epoch_belongs_to_project {
-        return Ok(false);
-    }
-
-    let Some(spec_json) = run.spec_json.as_deref() else {
-        return Ok(false);
-    };
-    let Ok(spec) = serde_json::from_str::<Value>(spec_json) else {
-        return Ok(false);
-    };
-    if spec.get("backfillAlgorithmVersion").and_then(Value::as_str)
-        != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
-    {
-        return Ok(false);
-    }
-
-    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
-        return Ok(false);
-    };
-    let Ok(outcome) = serde_json::from_str::<Value>(outcome_json) else {
-        return Ok(false);
-    };
-    if outcome.get("maintenancePhase").and_then(Value::as_str) != Some("backfill-complete")
-        || outcome
-            .get("backfillAlgorithmVersion")
-            .and_then(Value::as_str)
-            != Some(LEGACY_BACKFILL_ALGORITHM_VERSION)
-        || outcome.get("semanticEpochId").and_then(Value::as_str) != Some(epoch_id)
-    {
-        return Ok(false);
-    }
-    let Some(summary) = outcome.get("summary").and_then(Value::as_object) else {
-        return Ok(false);
-    };
-    Ok(summary
-        .get("epoch_created")
-        .and_then(Value::as_bool)
-        .is_some()
-        && summary
-            .get("contributions_created")
-            .and_then(Value::as_u64)
-            .is_some()
-        && summary
-            .get("edges_created")
-            .and_then(Value::as_u64)
-            .is_some()
-        && summary
-            .get("applications_without_run_id")
-            .and_then(Value::as_u64)
-            .is_some())
+    is_valid_completed_backfill_marker(
+        conn,
+        project_id,
+        &CompletedBackfillMarker {
+            run_kind: &run.run_kind,
+            status: &run.status,
+            spec_json: run.spec_json.as_deref(),
+            semantic_epoch_id: run.semantic_epoch_id.as_deref(),
+            work_key: run.work_key.as_deref(),
+            outcome_summary_json: run.outcome_summary_json.as_deref(),
+        },
+    )
 }
 
 /// Rediscover the next durable phase from the Run ledger. Callers must use
@@ -540,11 +546,10 @@ pub fn discover_durable_maintenance_work(
         let current_epoch_id =
             super::semantic_epoch::get_current_epoch(conn, &project_id)?.map(|epoch| epoch.id);
         let runs = load_durable_maintenance_runs(conn, &project_id)?;
-        let active = runs
-            .iter()
-            .find(|run| matches!(run.status.as_str(), "pending" | "running"))
-            .cloned();
-        let latest = runs.first().cloned();
+        let active = select_latest_relevant_run(&runs, current_epoch_id.as_deref(), |run| {
+            matches!(run.status.as_str(), "pending" | "running")
+        })?;
+        let latest = select_latest_relevant_run(&runs, current_epoch_id.as_deref(), |_| true)?;
         let mut completed_backfill = None;
         for run in &runs {
             if is_completed_backfill_marker(conn, &project_id, run)? {
@@ -796,17 +801,22 @@ pub fn run_system_work_cycle_with_modes(
     }
 
     let mut queue = std::collections::VecDeque::from(work.clone());
-    let mut dispatch_count = 0usize;
+    let mut dequeue_count = 0usize;
     let mut dispatched_any = false;
     let mut coalesced_active = false;
     let mut has_more = false;
     let mut project_ids = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());
-        if dispatch_count >= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE {
+        // Bound both actual adapter dispatch and dequeue/recovery progress.
+        // Follow-up discovery can enqueue more work without incrementing the
+        // dequeue bound; limiting only dispatches would let malformed durable
+        // rows spin forever before the boundary is reached.
+        if dequeue_count >= MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE {
             has_more = true;
             break;
         }
+        dequeue_count += 1;
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
         // completed rows are intentionally never reused.
@@ -899,7 +909,6 @@ pub fn run_system_work_cycle_with_modes(
                     continue;
                 }
                 dispatch_enabled_work(db, &item)?;
-                dispatch_count += 1;
                 dispatched_any = true;
                 if let Some(next) = discover_durable_maintenance_work(
                     db,
@@ -1586,6 +1595,65 @@ pub fn read_run_ledger(db: &Database, work: &WorkKey) -> anyhow::Result<RunLedge
     read_run_ledger_for_epoch(db, work, None)
 }
 
+/// Check the same strict Backfill completion marker used by durable
+/// discovery. Generic Run-ledger counts intentionally include malformed
+/// terminal rows for diagnostics, but recovery must not treat those rows as a
+/// completed once-boundary or it can rediscover the same work forever.
+fn has_valid_completed_backfill_marker(
+    db: &Database,
+    work: &WorkKey,
+    expected_semantic_epoch_id: Option<&str>,
+) -> anyhow::Result<bool> {
+    if work.run_kind != AutomaticRunKind::Backfill || work.work_key != LEGACY_BACKFILL_WORK_KEY {
+        return Ok(false);
+    }
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT run_kind, status, spec_json, semantic_epoch_id, work_key,
+                    outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                AND status = 'completed'",
+        )?;
+        let rows = statement.query_map(
+            params![work.project_id, work.run_kind.as_str(), work.work_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                ))
+            },
+        )?;
+        for row in rows {
+            let (run_kind, status, spec_json, epoch_id, work_key, outcome_json) = row?;
+            if expected_semantic_epoch_id
+                .is_some_and(|expected| epoch_id.as_deref() != Some(expected))
+            {
+                continue;
+            }
+            if is_valid_completed_backfill_marker(
+                conn,
+                &work.project_id,
+                &CompletedBackfillMarker {
+                    run_kind: &run_kind,
+                    status: &status,
+                    spec_json: spec_json.as_deref(),
+                    semantic_epoch_id: epoch_id.as_deref(),
+                    work_key: work_key.as_deref(),
+                    outcome_summary_json: outcome_json.as_deref(),
+                },
+            )? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    })
+}
+
 /// Decide whether the next automatic request should reuse, retry, skip, or
 /// stop based on the durable Run ledger and the current failure class.
 pub fn decide_run_recovery(
@@ -1612,6 +1680,8 @@ pub fn decide_run_recovery_for_epoch(
     failure_message: Option<&str>,
 ) -> anyhow::Result<RecoveryDecision> {
     let counts = read_run_ledger_for_epoch(db, work, expected_semantic_epoch_id)?;
+    let has_valid_backfill_marker =
+        has_valid_completed_backfill_marker(db, work, expected_semantic_epoch_id)?;
     let durable_failure_message =
         failure_message.or(counts.latest_failed_terminal_reason_code.as_deref());
     let mut current_active_run_ids = counts.running_run_ids.clone();
@@ -1637,6 +1707,7 @@ pub fn decide_run_recovery_for_epoch(
     } else if work.run_kind == AutomaticRunKind::Backfill
         && counts.completed_runs > 0
         && counts.failed_runs == 0
+        && has_valid_backfill_marker
         && durable_failure_message.is_none()
     {
         RecoveryAction::SkipCompleted {
