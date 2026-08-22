@@ -63,11 +63,11 @@ use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
     ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
-    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
-    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
-    VerifyNarrativeDependencyGraphPayload,
+    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
+    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
+    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -113,6 +113,15 @@ fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
     format!("authority:{}", authority.identity())
 }
 
+fn narrative_maintenance_binding_for_authority(
+    state: &AppState,
+    authority: &PinnedWorkspaceDb,
+) -> MaintenanceWorkspaceBinding {
+    state
+        .narrative_maintenance_recovery_gate
+        .binding_for_authority(&narrative_authority_id(authority))
+}
+
 fn idempotency_receipt_exists(
     db: &Database,
     domain: &str,
@@ -130,13 +139,20 @@ fn idempotency_receipt_exists(
     })
 }
 
-fn emit_narrative_epoch_rotated(state: &AppState, project_id: &str, operation: &str) {
+fn emit_narrative_epoch_rotated(
+    state: &AppState,
+    binding: &MaintenanceWorkspaceBinding,
+    project_id: &str,
+    operation: &str,
+) {
     state.events.emit(
         NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT,
         serde_json::json!({
             "projectId": project_id,
             "operation": operation,
             "reason": "semantic-epoch-rotated",
+            "authorityId": binding.authority_id,
+            "generation": binding.generation,
         }),
     );
 }
@@ -2449,14 +2465,22 @@ impl Backend {
                 .narrative_maintenance_mutation_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let (result, replayed) = with_db_state(&state.ws, |db| {
+            let authority = active_database(&state.ws)?;
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let (result, replayed) = {
+                let db = authority.db();
                 let replayed =
                     idempotency_receipt_exists(db, "project_snapshot_restore", &request_id)?;
                 let result = project_snapshots::apply_project_snapshot_restore(db, payload)?;
-                Ok((result, replayed))
-            })?;
+                (result, replayed)
+            };
             if !replayed && !result.no_op {
-                emit_narrative_epoch_rotated(&state, &project_id, "project-snapshot-restore");
+                emit_narrative_epoch_rotated(
+                    &state,
+                    &binding,
+                    &project_id,
+                    "project-snapshot-restore",
+                );
             }
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
@@ -3357,17 +3381,20 @@ impl Backend {
                 .narrative_maintenance_mutation_lock
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let (report, replayed) = with_db_state(&state.ws, |db| {
+            let authority = active_database(&state.ws)?;
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            let (report, replayed) = {
+                let db = authority.db();
                 let replayed = idempotency_receipt_exists(db, "repair_integrity", &request_id)?;
                 let report = db.repair_integrity(payload)?;
-                Ok((report, replayed))
-            })?;
+                (report, replayed)
+            };
             let changed = report.codex_sources_fixed > 0
                 || report.snippet_sources_fixed > 0
                 || report.snippet_scenes_fixed > 0
                 || report.change_event_uid.is_some();
             if !replayed && changed {
-                emit_narrative_epoch_rotated(&state, &project_id, "integrity-repair");
+                emit_narrative_epoch_rotated(&state, &binding, &project_id, "integrity-repair");
             }
             Ok(serde_json::to_string(&report).map_err(anyhow::Error::from)?)
         })

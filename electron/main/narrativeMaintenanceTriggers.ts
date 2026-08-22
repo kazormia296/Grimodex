@@ -15,6 +15,10 @@ export const NARRATIVE_MAINTENANCE_REDISCOVERY_DELAY_MS = 250;
 export const NARRATIVE_MAINTENANCE_MAX_REDISCOVERY_ATTEMPTS = 3;
 
 interface NarrativeMaintenanceDiscoveryBackend {
+  getNarrativeMaintenanceWorkspaceBinding?():
+    | string
+    | NarrativeMaintenanceWorkspaceBinding
+    | null;
   discoverNarrativeMaintenanceWork?(
     reason: NarrativeMaintenanceWakeReason,
   ): Promise<unknown>;
@@ -69,6 +73,35 @@ function normalizeBinding(raw: unknown): NarrativeMaintenanceWorkspaceBinding {
     authorityId: raw.authorityId,
     generation: raw.generation as number,
   };
+}
+
+function normalizeOptionalBinding(
+  raw: unknown,
+): NarrativeMaintenanceWorkspaceBinding | null {
+  const parsed = parseJsonWire(raw);
+  return parsed === null || parsed === undefined ? null : normalizeBinding(parsed);
+}
+
+function sameBinding(
+  left: NarrativeMaintenanceWorkspaceBinding | null,
+  right: NarrativeMaintenanceWorkspaceBinding | null,
+): boolean {
+  return (
+    left !== null &&
+    right !== null &&
+    left.authorityId === right.authorityId &&
+    left.generation === right.generation
+  );
+}
+
+function epochEventBinding(payload: unknown): NarrativeMaintenanceWorkspaceBinding {
+  if (!isRecord(payload)) {
+    throw new Error("narrative maintenance epoch event has no workspace binding");
+  }
+  return normalizeBinding({
+    authorityId: payload.authorityId,
+    generation: payload.generation,
+  });
 }
 
 function normalizeWork(raw: unknown): NarrativeMaintenanceRequest[] {
@@ -368,6 +401,30 @@ export function createNarrativeMaintenanceTriggerCoordinator(
           channel !== "narrative-maintenance:epoch-rotated")
       ) {
         return;
+      }
+      if (channel === "narrative-maintenance:epoch-rotated") {
+        try {
+          const eventBinding = epochEventBinding(payload);
+          const getBinding = backend?.getNarrativeMaintenanceWorkspaceBinding;
+          if (typeof getBinding !== "function") {
+            warn(
+              "[narrative-maintenance] ignored epoch event: native binding unavailable",
+            );
+            return;
+          }
+          const currentBinding = normalizeOptionalBinding(
+            getBinding.call(backend),
+          );
+          if (!sameBinding(eventBinding, currentBinding)) {
+            return;
+          }
+        } catch (error) {
+          warn(
+            "[narrative-maintenance] ignored malformed or stale epoch event:",
+            error,
+          );
+          return;
+        }
       }
       const generation = ++chainGeneration;
       rediscoveryAttempts = 0;
