@@ -415,6 +415,7 @@ requirements:
       - policies/narrative/narrative-dependency-role-registry.json
       - policies/narrative/fixtures/dependency-role-contract.json
       - policies/narrative/fixtures/canonical-json-number-parity.json
+      - policies/narrative/narrative-finding-contract.json
       - policies/narrative/schemas/mutation-authority-routes.schema.json
       - policies/narrative/schemas/semantic-state-vocabulary.schema.json
       - policies/narrative/schemas/semantic-core-authorities.schema.json
@@ -423,6 +424,7 @@ requirements:
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/schemas/narrative-ir-contract.schema.json
+      - policies/narrative/schemas/narrative-finding-contract.schema.json
       - src/features/narrative-semantic-core/contracts/index.ts
       - src/features/narrative-semantic-core/contracts/scopeV2.ts
       - src/features/narrative-semantic-core/contracts/narrativeIr.ts
@@ -446,6 +448,11 @@ requirements:
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.ts
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.ts
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/finding_identity.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/finding_observation.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/inbox_read_model.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/terminal_failure.rs
+      - scripts/quality/validate-execution-state-authority.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
@@ -468,6 +475,8 @@ requirements:
       - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - scripts/quality/validate-execution-state-authority.test.mjs
+      - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src/features/narrative-extraction/reconciler/chroniclePromptBuilder.test.ts
       - src/features/narrative-extraction/proposals/chronicleSceneEventAdapter.test.ts
       - scripts/quality/impact-map.test.mjs
