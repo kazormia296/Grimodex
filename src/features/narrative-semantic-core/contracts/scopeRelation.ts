@@ -145,6 +145,27 @@ interface BoundComparison {
   readonly usedOracle: boolean;
 }
 
+type BoundComparisonCache = Map<string, Map<string, BoundComparison>>;
+
+function cachedBoundComparison(
+  cache: BoundComparisonCache,
+  leftRef: string,
+  rightRef: string,
+): BoundComparison | undefined {
+  return cache.get(leftRef)?.get(rightRef);
+}
+
+function cacheBoundComparison(
+  cache: BoundComparisonCache,
+  leftRef: string,
+  rightRef: string,
+  comparison: BoundComparison,
+): void {
+  const row = cache.get(leftRef) ?? new Map<string, BoundComparison>();
+  row.set(rightRef, comparison);
+  cache.set(leftRef, row);
+}
+
 interface OrderOracleValidationState {
   readonly comparisons: Map<string, Map<string, -1 | 0 | 1 | "unresolved">>;
   readonly equalityParent: Map<string, string>;
@@ -825,11 +846,10 @@ function temporalConstraintRelation(
   const orderAxis = ORDER_AXIS_BY_SCOPE_AXIS[axis];
   const oracle = orderOracleFor(axis, options);
   const oracleState = createOrderOracleValidationState();
-  const cache = new Map<string, BoundComparison>();
+  const cache: BoundComparisonCache = new Map();
   let orderOracleUsed = false;
   const compareRef = (leftRef: string, rightRef: string): BoundComparison => {
-    const key = `${leftRef}\u0000${rightRef}`;
-    const cached = cache.get(key);
+    const cached = cachedBoundComparison(cache, leftRef, rightRef);
     if (cached) return cached;
     const comparison = compareReferences(
       leftRef,
@@ -838,7 +858,7 @@ function temporalConstraintRelation(
       oracleState,
     );
     orderOracleUsed ||= comparison.usedOracle;
-    cache.set(key, comparison);
+    cacheBoundComparison(cache, leftRef, rightRef, comparison);
     return comparison;
   };
   const leftValidation = validateInterval(left, axis, compareRef);
@@ -1225,10 +1245,9 @@ export function validateScopeOrder(
     return { status: "unresolved", reason: constraint.reason };
   }
   const oracleState = createOrderOracleValidationState();
-  const cache = new Map<string, BoundComparison>();
+  const cache: BoundComparisonCache = new Map();
   const compareRef = (leftRef: string, rightRef: string): BoundComparison => {
-    const key = `${leftRef}\u0000${rightRef}`;
-    const cached = cache.get(key);
+    const cached = cachedBoundComparison(cache, leftRef, rightRef);
     if (cached) return cached;
     const comparison = compareReferences(
       leftRef,
@@ -1236,7 +1255,7 @@ export function validateScopeOrder(
       oracle,
       oracleState,
     );
-    cache.set(key, comparison);
+    cacheBoundComparison(cache, leftRef, rightRef, comparison);
     return comparison;
   };
   return validateInterval(

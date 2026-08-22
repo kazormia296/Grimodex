@@ -311,6 +311,46 @@ describe("Narrative Scope Relation S2 contract", () => {
     expect(result.basis).toEqual(basis);
   });
 
+  it("keeps embedded-NUL reference pairs distinct in the interval cache", () => {
+    const oracle: ScopeOrderOracle = {
+      axis: "story-time",
+      revisionToken: "story-time/embedded-nul",
+      compare(leftRef, rightRef) {
+        if (leftRef === rightRef) return 0;
+        if (leftRef === "a" && rightRef === "b\u0000c") return -1;
+        if (leftRef === "b\u0000c" && rightRef === "a") return 1;
+        if (leftRef === "a\u0000b" && rightRef === "c") return 1;
+        if (leftRef === "c" && rightRef === "a\u0000b") return -1;
+        return "unresolved";
+      },
+    };
+
+    expect(() =>
+      compareScopeRelation(
+        scopeWith({
+          storyTime: {
+            kind: "interval",
+            from: { ref: "a", inclusive: true },
+            until: { ref: "b\u0000c", inclusive: true },
+          },
+        }),
+        scopeWith({
+          storyTime: {
+            kind: "interval",
+            from: { ref: "a\u0000b", inclusive: true },
+            until: { ref: "c", inclusive: true },
+          },
+        }),
+        { orderOracles: { "story-time": oracle }, basis },
+      ),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "ScopeRelationContractError",
+        code: "invalid-order",
+      }),
+    );
+  });
+
   it("fails closed when an Order Oracle violates antisymmetry", () => {
     const contradictoryOracle = orderedOracle("story-time", "story-time/1", [
       "story:a",

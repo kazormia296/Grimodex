@@ -7,7 +7,10 @@
 
 use std::{cmp::Ordering, collections::HashSet};
 
-use serde::{Deserialize, Serialize};
+use serde::{
+    de::{self, Visitor},
+    Deserialize, Deserializer, Serialize,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -260,7 +263,9 @@ pub enum DependencySelector {
     #[serde(rename = "text-range")]
     TextRange {
         unit: String,
+        #[serde(deserialize_with = "deserialize_integer_u64")]
         from: u64,
+        #[serde(deserialize_with = "deserialize_integer_u64")]
         to: u64,
         #[serde(rename = "normalizerVersion")]
         normalizer_version: String,
@@ -388,6 +393,83 @@ pub enum DependencyContractError {
     InvalidDigestEntry,
 }
 
+fn integer_from_f64(value: f64) -> Option<u64> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value >= u64::MAX as f64 {
+        return None;
+    }
+    Some(value as u64)
+}
+
+/// Deserialize a u64 by numeric value so JSON spellings such as `1.0`, `1e0`,
+/// and `-0` have the same contract meaning as `1`, `1`, and `0`.
+fn deserialize_integer_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct IntegerU64Visitor;
+
+    impl<'de> Visitor<'de> for IntegerU64Visitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a finite, non-negative integer-valued JSON number")
+        }
+
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(value)
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            u64::try_from(value).map_err(|_| E::custom("integer is negative"))
+        }
+
+        fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            integer_from_f64(value)
+                .ok_or_else(|| E::custom("number is negative, fractional, or overflows u64"))
+        }
+    }
+
+    deserializer.deserialize_any(IntegerU64Visitor)
+}
+
+fn integer_json_u64(value: &Value) -> Option<u64> {
+    let number = value.as_number()?;
+    number
+        .as_u64()
+        .or_else(|| number.as_f64().and_then(integer_from_f64))
+}
+
+fn normalize_selector_integer_spelling(value: &Value) -> Result<Value, DependencyContractError> {
+    let Some(object) = value.as_object() else {
+        return Ok(value.clone());
+    };
+    if object.get("kind").and_then(Value::as_str) != Some("text-range") {
+        return Ok(value.clone());
+    }
+
+    let mut normalized = object.clone();
+    for field in ["from", "to"] {
+        if let Some(bound) = object.get(field) {
+            let integer = integer_json_u64(bound).ok_or_else(|| {
+                DependencyContractError::InvalidSelector(format!(
+                    "text-range {field} must be a finite integer-valued number"
+                ))
+            })?;
+            normalized.insert(field.to_owned(), Value::from(integer));
+        }
+    }
+    Ok(Value::Object(normalized))
+}
+
 fn is_digest(value: &str) -> bool {
     let Some(hex) = value.strip_prefix("sha256:") else {
         return false;
@@ -489,12 +571,14 @@ pub fn validate_dependency_selector_value(
     value: &Value,
     source: Option<&str>,
 ) -> Result<DependencySelector, DependencyContractError> {
-    let selector: DependencySelector = serde_json::from_value(value.clone()).map_err(|error| {
-        DependencyContractError::InvalidSelector(format!("selector shape: {error}"))
-    })?;
+    let normalized_value = normalize_selector_integer_spelling(value)?;
+    let selector: DependencySelector =
+        serde_json::from_value(normalized_value.clone()).map_err(|error| {
+            DependencyContractError::InvalidSelector(format!("selector shape: {error}"))
+        })?;
     let parsed_value = serde_json::to_value(&selector)
         .map_err(|error| DependencyContractError::CanonicalJson(error.to_string()))?;
-    if parsed_value != *value {
+    if parsed_value != normalized_value {
         return Err(DependencyContractError::InvalidSelector(
             "selector contains unknown or non-canonical fields".to_string(),
         ));

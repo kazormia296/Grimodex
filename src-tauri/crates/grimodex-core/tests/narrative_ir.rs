@@ -109,6 +109,40 @@ fn validates_scope_and_reuses_k0_for_canonical_bytes_and_digest() {
 }
 
 #[test]
+fn accepts_integer_valued_raw_json_schema_versions() {
+    for spelling in ["2.0", "2e0"] {
+        let mut scope = valid_scope();
+        scope["schemaVersion"] = serde_json::from_str(spelling).expect("schema number");
+        assert!(
+            validate_narrative_scope_v2(&scope).is_ok(),
+            "scope {spelling}"
+        );
+        assert_eq!(
+            canonical_narrative_scope_v2(&scope).expect("scope canonicalizes"),
+            canonical_narrative_scope_v2(&valid_scope()).expect("canonical scope")
+        );
+
+        let mut envelope = valid_envelope();
+        envelope["schemaVersion"] = serde_json::from_str(spelling).expect("envelope number");
+        envelope["assertion"]["scope"]["schemaVersion"] =
+            serde_json::from_str(spelling).expect("nested schema number");
+        assert!(
+            validate_narrative_revision_envelope_v2(&envelope).is_ok(),
+            "envelope {spelling}"
+        );
+    }
+
+    for spelling in ["2.5", "-1.0", "18446744073709551616.0"] {
+        let mut scope = valid_scope();
+        scope["schemaVersion"] = serde_json::from_str(spelling).expect("schema number");
+        assert!(
+            validate_narrative_scope_v2(&scope).is_err(),
+            "scope {spelling} must be rejected"
+        );
+    }
+}
+
+#[test]
 fn rejects_unknown_scope_versions_axes_vocabularies_and_malformed_constraints() {
     let mut candidate = valid_scope();
     candidate["schemaVersion"] = json!(3);

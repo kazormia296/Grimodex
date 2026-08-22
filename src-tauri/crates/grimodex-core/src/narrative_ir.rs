@@ -82,6 +82,25 @@ fn non_empty_string(value: &Value) -> bool {
     value.as_str().is_some_and(|text| !text.trim().is_empty())
 }
 
+/// Read an unsigned integer by numeric value rather than JSON number spelling.
+///
+/// `Value::as_u64` intentionally rejects a JSON number such as `2.0`, even
+/// though JavaScript's `JSON.parse` produces the same Number as `2`.  Keep the
+/// contract numeric while still rejecting negative values, fractions, and
+/// values outside the `u64` domain.  `-0` is numeric zero and is therefore
+/// accepted here.
+fn integer_json_u64(value: &Value) -> Option<u64> {
+    let number = value.as_number()?;
+    if let Some(integer) = number.as_u64() {
+        return Some(integer);
+    }
+    let float = number.as_f64()?;
+    if !float.is_finite() || float < 0.0 || float.fract() != 0.0 || float >= u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
+}
+
 fn require<'a>(
     value: &'a Map<String, Value>,
     key: &str,
@@ -232,7 +251,8 @@ pub fn validate_narrative_scope_v2(value: &Value) -> Result<(), NarrativeIrValid
         ],
         "scope",
     )?;
-    if require(value, "schemaVersion", "scope")?.as_u64() != Some(NARRATIVE_SCOPE_V2_SCHEMA_VERSION)
+    if integer_json_u64(require(value, "schemaVersion", "scope")?)
+        != Some(NARRATIVE_SCOPE_V2_SCHEMA_VERSION)
     {
         return Err(validation_error(
             "unsupported-schema-version",
@@ -975,7 +995,7 @@ pub fn validate_narrative_revision_envelope_v2(
         ],
         "envelope",
     )?;
-    if require(value, "schemaVersion", "envelope")?.as_u64()
+    if integer_json_u64(require(value, "schemaVersion", "envelope")?)
         != Some(NARRATIVE_IR_ENVELOPE_V2_SCHEMA_VERSION)
     {
         return Err(validation_error(

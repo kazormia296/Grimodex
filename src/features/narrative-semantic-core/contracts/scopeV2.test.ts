@@ -34,6 +34,17 @@ describe("Narrative Scope V2 structural contract", () => {
     );
   });
 
+  it("accepts integer-valued schema versions after JSON parsing", () => {
+    const scope = JSON.parse(
+      '{"schemaVersion":2.0,"registryVersion":"narrative-scope/2","timeline":{"kind":"any"},"worldline":{"kind":"any"},"scene":{"kind":"exact","ref":"scene:1"},"viewpoint":{"kind":"any"},"knowledgeHolder":{"kind":"any"},"audience":{"kind":"any"},"narrativeLayer":{"kind":"any"},"storyTime":{"kind":"any"},"readingOrder":{"kind":"any"}}',
+    );
+
+    expect(validateNarrativeScopeV2(scope)).toEqual({ valid: true });
+    expect(canonicalNarrativeScopeV2(scope)).toBe(
+      canonicalNarrativeScopeV2(validScope()),
+    );
+  });
+
   it.each([
     [
       "unknown schema version",

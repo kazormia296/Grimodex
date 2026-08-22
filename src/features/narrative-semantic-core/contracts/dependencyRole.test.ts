@@ -120,6 +120,24 @@ describe("narrative dependency role contract", () => {
     });
   });
 
+  it("accepts integer-valued raw JSON spellings for UTF-16 bounds", () => {
+    for (const [from, to] of [
+      ["0.0", "1.0"],
+      ["-0", "1"],
+      ["0e0", "1e0"],
+    ] as const) {
+      const selector = JSON.parse(
+        `{"kind":"text-range","unit":"utf16","from":${from},"to":${to},"normalizerVersion":"gdx-canonical-text/1"}`,
+      );
+      expect(validateDependencySelector(selector)).toMatchObject({
+        valid: true,
+      });
+      expect(canonicalizeDependencySelector(selector)).toBe(
+        '{"from":0,"kind":"text-range","normalizerVersion":"gdx-canonical-text/1","to":1,"unit":"utf16"}',
+      );
+    }
+  });
+
   it("rejects a text range whose normalizer version is not trimmed", () => {
     const fixtureCase = dependencyFixture.cases.find(
       (candidate) =>

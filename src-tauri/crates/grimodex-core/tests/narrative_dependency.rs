@@ -2,10 +2,11 @@ use grimodex_core::narrative_dependency::{
     aggregate_dependency_build_actions, canonicalize_dependency_selector,
     canonicalize_dependency_set, compute_dependency_key, compute_dependency_set_digest,
     evaluate_dependency_effect, load_dependency_role_registry, validate_dependency_selector,
-    ActionRequirement, BuildAction, DependencyEffect, DependencyEffectInput, DependencySelector,
-    DependencySetDigestEntry, EvidenceFreshness,
+    validate_dependency_selector_value, ActionRequirement, BuildAction, DependencyEffect,
+    DependencyEffectInput, DependencySelector, DependencySetDigestEntry, EvidenceFreshness,
 };
 use serde::Deserialize;
+use serde_json::Value;
 
 #[derive(Debug, Deserialize)]
 struct Fixture {
@@ -143,6 +144,36 @@ fn rejects_dependency_text_ranges_beyond_javascript_safe_integer() {
     let selector: DependencySelector =
         serde_json::from_value(case["selector"].clone()).expect("text range selector");
     assert!(validate_dependency_selector(&selector, None).is_err());
+}
+
+#[test]
+fn accepts_integer_valued_raw_json_spellings_for_dependency_bounds() {
+    for (from, to) in [("0.0", "1.0"), ("-0", "1"), ("0e0", "1e0")] {
+        let value: Value = serde_json::from_str(&format!(
+            r#"{{"kind":"text-range","unit":"utf16","from":{from},"to":{to},"normalizerVersion":"gdx-canonical-text/1"}}"#
+        ))
+        .expect("raw selector parses");
+        let direct: DependencySelector =
+            serde_json::from_value(value.clone()).expect("integer-valued bounds deserialize");
+        let validated = validate_dependency_selector_value(&value, None)
+            .expect("integer-valued bounds validate");
+        assert_eq!(direct, validated);
+        assert_eq!(
+            canonicalize_dependency_selector(&validated).expect("selector canonicalizes"),
+            r#"{"from":0,"kind":"text-range","normalizerVersion":"gdx-canonical-text/1","to":1,"unit":"utf16"}"#
+        );
+    }
+
+    for (from, to) in [("-1.0", "1"), ("0", "1.5"), ("0", "18446744073709551616.0")] {
+        let value: Value = serde_json::from_str(&format!(
+            r#"{{"kind":"text-range","unit":"utf16","from":{from},"to":{to},"normalizerVersion":"gdx-canonical-text/1"}}"#
+        ))
+        .expect("raw selector parses");
+        assert!(
+            validate_dependency_selector_value(&value, None).is_err(),
+            "{from}..{to} must be rejected"
+        );
+    }
 }
 
 #[test]
