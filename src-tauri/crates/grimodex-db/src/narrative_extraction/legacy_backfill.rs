@@ -282,9 +282,26 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
     } else {
         NarrativeRunStatus::Failed
     };
+    // Keep the failure class on the durable Run row. The live maintenance
+    // recovery seam must be able to distinguish a retryable SQLite/IO failure
+    // from a contract violation after a process restart; an in-memory error
+    // string is not sufficient for that boundary.
+    let terminal_reason_code = transform_result
+        .as_ref()
+        .err()
+        .map(|error| super::maintenance_runtime::classify_failure(&error.to_string()).code);
     let finalize_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            transition_run_status_in_tx(conn, &run_id, finalize_status)
+            transition_run_status_in_tx(conn, &run_id, finalize_status)?;
+            if let Some(reason_code) = terminal_reason_code.as_deref() {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET terminal_reason_code = ?1
+                      WHERE id = ?2 AND status = 'failed'",
+                    params![reason_code, run_id],
+                )?;
+            }
+            Ok(())
         })
     });
     if let Err(finalize_error) = finalize_result {

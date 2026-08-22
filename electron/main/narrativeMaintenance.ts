@@ -30,6 +30,16 @@ export interface NarrativeMaintenanceWork {
   reasons: readonly string[];
 }
 
+export interface NarrativeMaintenanceWorkspaceBinding {
+  authorityId: string;
+  generation: number;
+}
+
+interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
+  /** Queue-only metadata; never serialized into a Rust work item. */
+  workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
+}
+
 /**
  * Request delivered to the future main-only NAPI cycle method. Empty `work`
  * is valid only when `wakeProjectIds` names the durable native backlog scope;
@@ -38,6 +48,7 @@ export interface NarrativeMaintenanceWork {
 export interface NarrativeMaintenanceCycleRequest {
   work: readonly NarrativeMaintenanceWork[];
   wakeProjectIds: readonly string[];
+  workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
 }
 
 /**
@@ -48,12 +59,17 @@ export interface NarrativeMaintenanceCycleRequest {
  */
 export type NarrativeMaintenanceCycleResult =
   | { status: "accepted"; hasMore: boolean }
-  | { status: "workspace-unavailable" }
+  | { status: "workspace-unavailable"; reason?: string }
   | { status: "coalesced" }
   /** Valid work whose adapter is intentionally not enabled in this lane. */
   | { status: "deferred"; hasMore: boolean };
 
 export interface NarrativeMaintenanceBackendLike {
+  /** Synchronous main-only enqueue snapshot; absent in legacy test doubles. */
+  getNarrativeMaintenanceWorkspaceBinding?():
+    | string
+    | NarrativeMaintenanceWorkspaceBinding
+    | null;
   /**
    * The backend must acknowledge ownership of the request explicitly.  The
    * scheduler retains/requeues work until it receives `accepted` or
@@ -82,6 +98,7 @@ export const NARRATIVE_MAINTENANCE_IDLE_POLL_INTERVAL_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS = 10;
 export const NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_MAX_RETRIES = 3;
+export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
 
 const AUTOMATIC_RUN_KINDS = new Set<NarrativeMaintenanceRunKind>([
   "backfill",
@@ -135,6 +152,46 @@ function validateRequest(
     reason: requireWorkComponent(request.reason, "reason"),
     semanticEpochId: optionalWorkComponent(request.semanticEpochId),
   };
+}
+
+function normalizeWorkspaceBinding(
+  raw: unknown,
+): NarrativeMaintenanceWorkspaceBinding | null {
+  if (raw === null || raw === undefined) return null;
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native maintenance workspace binding returned malformed JSON");
+    }
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("native maintenance workspace binding returned invalid status");
+  }
+  const binding = value as Record<string, unknown>;
+  if (
+    typeof binding.authorityId !== "string" ||
+    binding.authorityId.trim().length === 0 ||
+    !Number.isSafeInteger(binding.generation) ||
+    (binding.generation as number) < 0
+  ) {
+    throw new Error("native maintenance workspace binding returned invalid status");
+  }
+  return {
+    authorityId: binding.authorityId,
+    generation: binding.generation as number,
+  };
+}
+
+function workspaceBindingKey(
+  binding: NarrativeMaintenanceWorkspaceBinding | null | undefined,
+): string {
+  return binding === undefined
+    ? "unbound"
+    : binding === null
+      ? "unavailable"
+      : `${binding.authorityId}\u0000${binding.generation}`;
 }
 
 export function canonicalNarrativeMaintenanceWorkKey(
@@ -206,12 +263,18 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   }
 
   const value = raw as Record<string, unknown>;
+  const hasStatus = Object.prototype.hasOwnProperty.call(value, "status");
   if (typeof value.status === "string") {
     if (value.status === "accepted" && typeof value.hasMore === "boolean") {
       return { status: "accepted", hasMore: value.hasMore };
     }
     if (value.status === "workspace-unavailable") {
-      return { status: "workspace-unavailable" };
+      return {
+        status: "workspace-unavailable",
+        ...(typeof value.reason === "string"
+          ? { reason: value.reason }
+          : {}),
+      };
     }
     if (value.status === "coalesced") {
       return { status: "coalesced" };
@@ -223,7 +286,7 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   }
 
   // Backward-compatible JSON summary from the pre-status native adapter.
-  if (typeof value.hasMore === "boolean") {
+  if (!hasStatus && typeof value.hasMore === "boolean") {
     return { status: "accepted", hasMore: value.hasMore };
   }
   throw new Error("native maintenance cycle returned invalid status");
@@ -303,13 +366,17 @@ export function createNarrativeMaintenanceScheduler(
   let started = false;
   let disposed = false;
   let inFlight = false;
-  const pending = new Map<string, NarrativeMaintenanceWork>();
+  const pending = new Map<string, PendingNarrativeMaintenanceWork>();
   const retryCounts = new Map<string, number>();
   const sharedCoordinator = backend ? processCoordinator : null;
   // hasMore is a durable native backlog signal, so retain the project that
   // owns the signal.  An unscoped boolean would allow another scheduler to
   // issue the empty wake while this scheduler's project claim is held.
   const durableWakeProjects = new Set<string>();
+  const durableWakeBindings = new Map<
+    string,
+    NarrativeMaintenanceWorkspaceBinding | null | undefined
+  >();
   const durableWakeRetryCounts = new Map<string, number>();
   // A deferred adapter must remain durable without creating an idle retry
   // loop.  Keep the canonical work identity parked, rather than the whole
@@ -353,7 +420,7 @@ export function createNarrativeMaintenanceScheduler(
     });
   };
 
-  const requeueWork = (work: NarrativeMaintenanceWork): void => {
+  const requeueWork = (work: PendingNarrativeMaintenanceWork): void => {
     const key = canonicalNarrativeMaintenanceWorkKey(work);
     const existing = pending.get(key);
     if (existing) {
@@ -384,6 +451,15 @@ export function createNarrativeMaintenanceScheduler(
         !deferredWakeProjects.has(projectId) && !blockedProjects.has(projectId),
     );
 
+  const captureWorkspaceBinding = ():
+    | NarrativeMaintenanceWorkspaceBinding
+    | null
+    | undefined => {
+    const getter = backend?.getNarrativeMaintenanceWorkspaceBinding;
+    if (typeof getter !== "function") return undefined;
+    return normalizeWorkspaceBinding(getter.call(backend));
+  };
+
   const runCycle = async (): Promise<void> => {
     if (disposed || inFlight) return;
     const method = backend?.runNarrativeMaintenanceCycle;
@@ -395,14 +471,39 @@ export function createNarrativeMaintenanceScheduler(
       (work) =>
         !deferredWorkKeys.has(canonicalNarrativeMaintenanceWorkKey(work)),
     );
+    // Select one authority snapshot before claiming projects. This keeps
+    // replacement-workspace identities out of one native cycle and bounds a
+    // burst to the same 32-item limit enforced by shared Rust.
+    const candidateBindingKey = workspaceBindingKey(
+      candidates[0]?.workspaceBinding,
+    );
+    const chunkCandidates = candidates
+      .filter(
+        (work) =>
+          workspaceBindingKey(work.workspaceBinding) === candidateBindingKey,
+      )
+      .slice(0, NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE);
+    const wakeCandidates = [...durableWakeProjects].filter(
+      (projectId) => !deferredWakeProjects.has(projectId),
+    );
+    const wakeBindingKey = workspaceBindingKey(
+      wakeCandidates.length > 0
+        ? durableWakeBindings.get(wakeCandidates[0]!)
+        : undefined,
+    );
+    const selectedWakeProjects = wakeCandidates
+      .filter(
+        (projectId) =>
+          workspaceBindingKey(durableWakeBindings.get(projectId)) ===
+          wakeBindingKey,
+      )
+      .slice(0, NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE);
     // Process ordinary work first. A wake-only cycle is represented by an
     // empty batch, but only after its durable project has been claimed.
     const projectIds = [
       ...new Set([
-        ...candidates.map((work) => work.projectId),
-        ...[...durableWakeProjects].filter(
-          (projectId) => !deferredWakeProjects.has(projectId),
-        ),
+        ...chunkCandidates.map((work) => work.projectId),
+        ...(chunkCandidates.length === 0 ? selectedWakeProjects : []),
       ]),
     ];
     const claimedProjects = sharedCoordinator
@@ -412,7 +513,7 @@ export function createNarrativeMaintenanceScheduler(
     const blockedProjectIds = projectIds.filter(
       (projectId) => !claimedProjectSet.has(projectId),
     );
-    const batch = candidates.filter((work) =>
+    const batch = chunkCandidates.filter((work) =>
       claimedProjectSet.has(work.projectId),
     );
     const deferredBatch = batch.filter((work) => work.runKind !== "backfill");
@@ -421,9 +522,24 @@ export function createNarrativeMaintenanceScheduler(
     // deferred seam.  When enabled work is present, hold only the deferred
     // identities back so another project (or same-project Backfill) can run.
     const backendBatch = enabledBatch.length > 0 ? enabledBatch : batch;
-    const sendingWakeProjects = claimedProjects.filter((projectId) =>
-      durableWakeProjects.has(projectId),
-    );
+    // Ordinary work and a durable empty wake have separate ACK scopes. Keep
+    // the wake pending when a work batch is available and issue it later.
+    const sendingWakeProjects =
+      backendBatch.length === 0
+        ? claimedProjects.filter((projectId) => durableWakeProjects.has(projectId))
+        : [];
+    const cycleBinding =
+      backendBatch[0]?.workspaceBinding ??
+      (sendingWakeProjects.length > 0
+        ? durableWakeBindings.get(sendingWakeProjects[0]!)
+        : undefined);
+    const wireBatch: NarrativeMaintenanceWork[] = backendBatch.map((work) => ({
+      projectId: work.projectId,
+      runKind: work.runKind,
+      workKey: work.workKey,
+      semanticEpochId: work.semanticEpochId,
+      reasons: work.reasons,
+    }));
     if (batch.length === 0 && sendingWakeProjects.length === 0) {
       // A competing scheduler owns every project we need. Release-driven
       // wakeup removes the old 10ms busy-poll and cannot starve a project.
@@ -433,6 +549,7 @@ export function createNarrativeMaintenanceScheduler(
     clearCoordinatorWait();
     for (const projectId of sendingWakeProjects) {
       durableWakeProjects.delete(projectId);
+      durableWakeBindings.delete(projectId);
     }
     for (const work of backendBatch) {
       pending.delete(canonicalNarrativeMaintenanceWorkKey(work));
@@ -446,12 +563,16 @@ export function createNarrativeMaintenanceScheduler(
     let nextDelayMs = NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS;
     let shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
     let workspaceUnavailable = false;
+    let workspaceMismatch = false;
     let deferredCycle = false;
     try {
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
-        work: backendBatch,
+        work: wireBatch,
         wakeProjectIds: sendingWakeProjects,
+        ...(cycleBinding !== undefined && cycleBinding !== null
+          ? { workspaceBinding: cycleBinding }
+          : {}),
       });
       // Validate the response before clearing retry state.  A malformed
       // native response is a failed cycle and consumes the same bounded retry
@@ -461,7 +582,15 @@ export function createNarrativeMaintenanceScheduler(
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
       if (cycleResult.status === "workspace-unavailable") {
-        workspaceUnavailable = true;
+        if (
+          cycleResult.reason === "maintenance-workspace-binding-mismatch" ||
+          cycleResult.reason === "maintenance-workspace-binding-missing" ||
+          cycleResult.reason === "maintenance-workspace-snapshot-changed"
+        ) {
+          workspaceMismatch = true;
+        } else {
+          workspaceUnavailable = true;
+        }
         throw new Error(
           "native maintenance cycle could not acquire an active workspace",
         );
@@ -516,6 +645,9 @@ export function createNarrativeMaintenanceScheduler(
         } else {
           for (const projectId of wakeProjects)
             durableWakeProjects.add(projectId);
+          for (const projectId of wakeProjects) {
+            durableWakeBindings.set(projectId, cycleBinding);
+          }
           shouldSchedule = true;
         }
       }
@@ -528,6 +660,7 @@ export function createNarrativeMaintenanceScheduler(
           }
           for (const projectId of sendingWakeProjects) {
             durableWakeProjects.add(projectId);
+            durableWakeBindings.set(projectId, cycleBinding);
             deferredWakeProjects.add(projectId);
           }
           warn(
@@ -535,6 +668,22 @@ export function createNarrativeMaintenanceScheduler(
           );
           // Do not schedule this project again until a new explicit request
           // clears its park.  This is a typed non-ACK, not a retry failure.
+          shouldSchedule = false;
+        } else if (workspaceMismatch) {
+          for (const work of backendBatch) {
+            requeueWork(work);
+            deferredWorkKeys.add(canonicalNarrativeMaintenanceWorkKey(work));
+          }
+          for (const projectId of sendingWakeProjects) {
+            durableWakeProjects.add(projectId);
+            durableWakeBindings.set(projectId, cycleBinding);
+            deferredWakeProjects.add(projectId);
+          }
+          warn(
+            "[narrative-maintenance] workspace binding changed; parking trigger until the replacement workspace re-enqueues it",
+          );
+          // A stale authority must not hot-loop while open/restore is in
+          // progress. A replacement-workspace enqueue clears the park.
           shouldSchedule = false;
         } else if (workspaceUnavailable) {
           // This is an expected, recoverable state while a workspace is
@@ -544,6 +693,7 @@ export function createNarrativeMaintenanceScheduler(
           for (const work of backendBatch) requeueWork(work);
           for (const projectId of sendingWakeProjects) {
             durableWakeProjects.add(projectId);
+            durableWakeBindings.set(projectId, cycleBinding);
           }
           warn(
             "[narrative-maintenance] active workspace unavailable; retaining maintenance trigger",
@@ -572,6 +722,7 @@ export function createNarrativeMaintenanceScheduler(
               if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
                 durableWakeRetryCounts.set(projectId, retryCount);
                 durableWakeProjects.add(projectId);
+                durableWakeBindings.set(projectId, cycleBinding);
               } else {
                 durableWakeRetryCounts.delete(projectId);
                 durableWakeProjects.delete(projectId);
@@ -614,23 +765,35 @@ export function createNarrativeMaintenanceScheduler(
   const enqueue = (rawWork: NarrativeMaintenanceRequest): void => {
     if (disposed) return;
     const work = validateRequest(rawWork);
+    const capturedBinding = captureWorkspaceBinding();
     const key = canonicalNarrativeMaintenanceWorkKey(work);
     deferredWorkKeys.delete(key);
     deferredWakeProjects.delete(work.projectId);
     const existing = pending.get(key);
+    let queued: PendingNarrativeMaintenanceWork | undefined = existing;
     if (existing && !existing.reasons.includes(work.reason)) {
-      pending.set(key, {
+      queued = {
         ...existing,
         reasons: [...existing.reasons, work.reason],
-      });
+      };
     } else if (!existing) {
-      pending.set(key, {
+      queued = {
         projectId: work.projectId,
         runKind: work.runKind,
         workKey: work.workKey,
         semanticEpochId: work.semanticEpochId ?? null,
         reasons: [work.reason],
-      });
+      };
+    }
+    if (queued && capturedBinding !== undefined) {
+      if (capturedBinding === null) {
+        delete queued.workspaceBinding;
+      } else {
+        queued = { ...queued, workspaceBinding: capturedBinding };
+      }
+    }
+    if (queued) {
+      pending.set(key, queued);
     }
     // A pending timer already represents the next wakeup.  When no timer is
     // present, the current cycle is in flight and its finally block will
@@ -665,6 +828,7 @@ export function createNarrativeMaintenanceScheduler(
       clearCoordinatorWait();
       pending.clear();
       durableWakeProjects.clear();
+      durableWakeBindings.clear();
       durableWakeRetryCounts.clear();
       // An in-flight native call is not forcibly cancelled.  The disposed
       // guard suppresses its warning/re-schedule after completion.

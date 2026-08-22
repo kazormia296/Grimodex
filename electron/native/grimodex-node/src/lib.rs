@@ -92,6 +92,7 @@ use grimodex_db::sample_seed;
 use grimodex_db::scene_body::{self, SaveSceneBodyBundlePayload};
 use grimodex_db::state::{
     active_database, active_workspace_path, active_workspace_snapshot, ActiveWorkspaceSnapshot,
+    PinnedWorkspaceDb,
 };
 use grimodex_db::trash_bin::{self, TrashBinCreatePayload, TrashBinRestorePayload};
 use grimodex_db::web_editor_handoff;
@@ -105,6 +106,10 @@ use post_effect_runtime::{NodePostEffectAiClient, NodePostEffectRuntime};
 use state::{AppState, EventQueue, EventTsfn};
 
 const RUNTIME_PERFORMANCE_OWNER_TOKEN_ENV: &str = "GRIMODEX_RUNTIME_PERFORMANCE_OWNER_TOKEN";
+
+fn narrative_authority_id(authority: &PinnedWorkspaceDb) -> String {
+    format!("authority:{}", authority.identity())
+}
 
 fn validate_runtime_performance_owner_token(owner_token: &str) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -1652,6 +1657,29 @@ impl Backend {
         .await
     }
 
+    /// Main-process-only enqueue snapshot for the serialized maintenance
+    /// seam. This is synchronous by design: it reads the currently pinned
+    /// authority and recovery gate under one short state boundary, so the
+    /// scheduler can bind a request before it enters its pending queue.
+    #[napi]
+    pub fn get_narrative_maintenance_workspace_binding(&self) -> Result<Option<String>> {
+        let authority = match active_database(&self.state.ws) {
+            Ok(authority) => authority,
+            Err(
+                AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+            ) => return Ok(None),
+            Err(error) => return Err(app_err_to_napi(error)),
+        };
+        let authority_id = narrative_authority_id(&authority);
+        let binding = self
+            .state
+            .narrative_maintenance_recovery_gate
+            .binding_for_authority(&authority_id);
+        serde_json::to_string(&binding)
+            .map(Some)
+            .map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
     /// Electron main-only serialized system-work cycle.
     ///
     /// The request is validated in shared Rust, then executed against one
@@ -1683,16 +1711,50 @@ impl Backend {
                 }
                 Err(error) => return Err(error),
             };
-            let generation = state
+            let authority_id = narrative_authority_id(&authority);
+            let Some(request_binding) = request.workspace_binding.as_ref() else {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-missing",
+                })
+                .to_string());
+            };
+            let current_binding = state
                 .narrative_maintenance_recovery_gate
-                .current_generation();
+                .binding_for_authority(&authority_id);
+            // Pinning an Arc is necessary but not sufficient: a workspace
+            // swap may begin between the first pin and this validation. Read
+            // the active snapshot again and fail closed if it is no longer
+            // the exact authority that was pinned for this cycle.
+            let current_snapshot = match active_workspace_snapshot(&state.ws) {
+                Ok(snapshot) => snapshot,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => {
+                    return Ok(serde_json::json!({
+                        "status": "workspace-unavailable",
+                        "reason": "maintenance-workspace-snapshot-changed",
+                    })
+                    .to_string());
+                }
+                Err(error) => return Err(error),
+            };
+            if !std::sync::Arc::ptr_eq(&authority, &current_snapshot.authority)
+                || request_binding != &current_binding
+            {
+                return Ok(serde_json::json!({
+                    "status": "workspace-unavailable",
+                    "reason": "maintenance-workspace-binding-mismatch",
+                })
+                .to_string());
+            }
             let result = narrative_extraction::run_system_work_cycle_with_modes(
                 authority.db(),
                 &request,
                 |item| {
                     state
                         .narrative_maintenance_recovery_gate
-                        .mode_for(generation, &item.canonical_key())
+                        .mode_for_binding(request_binding, &item.canonical_key())
                 },
             )?;
             let json = serde_json::to_string(&result).map_err(anyhow::Error::from)?;
@@ -1708,7 +1770,7 @@ impl Backend {
                 for item in &normalized_work {
                     state
                         .narrative_maintenance_recovery_gate
-                        .mark_recovered(generation, &item.canonical_key());
+                        .mark_recovered_for_binding(request_binding, &item.canonical_key());
                 }
             }
             Ok(json)
@@ -2601,6 +2663,12 @@ impl Backend {
                 };
                 *matcher = None;
                 state_for_hook.semantic.rotate_workspace_epoch();
+                // Restore publishes a replacement authority through a
+                // separate shared path; advance the maintenance gate here as
+                // well so a late old-authority ACK cannot win the handoff.
+                state_for_hook
+                    .narrative_maintenance_recovery_gate
+                    .mark_workspace_swapped();
             })?;
             let path = active_workspace_path(&state.ws)?;
             state.events.emit(

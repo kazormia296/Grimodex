@@ -145,7 +145,7 @@ pub use maintenance_runtime::{
 pub use maintenance_runtime::{
     run_system_work_cycle, run_system_work_cycle_with_modes, MaintenanceCycleRequest,
     MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
-    MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{

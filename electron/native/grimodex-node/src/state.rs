@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
-use grimodex_db::narrative_extraction::RecoveryMode;
+use grimodex_db::narrative_extraction::{MaintenanceWorkspaceBinding, RecoveryMode};
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -108,6 +108,7 @@ const MAX_STREAM_ABORT_TOMBSTONES: usize = 256;
 /// in StartupRecovery.
 struct NarrativeMaintenanceRecoveryState {
     workspace_generation: u64,
+    authority_id: Option<String>,
     recovered_work_keys: HashSet<String>,
 }
 
@@ -120,6 +121,7 @@ impl Default for NarrativeMaintenanceRecoveryGate {
         Self {
             state: Mutex::new(NarrativeMaintenanceRecoveryState {
                 workspace_generation: 0,
+                authority_id: None,
                 recovered_work_keys: HashSet::new(),
             }),
         }
@@ -127,6 +129,68 @@ impl Default for NarrativeMaintenanceRecoveryGate {
 }
 
 impl NarrativeMaintenanceRecoveryGate {
+    /// Atomically bind a live authority identity to its recovery generation.
+    /// The identity is process-local and supplied by the pinned Arc in the
+    /// N-API adapter; changing it clears every recovered WorkKey before the
+    /// new binding is returned.
+    pub fn binding_for_authority(&self, authority_id: &str) -> MaintenanceWorkspaceBinding {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() != Some(authority_id) {
+            if state.authority_id.is_some() {
+                state.workspace_generation = state.workspace_generation.wrapping_add(1);
+            }
+            state.authority_id = Some(authority_id.to_string());
+            state.recovered_work_keys.clear();
+        }
+        MaintenanceWorkspaceBinding {
+            authority_id: authority_id.to_string(),
+            generation: state.workspace_generation,
+        }
+    }
+
+    pub fn mode_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        work_key: &str,
+    ) -> RecoveryMode {
+        let recovered = self
+            .state
+            .lock()
+            .map(|state| {
+                state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+                    && state.workspace_generation == binding.generation
+                    && state.recovered_work_keys.contains(work_key)
+            })
+            .unwrap_or(false);
+        if recovered {
+            RecoveryMode::SameProcessLive
+        } else {
+            RecoveryMode::StartupRecovery
+        }
+    }
+
+    /// Must be called only after a cycle is fully accepted for this exact
+    /// authority snapshot. A late ACK from an old authority is ignored.
+    pub fn mark_recovered_for_binding(
+        &self,
+        binding: &MaintenanceWorkspaceBinding,
+        work_key: &str,
+    ) {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.authority_id.as_deref() == Some(binding.authority_id.as_str())
+            && state.workspace_generation == binding.generation
+        {
+            state.recovered_work_keys.insert(work_key.to_string());
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn current_generation(&self) -> u64 {
         self.state
             .lock()
@@ -140,10 +204,12 @@ impl NarrativeMaintenanceRecoveryGate {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         state.workspace_generation = state.workspace_generation.wrapping_add(1);
+        state.authority_id = None;
         state.recovered_work_keys.clear();
         state.workspace_generation
     }
 
+    #[allow(dead_code)]
     pub fn mode_for(&self, generation: u64, work_key: &str) -> RecoveryMode {
         let recovered = self
             .state
@@ -161,6 +227,7 @@ impl NarrativeMaintenanceRecoveryGate {
     }
 
     /// Must be called only after the live cycle has validated and completed.
+    #[allow(dead_code)]
     pub fn mark_recovered(&self, generation: u64, work_key: &str) {
         let mut state = self
             .state
@@ -589,7 +656,10 @@ mod tests {
             RecoveryMode::StartupRecovery
         );
         gate.mark_recovered_for_binding(&first, key);
-        assert_eq!(gate.mode_for_binding(&first, key), RecoveryMode::SameProcessLive);
+        assert_eq!(
+            gate.mode_for_binding(&first, key),
+            RecoveryMode::SameProcessLive
+        );
 
         let second = gate.binding_for_authority("authority-two");
         assert_ne!(first, second);

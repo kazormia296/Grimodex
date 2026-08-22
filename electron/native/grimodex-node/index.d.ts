@@ -46,6 +46,8 @@ export declare class Backend {
    * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
+  /** Main-only enqueue snapshot for serialized maintenance work. */
+  getNarrativeMaintenanceWorkspaceBinding(): string | null
   /**
    * Electron main-only serialized system-work cycle. The payload is the
    * coalesced project-scoped work DTO; renderer/preload never receives this

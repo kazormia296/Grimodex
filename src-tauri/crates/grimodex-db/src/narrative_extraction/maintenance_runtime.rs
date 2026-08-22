@@ -210,6 +210,21 @@ pub struct MaintenanceCycleRequest {
     pub work: Vec<MaintenanceWorkRequest>,
     #[serde(default)]
     pub wake_project_ids: Vec<String>,
+    /// Snapshot binding captured by the Electron main scheduler at enqueue
+    /// time. Shared-crate callers may omit it because they already supply the
+    /// pinned `Database`; the N-API adapter requires it before dispatch.
+    #[serde(default)]
+    pub workspace_binding: Option<MaintenanceWorkspaceBinding>,
+}
+
+/// Opaque process-local authority snapshot used by the main/N-API seam.
+/// `authority_id` changes for every replacement authority, including a
+/// same-path restore. `generation` is the recovery gate epoch paired with it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MaintenanceWorkspaceBinding {
+    pub authority_id: String,
+    pub generation: u64,
 }
 
 /// One project-scoped automatic work item delivered by the main scheduler.
@@ -352,6 +367,10 @@ pub fn run_system_work_cycle_with_modes(
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     let work = request.normalized_work()?;
+    anyhow::ensure!(
+        work.is_empty() || request.wake_project_ids.is_empty(),
+        "NEX_MAINTENANCE_WAKE_MIXED_ACK_SCOPE: ordinary work and durable wake must use separate cycles"
+    );
     if work.is_empty() {
         // An empty request is meaningful only as the scheduler's durable
         // project-scoped wake. There is no detached poll or speculative write
@@ -833,6 +852,9 @@ pub fn classify_failure(message: &str) -> FailureClassification {
     let transient = [
         "sqlite_busy",
         "sqlite_locked",
+        "nex_maintenance_sqlite_locked",
+        "nex_maintenance_transient",
+        "nex_maintenance_sqlite_ioerr",
         "database is locked",
         "database table is locked",
         "interrupted",
@@ -903,6 +925,11 @@ pub struct RunLedgerCounts {
     pub stale_active_run_ids: Vec<String>,
     #[serde(skip)]
     pub stale_active_run_provenance: Vec<StaleActiveRun>,
+    /// Latest durable reason for a failed row that is still newer than the
+    /// most recent completed row. Recovery must classify this persisted value
+    /// instead of silently treating a failed Backfill as missing detail.
+    #[serde(skip)]
+    pub latest_failed_terminal_reason_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -977,7 +1004,7 @@ pub fn read_run_ledger_for_epoch(
     }
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT rowid, id, status, semantic_epoch_id
+            "SELECT rowid, id, status, semantic_epoch_id, terminal_reason_code
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
               ORDER BY rowid ASC",
@@ -990,18 +1017,19 @@ pub fn read_run_ledger_for_epoch(
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
                 ))
             },
         )?;
         let mut current_rows = Vec::new();
         let mut stale_active_runs = Vec::new();
         for row in rows {
-            let (rowid, id, status, row_epoch_id) = row?;
+            let (rowid, id, status, row_epoch_id, terminal_reason_code) = row?;
             let epoch_matches = expected_semantic_epoch_id
                 .map(|expected| row_epoch_id.as_deref() == Some(expected))
                 .unwrap_or(true);
             if epoch_matches {
-                current_rows.push((rowid, id, status));
+                current_rows.push((rowid, id, status, terminal_reason_code));
             } else if matches!(status.as_str(), "pending" | "running") {
                 stale_active_runs.push(StaleActiveRun {
                     run_id: id,
@@ -1012,14 +1040,15 @@ pub fn read_run_ledger_for_epoch(
 
         let latest_completed_rowid = current_rows
             .iter()
-            .filter(|(_, _, status)| status == "completed")
-            .map(|(rowid, _, _)| *rowid)
+            .filter(|(_, _, status, _)| status == "completed")
+            .map(|(rowid, _, _, _)| *rowid)
             .max();
         let mut pending_run_ids = Vec::new();
         let mut running_run_ids = Vec::new();
         let mut failed_runs = 0_u32;
         let mut completed_runs = 0_u32;
-        for (rowid, id, status) in &current_rows {
+        let mut latest_failed_terminal_reason_code = None;
+        for (rowid, id, status, terminal_reason_code) in &current_rows {
             match status.as_str() {
                 "pending" => pending_run_ids.push(id.clone()),
                 "running" => running_run_ids.push(id.clone()),
@@ -1028,7 +1057,8 @@ pub fn read_run_ledger_for_epoch(
                         .map(|completed_rowid| *rowid > completed_rowid)
                         .unwrap_or(true) =>
                 {
-                    failed_runs = failed_runs.saturating_add(1)
+                    failed_runs = failed_runs.saturating_add(1);
+                    latest_failed_terminal_reason_code = terminal_reason_code.clone();
                 }
                 "completed" => completed_runs = completed_runs.saturating_add(1),
                 _ => {}
@@ -1049,6 +1079,7 @@ pub fn read_run_ledger_for_epoch(
                 .map(|run| run.run_id.clone())
                 .collect(),
             stale_active_run_provenance: stale_active_runs,
+            latest_failed_terminal_reason_code,
         })
     })
 }
@@ -1085,6 +1116,8 @@ pub fn decide_run_recovery_for_epoch(
     failure_message: Option<&str>,
 ) -> anyhow::Result<RecoveryDecision> {
     let counts = read_run_ledger_for_epoch(db, work, expected_semantic_epoch_id)?;
+    let durable_failure_message =
+        failure_message.or(counts.latest_failed_terminal_reason_code.as_deref());
     let mut current_active_run_ids = counts.running_run_ids.clone();
     current_active_run_ids.extend(counts.pending_run_ids.clone());
     let action = if !counts.stale_active_run_provenance.is_empty() {
@@ -1108,14 +1141,14 @@ pub fn decide_run_recovery_for_epoch(
     } else if work.run_kind == AutomaticRunKind::Backfill
         && counts.completed_runs > 0
         && counts.failed_runs == 0
-        && failure_message.is_none()
+        && durable_failure_message.is_none()
     {
         RecoveryAction::SkipCompleted {
             completed_runs: counts.completed_runs,
         }
-    } else if counts.failed_runs == 0 && failure_message.is_none() {
+    } else if counts.failed_runs == 0 && durable_failure_message.is_none() {
         RecoveryAction::StartFresh
-    } else if let Some(message) = failure_message {
+    } else if let Some(message) = durable_failure_message {
         let classification = classify_failure(message);
         if !classification.retryable {
             RecoveryAction::ManualIntervention {
@@ -1137,7 +1170,7 @@ pub fn decide_run_recovery_for_epoch(
             }
         }
     } else {
-        retry_or_manual(&counts, failure_message)
+        retry_or_manual(&counts, durable_failure_message)
     };
 
     Ok(RecoveryDecision {

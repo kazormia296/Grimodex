@@ -825,6 +825,9 @@ export interface NapiBackendLike {
   // renderer command ではなく、Change Feed を駆動する Electron main
   // scheduler 専用。1回につきNative側の有界batchを最大1件処理する。
   runNarrativeFreshnessCycle?(): Promise<string | null>;
+  // main-only enqueue snapshot for the serialized system-work seam. This is
+  // synchronous so a request can be bound before it enters the pending queue.
+  getNarrativeMaintenanceWorkspaceBinding?(): string | null;
   // renderer/preload には公開しない serialized system-work seam。入力は
   // Electron main scheduler が coalesce 済みの project-scoped work DTO。
   runNarrativeMaintenanceCycle?(payload: unknown): Promise<string>;
