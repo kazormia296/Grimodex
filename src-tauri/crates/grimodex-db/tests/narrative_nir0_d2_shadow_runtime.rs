@@ -162,6 +162,36 @@ fn seed_v2_head(db: &Database) {
     .expect("seed sealed V2 head");
 }
 
+fn seed_v2_text_range_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: CONSUMER_KEY.to_owned(),
+            producer_id: "nir0-d2-range-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: format!("project:scene:{SCENE_ID}"),
+                role: DependencyRole::DirectEvidence,
+                selector: DependencySelector::TextRange {
+                    unit: "utf16".to_owned(),
+                    from: 0,
+                    to: 5,
+                    normalizer_version: "gdx-canonical-text/1".to_owned(),
+                    anchor_digest: Some(
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                    ),
+                },
+            }],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed sealed V2 range head");
+}
+
 #[test]
 fn active_v2_head_is_reached_through_public_incremental_cycle_and_keeps_v1_canonical() {
     let db = fixture_db();
@@ -236,7 +266,7 @@ fn corrupt_v2_head_is_observable_but_does_not_block_v1_publication() {
         .v2_shadow
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.contains("corrupt")));
+        .any(|diagnostic| diagnostic.contains("CORRUPT")), "{:?}", summary.v2_shadow);
     let freshness: String = db
         .with_conn(|conn| {
             Ok(conn.query_row(
@@ -248,4 +278,73 @@ fn corrupt_v2_head_is_observable_but_does_not_block_v1_publication() {
         })
         .expect("read V1 publication after V2 corruption");
     assert_eq!(freshness, "stale");
+}
+
+#[test]
+fn active_v2_head_is_reached_for_a_v2_only_source_without_a_v1_reverse_edge() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute("DELETE FROM narrative_dependency_edges", [])?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("remove the V1 compatibility edge from the shadow-only fixture");
+    seed_v2_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run V2-only shadow cycle")
+    else {
+        panic!("the Feed range must still be processed");
+    };
+    assert_eq!(summary.affected_edge_count, 0);
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 2);
+}
+
+#[test]
+fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET text_impact_json = ?1
+              WHERE id = 'nir0-d2-change-1'",
+            [json!({
+                "normalizerVersion": "gdx-canonical-text/1",
+                "mapping": {
+                    "kind": "position-map",
+                    "segments": [{
+                        "oldRange": { "from": 0, "to": 5 },
+                        "newRange": { "from": 0, "to": 0 },
+                        "behavior": "deleted"
+                    }]
+                }
+            })
+            .to_string()],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed V2 selector mapping");
+    seed_v2_text_range_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run selector-aware shadow cycle")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.freshness, "anchor-mismatch");
+    assert_eq!(consumer.required_actions, vec!["reanchor-candidate"]);
+
+    let v1_state: (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT evidence_freshness, build_action
+                   FROM narrative_dependency_edge_states
+                  WHERE edge_id = 'nir0-d2-v1-edge'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read V1 state after selector-aware shadow");
+    assert_eq!(v1_state, ("stale".to_owned(), "rebuild-required".to_owned()));
 }
