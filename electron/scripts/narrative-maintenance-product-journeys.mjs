@@ -1678,7 +1678,7 @@ async function withWorkspace(
 
 async function createSceneIfNeeded(context, marker) {
   const existing = await context.query(
-    `SELECT id, version, updated_at AS updatedAt, content
+    `SELECT id, project_id AS projectId, version, updated_at AS updatedAt, content
        FROM tree_nodes
       WHERE project_id = ? AND node_type = 'scene'
       ORDER BY created_at, id
@@ -1724,7 +1724,7 @@ async function createSceneIfNeeded(context, marker) {
   return context.harness.waitUntil(
     async () => {
       const rows = await context.query(
-        "SELECT id, version, updated_at AS updatedAt, content FROM tree_nodes WHERE id = ?",
+        "SELECT id, project_id AS projectId, version, updated_at AS updatedAt, content FROM tree_nodes WHERE id = ?",
         [sceneId],
       );
       return rows[0] ?? null;
@@ -3084,11 +3084,46 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       baselineRunCount: primaryBaseline.length,
     });
 
+    // Switch through the renderer's canonical WorkspaceMenu/store route. A
+    // low-level bridge invoke would change the native authority without
+    // publishing the renderer scope, leaving EditorPane's old B load alive
+    // while the quiescence lease rejects its sidecar reads.
     const openRequestLowerBound = Date.now();
-    await harness.invokeOk(first.page, "open_workspace", {
-      path: workspaceA,
-    });
-    const workspaceOpenedAt = Date.now();
+    const previousRevision = Number(
+      await first.page
+        .getByTestId("workspace-menu-trigger")
+        .getAttribute("data-workspace-open-revision"),
+    );
+    if (!Number.isSafeInteger(previousRevision)) {
+      throw new Error(
+        `invalid foreground workspace revision: ${String(previousRevision)}`,
+      );
+    }
+    await first.page.getByTestId("workspace-menu-trigger").click();
+    await first.page
+      .getByTestId("workspace-menu-dropdown")
+      .getByRole("button", { name: path.basename(workspaceA), exact: true })
+      .click();
+    const workspaceOpenedAt = await harness.waitUntil(
+      async () => {
+        const triggerText = await first.page
+          .getByTestId("workspace-menu-trigger")
+          .textContent();
+        const revision = Number(
+          await first.page
+            .getByTestId("workspace-menu-trigger")
+            .getAttribute("data-workspace-open-revision"),
+        );
+        return String(triggerText ?? "").includes(path.basename(workspaceA)) &&
+          Number.isSafeInteger(revision) &&
+          revision > previousRevision
+          ? Date.now()
+          : null;
+      },
+      "foreground target A UI authority",
+      30_000,
+      100,
+    );
     const context = await contextForLaunch(
       harness,
       first,
@@ -3097,6 +3132,18 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       targetBaseline,
     );
     const scene = await createSceneIfNeeded(context, "foreground-authoring");
+    const loadedScene = first.page.locator(
+      `[data-editor-loaded-document-id="${scene.id}"][data-editor-document-loading="false"]:visible`,
+    );
+    await loadedScene.waitFor({ state: "visible", timeout: 30_000 });
+    if (scene.projectId !== context.projectId) {
+      throw new Error(
+        `foreground scene crossed project authority: ${JSON.stringify({
+          sceneProjectId: scene.projectId,
+          contextProjectId: context.projectId,
+        })}`,
+      );
+    }
     const body = `C2-5B-FOREGROUND-${Date.now()}`;
     const wakeBaseline = targetBaseline;
     context.record("workspace-opened-target", {

@@ -1554,6 +1554,26 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     /harness\.launch\(`\$\{id\}\/settle-primary`\)/,
     "foreground workspace-wake must retain its settle-primary launch phase",
   );
+  assert.match(
+    foregroundJourneyBody,
+    /getByTestId\("workspace-menu-trigger"\)/,
+    "foreground workspace-wake must switch A through the canonical WorkspaceMenu",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /data-workspace-open-revision.*previousRevision|previousRevision.*data-workspace-open-revision/s,
+    "foreground workspace-wake must prove the renderer workspace revision advanced",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /data-editor-loaded-document-id=/,
+    "foreground workspace-wake must prove the post-switch scene loaded in the editor",
+  );
+  assert.doesNotMatch(
+    foregroundJourneyBody,
+    /harness\.invokeOk\(first\.page,\s*"open_workspace"/,
+    "foreground workspace-wake must not mutate native authority behind the renderer store",
+  );
 });
 
 test("c2-5b runner IDs are wired to the central catalog and impact selector", () => {
