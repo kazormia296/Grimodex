@@ -1527,7 +1527,7 @@ pub fn discover_durable_maintenance_work_with_coordinates(
     })
 }
 
-fn discover_durable_maintenance_work_in_tx(
+pub(crate) fn discover_durable_maintenance_work_in_tx(
     conn: &Connection,
     project_id: &str,
     reason: &str,

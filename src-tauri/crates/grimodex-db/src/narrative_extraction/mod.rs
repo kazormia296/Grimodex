@@ -192,8 +192,8 @@ pub use terminal_failure::{
 // `electron/native/grimodex-node/src/lib.rs`, a different crate.
 pub use legacy_backfill::{
     bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
-    inject_legacy_backfill_fault_for_project, BackfillStatus, BackfillSummary,
-    LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
+    inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
+    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,

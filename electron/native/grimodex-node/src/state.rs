@@ -312,7 +312,7 @@ impl NarrativeMaintenanceCiSeamState {
         // persisted identity still records every binding component, but a
         // workspace swap, another project, or a replay must never turn that
         // one fault into a second injection under a different key.
-        if faults.pending.contains(&key) || !faults.consumed.is_empty() {
+        if !faults.pending.is_empty() || !faults.consumed.is_empty() {
             return Ok(None);
         }
         faults.pending.insert(key.clone());
@@ -328,37 +328,46 @@ impl NarrativeMaintenanceCiSeamState {
         run_id: &str,
         semantic_epoch_id: Option<&str>,
     ) -> anyhow::Result<()> {
-        validate_fault_identity_component(run_id, "runId")?;
-        let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
-            anyhow::anyhow!(
-                "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: the created Run must carry a Semantic Epoch"
-            )
-        })?;
-        validate_fault_identity_component(semantic_epoch_id, "semanticEpochId")?;
-        if let Some(expected_epoch_id) = claim.key.semantic_epoch_id.as_deref() {
+        let result = (|| {
+            validate_fault_identity_component(run_id, "runId")?;
+            let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: the created Run must carry a Semantic Epoch"
+                )
+            })?;
+            validate_fault_identity_component(semantic_epoch_id, "semanticEpochId")?;
+            if let Some(expected_epoch_id) = claim.key.semantic_epoch_id.as_deref() {
+                anyhow::ensure!(
+                    semantic_epoch_id == expected_epoch_id,
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: Run Semantic Epoch does not match the claimed work identity"
+                );
+            }
+            let mut faults = self
+                .faults
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             anyhow::ensure!(
-                semantic_epoch_id == expected_epoch_id,
-                "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: Run Semantic Epoch does not match the claimed work identity"
+                faults.pending.remove(&claim.key),
+                "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: fault claim is not pending"
             );
+            faults.consumed.insert(NarrativeMaintenanceFaultIdentity {
+                authority_id: claim.key.authority_id.clone(),
+                generation: claim.key.generation,
+                project_id: claim.key.project_id.clone(),
+                run_kind: claim.key.run_kind.clone(),
+                semantic_epoch_id: Some(semantic_epoch_id.to_string()),
+                work_key: claim.key.work_key.clone(),
+                run_id: run_id.to_string(),
+            });
+            Ok(())
+        })();
+        if result.is_err() {
+            // A post-claim validation/commit error must not strand the
+            // process-local reservation. The durable lifecycle transaction
+            // is rolled back by its caller before this cleanup is observed.
+            self.release_fault_claim(claim);
         }
-        let mut faults = self
-            .faults
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        anyhow::ensure!(
-            faults.pending.remove(&claim.key),
-            "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: fault claim is not pending"
-        );
-        faults.consumed.insert(NarrativeMaintenanceFaultIdentity {
-            authority_id: claim.key.authority_id.clone(),
-            generation: claim.key.generation,
-            project_id: claim.key.project_id.clone(),
-            run_kind: claim.key.run_kind.clone(),
-            semantic_epoch_id: Some(semantic_epoch_id.to_string()),
-            work_key: claim.key.work_key.clone(),
-            run_id: run_id.to_string(),
-        });
-        Ok(())
+        result
     }
 
     pub(crate) fn release_fault_claim(&self, claim: &NarrativeMaintenanceFaultClaim) {
@@ -1366,6 +1375,57 @@ mod tests {
             "a second project must not reserve a globally one-shot pending fault"
         );
         seam.release_fault_claim(&first);
+    }
+
+    #[test]
+    fn ci_fault_claim_allows_only_one_pending_identity_globally() {
+        let seam = Arc::new(NarrativeMaintenanceCiSeamState::default());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let claims = std::thread::scope(|scope| {
+            let first_seam = Arc::clone(&seam);
+            let first_barrier = Arc::clone(&barrier);
+            let first = scope.spawn(move || {
+                first_barrier.wait();
+                first_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-one".to_string(),
+                            generation: 1,
+                        },
+                        "project-one",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("first pending reservation")
+                    .is_some()
+            });
+            let second_seam = Arc::clone(&seam);
+            let second_barrier = Arc::clone(&barrier);
+            let second = scope.spawn(move || {
+                second_barrier.wait();
+                second_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-two".to_string(),
+                            generation: 2,
+                        },
+                        "project-two",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("second pending reservation")
+                    .is_some()
+            });
+            [
+                first.join().expect("first reservation thread"),
+                second.join().expect("second reservation thread"),
+            ]
+        });
+        assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
     }
 
     #[test]

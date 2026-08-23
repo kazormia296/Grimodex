@@ -7,9 +7,9 @@
 
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, discover_durable_maintenance_work, ensure_test_schema,
-    inject_legacy_backfill_fault_for_project, run_system_work_cycle,
-    terminalize_interrupted_runs_for_epoch, AutomaticRunKind, InboxEntryKind,
-    LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
+    inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
+    run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind,
+    InboxEntryKind, LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
     NarrativeMaintenanceCiFault, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
@@ -155,15 +155,19 @@ fn project_fault_helper_must_not_follow_a_rotated_epoch_from_a_preflighted_work_
     })
     .expect("rotate Semantic Epoch after discovery");
 
-    let injected = inject_legacy_backfill_fault_for_project(
+    let expected_work = planned.work_key_identity();
+    let error = inject_legacy_backfill_fault_for_work(
         &db,
-        PROJECT_ID,
+        &expected_work,
+        &["durable-wake".to_string()],
         NarrativeMaintenanceCiFault::ContractViolation,
     )
-    .expect("legacy helper returns its durable fault result");
+    .expect_err("preflighted E1 must be rejected after rotation to E2");
     assert!(
-        matches!(&injected, LegacyBackfillFaultOutcome::NotInjected),
-        "a project-only helper must not inject the preflighted E1 fault into E2: {injected:?}"
+        error
+            .to_string()
+            .contains("NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH"),
+        "unexpected stale-epoch error: {error}"
     );
     let lifecycle_count: i64 = db
         .with_conn(|conn| {
@@ -180,6 +184,94 @@ fn project_fault_helper_must_not_follow_a_rotated_epoch_from_a_preflighted_work_
         lifecycle_count, 0,
         "epoch TOCTOU must not create a Backfill lifecycle under a replacement Epoch"
     );
+}
+
+#[test]
+fn epochless_expected_fault_is_rejected_atomically_after_epoch_rotation() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-rotated', ?1, 1, 'restore',
+                     '2026-08-23T01:00:00.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("rotate the current Semantic Epoch before the fault write");
+    let expected = WorkKey::new(
+        PROJECT_ID,
+        AutomaticRunKind::Backfill,
+        LEGACY_BACKFILL_WORK_KEY,
+    )
+    .expect("epoch-less Backfill identity");
+    let error = inject_legacy_backfill_fault_for_work(
+        &db,
+        &expected,
+        &["workspace-opened".to_string()],
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect_err("an epoch-less preflight identity cannot inject after rotation");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH"),
+        "unexpected stale-epoch error: {error}"
+    );
+    let (epoch_count, run_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok((
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_semantic_epochs WHERE project_id = ?1",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?,
+                conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                    [PROJECT_ID],
+                    |row| row.get(0),
+                )?,
+            ))
+        })
+        .expect("read atomic stale-epoch evidence");
+    assert_eq!(epoch_count, 1);
+    assert_eq!(run_count, 0);
+}
+
+#[test]
+fn crafted_fault_reason_cannot_inject_a_backfill_lifecycle() {
+    let db = fixture_db();
+    let expected = WorkKey::new(
+        PROJECT_ID,
+        AutomaticRunKind::Backfill,
+        LEGACY_BACKFILL_WORK_KEY,
+    )
+    .expect("epoch-less Backfill identity");
+    let error = inject_legacy_backfill_fault_for_work(
+        &db,
+        &expected,
+        &["fault-preflight".to_string()],
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect_err("a private sentinel reason must fail planner revalidation");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_MAINTENANCE_FAULT_PLANNER_MISMATCH"),
+        "unexpected crafted-reason error: {error}"
+    );
+    let run_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read crafted-reason lifecycle evidence");
+    assert_eq!(run_count, 0);
 }
 
 #[test]
