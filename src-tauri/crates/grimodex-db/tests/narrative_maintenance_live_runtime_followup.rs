@@ -384,11 +384,12 @@ fn recovery_mode_must_be_startup_again_after_a_workspace_generation_change() {
 
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO narrative_extraction_runs
+            r#"INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
-             VALUES ('generation-one-interrupted', ?1, 'maintenance', '{}', '{}', 'digest',
-                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)",
+             VALUES ('generation-one-interrupted', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;
         Ok(())
@@ -399,11 +400,12 @@ fn recovery_mode_must_be_startup_again_after_a_workspace_generation_change() {
 
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO narrative_extraction_runs
+            r#"INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
-             VALUES ('generation-two-interrupted', ?1, 'maintenance', '{}', '{}', 'digest',
-                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)",
+             VALUES ('generation-two-interrupted', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;
         Ok(())
