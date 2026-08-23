@@ -5,11 +5,13 @@
 //! one unit; the generic repository task APIs deliberately remain outside
 //! this boundary.
 
+use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::execution_state::next_run_lifecycle_timestamp_in_tx;
+use super::commit::digest_plan;
+use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::maintenance_runtime::{
     canonical_work_key_for_epoch, spec_with_active_system_work_marker, NarrativeSystemWorkMarker,
 };
@@ -115,6 +117,30 @@ fn canonical_spec(run_kind: &str) -> anyhow::Result<Value> {
             "NEX_MAINTENANCE_RUN_KIND_INVALID: unsupported maintenance Run kind '{other}'"
         ),
     }
+}
+
+fn validate_canonical_phase_spec(
+    spec_json: &str,
+    spec_digest: &str,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+) -> anyhow::Result<Value> {
+    let persisted_base =
+        persisted_spec_base(spec_json, project_id, run_kind, semantic_epoch_id, work_key)?;
+    let expected_spec =
+        canonical_spec(run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    anyhow::ensure!(
+        persisted_base == expected_spec,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: persisted Run spec does not match the canonical maintenance phase contract"
+    );
+    let expected_digest = format!("sha256:{}", digest_plan(&expected_spec));
+    anyhow::ensure!(
+        spec_digest == expected_digest,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: persisted maintenance spec digest does not match the canonical phase spec digest"
+    );
+    Ok(persisted_base)
 }
 
 fn strip_validated_system_work_marker(
@@ -250,6 +276,17 @@ pub(crate) fn create_maintenance_run_in_tx(
         semantic_epoch_id,
         work_key,
     )?;
+    let expected_spec =
+        canonical_spec(run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    anyhow::ensure!(
+        requested_spec_base == expected_spec,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: requested maintenance spec does not match the canonical maintenance phase contract"
+    );
+    let expected_digest = format!("sha256:{}", digest_plan(&expected_spec));
+    anyhow::ensure!(
+        spec_digest == expected_digest,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: requested maintenance spec digest does not match the canonical phase spec digest"
+    );
     let run = create_system_run_in_tx(
         conn,
         project_id,
@@ -418,10 +455,8 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
             "sealed spec digest and lifecycle timestamp are required",
         ));
     }
-    let persisted_spec = serde_json::from_str::<Value>(&spec_json)
-        .map_err(|error| ownership_error(format!("sealed spec JSON is invalid: {error}")))?;
-    let persisted_spec_base = strip_validated_system_work_marker(
-        &persisted_spec,
+    let persisted_base = persisted_spec_base(
+        &spec_json,
         &project_id,
         &run_kind,
         &semantic_epoch_id,
@@ -429,11 +464,10 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
     )?;
     let expected_spec =
         canonical_spec(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
-    if persisted_spec_base != expected_spec {
-        return Err(ownership_error(format!(
-            "Run '{run_id}' spec does not match the canonical maintenance phase contract"
-        )));
-    }
+    anyhow::ensure!(
+        persisted_base == expected_spec,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: Run '{run_id}' spec does not match the canonical maintenance phase contract"
+    );
 
     let (task_count, attempt_count) = recovery_lifecycle_counts_in_tx(conn, run_id)?;
     if task_count != 0 || attempt_count != 0 {
@@ -507,8 +541,9 @@ pub(crate) fn load_maintenance_run_in_tx(
     let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
     let task_kind =
         maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
-    persisted_spec_base(
+    validate_canonical_phase_spec(
         &spec_json,
+        &spec_digest,
         &project_id,
         &run_kind,
         &semantic_epoch_id,
@@ -633,8 +668,9 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
     let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
     let task_kind =
         maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
-    persisted_spec_base(
+    validate_canonical_phase_spec(
         &spec_json,
+        &spec_digest,
         &project_id,
         &run_kind,
         &semantic_epoch_id,
@@ -720,7 +756,7 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: completed lifecycle rows do not share one terminal instant"
     );
 
-    Ok(MaintenanceRunHandle {
+    let handle = MaintenanceRunHandle {
         project_id,
         run_id: run_id.to_owned(),
         run_kind,
@@ -731,7 +767,187 @@ pub(crate) fn load_completed_maintenance_run_in_tx(
         task_id,
         attempt_id,
         reused: true,
-    })
+    };
+    validate_lifecycle_timestamps_in_tx(conn, &handle, true)?;
+    Ok(handle)
+}
+
+fn parse_lifecycle_timestamp(
+    value: Option<&str>,
+    field: &str,
+    required: bool,
+) -> anyhow::Result<Option<DateTime<Utc>>> {
+    let Some(value) = value else {
+        anyhow::ensure!(
+            !required,
+            "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: {field} is required"
+        );
+        return Ok(None);
+    };
+    Ok(Some(parse_run_lifecycle_instant(value).map_err(
+        |error| ownership_error(format!("{field} timestamp is invalid: {error}")),
+    )?))
+}
+
+fn max_lifecycle_instant(
+    latest: Option<DateTime<Utc>>,
+    candidate: Option<DateTime<Utc>>,
+) -> Option<DateTime<Utc>> {
+    match (latest, candidate) {
+        (Some(current), Some(candidate)) => Some(current.max(candidate)),
+        (None, Some(candidate)) => Some(candidate),
+        (current, None) => current,
+    }
+}
+
+/// Validate the lifecycle timestamps owned by a strict maintenance Run.
+///
+/// The generic Run timestamp allocator is intentionally unchanged: this
+/// owner-specific validation supplies the Task/Attempt ordering evidence and
+/// advances a terminal instant beyond imported child timestamps.
+fn validate_lifecycle_timestamps_in_tx(
+    conn: &Connection,
+    handle: &MaintenanceRunHandle,
+    completed: bool,
+) -> anyhow::Result<DateTime<Utc>> {
+    let row: (
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT r.created_at, r.started_at, r.completed_at,
+                t.created_at, t.started_at, t.completed_at,
+                a.started_at, a.completed_at
+           FROM narrative_extraction_runs r
+           JOIN narrative_extraction_tasks t ON t.run_id = r.id
+           JOIN narrative_extraction_attempts a ON a.task_id = t.id
+          WHERE r.id = ?1 AND t.id = ?2 AND a.id = ?3",
+        params![&handle.run_id, &handle.task_id, &handle.attempt_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        },
+    )?;
+    let (
+        run_created_raw,
+        run_started_raw,
+        run_completed_raw,
+        task_created_raw,
+        task_started_raw,
+        task_completed_raw,
+        attempt_started_raw,
+        attempt_completed_raw,
+    ) = row;
+    let run_created = parse_lifecycle_timestamp(Some(&run_created_raw), "Run.createdAt", true)?
+        .expect("required Run.createdAt parsed");
+    let run_started =
+        parse_lifecycle_timestamp(run_started_raw.as_deref(), "Run.startedAt", false)?;
+    let task_created = parse_lifecycle_timestamp(Some(&task_created_raw), "Task.createdAt", true)?
+        .expect("required Task.createdAt parsed");
+    let task_started =
+        parse_lifecycle_timestamp(task_started_raw.as_deref(), "Task.startedAt", true)?
+            .expect("required Task.startedAt parsed");
+    let attempt_started =
+        parse_lifecycle_timestamp(attempt_started_raw.as_deref(), "Attempt.startedAt", true)?
+            .expect("required Attempt.startedAt parsed");
+
+    anyhow::ensure!(
+        task_created <= task_started,
+        "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: Task.createdAt must not be after Task.startedAt"
+    );
+    anyhow::ensure!(
+        run_created <= task_created,
+        "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: Task.createdAt must not be before Run.createdAt"
+    );
+    anyhow::ensure!(
+        task_started <= attempt_started,
+        "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: Attempt.startedAt must not be before Task.startedAt"
+    );
+    if let Some(run_started) = run_started {
+        anyhow::ensure!(
+            run_created <= run_started,
+            "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: Run.createdAt must not be after Run.startedAt"
+        );
+        anyhow::ensure!(
+            run_started <= task_started,
+            "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: Task.startedAt must not be before Run.startedAt"
+        );
+    }
+
+    let mut latest = None;
+    for instant in [
+        Some(run_created),
+        run_started,
+        Some(task_created),
+        Some(task_started),
+        Some(attempt_started),
+    ] {
+        latest = max_lifecycle_instant(latest, instant);
+    }
+
+    let terminal_values = [run_completed_raw, task_completed_raw, attempt_completed_raw];
+    if completed {
+        let run_completed =
+            parse_lifecycle_timestamp(terminal_values[0].as_deref(), "Run.completedAt", true)?
+                .expect("required Run.completedAt parsed");
+        let task_completed =
+            parse_lifecycle_timestamp(terminal_values[1].as_deref(), "Task.completedAt", true)?
+                .expect("required Task.completedAt parsed");
+        let attempt_completed =
+            parse_lifecycle_timestamp(terminal_values[2].as_deref(), "Attempt.completedAt", true)?
+                .expect("required Attempt.completedAt parsed");
+        anyhow::ensure!(
+            terminal_values[0] == terminal_values[1]
+                && terminal_values[1] == terminal_values[2],
+            "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: completed lifecycle rows do not share one terminal instant"
+        );
+        anyhow::ensure!(
+            run_completed == task_completed && task_completed == attempt_completed,
+            "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: completed lifecycle rows do not share one parsed terminal instant"
+        );
+        anyhow::ensure!(
+            run_completed > latest.expect("lifecycle timestamps have a latest instant"),
+            "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: terminal timestamp must be after every Run, Task, and Attempt lifecycle instant"
+        );
+        return Ok(run_completed);
+    }
+
+    anyhow::ensure!(
+        terminal_values.iter().all(Option::is_none),
+        "NEX_MAINTENANCE_LIFECYCLE_TIMESTAMP_INVALID: running lifecycle rows must not have terminal timestamps"
+    );
+    Ok(latest.expect("lifecycle timestamps have a latest instant"))
+}
+
+fn next_maintenance_terminal_timestamp_in_tx(
+    conn: &Connection,
+    handle: &MaintenanceRunHandle,
+) -> anyhow::Result<String> {
+    let latest_child_instant = validate_lifecycle_timestamps_in_tx(conn, handle, false)?;
+    let run_cursor = parse_run_lifecycle_instant(&next_run_lifecycle_timestamp_in_tx(
+        conn,
+        &handle.project_id,
+    )?)?;
+    let child_cursor = latest_child_instant
+        .checked_add_signed(Duration::milliseconds(1))
+        .ok_or_else(|| {
+            ownership_error("cannot advance terminal timestamp beyond child lifecycle instant")
+        })?;
+    let terminal = run_cursor.max(child_cursor);
+    Ok(terminal.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
 }
 
 fn validate_handle_in_tx(conn: &Connection, handle: &MaintenanceRunHandle) -> anyhow::Result<()> {
@@ -810,6 +1026,7 @@ fn validate_handle_in_tx(conn: &Connection, handle: &MaintenanceRunHandle) -> an
     if !attempt_matches {
         return Err(ownership_error("Attempt ownership tuple mismatch"));
     }
+    validate_lifecycle_timestamps_in_tx(conn, handle, false)?;
     Ok(())
 }
 
@@ -828,7 +1045,7 @@ pub(crate) fn complete_maintenance_run_in_tx(
     handle: &MaintenanceRunHandle,
 ) -> anyhow::Result<String> {
     validate_handle_in_tx(conn, handle)?;
-    let completed_at = next_run_lifecycle_timestamp_in_tx(conn, &handle.project_id)?;
+    let completed_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
     let attempt_updated = conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = 'completed',
@@ -905,7 +1122,7 @@ pub(crate) fn fail_maintenance_run_in_tx(
         "NEX_MAINTENANCE_LIFECYCLE_FAILURE_INVALID: error message must not be empty"
     );
     validate_handle_in_tx(conn, handle)?;
-    let completed_at = next_run_lifecycle_timestamp_in_tx(conn, &handle.project_id)?;
+    let completed_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
     let next_attempt_at = failure_kind.is_retryable().then_some(completed_at.as_str());
     let failure_code = failure_kind.failure_code();
     let retry_disposition = failure_kind.retry_disposition();
@@ -1023,6 +1240,20 @@ mod tests {
 
     fn create(conn: &Connection, run_kind: &str) -> anyhow::Result<MaintenanceRunHandle> {
         create_canonical(conn, run_kind)
+    }
+
+    fn create_unsealed(conn: &Connection, run_kind: &str) -> anyhow::Result<MaintenanceRunHandle> {
+        let (epoch_id, work_key) = work(run_kind);
+        create_maintenance_run_in_tx(
+            conn,
+            "project-1",
+            run_kind,
+            epoch_id,
+            work_key,
+            &json!({ "sealed": run_kind }),
+            "sha256:maintenance-test",
+            SystemRunWorkKeyReuse::RunningOnly,
+        )
     }
 
     fn create_canonical(conn: &Connection, run_kind: &str) -> anyhow::Result<MaintenanceRunHandle> {
@@ -1213,6 +1444,17 @@ mod tests {
     fn strict_loaders_reject_noncanonical_spec_and_digest_but_accept_marker_only_spec() {
         let db = open_db();
         db.with_conn(|conn| {
+            let error = create_unsealed(conn, "backfill")
+                .expect_err("arbitrary phase spec must not be created");
+            assert!(error
+                .to_string()
+                .contains("canonical maintenance phase contract"));
+            Ok(())
+        })
+        .expect("noncanonical spec rejection");
+
+        let db = open_db();
+        db.with_conn(|conn| {
             let handle = create_canonical(conn, "backfill")?;
             let noncanonical = r#"{"sealed":"backfill"}"#;
             conn.execute(
@@ -1228,13 +1470,13 @@ mod tests {
                 params![noncanonical, handle.task_id],
             )?;
             let error = load_maintenance_run_in_tx(conn, &handle.run_id)
-                .expect_err("arbitrary phase spec must not load");
+                .expect_err("Run and Task corruption must not load");
             assert!(error
                 .to_string()
                 .contains("canonical maintenance phase contract"));
             Ok(())
         })
-        .expect("noncanonical spec rejection");
+        .expect("simultaneous Run and Task corruption rejection");
 
         let db = open_db();
         db.with_conn(|conn| {
@@ -1340,6 +1582,32 @@ mod tests {
             Ok(())
         })
         .expect("malformed timestamp rollback");
+    }
+
+    #[test]
+    fn child_lifecycle_before_run_fails_closed() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create_canonical(conn, "backfill")?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET created_at = '2025-01-01T00:00:00.000Z',
+                        started_at = '2025-01-01T00:00:01.000Z'
+                  WHERE id = ?1",
+                params![handle.task_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET started_at = '2025-01-01T00:00:02.000Z'
+                  WHERE id = ?1",
+                params![handle.attempt_id],
+            )?;
+            let error = load_maintenance_run_in_tx(conn, &handle.run_id)
+                .expect_err("child timestamps before Run must fail closed");
+            assert!(error.to_string().contains("before Run"));
+            Ok(())
+        })
+        .expect("child-before-Run validation");
     }
 
     #[test]

@@ -137,11 +137,26 @@ const RUN_COLUMNS = `
     WHERE t.run_id = r.id
     ORDER BY t.created_at ASC, t.id ASC
     LIMIT 1) AS taskStatus,
+  (SELECT t.task_kind
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskKind,
+  (SELECT t.attempt_count
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskAttemptCount,
   (SELECT t.input_json
      FROM narrative_extraction_tasks t
     WHERE t.run_id = r.id
     ORDER BY t.created_at ASC, t.id ASC
     LIMIT 1) AS taskInputJson,
+  (SELECT t.created_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskCreatedAt,
   (SELECT t.started_at
      FROM narrative_extraction_tasks t
     WHERE t.run_id = r.id
@@ -156,6 +171,18 @@ const RUN_COLUMNS = `
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id) AS maxAttemptNumber,
+  (SELECT a.attempt_number
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptNumber,
+  (SELECT a.started_at
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptStartedAt,
   (SELECT a.status
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
@@ -175,7 +202,11 @@ const RUN_COLUMNS = `
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
     LIMIT 1) AS lastAttemptCompletedAt`;
 
-function assertForegroundLifecycle(run, expectedStatus, label) {
+export function assertForegroundLifecycle(
+  run,
+  expectedStatus,
+  label = "foreground lifecycle",
+) {
   if (Number(run?.taskCount ?? 0) !== 1 || Number(run?.attemptCount ?? 0) !== 1) {
     throw new Error(
       `${label} must own exactly one Task and Attempt: ${JSON.stringify({
@@ -195,12 +226,64 @@ function assertForegroundLifecycle(run, expectedStatus, label) {
       })}`,
     );
   }
+  const expectedTaskKinds = {
+    backfill: "maintenance-backfill",
+    "dependency-verify": "maintenance-dependency-verify",
+    "semantic-index-rebuild": "maintenance-semantic-index-rebuild",
+  };
+  const expectedTaskKind = expectedTaskKinds[run.runKind];
+  if (!expectedTaskKind || run.taskKind !== expectedTaskKind) {
+    throw new Error(
+      `${label} Task kind mismatch: ${JSON.stringify({
+        runId: run?.id,
+        runKind: run?.runKind,
+        expectedTaskKind,
+        taskKind: run?.taskKind,
+      })}`,
+    );
+  }
+  if (Number(run.taskAttemptCount ?? 0) !== 1 || Number(run.lastAttemptNumber ?? 0) !== 1) {
+    throw new Error(
+      `${label} must retain exactly one Task attempt and Attempt #1: ${JSON.stringify({
+        runId: run?.id,
+        taskAttemptCount: run?.taskAttemptCount,
+        lastAttemptNumber: run?.lastAttemptNumber,
+      })}`,
+    );
+  }
   if (typeof run.specJson !== "string" || run.taskInputJson !== run.specJson) {
     throw new Error(
       `${label} Task input did not preserve the full Run spec: ${JSON.stringify({
         runId: run?.id,
         specJson: run?.specJson,
         taskInputJson: run?.taskInputJson,
+      })}`,
+    );
+  }
+  const runCreatedAt = parseInstant(run.createdAt, `${label} Run createdAt`);
+  const taskCreatedAt = parseInstant(run.taskCreatedAt, `${label} Task createdAt`);
+  const taskStartedAt = parseInstant(run.taskStartedAt, `${label} Task startedAt`);
+  const attemptStartedAt = parseInstant(
+    run.lastAttemptStartedAt,
+    `${label} Attempt startedAt`,
+  );
+  if (run.startedAt) {
+    const runStartedAt = parseInstant(run.startedAt, `${label} Run startedAt`);
+    if (runCreatedAt > runStartedAt) {
+      throw new Error(`${label} Run createdAt must not be after startedAt`);
+    }
+  }
+  if (runCreatedAt > taskCreatedAt) {
+    throw new Error(`${label} Run createdAt must not be after Task createdAt`);
+  }
+  if (taskCreatedAt > taskStartedAt) {
+    throw new Error(`${label} Task createdAt must not be after startedAt`);
+  }
+  if (taskStartedAt !== attemptStartedAt) {
+    throw new Error(
+      `${label} taskStartedAt and lastAttemptStartedAt must share one lifecycle instant: ${JSON.stringify({
+        taskStartedAt: run?.taskStartedAt,
+        lastAttemptStartedAt: run?.lastAttemptStartedAt,
       })}`,
     );
   }
@@ -218,6 +301,20 @@ function assertForegroundLifecycle(run, expectedStatus, label) {
           attemptCompletedAt: run?.lastAttemptCompletedAt,
         })}`,
       );
+    }
+    const terminalAt = parseInstant(run.completedAt, `${label} terminal completedAt`);
+    for (const [field, value] of [
+      ["Run.createdAt", run.createdAt],
+      ["Run.startedAt", run.startedAt],
+      ["Task.createdAt", run.taskCreatedAt],
+      ["Task.startedAt", run.taskStartedAt],
+      ["Attempt.startedAt", run.lastAttemptStartedAt],
+    ]) {
+      if (value && terminalAt <= parseInstant(value, `${label} ${field}`)) {
+        throw new Error(
+          `${label} terminal completedAt must be after ${field}`,
+        );
+      }
     }
   } else if (run.completedAt || run.taskCompletedAt || run.lastAttemptCompletedAt) {
     throw new Error(

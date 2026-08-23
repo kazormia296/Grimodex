@@ -215,7 +215,7 @@ fn attempt_transition_allowed(from: NarrativeAttemptStatus, to: NarrativeAttempt
     matches!((from, to), (Running, Completed) | (Running, Failed))
 }
 
-fn parse_run_lifecycle_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
+pub(crate) fn parse_run_lifecycle_instant(value: &str) -> anyhow::Result<DateTime<Utc>> {
     if let Ok(parsed) = DateTime::parse_from_rfc3339(value) {
         return Ok(parsed.with_timezone(&Utc));
     }

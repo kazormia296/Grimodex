@@ -90,6 +90,7 @@ use super::maintenance_lifecycle::{
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
+use super::maintenance_runtime::validate_phase_success_outcome;
 #[cfg(test)]
 use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
@@ -499,6 +500,15 @@ fn finalize_legacy_backfill_run(
                     "failure": error.to_string(),
                 }),
             };
+            if transform_result.is_ok() {
+                validate_phase_success_outcome(
+                    "backfill",
+                    project_id,
+                    LEGACY_BACKFILL_WORK_KEY,
+                    Some(&semantic_epoch_id),
+                    &outcome,
+                )?;
+            }
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
             if transform_result.is_ok()
                 && super::maintenance_runtime::foreground_system_work_barrier_requested()

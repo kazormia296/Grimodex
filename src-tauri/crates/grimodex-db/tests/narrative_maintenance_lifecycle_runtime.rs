@@ -224,6 +224,25 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
     assert!(run_at.is_some());
     assert_eq!(run_at, task_at);
     assert_eq!(task_at, attempt_at);
+
+    complete_foreground_system_work_run(&db, &barrier)
+        .expect("an exact completed lifecycle release remains idempotent");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET status = 'failed'
+              WHERE task_id IN (
+                    SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1
+              )",
+            [barrier.run_id.as_str()],
+        )?;
+        Ok(())
+    })
+    .expect("corrupt the completed child lifecycle");
+    assert!(
+        complete_foreground_system_work_run(&db, &barrier).is_err(),
+        "duplicate release must validate the completed Task/Attempt pair"
+    );
 }
 
 #[test]

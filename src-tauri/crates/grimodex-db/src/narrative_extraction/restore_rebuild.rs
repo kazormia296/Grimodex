@@ -36,6 +36,7 @@ use super::maintenance_lifecycle::{
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
+use super::maintenance_runtime::validate_phase_success_outcome;
 use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
@@ -594,6 +595,15 @@ fn finalize_rebuild_run(
                     None,
                 ),
             };
+            if work_result.is_ok() {
+                validate_phase_success_outcome(
+                    "semantic-index-rebuild",
+                    project_id,
+                    REBUILD_DERIVED_WORK_KEY,
+                    Some(semantic_epoch_id),
+                    &outcome,
+                )?;
+            }
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
             if work_result.is_ok()
                 && super::maintenance_runtime::foreground_system_work_barrier_requested()
@@ -1277,6 +1287,13 @@ pub fn run_dependency_verify_for_project(
             });
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
+                    validate_phase_success_outcome(
+                        VERIFY_RUN_KIND,
+                        project_id,
+                        &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                        Some(&epoch_id),
+                        &outcome,
+                    )?;
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
                     if super::maintenance_runtime::foreground_system_work_barrier_requested() {
                         // The native product-journey barrier owns the terminal
@@ -3110,7 +3127,7 @@ mod tests {
                         &epoch_id,
                         REBUILD_DERIVED_WORK_KEY,
                         &json!({}),
-                        "digest",
+                        &format!("sha256:{}", digest_plan(&json!({}))),
                         SystemRunWorkKeyReuse::RunningOnly,
                     )?;
                     Ok(handle.run_id)
@@ -3166,7 +3183,7 @@ mod tests {
                         &epoch_id,
                         REBUILD_DERIVED_WORK_KEY,
                         &json!({}),
-                        "digest",
+                        &format!("sha256:{}", digest_plan(&json!({}))),
                         SystemRunWorkKeyReuse::RunningOnly,
                     )?;
                     Ok(handle.run_id)
@@ -3318,7 +3335,7 @@ mod tests {
                         &epoch_id,
                         REBUILD_DERIVED_WORK_KEY,
                         &json!({}),
-                        "digest",
+                        &format!("sha256:{}", digest_plan(&json!({}))),
                         SystemRunWorkKeyReuse::RunningOnly,
                     )?;
                     Ok(handle.run_id)
@@ -4521,7 +4538,12 @@ mod tests {
                         &epoch_id,
                         &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                         &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION }),
-                        "digest",
+                        &format!(
+                            "sha256:{}",
+                            digest_plan(
+                                &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION })
+                            )
+                        ),
                         SystemRunWorkKeyReuse::RunningOnly,
                     )?;
                     let run_id = handle.run_id;

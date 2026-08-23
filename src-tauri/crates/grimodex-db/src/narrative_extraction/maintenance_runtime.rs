@@ -7,10 +7,11 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::commit::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::legacy_backfill::{
     is_valid_completed_backfill_marker, parse_maintenance_instant, CompletedBackfillMarker,
@@ -31,8 +32,8 @@ use super::maintenance_skip_evidence::{
 };
 use super::restore_rebuild::{
     rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
-    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, VERIFY_CONTRACT_VERSION,
-    VERIFY_RUN_KIND,
+    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
+    REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -609,6 +610,167 @@ fn validate_foreground_run_identity(
     Ok(())
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BackfillSuccessSummary {
+    epoch_created: bool,
+    contributions_created: usize,
+    edges_created: usize,
+    applications_without_run_id: usize,
+}
+
+/// Validate the immutable success evidence produced by one automatic phase.
+///
+/// This is intentionally shared by normal completion and foreground release:
+/// a held Run must not gain a terminal status merely because its outcome was
+/// replaced with an empty object, and the normal writer/release paths must
+/// agree on the same production evidence shape.
+pub(crate) fn validate_phase_success_outcome(
+    run_kind: &str,
+    project_id: &str,
+    work_key: &str,
+    semantic_epoch_id: Option<&str>,
+    outcome: &Value,
+) -> anyhow::Result<()> {
+    let object = outcome.as_object().ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: successful phase outcome must be an object"
+        )
+    })?;
+    let epoch_id = semantic_epoch_id.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: successful phase outcome requires a Semantic Epoch"
+        )
+    })?;
+    anyhow::ensure!(
+        !project_id.trim().is_empty(),
+        "project identity is required"
+    );
+    match run_kind {
+        "backfill" => {
+            anyhow::ensure!(
+                work_key == LEGACY_BACKFILL_WORK_KEY,
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill work key is not canonical"
+            );
+            anyhow::ensure!(
+                object.get("maintenancePhase").and_then(Value::as_str)
+                    == Some("backfill-complete"),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome marker is missing or incorrect"
+            );
+            anyhow::ensure!(
+                object
+                    .get("backfillAlgorithmVersion")
+                    .and_then(Value::as_str)
+                    == Some("2"),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill algorithm version is missing or incorrect"
+            );
+            anyhow::ensure!(
+                object.get("semanticEpochId").and_then(Value::as_str) == Some(epoch_id),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome epoch does not match the Run"
+            );
+            let summary = object.get("summary").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome summary is missing"
+                )
+            })?;
+            serde_json::from_value::<BackfillSuccessSummary>(summary.clone()).map_err(|error| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome summary is invalid: {error}"
+                )
+            })?;
+        }
+        VERIFY_RUN_KIND => {
+            anyhow::ensure!(
+                work_key == format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify work key is not canonical"
+            );
+            anyhow::ensure!(
+                object
+                    .get("verifyContractVersion")
+                    .and_then(Value::as_str)
+                    == Some(VERIFY_CONTRACT_VERSION),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify contract version is missing or incorrect"
+            );
+            anyhow::ensure!(
+                object.get("semanticEpochId").and_then(Value::as_str) == Some(epoch_id),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify outcome epoch does not match the Run"
+            );
+            let report = object.get("report").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify report is missing"
+                )
+            })?;
+            serde_json::from_value::<DependencyGraphVerifyReport>(report.clone()).map_err(
+                |error| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify report is invalid: {error}"
+                    )
+                },
+            )?;
+            let report_digest = object
+                .get("reportDigest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify report digest is missing"
+                    )
+                })?;
+            let expected_digest = format!("sha256:{}", digest_plan(report));
+            anyhow::ensure!(
+                report_digest == expected_digest,
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Verify report digest does not match the report"
+            );
+        }
+        "semantic-index-rebuild" => {
+            anyhow::ensure!(
+                work_key == REBUILD_DERIVED_WORK_KEY,
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild work key is not canonical"
+            );
+            anyhow::ensure!(
+                object
+                    .get("rebuildContractVersion")
+                    .and_then(Value::as_str)
+                    == Some(REBUILD_CONTRACT_VERSION),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild contract version is missing or incorrect"
+            );
+            anyhow::ensure!(
+                object.get("semanticEpochId").and_then(Value::as_str) == Some(epoch_id),
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild outcome epoch does not match the Run"
+            );
+            let summary = object.get("summary").ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild outcome summary is missing"
+                )
+            })?;
+            serde_json::from_value::<RebuildDerivedStateSummary>(summary.clone()).map_err(
+                |error| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild outcome summary is invalid: {error}"
+                    )
+                },
+            )?;
+            let summary_digest = object
+                .get("summaryDigest")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild summary digest is missing"
+                    )
+                })?;
+            let expected_digest = format!("sha256:{}", digest_plan(summary));
+            anyhow::ensure!(
+                summary_digest == expected_digest,
+                "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Rebuild summary digest does not match the summary"
+            );
+        }
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: unsupported successful Run kind '{other}'"
+        ),
+    }
+    Ok(())
+}
+
 /// Release one exact foreground Run after the ordinary authoring write has
 /// committed.  The Run is real durable work: its adapter recorded the native
 /// outcome before the barrier, and this owner-only transition supplies the
@@ -676,8 +838,19 @@ pub fn complete_foreground_system_work_run(
                 .as_deref()
             {
                 Some(text) => serde_json::from_str::<Value>(text)?,
-                None => json!({}),
+                None => {
+                    anyhow::bail!(
+                        "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run has no successful phase outcome"
+                    )
+                }
             };
+            validate_phase_success_outcome(
+                &run_kind,
+                &project_id,
+                &work_key,
+                epoch_id.as_deref(),
+                &outcome,
+            )?;
             let outcome_object = outcome.as_object_mut().ok_or_else(|| {
                 anyhow::anyhow!(
                     "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: foreground Run outcome is not an object"

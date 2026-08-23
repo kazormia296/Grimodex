@@ -245,6 +245,7 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     ["lastAttemptNumber", 2],
     ["taskCount", 2],
     ["taskStartedAt", "2099-01-01T00:00:00.000Z"],
+    ["taskCreatedAt", "2025-01-01T00:00:00.000Z"],
   ]) {
     const corrupted = { ...valid, [field]: value };
     assert.throws(
