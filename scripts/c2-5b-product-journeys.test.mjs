@@ -318,6 +318,7 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     "2026-08-23T00:00:00.000Z ",
     "2026-02-30T00:00:00.000Z",
     "2026-08-23T00:00:00",
+    "2026-08-23T00:00:00.1234567890Z",
   ]) {
     assert.throws(
       () =>
@@ -336,6 +337,111 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
       /timestamp/,
     );
   }
+});
+
+test("wall-clock bounds and overlap use the exact instant representation", () => {
+  const {
+    assertWallClockIntervalContains,
+    assertWallClockLowerBound,
+  } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof assertWallClockLowerBound, "function");
+  assert.equal(typeof assertWallClockIntervalContains, "function");
+
+  const openLowerBound = Date.parse("2026-08-23T00:00:00.001Z");
+  assert.doesNotThrow(() =>
+    assertWallClockLowerBound(
+      "2026-08-23T00:00:00.001000000Z",
+      openLowerBound,
+      "current workspace wake Run",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertWallClockLowerBound(
+        "2026-08-23T00:00:00.000999999Z",
+        openLowerBound,
+        "old workspace wake Run",
+      ),
+    /predates/,
+  );
+
+  const schedulerStartedAt = "2026-08-23T00:00:00.001000000Z";
+  const schedulerCompletedAt = "2026-08-23T00:00:00.003000000Z";
+  assert.doesNotThrow(() =>
+    assertWallClockIntervalContains(
+      Date.parse("2026-08-23T00:00:00.001500Z"),
+      Date.parse("2026-08-23T00:00:00.002500Z"),
+      schedulerStartedAt,
+      schedulerCompletedAt,
+      "current foreground write",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertWallClockIntervalContains(
+        Date.parse("2026-08-23T00:00:00.000500Z"),
+        Date.parse("2026-08-23T00:00:00.002500Z"),
+        schedulerStartedAt,
+        schedulerCompletedAt,
+        "old foreground write",
+      ),
+    /overlap/,
+  );
+});
+
+test("instant comparison preserves Chrono leap-second ordering and precision", () => {
+  const { compareInstants } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof compareInstants, "function");
+  assert.equal(
+    compareInstants(
+      "2026-08-23T23:59:59.999999999Z",
+      "2026-08-23T23:59:60.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T23:59:60.999999999Z",
+      "2026-08-24T00:00:00.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-24T00:00:00.000000000Z",
+      "2026-08-24T00:00:01.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T09:00:00.000000001+09:00",
+      "2026-08-23T00:00:00.000000001Z",
+    ),
+    0,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23 00:00:00.000000001",
+      "2026-08-23T00:00:00.000000001Z",
+    ),
+    0,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T00:00:00.000000001Z",
+      "2026-08-23T00:00:00.000000000Z",
+    ),
+    1,
+  );
+  assert.throws(
+    () =>
+      compareInstants(
+        "2026-08-23T00:00:00.1234567890Z",
+        "2026-08-23T00:00:00.123456789Z",
+      ),
+    /timestamp/,
+  );
 });
 
 test("transient retry validates every distinct same-work lifecycle in order", () => {
