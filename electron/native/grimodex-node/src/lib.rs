@@ -62,13 +62,14 @@ use grimodex_db::lint_terms::{
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
-    ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    LegacyBackfillFaultOutcome, ListResumableRunsPayload, MaintenanceCycleRequest,
+    MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
     NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceCiTrigger, NarrativeMaintenanceInboxListPayload,
-    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
+    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
+    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -1851,7 +1852,8 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let request: MaintenanceCycleRequest = from_wire("payload", payload)?;
-            let normalized_work = request.normalized_work()?;
+            let normalized_work = narrative_extraction::preflight_maintenance_cycle_request(&request)
+                .map_err(AppError::Anyhow)?;
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
@@ -1902,6 +1904,209 @@ impl Backend {
                 .to_string());
             }
             let ci_config = state.narrative_maintenance_ci_seam.config();
+            // Faults are claimed against the same immutable authority,
+            // generation, project, epoch, and canonical work identity that
+            // the recovery gate uses.  The shared Backfill owner creates the
+            // real lifecycle triplet; this adapter only supplies the typed
+            // one-shot seam and owns the deliberate process exit case.
+            if let Some(config) = ci_config.as_ref() {
+                if let Some(fault) = config.fault {
+                    // Fault injection is a single-work product-journey seam.
+                    // A mixed phase batch must go through the ordinary state
+                    // machine so an ACK cannot drop the other queued work
+                    // while the main owner deliberately halts for exit.
+                    if normalized_work.len() == 1
+                        && normalized_work[0].run_kind.as_str() == "backfill"
+                    {
+                        let item = &normalized_work[0];
+                        // Recheck every actual normalized reason. A private
+                        // sentinel reason must never make the planner claim a
+                        // Backfill that the public state machine would not
+                        // dispatch.
+                        let planner_identity_matches = item.reasons.iter().try_fold(
+                            true,
+                            |matches, reason| -> anyhow::Result<bool> {
+                                let candidate = narrative_extraction::
+                                    discover_durable_maintenance_work_with_config(
+                                        authority.db(),
+                                        &item.project_id,
+                                        reason,
+                                        Some(config),
+                                    )?;
+                                Ok(matches
+                                    && candidate.is_some_and(|candidate| {
+                                        candidate.project_id == item.project_id
+                                            && candidate.run_kind == item.run_kind
+                                            && candidate.work_key == item.work_key
+                                            && candidate.semantic_epoch_id
+                                                == item.semantic_epoch_id
+                                    }))
+                            },
+                        )?;
+                        if planner_identity_matches {
+                            // Re-pin immediately before reserving/writing. A
+                            // workspace replacement between the broad cycle
+                            // snapshot and this fault boundary fails closed.
+                            let write_snapshot = match active_workspace_snapshot(&state.ws) {
+                                Ok(snapshot) => snapshot,
+                                Err(
+                                    AppError::NoWorkspace
+                                    | AppError::WorkspaceSwitching
+                                    | AppError::SafeModeActive,
+                                ) => {
+                                    return Ok(serde_json::json!({
+                                        "status": "workspace-unavailable",
+                                        "reason": "maintenance-workspace-snapshot-changed",
+                                    })
+                                    .to_string());
+                                }
+                                Err(error) => return Err(error),
+                            };
+                            let write_binding = state
+                                .narrative_maintenance_recovery_gate
+                                .binding_for_authority(&narrative_authority_id(
+                                    &write_snapshot.authority,
+                                ));
+                            if !std::sync::Arc::ptr_eq(
+                                &authority,
+                                &write_snapshot.authority,
+                            ) || request_binding != &write_binding
+                            {
+                                return Ok(serde_json::json!({
+                                    "status": "workspace-unavailable",
+                                    "reason": "maintenance-workspace-binding-mismatch",
+                                })
+                                .to_string());
+                            }
+                            if let Some(claim) = state
+                                .narrative_maintenance_ci_seam
+                                .claim_fault_for_binding(
+                                    fault,
+                                    request_binding,
+                                    &item.project_id,
+                                    item.run_kind.as_str(),
+                                    item.semantic_epoch_id.as_deref(),
+                                    &item.work_key,
+                                )
+                                .map_err(AppError::Anyhow)?
+                            {
+                                let expected_work = item.work_key_identity();
+                                let injected = match narrative_extraction::
+                                    inject_legacy_backfill_fault_for_work(
+                                        authority.db(),
+                                        &expected_work,
+                                        &item.reasons,
+                                        claim.fault(),
+                                    ) {
+                                    Ok(outcome) => outcome,
+                                    Err(error) => {
+                                        state
+                                            .narrative_maintenance_ci_seam
+                                            .release_fault_claim(&claim);
+                                        return Err(AppError::Anyhow(error));
+                                    }
+                                };
+                                match injected {
+                                    LegacyBackfillFaultOutcome::NotInjected => {
+                                        state
+                                            .narrative_maintenance_ci_seam
+                                            .release_fault_claim(&claim);
+                                    }
+                                    LegacyBackfillFaultOutcome::Failed {
+                                        run_id,
+                                        semantic_epoch_id,
+                                        failure_code,
+                                    } => {
+                                        let fault_kind = claim.fault();
+                                        state
+                                            .narrative_maintenance_ci_seam
+                                            .commit_fault_for_run(
+                                                &claim,
+                                                &run_id,
+                                                Some(&semantic_epoch_id),
+                                            )
+                                            .map_err(AppError::Anyhow)?;
+                                        match fault_kind {
+                                            NarrativeMaintenanceCiFault::ContractViolation => {
+                                                // A terminal contract violation is
+                                                // durably failed and projected to
+                                                // Inbox by the shared owner. ACK it
+                                                // as handled so main never enters
+                                                // its generic delivery retry path.
+                                                return Ok(serde_json::json!({
+                                                    "status": "ci-terminal-fault-handled",
+                                                    "fault": "contract-violation",
+                                                    "runId": run_id,
+                                                    "authorityId": request_binding.authority_id,
+                                                    "generation": request_binding.generation,
+                                                })
+                                                .to_string());
+                                            }
+                                            NarrativeMaintenanceCiFault::TransientIo => {
+                                                // Returning a typed error leaves
+                                                // the exact work key queued. Its
+                                                // next cycle rediscovers this
+                                                // failed Run and applies the
+                                                // bounded transient policy.
+                                                return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                    "{failure_code}: injected maintenance fault"
+                                                )));
+                                            }
+                                            NarrativeMaintenanceCiFault::ProcessInterruption => {
+                                                return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                    "NEX_MAINTENANCE_CI_SEAM_FAULT_MISMATCH: process interruption returned a failed outcome"
+                                                )));
+                                            }
+                                        }
+                                    }
+                                    LegacyBackfillFaultOutcome::Running {
+                                        run_id,
+                                        semantic_epoch_id,
+                                    } => {
+                                        let is_process_interruption = matches!(
+                                            claim.fault(),
+                                            NarrativeMaintenanceCiFault::ProcessInterruption
+                                        );
+                                        if !is_process_interruption {
+                                            state
+                                                .narrative_maintenance_ci_seam
+                                                .release_fault_claim(&claim);
+                                            return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                "NEX_MAINTENANCE_CI_SEAM_FAULT_MISMATCH: running fault outcome is not process interruption"
+                                            )));
+                                        }
+                                        state
+                                            .narrative_maintenance_ci_seam
+                                            .commit_fault_for_run(
+                                                &claim,
+                                                &run_id,
+                                                Some(&semantic_epoch_id),
+                                            )
+                                            .map_err(AppError::Anyhow)?;
+                                        // The config was validated at one-shot
+                                        // setup; recheck the process-only gate at
+                                        // the actual exit boundary as defense in
+                                        // depth against a future state refactor.
+                                        if config.is_packaged || config.ci != "true" {
+                                            return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                "NEX_MAINTENANCE_CI_SEAM_INACTIVE: process interruption requires an unpackaged CI launch"
+                                            )));
+                                        }
+                                        return Ok(serde_json::json!({
+                                            "status": "ci-process-interruption-pending",
+                                            "fault": "process-interruption",
+                                            "runId": run_id,
+                                            "authorityId": request_binding.authority_id,
+                                            "generation": request_binding.generation,
+                                        })
+                                        .to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             let result = narrative_extraction::run_system_work_cycle_with_modes_and_config(
                 authority.db(),
                 &request,
@@ -7949,6 +8154,187 @@ mod narrative_maintenance_epoch_event_tests {
         assert!(!should_emit_narrative_epoch_rotated(true, true));
         assert!(!should_emit_narrative_epoch_rotated(false, false));
         assert!(!should_emit_narrative_epoch_rotated(true, false));
+    }
+}
+
+#[cfg(test)]
+mod narrative_maintenance_fault_red_tests {
+    use super::*;
+    use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
+    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct TestRoot(PathBuf);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "grimodex-node-fault-red-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ))
+    }
+
+    fn backend_with_fresh_workspace(label: &str) -> (TestRoot, Backend, PathBuf) {
+        let root = test_root(label);
+        // Declare the guard before constructing Backend/WorkspaceAuthority so
+        // an assertion panic drops the database owner before cleanup runs.
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(workspace_path.join(".grimodex"))
+            .expect("workspace metadata directory");
+        std::fs::write(
+            workspace_path.join(".grimodex/workspace.json"),
+            serde_json::json!({
+                "id": format!("workspace-{label}"),
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(Arc::clone(&authority)));
+        (
+            cleanup,
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+        )
+    }
+
+    #[tokio::test]
+    async fn public_napi_fault_cycle_must_consume_discovered_fresh_workspace_backfill() {
+        let (cleanup, backend, root_path) = backend_with_fresh_workspace("public-discovery");
+        backend
+            .state
+            .narrative_maintenance_ci_seam
+            .configure(NarrativeMaintenanceCiConfig {
+                is_packaged: false,
+                ci: "true".to_string(),
+                owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+                fault: Some(NarrativeMaintenanceCiFault::ContractViolation),
+                trigger: None,
+                setup: None,
+                product_journey_barrier_id: None,
+                correlation: None,
+            })
+            .expect("configure fault seam");
+
+        let discovery: Value = serde_json::from_str(
+            &backend
+                .discover_narrative_maintenance_work("workspace-opened".to_string())
+                .await
+                .expect("public discovery"),
+        )
+        .expect("discovery JSON");
+        let discovered_work = discovery["pages"][0]["work"][0].clone();
+        assert!(
+            discovered_work["projectId"]
+                .as_str()
+                .is_some_and(|project_id| !project_id.is_empty()),
+            "public discovery must return a concrete project identity"
+        );
+        assert_eq!(discovered_work["runKind"], "backfill");
+        assert_eq!(discovered_work["semanticEpochId"], Value::Null);
+
+        let cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [discovered_work],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": discovery["workspaceBinding"].clone(),
+                }))
+                .await
+                .expect("public fault cycle"),
+        )
+        .expect("cycle JSON");
+        assert_eq!(
+            cycle["status"], "ci-terminal-fault-handled",
+            "the configured fault must be reached through public discovery output"
+        );
+
+        let ack_run_id = cycle["runId"]
+            .as_str()
+            .expect("terminal fault ACK carries the durable Run id");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let lifecycle: (String, String, String, Option<String>, i64, i64, i64) = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT r.status, t.status, a.status, a.failure_code,
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_runs rr
+                              WHERE rr.id = r.id),
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_tasks tt
+                              WHERE tt.run_id = r.id),
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_attempts aa
+                               JOIN narrative_extraction_tasks at ON at.id = aa.task_id
+                              WHERE at.run_id = r.id)
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                    [ack_run_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("read injected lifecycle");
+        assert_eq!(lifecycle.0, "failed");
+        assert_eq!(lifecycle.1, "failed");
+        assert_eq!(lifecycle.2, "failed");
+        assert_eq!(
+            lifecycle.3.as_deref(),
+            Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+        );
+        assert_eq!((lifecycle.4, lifecycle.5, lifecycle.6), (1, 1, 1));
+
+        drop(authority);
+        drop(backend);
+        drop(cleanup);
+        assert!(!root_path.exists(), "fault seam fixture must clean up");
     }
 }
 

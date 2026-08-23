@@ -15,7 +15,7 @@ use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
 use grimodex_db::narrative_extraction::{
     ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
-    RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+    NarrativeMaintenanceCiFault, RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
 };
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -191,12 +191,54 @@ fn allocate_narrative_maintenance_generation(preferred: Option<u64>) -> u64 {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct NarrativeMaintenanceFaultIdentity {
+    pub(crate) authority_id: String,
+    pub(crate) generation: u64,
+    pub(crate) project_id: String,
+    pub(crate) run_kind: String,
+    pub(crate) semantic_epoch_id: Option<String>,
+    pub(crate) work_key: String,
+    pub(crate) run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NarrativeMaintenanceFaultClaimKey {
+    authority_id: String,
+    generation: u64,
+    project_id: String,
+    run_kind: String,
+    semantic_epoch_id: Option<String>,
+    work_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NarrativeMaintenanceFaultClaim {
+    key: NarrativeMaintenanceFaultClaimKey,
+    fault: NarrativeMaintenanceCiFault,
+}
+
+impl NarrativeMaintenanceFaultClaim {
+    pub(crate) fn fault(&self) -> NarrativeMaintenanceCiFault {
+        self.fault
+    }
+}
+
+#[derive(Default)]
+struct NarrativeMaintenanceFaultState {
+    pending: HashSet<NarrativeMaintenanceFaultClaimKey>,
+    consumed: HashSet<NarrativeMaintenanceFaultIdentity>,
+}
+
 /// One-shot native storage for the authorized product-journey configuration.
 /// Main performs the launch gate, while this state validates it again and
-/// rejects every second configuration attempt.
+/// rejects every second configuration attempt. Fault consumption is kept
+/// separate from configuration so a replay, a different authority, or a
+/// different workspace-generation binding cannot reuse the same injection.
 pub struct NarrativeMaintenanceCiSeamState {
     configured: AtomicBool,
     config: Mutex<Option<NarrativeMaintenanceCiConfig>>,
+    faults: Mutex<NarrativeMaintenanceFaultState>,
 }
 
 impl Default for NarrativeMaintenanceCiSeamState {
@@ -204,6 +246,7 @@ impl Default for NarrativeMaintenanceCiSeamState {
         Self {
             configured: AtomicBool::new(false),
             config: Mutex::new(None),
+            faults: Mutex::new(NarrativeMaintenanceFaultState::default()),
         }
     }
 }
@@ -230,6 +273,128 @@ impl NarrativeMaintenanceCiSeamState {
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
     }
+
+    /// Reserve the configured fault for one exact live authority/work
+    /// identity. The Run id is deliberately attached only after the native
+    /// lifecycle owner creates it; this pending reservation closes the race
+    /// between two concurrent cycle calls without allowing a speculative
+    /// failed call to consume the one-shot permanently.
+    pub(crate) fn claim_fault_for_binding(
+        &self,
+        fault: NarrativeMaintenanceCiFault,
+        binding: &MaintenanceWorkspaceBinding,
+        project_id: &str,
+        run_kind: &str,
+        semantic_epoch_id: Option<&str>,
+        work_key: &str,
+    ) -> anyhow::Result<Option<NarrativeMaintenanceFaultClaim>> {
+        binding.validate()?;
+        validate_fault_identity_component(&binding.authority_id, "authorityId")?;
+        validate_fault_identity_component(project_id, "projectId")?;
+        validate_fault_identity_component(run_kind, "runKind")?;
+        validate_fault_identity_component(work_key, "workKey")?;
+        if let Some(epoch_id) = semantic_epoch_id {
+            validate_fault_identity_component(epoch_id, "semanticEpochId")?;
+        }
+        let key = NarrativeMaintenanceFaultClaimKey {
+            authority_id: binding.authority_id.clone(),
+            generation: binding.generation,
+            project_id: project_id.to_string(),
+            run_kind: run_kind.to_string(),
+            semantic_epoch_id: semantic_epoch_id.map(str::to_string),
+            work_key: work_key.to_string(),
+        };
+        let mut faults = self
+            .faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The configured seam is one-shot for the whole AppState.  The
+        // persisted identity still records every binding component, but a
+        // workspace swap, another project, or a replay must never turn that
+        // one fault into a second injection under a different key.
+        if !faults.pending.is_empty() || !faults.consumed.is_empty() {
+            return Ok(None);
+        }
+        faults.pending.insert(key.clone());
+        Ok(Some(NarrativeMaintenanceFaultClaim { key, fault }))
+    }
+
+    /// Bind a reserved fault to the real Run id and the epoch selected by the
+    /// lifecycle owner. A claim can be committed exactly once; a mismatched
+    /// authority/generation or empty Run id fails closed.
+    pub(crate) fn commit_fault_for_run(
+        &self,
+        claim: &NarrativeMaintenanceFaultClaim,
+        run_id: &str,
+        semantic_epoch_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let result = (|| {
+            validate_fault_identity_component(run_id, "runId")?;
+            let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: the created Run must carry a Semantic Epoch"
+                )
+            })?;
+            validate_fault_identity_component(semantic_epoch_id, "semanticEpochId")?;
+            if let Some(expected_epoch_id) = claim.key.semantic_epoch_id.as_deref() {
+                anyhow::ensure!(
+                    semantic_epoch_id == expected_epoch_id,
+                    "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: Run Semantic Epoch does not match the claimed work identity"
+                );
+            }
+            let mut faults = self
+                .faults
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            anyhow::ensure!(
+                faults.pending.remove(&claim.key),
+                "NEX_MAINTENANCE_FAULT_CLAIM_INVALID: fault claim is not pending"
+            );
+            faults.consumed.insert(NarrativeMaintenanceFaultIdentity {
+                authority_id: claim.key.authority_id.clone(),
+                generation: claim.key.generation,
+                project_id: claim.key.project_id.clone(),
+                run_kind: claim.key.run_kind.clone(),
+                semantic_epoch_id: Some(semantic_epoch_id.to_string()),
+                work_key: claim.key.work_key.clone(),
+                run_id: run_id.to_string(),
+            });
+            Ok(())
+        })();
+        if result.is_err() {
+            // A post-claim validation/commit error must not strand the
+            // process-local reservation. The durable lifecycle transaction
+            // is rolled back by its caller before this cleanup is observed.
+            self.release_fault_claim(claim);
+        }
+        result
+    }
+
+    pub(crate) fn release_fault_claim(&self, claim: &NarrativeMaintenanceFaultClaim) {
+        self.faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .remove(&claim.key);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumed_fault_identities(&self) -> Vec<NarrativeMaintenanceFaultIdentity> {
+        self.faults
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .consumed
+            .iter()
+            .cloned()
+            .collect()
+    }
+}
+
+fn validate_fault_identity_component(value: &str, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.is_empty(), "{name} is required");
+    anyhow::ensure!(value == value.trim(), "{name} must be trimmed");
+    anyhow::ensure!(!value.contains('\0'), "{name} must not contain NUL");
+    Ok(())
 }
 
 /// Process-local retry handles for foreground Runs selected by the
@@ -1084,6 +1249,220 @@ mod tests {
             gate.mode_for_binding(&second, key),
             RecoveryMode::StartupRecovery,
             "late old-authority ACK must remain harmless"
+        );
+    }
+
+    #[test]
+    fn ci_fault_claim_is_one_shot_across_binding_project_and_replay() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-one".to_string(),
+            generation: 7,
+        };
+        let claim = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-one",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("claim exact fault identity")
+            .expect("first claim is available");
+        seam.commit_fault_for_run(&claim, "run-one", Some("epoch-one"))
+            .expect("bind claim to real Run and epoch");
+
+        let consumed = seam.consumed_fault_identities();
+        assert_eq!(consumed.len(), 1);
+        assert_eq!(consumed[0].authority_id, "authority-one");
+        assert_eq!(consumed[0].generation, 7);
+        assert_eq!(consumed[0].project_id, "project-one");
+        assert_eq!(consumed[0].run_id, "run-one");
+        assert_eq!(consumed[0].semantic_epoch_id.as_deref(), Some("epoch-one"));
+
+        for (other_binding, project, epoch, work_key) in [
+            (
+                binding.clone(),
+                "project-one",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                MaintenanceWorkspaceBinding {
+                    authority_id: "authority-two".to_string(),
+                    generation: 8,
+                },
+                "project-one",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                binding.clone(),
+                "project-two",
+                None,
+                "legacy-dependency-backfill:v2",
+            ),
+            (
+                binding.clone(),
+                "project-one",
+                Some("epoch-two"),
+                "legacy-dependency-backfill:v2",
+            ),
+            (binding.clone(), "project-one", None, "different-work"),
+        ] {
+            assert!(
+                seam.claim_fault_for_binding(
+                    NarrativeMaintenanceCiFault::TransientIo,
+                    &other_binding,
+                    project,
+                    "backfill",
+                    epoch,
+                    work_key,
+                )
+                .expect("replay validation")
+                .is_none(),
+                "a consumed fault cannot be replayed under another identity"
+            );
+        }
+
+        let pending = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &MaintenanceWorkspaceBinding {
+                    authority_id: "authority-three".to_string(),
+                    generation: 9,
+                },
+                "project-three",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("pending claim validation");
+        assert!(pending.is_none(), "consumed state remains one-shot");
+    }
+
+    #[test]
+    fn ci_fault_claim_is_globally_one_shot_while_any_distinct_key_is_pending() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-pending".to_string(),
+            generation: 11,
+        };
+        let first = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-one",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("first pending claim validation")
+            .expect("first pending claim");
+        let second = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-two",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("distinct pending claim validation");
+        assert!(
+            second.is_none(),
+            "a second project must not reserve a globally one-shot pending fault"
+        );
+        seam.release_fault_claim(&first);
+    }
+
+    #[test]
+    fn ci_fault_claim_allows_only_one_pending_identity_globally() {
+        let seam = Arc::new(NarrativeMaintenanceCiSeamState::default());
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let claims = std::thread::scope(|scope| {
+            let first_seam = Arc::clone(&seam);
+            let first_barrier = Arc::clone(&barrier);
+            let first = scope.spawn(move || {
+                first_barrier.wait();
+                first_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-one".to_string(),
+                            generation: 1,
+                        },
+                        "project-one",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("first pending reservation")
+                    .is_some()
+            });
+            let second_seam = Arc::clone(&seam);
+            let second_barrier = Arc::clone(&barrier);
+            let second = scope.spawn(move || {
+                second_barrier.wait();
+                second_seam
+                    .claim_fault_for_binding(
+                        NarrativeMaintenanceCiFault::TransientIo,
+                        &MaintenanceWorkspaceBinding {
+                            authority_id: "authority-two".to_string(),
+                            generation: 2,
+                        },
+                        "project-two",
+                        "backfill",
+                        None,
+                        "legacy-dependency-backfill:v2",
+                    )
+                    .expect("second pending reservation")
+                    .is_some()
+            });
+            [
+                first.join().expect("first reservation thread"),
+                second.join().expect("second reservation thread"),
+            ]
+        });
+        assert_eq!(claims.into_iter().filter(|claimed| *claimed).count(), 1);
+    }
+
+    #[test]
+    fn failed_fault_claim_commit_releases_pending_reservation_for_retry() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-commit-error".to_string(),
+            generation: 12,
+        };
+        let claim = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("claim validation")
+            .expect("pending claim");
+        assert!(
+            seam.commit_fault_for_run(&claim, "run-one", Some("epoch-two"))
+                .is_err(),
+            "a mismatched commit must fail closed"
+        );
+        assert!(
+            seam.claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("retry claim validation")
+            .is_some(),
+            "a failed post-claim commit must not strand the one-shot reservation"
         );
     }
 

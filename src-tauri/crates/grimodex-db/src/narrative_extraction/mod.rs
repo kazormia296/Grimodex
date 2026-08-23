@@ -152,16 +152,16 @@ pub use maintenance_runtime::{
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
     discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
-    plan_maintenance_trigger, read_run_ledger, read_run_ledger_for_epoch, retry_backoff_ms,
-    terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
-    terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
-    AutomaticRunKind, DesiredWork, FailureClass, FailureClassification,
-    InterruptedRunTerminalization, MaintenanceExecutionDecision, MaintenanceExecutionMode,
-    MaintenanceTrigger, NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault,
-    NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger, NarrativeSystemWorkMarker,
-    RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts, StaleActiveRun, WorkKey,
-    LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    plan_maintenance_trigger, preflight_maintenance_cycle_request, read_run_ledger,
+    read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
+    terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
+    terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
+    FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
+    MaintenanceExecutionMode, MaintenanceTrigger, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger,
+    NarrativeSystemWorkMarker, RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts,
+    StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
@@ -192,7 +192,8 @@ pub use terminal_failure::{
 // `electron/native/grimodex-node/src/lib.rs`, a different crate.
 pub use legacy_backfill::{
     bootstrap_legacy_dependency_backfill_for_project, get_backfill_status_for_project,
-    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome,
+    inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
+    BackfillStatus, BackfillSummary, LegacyBackfillBootstrapOutcome, LegacyBackfillFaultOutcome,
 };
 pub use repair::{
     repair_narrative_dependency_declarations_for_project,

@@ -258,6 +258,50 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
   }
 });
 
+test("terminal fault evidence requires the exact failed Run, Task, and Attempt triplet", () => {
+  const valid = {
+    id: "terminal-run",
+    runKind: "backfill",
+    status: "failed",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    taskStatus: "failed",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+    terminalReasonCode: NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
+    specJson: '{"backfillAlgorithmVersion":"2"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    createdAt: "2026-08-23T00:00:00.000000001Z",
+    startedAt: "2026-08-23T00:00:00.000000002Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
+    taskStartedAt: "2026-08-23T00:00:00.000000003Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000000003Z",
+    completedAt: "2026-08-23T00:00:00.000000004Z",
+    taskCompletedAt: "2026-08-23T00:00:00.000000004Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:00.000000004Z",
+  };
+  assert.doesNotThrow(() => assertTerminalFailureEvidence(valid));
+  for (const [field, value] of [
+    ["taskCount", 2],
+    ["attemptCount", 2],
+    ["taskKind", "wrong-kind"],
+    ["taskAttemptCount", 2],
+    ["lastAttemptNumber", 2],
+    ["lastAttemptFailureCode", "wrong-code"],
+    ["taskCompletedAt", "2026-08-23T00:00:00.000000005Z"],
+  ]) {
+    assert.throws(
+      () => assertTerminalFailureEvidence({ ...valid, [field]: value }),
+      new RegExp(field),
+      `terminal evidence must reject corrupted ${field}`,
+    );
+  }
+});
+
 test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
   const valid = {
     id: "timestamp-run",

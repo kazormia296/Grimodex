@@ -90,7 +90,10 @@ use super::maintenance_lifecycle::{
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
-use super::maintenance_runtime::validate_phase_success_outcome;
+use super::maintenance_runtime::{
+    discover_durable_maintenance_work_in_tx, validate_phase_success_outcome, AutomaticRunKind,
+    NarrativeMaintenanceCiFault, WorkKey,
+};
 #[cfg(test)]
 use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
@@ -267,6 +270,214 @@ pub enum LegacyBackfillBootstrapOutcome {
         run_id: String,
         summary: BackfillSummary,
     },
+}
+
+/// Result of consuming the typed CI fault at the native phase boundary.
+///
+/// The lifecycle owner creates the real Backfill Run before returning any
+/// injected result.  `Failed` therefore represents a durable failed
+/// Run/Task/Attempt triplet, while `Running` is the durable boundary used by
+/// the N-API owner immediately before its deliberate process exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyBackfillFaultOutcome {
+    /// A valid completed or already-running Backfill owns this work, so the
+    /// one-shot fault must not attach itself to another Run.
+    NotInjected,
+    /// A synthetic phase failure was finalized durably.
+    Failed {
+        run_id: String,
+        semantic_epoch_id: String,
+        failure_code: String,
+    },
+    /// Phase 1 committed a running lifecycle; the native owner may exit.
+    Running {
+        run_id: String,
+        semantic_epoch_id: String,
+    },
+}
+
+/// Consume a typed fault for one planner-validated Backfill identity.
+///
+/// The caller supplies the exact normalized WorkKey and all wake reasons that
+/// accompanied it. Planner rechecks, current-Epoch validation, lifecycle
+/// creation, and terminalization all run under one IMMEDIATE transaction on
+/// the pinned authority connection. A stale epoch therefore rolls back before
+/// a Run/Task/Attempt can be created under a different epoch.
+pub fn inject_legacy_backfill_fault_for_work(
+    db: &Database,
+    expected_work: &WorkKey,
+    reasons: &[String],
+    fault: NarrativeMaintenanceCiFault,
+) -> anyhow::Result<LegacyBackfillFaultOutcome> {
+    anyhow::ensure!(
+        expected_work.run_kind == AutomaticRunKind::Backfill,
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: fault seam only supports Backfill"
+    );
+    anyhow::ensure!(
+        expected_work.work_key == LEGACY_BACKFILL_WORK_KEY,
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: Backfill work key is not canonical"
+    );
+    anyhow::ensure!(
+        !reasons.is_empty(),
+        "NEX_MAINTENANCE_FAULT_WORK_IDENTITY_MISMATCH: at least one planner reason is required"
+    );
+
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let current_epoch_id = get_current_epoch(conn, &expected_work.project_id)?
+                .map(|epoch| epoch.id);
+            match (
+                expected_work.semantic_epoch_id.as_deref(),
+                current_epoch_id.as_deref(),
+            ) {
+                (Some(expected), Some(current)) => anyhow::ensure!(
+                    expected == current,
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH: current Semantic Epoch changed before fault injection"
+                ),
+                (Some(_), None) => anyhow::bail!(
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISSING: expected Semantic Epoch is not current"
+                ),
+                (None, Some(_)) => anyhow::bail!(
+                    "NEX_MAINTENANCE_FAULT_EPOCH_MISMATCH: an epoch-less Backfill is no longer current"
+                ),
+                (None, None) => {}
+            }
+
+            let normalized_reasons = reasons
+                .iter()
+                .map(|reason| {
+                    let reason = reason.trim();
+                    anyhow::ensure!(
+                        !reason.is_empty() && !reason.contains(['/', '\\']),
+                        "NEX_MAINTENANCE_FAULT_REASON_INVALID: planner reason is not canonical"
+                    );
+                    Ok::<_, anyhow::Error>(reason.to_string())
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+
+            // A valid completed marker is durable evidence that this logical
+            // Backfill has already crossed its once-only boundary. It is a
+            // deterministic no-op for a real Backfill wake, even when a stale
+            // product wake asks again. Validate that reason vocabulary first
+            // so a private sentinel cannot turn the seam into a silent success.
+            if find_valid_completed_backfill_run_id(conn, &expected_work.project_id)?.is_some() {
+                anyhow::ensure!(
+                    normalized_reasons.iter().all(|reason| matches!(
+                        reason.as_str(),
+                        "workspace-opened" | "legacy-backfill-required" | "durable-wake"
+                    )),
+                    "NEX_MAINTENANCE_FAULT_PLANNER_MISMATCH: completed Backfill cannot consume a crafted wake reason"
+                );
+                return Ok(LegacyBackfillFaultOutcome::NotInjected);
+            }
+
+            // Every normalized reason must independently rediscover the exact
+            // requested identity. This rejects crafted reasons while allowing
+            // the legitimate coalesced set (workspace-opened, durable-wake,
+            // and legacy-backfill-required) to share one fault claim.
+            for reason in &normalized_reasons {
+                let planned = discover_durable_maintenance_work_in_tx(
+                    conn,
+                    &expected_work.project_id,
+                    reason,
+                    None,
+                )?;
+                anyhow::ensure!(
+                    planned.is_some_and(|candidate| {
+                        candidate.work_key_identity() == expected_work.clone()
+                    }),
+                    "NEX_MAINTENANCE_FAULT_PLANNER_MISMATCH: planner did not return the requested Backfill identity"
+                );
+            }
+
+            let semantic_epoch_id = match current_epoch_id {
+                Some(epoch_id) => epoch_id,
+                None => create_epoch_in_tx(conn, &expected_work.project_id, "initial", None)?,
+            };
+            let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            let handle = create_maintenance_run_in_tx(
+                conn,
+                &expected_work.project_id,
+                expected_work.run_kind.as_str(),
+                &semantic_epoch_id,
+                LEGACY_DEPENDENCY_PRODUCER_GENERATION,
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningOnly,
+            )?;
+            if handle.reused {
+                return Ok(LegacyBackfillFaultOutcome::NotInjected);
+            }
+
+            match fault {
+                NarrativeMaintenanceCiFault::ProcessInterruption => {
+                    Ok(LegacyBackfillFaultOutcome::Running {
+                        run_id: handle.run_id,
+                        semantic_epoch_id,
+                    })
+                }
+                NarrativeMaintenanceCiFault::TransientIo
+                | NarrativeMaintenanceCiFault::ContractViolation => {
+                    let failure_code = match fault {
+                        NarrativeMaintenanceCiFault::TransientIo => "NEX_MAINTENANCE_TRANSIENT",
+                        NarrativeMaintenanceCiFault::ContractViolation => {
+                            "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
+                        }
+                        NarrativeMaintenanceCiFault::ProcessInterruption => unreachable!(),
+                    };
+                    let failure_message = format!("{failure_code}: injected maintenance fault");
+                    let transform_result: anyhow::Result<BackfillSummary> =
+                        Err(anyhow::anyhow!(failure_message));
+                    finalize_legacy_backfill_run_in_tx(
+                        conn,
+                        &expected_work.project_id,
+                        &handle.run_id,
+                        Some(&semantic_epoch_id),
+                        &transform_result,
+                    )?;
+                    Ok(LegacyBackfillFaultOutcome::Failed {
+                        run_id: handle.run_id,
+                        semantic_epoch_id,
+                        failure_code: failure_code.to_string(),
+                    })
+                }
+            }
+        })
+    })
+}
+
+/// Consume one typed CI fault at the same Backfill lifecycle boundary used by
+/// the production phase owner.  This helper is intentionally native-only
+/// plumbing: it never exits the process and it never fabricates a Run outside
+/// `create_maintenance_run_in_tx`.
+pub fn inject_legacy_backfill_fault_for_project(
+    db: &Database,
+    project_id: &str,
+    fault: NarrativeMaintenanceCiFault,
+) -> anyhow::Result<LegacyBackfillFaultOutcome> {
+    let semantic_epoch_id = db.with_conn(|conn| {
+        get_current_epoch(conn, project_id).map(|epoch| epoch.map(|epoch| epoch.id))
+    })?;
+    let expected_work = match semantic_epoch_id {
+        Some(epoch_id) => WorkKey::new_for_epoch(
+            project_id,
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            epoch_id,
+        )?,
+        None => WorkKey::new(
+            project_id,
+            AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+        )?,
+    };
+    inject_legacy_backfill_fault_for_work(
+        db,
+        &expected_work,
+        &["workspace-opened".to_string()],
+        fault,
+    )
 }
 
 /// Field path recorded for every backfilled Contribution. Legacy
@@ -477,80 +688,106 @@ fn finalize_legacy_backfill_run(
 ) -> anyhow::Result<()> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            let semantic_epoch_id: Option<String> = conn.query_row(
-                "SELECT semantic_epoch_id FROM narrative_extraction_runs WHERE id = ?1",
-                [run_id],
-                |row| row.get(0),
-            )?;
-            let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "NEX_BACKFILL_RUN_EPOCH_MISSING: Run '{run_id}' has no Semantic Epoch"
-                )
-            })?;
-            let outcome = match transform_result {
-                Ok(summary) => json!({
-                    "maintenancePhase": "backfill-complete",
-                    "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
-                    "semanticEpochId": semantic_epoch_id,
-                    "summary": summary,
-                }),
-                Err(error) => json!({
-                    "maintenancePhase": "backfill-failed",
-                    "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
-                    "semanticEpochId": semantic_epoch_id,
-                    "failure": error.to_string(),
-                }),
-            };
-            if transform_result.is_ok() {
-                validate_phase_success_outcome(
-                    "backfill",
-                    project_id,
-                    LEGACY_BACKFILL_WORK_KEY,
-                    Some(&semantic_epoch_id),
-                    &outcome,
-                )?;
-            }
-            record_run_outcome_in_tx(conn, run_id, &outcome)?;
-            if transform_result.is_ok()
-                && super::maintenance_runtime::foreground_system_work_barrier_requested()
-            {
-                // The product-journey owner releases this exact Run after a
-                // successful ordinary tree_node_patch. Validate that the
-                // native lifecycle pair remains held with the Run.
-                let handle = load_maintenance_run_in_tx(conn, run_id)?;
-                hold_maintenance_run_in_tx(conn, &handle)?;
-                return Ok(());
-            }
-            match transform_result {
-                Ok(_) => {
-                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
-                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
-                    resolve_terminal_failure_for_run_in_tx(
-                        conn,
-                        project_id,
-                        run_id,
-                        &finalized_at,
-                    )?;
-                }
-                Err(error) => {
-                    let message = error.to_string();
-                    let failure_kind = maintenance_failure_kind_for_message(&message);
-                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
-                    let finalized_at =
-                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
-                    project_terminal_failure_for_run_in_tx(
-                        conn,
-                        project_id,
-                        run_id,
-                        &canonical_failure_message(failure_kind, &message),
-                        &finalized_at,
-                        true,
-                    )?;
-                }
-            }
-            Ok(())
+            finalize_legacy_backfill_run_in_tx(conn, project_id, run_id, None, transform_result)
         })
     })
+}
+
+/// Finalize a Backfill inside an already-open authority transaction. The
+/// optional expected epoch is used by the CI fault seam to make the planner
+/// identity and the lifecycle terminalization one atomic check/write.
+fn finalize_legacy_backfill_run_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    expected_semantic_epoch_id: Option<&str>,
+    transform_result: &anyhow::Result<BackfillSummary>,
+) -> anyhow::Result<()> {
+    let (actual_project_id, run_kind, work_key, semantic_epoch_id): (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+    ) = conn.query_row(
+        "SELECT project_id, run_kind, work_key, semantic_epoch_id
+           FROM narrative_extraction_runs
+          WHERE id = ?1",
+        [run_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    anyhow::ensure!(
+        actual_project_id == project_id,
+        "NEX_BACKFILL_RUN_PROJECT_MISMATCH: Run '{run_id}' belongs to another project"
+    );
+    anyhow::ensure!(
+        run_kind == "backfill" && work_key.as_deref() == Some(LEGACY_BACKFILL_WORK_KEY),
+        "NEX_BACKFILL_RUN_WORK_IDENTITY_MISMATCH: Run '{run_id}' is not the canonical Backfill"
+    );
+    let semantic_epoch_id = semantic_epoch_id.ok_or_else(|| {
+        anyhow::anyhow!("NEX_BACKFILL_RUN_EPOCH_MISSING: Run '{run_id}' has no Semantic Epoch")
+    })?;
+    if let Some(expected_semantic_epoch_id) = expected_semantic_epoch_id {
+        anyhow::ensure!(
+            semantic_epoch_id == expected_semantic_epoch_id,
+            "NEX_BACKFILL_RUN_EPOCH_MISMATCH: Run '{run_id}' Semantic Epoch changed before finalization"
+        );
+    }
+    let outcome = match transform_result {
+        Ok(summary) => json!({
+            "maintenancePhase": "backfill-complete",
+            "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+            "semanticEpochId": semantic_epoch_id,
+            "summary": summary,
+        }),
+        Err(error) => json!({
+            "maintenancePhase": "backfill-failed",
+            "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+            "semanticEpochId": semantic_epoch_id,
+            "failure": error.to_string(),
+        }),
+    };
+    if transform_result.is_ok() {
+        validate_phase_success_outcome(
+            "backfill",
+            project_id,
+            LEGACY_BACKFILL_WORK_KEY,
+            Some(&semantic_epoch_id),
+            &outcome,
+        )?;
+    }
+    record_run_outcome_in_tx(conn, run_id, &outcome)?;
+    if transform_result.is_ok()
+        && super::maintenance_runtime::foreground_system_work_barrier_requested()
+    {
+        // The product-journey owner releases this exact Run after a
+        // successful ordinary tree_node_patch. Validate that the native
+        // lifecycle pair remains held with the Run.
+        let handle = load_maintenance_run_in_tx(conn, run_id)?;
+        hold_maintenance_run_in_tx(conn, &handle)?;
+        return Ok(());
+    }
+    match transform_result {
+        Ok(_) => {
+            let handle = load_maintenance_run_in_tx(conn, run_id)?;
+            let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
+            resolve_terminal_failure_for_run_in_tx(conn, project_id, run_id, &finalized_at)?;
+        }
+        Err(error) => {
+            let message = error.to_string();
+            let failure_kind = maintenance_failure_kind_for_message(&message);
+            let handle = load_maintenance_run_in_tx(conn, run_id)?;
+            let finalized_at = fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
+            project_terminal_failure_for_run_in_tx(
+                conn,
+                project_id,
+                run_id,
+                &canonical_failure_message(failure_kind, &message),
+                &finalized_at,
+                true,
+            )?;
+        }
+    }
+    Ok(())
 }
 
 fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {

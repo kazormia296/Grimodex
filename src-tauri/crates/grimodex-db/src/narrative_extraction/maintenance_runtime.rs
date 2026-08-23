@@ -1130,6 +1130,23 @@ impl MaintenanceCycleRequest {
     }
 }
 
+/// Validate the complete wire request before any phase owner claims a fault
+/// or touches durable lifecycle state. Keep this shared so the N-API seam
+/// cannot grow a partial allowlist that disagrees with execute mode.
+pub fn preflight_maintenance_cycle_request(
+    request: &MaintenanceCycleRequest,
+) -> anyhow::Result<Vec<DesiredWork>> {
+    let work = request.normalized_work()?;
+    anyhow::ensure!(
+        work.is_empty() || request.wake_project_ids.is_empty(),
+        "NEX_MAINTENANCE_WAKE_MIXED_ACK_SCOPE: ordinary work and durable wake must use separate cycles"
+    );
+    for item in &work {
+        validate_dispatch_contract(item)?;
+    }
+    Ok(work)
+}
+
 #[derive(Debug, Clone)]
 struct DurableMaintenanceRun {
     run_id: String,
@@ -1511,7 +1528,7 @@ pub fn discover_durable_maintenance_work_with_coordinates(
     })
 }
 
-fn discover_durable_maintenance_work_in_tx(
+pub(crate) fn discover_durable_maintenance_work_in_tx(
     conn: &Connection,
     project_id: &str,
     reason: &str,
@@ -1875,11 +1892,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
     if let Some(binding) = request.workspace_binding.as_ref() {
         binding.validate()?;
     }
-    let mut work = request.normalized_work()?;
-    anyhow::ensure!(
-        work.is_empty() || request.wake_project_ids.is_empty(),
-        "NEX_MAINTENANCE_WAKE_MIXED_ACK_SCOPE: ordinary work and durable wake must use separate cycles"
-    );
+    let mut work = preflight_maintenance_cycle_request(request)?;
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
             if let Some(next) = discover_durable_maintenance_work_with_coordinates(
@@ -1891,12 +1904,6 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 work.push(next);
             }
         }
-    }
-
-    // Validate the entire initial batch before recovering or dispatching any
-    // item. Follow-up phases are generated only from durable outcomes below.
-    for item in &work {
-        validate_dispatch_contract(item)?;
     }
 
     let mut queue = std::collections::VecDeque::from(work.clone());
