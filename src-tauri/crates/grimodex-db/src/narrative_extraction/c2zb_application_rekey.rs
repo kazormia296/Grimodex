@@ -19,7 +19,9 @@ use super::c2z_preparation::{
     ApplicationRekeyPlan, RekeyMappingKind, APPLICATION_CONSUMER_KIND,
 };
 use super::consumer_identity::{validate_consumer_identity, RUN_CONSUMER_KIND};
-use super::dependency_edges::validate_stored_source_object_identity;
+use super::dependency_edges::{
+    canonical_source_object_identity, validate_stored_source_object_identity,
+};
 use super::finding_identity::stable_finding_identity;
 use super::semantic_epoch::create_epoch_in_tx;
 
@@ -101,24 +103,9 @@ pub(crate) fn migrate_narrative_application_rekey_v32(conn: &Connection) -> Resu
         }
     }
 
-    // This is deliberately the final C2-ZB write.  A marker trigger/fault
-    // therefore rolls back all re-keyed Edges, derived invalidation, finding
-    // re-homing, and migration Epochs when the schema owner unwinds the savepoint.
-    conn.execute(
-        "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(migration_id) DO UPDATE SET
-             contract_version = excluded.contract_version,
-             applied_at = excluded.applied_at",
-        params![
-            C2_ZB_MIGRATION_ID,
-            C2_ZB_CONTRACT_VERSION,
-            chrono::Utc::now()
-                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                .to_string(),
-        ],
-    )
-    .context("recording the C2-ZB Application re-key marker")?;
+    // The schema owner records the marker after this data-only phase returns.
+    // Keeping marker DML in `migrate.rs` makes the migration engine the sole
+    // writer of schema_data_migrations while preserving one savepoint.
     Ok(())
 }
 
@@ -463,7 +450,87 @@ fn preflight_existing_application_edges(conn: &Connection, project_id: &str) -> 
             owner,
             project_id
         );
+        preflight_existing_application_provenance(
+            conn,
+            project_id,
+            &edge_id,
+            &application_id,
+            &source,
+            &read_set_json,
+        )?;
     }
+    Ok(())
+}
+
+fn preflight_existing_application_provenance(
+    conn: &Connection,
+    project_id: &str,
+    edge_id: &str,
+    application_id: &str,
+    source_object_identity: &str,
+    read_set_json: &str,
+) -> Result<()> {
+    let application_commit_project: Option<String> = conn
+        .query_row(
+            "SELECT c.project_id
+               FROM narrative_proposal_applications a
+               JOIN narrative_apply_commits c ON c.id = a.commit_id
+              WHERE a.id = ?1",
+            [application_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let application_commit_project = application_commit_project.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZB_PREFLIGHT_APPLICATION_PROVENANCE_MISSING: Edge '{}' Application '{}' has no durable ApplyCommit",
+            edge_id,
+            application_id
+        )
+    })?;
+    ensure!(
+        application_commit_project == project_id,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_PROJECT_MISMATCH: Edge '{}' Application '{}' belongs to project '{}' rather than '{}'",
+        edge_id,
+        application_id,
+        application_commit_project,
+        project_id
+    );
+
+    let observed_token = read_set_token(read_set_json)?;
+    let mut statement = conn.prepare(
+        "SELECT source_kind, source_key, observed_revision_token
+           FROM narrative_projection_dependencies
+          WHERE application_id = ?1
+          ORDER BY source_kind ASC, source_key ASC",
+    )?;
+    let rows = statement.query_map([application_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut exact_matches = 0usize;
+    for row in rows {
+        let (source_kind, source_key, dependency_token) = row?;
+        let dependency_source = canonical_source_object_identity(&source_kind, &source_key)
+            .with_context(|| {
+                format!(
+                    "NEX_C2ZB_PREFLIGHT_APPLICATION_DEPENDENCY_SOURCE_INVALID: Edge '{}' Application '{}' has malformed projection Source",
+                    edge_id, application_id
+                )
+            })?;
+        if dependency_source == source_object_identity && dependency_token == observed_token {
+            exact_matches += 1;
+        }
+    }
+    ensure!(
+        exact_matches == 1,
+        "NEX_C2ZB_PREFLIGHT_APPLICATION_DEPENDENCY_MISMATCH: Edge '{}' Application '{}' has {} exact projection dependency matches for Source/read set",
+        edge_id,
+        application_id,
+        exact_matches
+    );
     Ok(())
 }
 
@@ -490,12 +557,11 @@ fn preflight_existing_target(
         candidate.planned_read_set_json
     );
     ensure!(
-        target.owning_run_id.as_deref() == Some(candidate.run_id.as_str())
+        target.owning_run_id.is_some()
             && target.owning_project_id.as_deref() == Some(plan.project_id.as_str()),
-        "NEX_C2ZB_PREFLIGHT_TARGET_OWNER_MISMATCH: Application '{}' Source '{}' does not name the exact same-project Run '{}'",
+        "NEX_C2ZB_PREFLIGHT_TARGET_OWNER_MISMATCH: Application '{}' Source '{}' does not name a valid same-project owner Run",
         candidate.application_id,
-        candidate.source_object_identity,
-        candidate.run_id
+        candidate.source_object_identity
     );
     if target.id != candidate.edge_id {
         let history = load_finding_history(

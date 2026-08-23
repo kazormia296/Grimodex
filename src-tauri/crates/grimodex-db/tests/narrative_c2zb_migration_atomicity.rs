@@ -210,6 +210,24 @@ fn seed_project(
     Ok(())
 }
 
+fn seed_fresh_backfill_owner(
+    conn: &Connection,
+    project_id: &str,
+    owner_id: &str,
+) -> anyhow::Result<()> {
+    let epoch_id = format!("{project_id}-epoch-0");
+    conn.execute(
+        "INSERT INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, completed_at, version, run_kind,
+             semantic_epoch_id, work_key)
+         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'c2zb-fresh-owner', 'completed',
+                 '{}', ?3, ?3, 0, 'backfill', ?4, 'legacy-dependency-backfill:v3')",
+        params![owner_id, project_id, SEEDED_AT, epoch_id],
+    )?;
+    Ok(())
+}
+
 fn assert_schema_31_without_marker(conn: &Connection, project_id: &str) -> anyhow::Result<()> {
     let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     assert_eq!(version, SCHEMA_31);
@@ -437,6 +455,103 @@ fn checkpoint_failure_after_marker_rolls_back_every_c2zb_write_and_retry_succeed
 }
 
 #[test]
+fn release_failure_rolls_back_c2zb_savepoint_and_leaves_connection_autocommit() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-release-failure",
+            "c2zb-release-failure-run",
+            "c2zb-release-failure-application",
+            "c2zb-release-failure-commit",
+            "c2zb-release-failure-edge",
+            "project:scene:c2zb-release-failure-scene",
+            "c2zb-release-failure-token",
+            false,
+            false,
+        )?;
+        conn.pragma_update(None, "foreign_keys", true)?;
+        conn.execute_batch(
+            "CREATE TABLE c2zb_deferred_release_failpoint (
+                 id TEXT PRIMARY KEY,
+                 edge_id TEXT NOT NULL,
+                 FOREIGN KEY(edge_id) REFERENCES narrative_dependency_edges(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );
+             CREATE TRIGGER c2zb_release_failpoint
+               AFTER INSERT ON schema_data_migrations
+               WHEN NEW.migration_id = 'narrative-c2-application-rekey-v32'
+               BEGIN
+                 INSERT INTO c2zb_deferred_release_failpoint(id, edge_id)
+                 VALUES ('orphan', 'missing-edge');
+               END;",
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed deferred-FK RELEASE failpoint");
+
+    db.migrate()
+        .expect_err("deferred foreign key must fail while releasing C2-ZB savepoint");
+    db.with_conn(|conn| {
+        assert!(
+            conn.is_autocommit(),
+            "failed RELEASE must unwind the savepoint"
+        );
+        assert_schema_31_without_marker(conn, "c2zb-release-failure")?;
+        let old_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-release-failure-edge'
+                AND consumer_kind = ?1
+                AND consumer_key = 'c2zb-release-failure-run'",
+            [RUN_KIND],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_edge_count, 1);
+        let application_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = 'c2zb-release-failure'
+                AND consumer_kind = 'application'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_count, 0);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify deferred-FK RELEASE rollback");
+
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "DROP TRIGGER c2zb_release_failpoint;
+             DROP TABLE c2zb_deferred_release_failpoint;",
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("remove deferred-FK RELEASE failpoint");
+    db.migrate().expect("retry after RELEASE failure");
+    db.with_conn(|conn| {
+        let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(version, SCHEMA_32);
+        let marker_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
+            [MARKER],
+            |row| row.get(0),
+        )?;
+        assert_eq!(marker_count, 1);
+        let application_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = 'c2zb-release-failure'
+                AND consumer_kind = 'application'
+                AND consumer_key = 'c2zb-release-failure-application'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_count, 1);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify retry after RELEASE failure");
+}
+
+#[test]
 fn all_projects_are_preflighted_before_a_safe_project_is_written() {
     let db = rewound_database();
     db.with_conn(|conn| {
@@ -514,7 +629,7 @@ fn all_projects_are_preflighted_before_a_safe_project_is_written() {
 }
 
 #[test]
-fn matching_pre_existing_application_target_without_history_is_reused() {
+fn matching_pre_existing_application_target_with_different_fresh_owner_is_reused() {
     let db = rewound_database();
     db.with_conn(|conn| {
         seed_project(
@@ -528,6 +643,17 @@ fn matching_pre_existing_application_target_without_history_is_reused() {
             "c2zb-existing-target-token",
             false,
             true,
+        )?;
+        seed_fresh_backfill_owner(
+            conn,
+            "c2zb-existing-target",
+            "c2zb-existing-target-fresh-owner",
+        )?;
+        conn.execute(
+            "UPDATE narrative_dependency_edges
+                SET owning_run_id = 'c2zb-existing-target-fresh-owner'
+              WHERE id = 'c2zb-existing-target-edge-target'",
+            [],
         )?;
         Ok::<_, anyhow::Error>(())
     })
@@ -557,7 +683,10 @@ fn matching_pre_existing_application_target_without_history_is_reused() {
         assert_eq!(target.1, "target-transaction");
         assert_eq!(target.2, "target-created");
         assert_eq!(target.3, "[\"c2zb-existing-target-token\"]");
-        assert_eq!(target.4.as_deref(), Some("c2zb-existing-target-run"));
+        assert_eq!(
+            target.4.as_deref(),
+            Some("c2zb-existing-target-fresh-owner")
+        );
         let old_edge_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_dependency_edges
               WHERE id = 'c2zb-existing-target-edge'",
@@ -575,6 +704,168 @@ fn matching_pre_existing_application_target_without_history_is_reused() {
         Ok::<_, anyhow::Error>(())
     })
     .expect("verify existing target reuse");
+}
+
+#[test]
+fn dangling_existing_application_edge_rejects_before_any_c2zb_write() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-dangling-application",
+            "c2zb-dangling-application-run",
+            "c2zb-dangling-application-id",
+            "c2zb-dangling-application-commit",
+            "c2zb-dangling-application-edge",
+            "project:scene:c2zb-dangling-application-scene",
+            "c2zb-dangling-application-token",
+            false,
+            false,
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json, generated_by_transaction_id,
+                 created_at, owning_run_id)
+             VALUES ('c2zb-dangling-application-edge-2',
+                     'c2zb-dangling-application', 'application',
+                     'c2zb-missing-application-id',
+                     'project:scene:c2zb-dangling-application-scene',
+                     '[\"c2zb-dangling-application-token\"]',
+                     'application-transaction', ?1,
+                     'c2zb-dangling-application-run')",
+            [SEEDED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed dangling Application Edge");
+
+    db.migrate()
+        .expect_err("dangling Application provenance must fail closed");
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-dangling-application")?;
+        let application_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-dangling-application-edge-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_edge_count, 1);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify dangling Application rollback");
+}
+
+#[test]
+fn foreign_application_commit_rejects_before_any_c2zb_write() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-foreign-application-project",
+            "c2zb-foreign-application-run",
+            "c2zb-foreign-application-id",
+            "c2zb-foreign-application-commit",
+            "c2zb-foreign-application-edge",
+            "project:scene:c2zb-foreign-application-scene",
+            "c2zb-foreign-application-token",
+            false,
+            false,
+        )?;
+        seed_project(
+            conn,
+            "c2zb-foreign-application-owner",
+            "c2zb-foreign-application-owner-run",
+            "c2zb-foreign-application-owner-id",
+            "c2zb-foreign-application-owner-commit",
+            "c2zb-foreign-application-owner-edge",
+            "project:scene:c2zb-foreign-application-owner-scene",
+            "c2zb-foreign-application-owner-token",
+            false,
+            false,
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json, generated_by_transaction_id,
+                 created_at, owning_run_id)
+             VALUES ('c2zb-foreign-application-edge-2',
+                     'c2zb-foreign-application-project', 'application',
+                     'c2zb-foreign-application-owner-id',
+                     'project:scene:c2zb-foreign-application-scene',
+                     '[\"c2zb-foreign-application-token\"]',
+                     'application-transaction', ?1,
+                     'c2zb-foreign-application-run')",
+            [SEEDED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed foreign-project Application Edge");
+
+    db.migrate()
+        .expect_err("foreign Application provenance must fail closed");
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-foreign-application-project")?;
+        let application_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-foreign-application-edge-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_edge_count, 1);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify foreign Application rollback");
+}
+
+#[test]
+fn mismatched_existing_application_projection_dependency_rejects_atomically() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        seed_project(
+            conn,
+            "c2zb-mismatched-application",
+            "c2zb-mismatched-application-run",
+            "c2zb-mismatched-application-id",
+            "c2zb-mismatched-application-commit",
+            "c2zb-mismatched-application-edge",
+            "project:scene:c2zb-mismatched-application-scene",
+            "c2zb-mismatched-application-token",
+            false,
+            false,
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_dependency_edges
+                (id, project_id, consumer_kind, consumer_key,
+                 source_object_identity, read_set_json, generated_by_transaction_id,
+                 created_at, owning_run_id)
+             VALUES ('c2zb-mismatched-application-edge-2',
+                     'c2zb-mismatched-application', 'application',
+                     'c2zb-mismatched-application-id',
+                     'project:scene:c2zb-mismatched-application-other-scene',
+                     '[\"c2zb-mismatched-application-other-token\"]',
+                     'application-transaction', ?1,
+                     'c2zb-mismatched-application-run')",
+            [SEEDED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed mismatched Application dependency Edge");
+
+    db.migrate()
+        .expect_err("mismatched Application dependency must fail closed");
+    db.with_conn(|conn| {
+        assert_schema_31_without_marker(conn, "c2zb-mismatched-application")?;
+        let application_edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE id = 'c2zb-mismatched-application-edge-2'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(application_edge_count, 1);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify mismatched Application rollback");
 }
 
 #[test]

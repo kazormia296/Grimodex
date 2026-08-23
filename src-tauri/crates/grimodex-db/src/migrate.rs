@@ -3647,6 +3647,27 @@ impl Database {
                 &conn,
             )?;
 
+            // The schema migration engine is the sole writer of
+            // schema_data_migrations. Keep the C2-ZB marker inside the same
+            // savepoint, after all data re-key writes and before the
+            // checkpoint/user_version stamp, so marker-trigger failures and
+            // deferred-constraint failures can unwind the whole migration.
+            conn.execute(
+                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(migration_id) DO UPDATE SET
+                     contract_version = excluded.contract_version,
+                     applied_at = excluded.applied_at",
+                params![
+                    crate::narrative_extraction::c2zb_application_rekey::C2_ZB_MIGRATION_ID,
+                    crate::narrative_extraction::c2zb_application_rekey::C2_ZB_CONTRACT_VERSION,
+                    chrono::Utc::now()
+                        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                        .to_string(),
+                ],
+            )
+            .context("recording the C2-ZB Application re-key marker")?;
+
             // The marker is part of the checkpoint, not a substitute for it.
             // Keep both the invariant check and the user_version stamp inside
             // the same savepoint as every C2-ZB write. A trigger, interrupted
@@ -3661,7 +3682,20 @@ impl Database {
             Ok(())
         })();
         match c2zb_result {
-            Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_32")?,
+            Ok(()) => {
+                if let Err(error) = conn.execute_batch("RELEASE narrative_c2_schema_32") {
+                    if let Err(unwind) = conn.execute_batch(
+                        "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                    ) {
+                        tracing::error!(
+                            target: "narrative.migrate",
+                            %unwind,
+                            "failed to unwind the C2-ZB schema savepoint after RELEASE failed"
+                        );
+                    }
+                    return Err(error.into());
+                }
+            }
             Err(error) => {
                 if let Err(unwind) = conn.execute_batch(
                     "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
