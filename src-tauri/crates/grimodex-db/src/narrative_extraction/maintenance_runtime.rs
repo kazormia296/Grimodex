@@ -1973,6 +1973,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                             || next.semantic_epoch_id != item.semantic_epoch_id =>
                     {
                         queue.push_back(next);
+                        continue;
                     }
                     Some(_) => {
                         // Discovery returned this same Verify as a required
