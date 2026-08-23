@@ -1967,6 +1967,102 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
         })}`,
       );
     }
+    // Establish the same durable legacy boundary that a real workspace has
+    // before restore.  Calling the typed production route is important here:
+    // an empty/epochless fixture makes the first post-restore open dispatch a
+    // Backfill, so the journey can no longer prove the required Verify ->
+    // Rebuild -> confirmation Verify chain.  The fixture deliberately rejects
+    // a reused/no-op response and validates the persisted Run/Epoch pair.
+    const backfillOutcome = await context.harness.invokeOk(
+      context.page,
+      "retry_narrative_legacy_backfill",
+      { payload: { projectId: context.projectId } },
+    );
+    if (
+      !backfillOutcome ||
+      backfillOutcome.outcome !== "ran" ||
+      typeof backfillOutcome.runId !== "string" ||
+      backfillOutcome.runId.trim() === ""
+    ) {
+      throw new Error(
+        `restore fixture requires a fresh typed legacy Backfill outcome: ${JSON.stringify(backfillOutcome)}`,
+      );
+    }
+    const backfillRuns = await context.query(
+      `SELECT id,
+              project_id AS projectId,
+              run_kind AS runKind,
+              work_key AS workKey,
+              status,
+              semantic_epoch_id AS semanticEpochId,
+              created_at AS createdAt,
+              started_at AS startedAt,
+              completed_at AS completedAt
+         FROM narrative_extraction_runs
+        WHERE project_id = ? AND id = ?`,
+      [context.projectId, backfillOutcome.runId],
+    );
+    const initialEpochs = await context.query(
+      `SELECT id,
+              project_id AS projectId,
+              epoch_number AS epochNumber,
+              reason,
+              created_at AS createdAt
+         FROM narrative_semantic_epochs
+        WHERE project_id = ?
+        ORDER BY epoch_number DESC, id DESC
+        LIMIT 1`,
+      [context.projectId],
+    );
+    const backfillRun = backfillRuns[0];
+    const initialEpoch = initialEpochs[0];
+    if (
+      backfillRuns.length !== 1 ||
+      !backfillRun ||
+      backfillRun.id !== backfillOutcome.runId ||
+      backfillRun.projectId !== context.projectId ||
+      backfillRun.runKind !== "backfill" ||
+      backfillRun.workKey !== "legacy-dependency-backfill:v2" ||
+      backfillRun.status !== "completed" ||
+      typeof backfillRun.semanticEpochId !== "string" ||
+      backfillRun.semanticEpochId.trim() === "" ||
+      initialEpochs.length !== 1 ||
+      !initialEpoch ||
+      initialEpoch.projectId !== context.projectId ||
+      Number(initialEpoch.epochNumber) !== 0 ||
+      initialEpoch.reason !== "initial" ||
+      backfillRun.semanticEpochId !== initialEpoch.id
+    ) {
+      throw new Error(
+        `restore fixture legacy Backfill boundary is not canonical: ${JSON.stringify({
+          outcome: backfillOutcome,
+          backfillRun,
+          initialEpoch,
+        })}`,
+      );
+    }
+    for (const [field, value] of [
+      ["createdAt", backfillRun.createdAt],
+      ["startedAt", backfillRun.startedAt],
+      ["completedAt", backfillRun.completedAt],
+      ["epoch.createdAt", initialEpoch.createdAt],
+    ]) {
+      parseInstant(value, `restore fixture Backfill ${field}`);
+    }
+    if (
+      compareInstants(backfillRun.createdAt, backfillRun.startedAt) > 0 ||
+      compareInstants(backfillRun.startedAt, backfillRun.completedAt) >= 0
+    ) {
+      throw new Error(
+        `restore fixture Backfill lifecycle timestamps are not terminal and monotonic: ${JSON.stringify(backfillRun)}`,
+      );
+    }
+    context.record("restore-fixture-backfill-boundary-seeded", {
+      runId: backfillRun.id,
+      semanticEpochId: backfillRun.semanticEpochId,
+      epochNumber: Number(initialEpoch.epochNumber),
+      reason: initialEpoch.reason,
+    });
     const runId = `c2-5b-restore-fixture-run-${randomUUID()}`;
     const createdRun = await context.harness.invokeOk(
       context.page,
