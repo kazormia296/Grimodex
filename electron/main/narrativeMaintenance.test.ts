@@ -5,8 +5,10 @@ import {
   coalesceNarrativeMaintenanceWork,
   createNarrativeMaintenanceScheduler,
   NARRATIVE_MAINTENANCE_MAX_RETRIES,
+  scheduleNarrativeMaintenanceProcessInterruption,
   type NarrativeMaintenanceCycleResult,
   type NarrativeMaintenanceRequest,
+  type NarrativeMaintenanceSchedulerOptions,
 } from "./narrativeMaintenance.js";
 
 const INITIAL_DELAY_MS = 250;
@@ -49,14 +51,149 @@ describe("narrative maintenance scheduler", () => {
     vi.restoreAllMocks();
   });
 
-  function createScheduler(backend: unknown, warn = vi.fn()) {
+  function createScheduler(
+    backend: unknown,
+    warn = vi.fn(),
+    options: Omit<NarrativeMaintenanceSchedulerOptions, "warn"> = {},
+  ) {
     const scheduler = createNarrativeMaintenanceScheduler(
       backend as Parameters<typeof createNarrativeMaintenanceScheduler>[0],
-      { warn },
+      { warn, ...options },
     );
     schedulers.push(scheduler);
     return { scheduler, warn };
   }
+
+  it("schedules interruption exit only for an authorized exact live binding", () => {
+    const expectedBinding = { authorityId: "authority-1", generation: 7 };
+    let currentBinding = expectedBinding;
+    const ack: Parameters<typeof scheduleNarrativeMaintenanceProcessInterruption>[1] = {
+      status: "ci-process-interruption-pending",
+      fault: "process-interruption",
+      runId: "run-1",
+      authorityId: expectedBinding.authorityId,
+      generation: expectedBinding.generation,
+    };
+    const scheduled: Array<() => void> = [];
+    const exit = vi.fn();
+    const backend = {
+      getNarrativeMaintenanceWorkspaceBinding: () => currentBinding,
+    };
+
+    expect(
+      scheduleNarrativeMaintenanceProcessInterruption(
+        backend,
+        ack,
+        expectedBinding,
+        () => false,
+        (callback) => {
+          scheduled.push(callback);
+        },
+        exit,
+      ),
+    ).toBe(false);
+    expect(scheduled).toHaveLength(0);
+
+    expect(
+      scheduleNarrativeMaintenanceProcessInterruption(
+        backend,
+        ack,
+        expectedBinding,
+        () => true,
+        (callback) => {
+          scheduled.push(callback);
+        },
+        exit,
+      ),
+    ).toBe(true);
+    expect(scheduled).toHaveLength(1);
+    currentBinding = { authorityId: "rotated", generation: 8 };
+    scheduled[0]?.();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["false", () => false],
+    ["throw", () => {
+      throw new Error("scheduler rejected");
+    }],
+  ])(
+    "retains a process-interruption batch for retry when the main owner returns %s",
+    async (_label, onCiProcessInterruption) => {
+      const binding = { authorityId: "authority-1", generation: 7 };
+      const runNarrativeMaintenanceCycle = vi
+        .fn()
+        .mockResolvedValueOnce({
+          status: "ci-process-interruption-pending",
+          fault: "process-interruption",
+          runId: "run-1",
+          authorityId: binding.authorityId,
+          generation: binding.generation,
+        })
+        .mockResolvedValue(acceptedCycle());
+      const { scheduler } = createScheduler(
+        {
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          runNarrativeMaintenanceCycle,
+        },
+        vi.fn(),
+        { onCiProcessInterruption },
+      );
+
+      scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+      expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it("does not handle a terminal ACK when its binding cannot prove the durable Run", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "ci-terminal-fault-handled",
+        fault: "contract-violation",
+        runId: "run-1",
+        authorityId: "forged-authority",
+        generation: binding.generation,
+      })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a terminal ACK whose exact binding is proven", async () => {
+    const binding = { authorityId: "authority-1", generation: 7 };
+    const runNarrativeMaintenanceCycle = vi.fn().mockResolvedValue({
+      status: "ci-terminal-fault-handled",
+      fault: "contract-violation",
+      runId: "run-1",
+      authorityId: binding.authorityId,
+      generation: binding.generation,
+    });
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS * 2);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
 
   it("canonical key includes project, run kind, and work key", () => {
     const backfill = work("project-1", "backfill", "same", "open");

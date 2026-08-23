@@ -1,0 +1,215 @@
+//! Behavioral C2-5B fault-seam coverage.
+//!
+//! These tests exercise the same shared Backfill owner used by N-API.  The
+//! fault adapter must leave a real Run/Task/Attempt triplet behind before it
+//! reports a transient, terminal, or interruption outcome; it must not use a
+//! test-only database fabrication path.
+
+use grimodex_db::narrative_extraction::{
+    build_maintenance_inbox, ensure_test_schema, inject_legacy_backfill_fault_for_project,
+    terminalize_interrupted_runs_for_epoch, AutomaticRunKind, InboxEntryKind,
+    LegacyBackfillFaultOutcome, NarrativeMaintenanceCiFault, WorkKey, LEGACY_BACKFILL_WORK_KEY,
+};
+use grimodex_db::Database;
+
+const PROJECT_ID: &str = "project-c2-5b-fault";
+
+fn fixture_db() -> Database {
+    let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+    db.migrate().expect("migrate database");
+    db.with_conn(|conn| {
+        ensure_test_schema(conn)?;
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES (?1, 'C2-5B fault')",
+            [PROJECT_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed project");
+    db
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct LifecycleSnapshot {
+    run_status: String,
+    task_status: String,
+    attempt_status: String,
+    task_kind: String,
+    attempt_number: i64,
+    failure_code: Option<String>,
+    task_count: i64,
+    attempt_count: i64,
+}
+
+fn lifecycle_snapshot(db: &Database, run_id: &str) -> LifecycleSnapshot {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT r.status, t.status, a.status, t.task_kind, a.attempt_number,
+                    a.failure_code,
+                    (SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = r.id),
+                    (SELECT COUNT(*)
+                       FROM narrative_extraction_attempts aa
+                       JOIN narrative_extraction_tasks tt ON tt.id = aa.task_id
+                      WHERE tt.run_id = r.id)
+               FROM narrative_extraction_runs r
+               JOIN narrative_extraction_tasks t ON t.run_id = r.id
+               JOIN narrative_extraction_attempts a ON a.task_id = t.id
+              WHERE r.id = ?1",
+            [run_id],
+            |row| {
+                Ok(LifecycleSnapshot {
+                    run_status: row.get(0)?,
+                    task_status: row.get(1)?,
+                    attempt_status: row.get(2)?,
+                    task_kind: row.get(3)?,
+                    attempt_number: row.get(4)?,
+                    failure_code: row.get(5)?,
+                    task_count: row.get(6)?,
+                    attempt_count: row.get(7)?,
+                })
+            },
+        )
+        .map_err(Into::into)
+    })
+    .expect("read lifecycle triplet")
+}
+
+fn terminal_failure_inbox_count(db: &Database) -> usize {
+    db.with_conn(|conn| {
+        Ok(build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
+            .into_iter()
+            .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
+            .count())
+    })
+    .expect("read maintenance Inbox")
+}
+
+#[test]
+fn transient_fault_leaves_one_failed_attempt_without_inbox_projection() {
+    let db = fixture_db();
+    let outcome = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::TransientIo,
+    )
+    .expect("inject transient fault");
+    let run_id = match outcome {
+        LegacyBackfillFaultOutcome::Failed {
+            run_id,
+            failure_code,
+            ..
+        } => {
+            assert_eq!(failure_code, "NEX_MAINTENANCE_TRANSIENT");
+            run_id
+        }
+        other => panic!("expected durable transient failure, got {other:?}"),
+    };
+    assert_eq!(
+        lifecycle_snapshot(&db, &run_id),
+        LifecycleSnapshot {
+            run_status: "failed".to_string(),
+            task_status: "failed".to_string(),
+            attempt_status: "failed".to_string(),
+            task_kind: "maintenance-backfill".to_string(),
+            attempt_number: 1,
+            failure_code: Some("NEX_MAINTENANCE_TRANSIENT".to_string()),
+            task_count: 1,
+            attempt_count: 1,
+        }
+    );
+    assert_eq!(terminal_failure_inbox_count(&db), 0);
+}
+
+#[test]
+fn terminal_fault_leaves_exact_failed_triplet_and_one_inbox_identity() {
+    let db = fixture_db();
+    let outcome = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("inject terminal fault");
+    let run_id = match outcome {
+        LegacyBackfillFaultOutcome::Failed {
+            run_id,
+            failure_code,
+            ..
+        } => {
+            assert_eq!(
+                failure_code,
+                "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
+            );
+            run_id
+        }
+        other => panic!("expected durable terminal failure, got {other:?}"),
+    };
+    let snapshot = lifecycle_snapshot(&db, &run_id);
+    assert_eq!(snapshot.run_status, "failed");
+    assert_eq!(snapshot.task_status, "failed");
+    assert_eq!(snapshot.attempt_status, "failed");
+    assert_eq!(snapshot.task_kind, "maintenance-backfill");
+    assert_eq!(snapshot.attempt_number, 1);
+    assert_eq!(
+        snapshot.failure_code.as_deref(),
+        Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
+    );
+    assert_eq!((snapshot.task_count, snapshot.attempt_count), (1, 1));
+    assert_eq!(terminal_failure_inbox_count(&db), 1);
+}
+
+#[test]
+fn interruption_leaves_running_triplet_then_recovery_marks_attempt_interrupted() {
+    let db = fixture_db();
+    let outcome = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ProcessInterruption,
+    )
+    .expect("inject interruption");
+    let (run_id, epoch_id) = match outcome {
+        LegacyBackfillFaultOutcome::Running {
+            run_id,
+            semantic_epoch_id,
+        } => (run_id, semantic_epoch_id),
+        other => panic!("expected durable running triplet, got {other:?}"),
+    };
+    let running = lifecycle_snapshot(&db, &run_id);
+    assert_eq!(
+        (
+            running.run_status.as_str(),
+            running.task_status.as_str(),
+            running.attempt_status.as_str(),
+        ),
+        ("running", "running", "running")
+    );
+    assert_eq!((running.task_count, running.attempt_count), (1, 1));
+    assert_eq!(running.attempt_number, 1);
+    assert_eq!(running.failure_code, None);
+
+    let work = WorkKey::new_for_epoch(
+        PROJECT_ID,
+        AutomaticRunKind::Backfill,
+        LEGACY_BACKFILL_WORK_KEY,
+        epoch_id,
+    )
+    .expect("canonical backfill work");
+    let recovered = terminalize_interrupted_runs_for_epoch(
+        &db,
+        PROJECT_ID,
+        &work,
+        work.semantic_epoch_id.as_deref(),
+        &[run_id.clone()],
+    )
+    .expect("terminalize interrupted lifecycle");
+    assert_eq!(recovered.failed_run_ids, vec![run_id.clone()]);
+    let interrupted = lifecycle_snapshot(&db, &run_id);
+    assert_eq!(interrupted.run_status, "failed");
+    assert_eq!(interrupted.task_status, "failed");
+    assert_eq!(interrupted.attempt_status, "failed");
+    assert_eq!(interrupted.attempt_number, 1);
+    assert_eq!(
+        interrupted.failure_code.as_deref(),
+        Some("NEX_MAINTENANCE_INTERRUPTED")
+    );
+    assert_eq!((interrupted.task_count, interrupted.attempt_count), (1, 1));
+}

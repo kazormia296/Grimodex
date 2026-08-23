@@ -146,7 +146,7 @@ test("fault injection is gated by the current native planner identity", async ()
   );
   assert.match(
     nativeSource,
-    /normalized_work\.as_slice\(\)[\s\S]*run_kind\.as_str\(\)\s*==\s*"backfill"/,
+    /normalized_work\.len\(\)\s*==\s*1[\s\S]*run_kind\.as_str\(\)\s*==\s*"backfill"/,
     "fault injection must only consume a planner-valid single Backfill item, never a mixed batch",
   );
 });
