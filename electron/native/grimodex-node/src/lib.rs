@@ -8451,10 +8451,6 @@ mod narrative_maintenance_foreground_release_tests {
     }
 
     fn configure_foreground_seam(backend: &Backend) {
-        configure_foreground_seam_with_correlation(backend, "correlation-test");
-    }
-
-    fn configure_foreground_seam_with_correlation(backend: &Backend, correlation: &str) {
         backend
             .state
             .narrative_maintenance_ci_seam
@@ -8466,7 +8462,7 @@ mod narrative_maintenance_foreground_release_tests {
                 trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
                 setup: None,
                 product_journey_barrier_id: Some("barrier-test".to_string()),
-                correlation: Some(correlation.to_string()),
+                correlation: Some("correlation-test".to_string()),
             })
             .expect("configure foreground seam");
     }
@@ -9178,14 +9174,9 @@ mod narrative_maintenance_foreground_release_tests {
             .remember(stale)
             .expect("retain stale process-local handle");
 
-        configure_foreground_seam_with_correlation(&backend, "correlation-current");
+        rewrite_foreground_marker_correlation(&authority, &run_a, "correlation-stale");
         duplicate_running_foreground_run(&authority, &run_a, "run-current");
-        rewrite_foreground_marker_correlation(&authority, "run-current", "correlation-current");
-        let config = backend
-            .state
-            .narrative_maintenance_ci_seam
-            .config()
-            .expect("reconfigured seam");
+        rewrite_foreground_marker_correlation(&authority, "run-current", "correlation-test");
         let current = narrative_extraction::find_running_foreground_system_work_run(
             &authority, &config, &binding,
         )
