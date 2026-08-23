@@ -91,7 +91,49 @@ describe("validate-run-kind-policy", () => {
         productionEntryPoint: "run_narrative_maintenance_cycle",
       });
     }
+    assert.equal(
+      runKind(policy, "dependency-backfill").trigger,
+      "automatic-once-after-schema-upgrade",
+    );
+    assert.equal(
+      runKind(policy, "dependency-verify").trigger,
+      "automatic-on-trigger-event",
+    );
+    assert.equal(
+      runKind(policy, "dependency-rebuild-derived").trigger,
+      "automatic-when-derived-state-absent-or-invalid",
+    );
+    for (const name of [
+      "dependency-backfill",
+      "dependency-verify",
+      "dependency-rebuild-derived",
+    ]) {
+      const entry = runKind(policy, name);
+      assert.equal(entry.implementationStatus.state, "wired");
+      assert.deepEqual(entry.implementationStatus.productionEntryPoints, [
+        "run_narrative_maintenance_cycle",
+      ]);
+    }
     assert.deepEqual(validateFixture(policy).errors, []);
+  });
+
+  it("rejects duplicate run kinds", () => {
+    const policy = bundledPolicy();
+    policy.runKinds[4] = JSON.parse(
+      JSON.stringify(runKind(policy, "dependency-verify")),
+    );
+    const result = validateFixture(policy);
+    assert.ok(result.errors.some((error) => error.includes("duplicate runKind")));
+  });
+
+  it("rejects a maintenance route registry version drift", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "dependency-verify").runtimeRoute.registryVersion =
+      "narrative-maintenance-route/v2";
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("registryVersion")),
+    );
   });
 
   it("rejects a wired automatic kind without the explicit route contract", () => {
@@ -110,6 +152,26 @@ describe("validate-run-kind-policy", () => {
     const result = validateFixture(policy);
     assert.ok(
       result.errors.some((error) => error.includes("runtimeRoute.routeId")),
+    );
+  });
+
+  it("rejects a maintenance route production entry point drift", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "dependency-rebuild-derived").runtimeRoute.productionEntryPoint =
+      "rebuildNarrativeDerivedState";
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("productionEntryPoint")),
+    );
+  });
+
+  it("rejects maintenance state drift from wired", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "dependency-backfill").implementationStatus.state =
+      "unwired-blocked";
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("implementationStatus.state")),
     );
   });
 
@@ -186,6 +248,21 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
+  it("rejects a duplicate future C2-ZC obligation", () => {
+    const policy = bundledPolicy();
+    const obligations = runKind(
+      policy,
+      "dependency-verify",
+    ).futureTriggerObligations;
+    obligations.push(JSON.parse(JSON.stringify(obligations[0])));
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("must contain exactly one before-c2z-cutover"),
+      ),
+    );
+  });
+
   it("rejects a future obligation that claims current wired status", () => {
     const policy = bundledPolicy();
     runKind(
@@ -207,6 +284,75 @@ describe("validate-run-kind-policy", () => {
     assert.ok(
       result.errors.some((error) => error.includes("adminCommands references")),
     );
+  });
+
+  it("rejects an API split operation outside the exact five-operation union", () => {
+    const policy = bundledPolicy();
+    policy.apiSplit.operations.push("unexpectedNarrativeOperation");
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("apiSplit.operations must be exactly")),
+    );
+  });
+
+  it("rejects dependency-repair safety scalar mutations", () => {
+    const mutations = [
+      ["trigger", "automatic-on-trigger-event"],
+      ["sameRequestIdReuse", "reuse-running-only"],
+      ["sameWorkKeyReuse", "reuse-running-and-completed"],
+      ["manualRetry", true],
+      ["manualRetryNote", "retry the repair"],
+      ["writes", "diagnostics-only"],
+    ];
+    for (const [field, value] of mutations) {
+      const policy = bundledPolicy();
+      runKind(policy, "dependency-repair")[field] = value;
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) => error.includes(`dependency-repair.${field}`)),
+        `expected ${field} mutation to fail`,
+      );
+    }
+  });
+
+  it("rejects dependency-repair precondition and safety-list mutations", () => {
+    const fields = [
+      "requiredPreconditions",
+      "allowedRepairs",
+      "forbiddenRepairs",
+      "unrecoverableDisposition",
+    ];
+    for (const field of fields) {
+      const policy = bundledPolicy();
+      runKind(policy, "dependency-repair")[field].push("unsafe-mutation");
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) => error.includes(`dependency-repair.${field}`)),
+        `expected ${field} mutation to fail`,
+      );
+    }
+  });
+
+  it("rejects trigger or route declarations on dependency-repair", () => {
+    for (const mutation of [
+      (repair) => {
+        repair.triggerEvents = ["manual-wake"];
+      },
+      (repair) => {
+        repair.runtimeRoute = {
+          registryVersion: "narrative-maintenance-route/v1",
+          routeId: "dependency-repair",
+          productionEntryPoint: "run_narrative_maintenance_cycle",
+        };
+      },
+    ]) {
+      const policy = bundledPolicy();
+      mutation(runKind(policy, "dependency-repair"));
+      const result = validateFixture(policy);
+      assert.ok(
+        result.errors.some((error) => error.includes("dependency-repair")),
+      );
+    }
   });
 
   it("preserves nonautomatic repair and verify/rebuild semantics", () => {

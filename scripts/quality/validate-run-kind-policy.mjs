@@ -51,6 +51,70 @@ const C2ZC_FUTURE_OBLIGATION_RUN_KINDS = new Set([
   "dependency-rebuild-derived",
 ]);
 
+const MAINTENANCE_TRIGGER_VALUES = {
+  "dependency-backfill": "automatic-once-after-schema-upgrade",
+  "dependency-verify": "automatic-on-trigger-event",
+  "dependency-rebuild-derived": "automatic-when-derived-state-absent-or-invalid",
+};
+
+const MAINTENANCE_ADMIN_COMMANDS = {
+  "dependency-backfill": [
+    "retryNarrativeLegacyBackfill",
+    "getNarrativeBackfillStatus",
+  ],
+  "dependency-verify": ["verifyNarrativeDependencyGraph"],
+  "dependency-rebuild-derived": ["rebuildNarrativeDerivedState"],
+};
+
+const REPAIR_REQUIRED_PRECONDITIONS = [
+  "successful-verify-run-id",
+  "sealed-repair-plan-from-verify-result",
+  "repair-plan-digest",
+  "current-semantic-epoch-match",
+  "exclusive-workspace-lease",
+  "automatic-backup-or-snapshot",
+  "explicit-confirmation",
+  "stable-request-id",
+  "change-count-preview",
+];
+
+const REPAIR_ALLOWED_REPAIRS = [
+  "edge-fully-reconstructible-from-durable-ledger",
+  "artifact-with-explicit-dependency-manifest",
+  "proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set",
+  "application-contribution-uniquely-derivable-from-commit-receipt",
+  "deactivate-duplicate-edge",
+  "supersede-a-clear-prior-generation",
+];
+
+const REPAIR_FORBIDDEN_REPAIRS = [
+  "infer-dependency-from-payload-semantic-analysis",
+  "ai-completion-of-a-missing-dependency",
+  "select-an-ambiguous-target-path",
+  "modify-a-domain-field",
+  "rewrite-author-ownership",
+  "guess-an-evidence-range",
+  "re-adjudicate-semantic-truth",
+];
+
+const REPAIR_UNRECOVERABLE_DISPOSITION = [
+  "detached",
+  "unknown",
+  "manual-review-required",
+];
+
+const REPAIR_MANUAL_RETRY =
+  "crash-recovery-of-an-already-approved-sealed-plan-only";
+const REPAIR_MANUAL_RETRY_NOTE =
+  "resuming an approved sealed repair plan after a crash is recovery of an already-approved operation, not a new repair decision.";
+const API_SPLIT_OPERATIONS = [
+  "verifyNarrativeDependencyGraph",
+  "rebuildNarrativeDerivedState",
+  "repairNarrativeDependencyDeclarations",
+  "getNarrativeBackfillStatus",
+  "retryNarrativeLegacyBackfill",
+];
+
 const INCREMENTAL_FRESHNESS_RETRY_POLICY = {
   maxAttemptsPerTask: 3,
   exhaustedFailureCode: "NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED",
@@ -161,6 +225,20 @@ function validateImplementationStatus(entry, errors) {
   if (MAINTENANCE_ROUTE_IDS.has(entry.runKind)) {
     const route = entry.runtimeRoute;
     if (!isObject(route)) return;
+    if (status.state !== "wired") {
+      errors.push(
+        `${entry.runKind}.implementationStatus.state must be 'wired' for a registered maintenance route`,
+      );
+    }
+    if (
+      !sameStringArray(status.productionEntryPoints, [
+        MAINTENANCE_ROUTE_ENTRY_POINT,
+      ])
+    ) {
+      errors.push(
+        `${entry.runKind}.implementationStatus.productionEntryPoints must be exactly ['${MAINTENANCE_ROUTE_ENTRY_POINT}']`,
+      );
+    }
     if (route.routeId !== entry.runKind) {
       errors.push(
         `${entry.runKind}.runtimeRoute.routeId must equal '${entry.runKind}'`,
@@ -318,6 +396,24 @@ function validateIncrementalFreshness(entry, errors) {
 }
 
 function validateRunKindSpecificFields(entry, errors) {
+  if (MAINTENANCE_ROUTE_IDS.has(entry.runKind)) {
+    if (entry.trigger !== MAINTENANCE_TRIGGER_VALUES[entry.runKind]) {
+      errors.push(
+        `${entry.runKind}.trigger must be '${MAINTENANCE_TRIGGER_VALUES[entry.runKind]}'`,
+      );
+    }
+    if (
+      !sameStringArray(
+        entry.adminCommands,
+        MAINTENANCE_ADMIN_COMMANDS[entry.runKind],
+      )
+    ) {
+      errors.push(
+        `${entry.runKind}.adminCommands must be exactly ${JSON.stringify(MAINTENANCE_ADMIN_COMMANDS[entry.runKind])}`,
+      );
+    }
+  }
+
   if (
     entry.trigger === "automatic-on-trigger-event" ||
     entry.trigger === "automatic-when-derived-state-absent-or-invalid"
@@ -344,18 +440,69 @@ function validateRunKindSpecificFields(entry, errors) {
     "unrecoverableDisposition",
   ];
   if (entry.runKind === "dependency-repair") {
-    for (const field of repairOnlyFields) {
-      if (entry[field] === undefined) {
-        errors.push(`dependency-repair is missing required field '${field}'`);
+    const expectedScalars = {
+      trigger: "manual-only",
+      sameRequestIdReuse: "idempotent-replay",
+      sameWorkKeyReuse: "no-automatic-reuse-decision",
+      epochBound: true,
+      cursorBound: false,
+      periodic: false,
+      manualRetry: REPAIR_MANUAL_RETRY,
+      manualRetryNote: REPAIR_MANUAL_RETRY_NOTE,
+      writes: "durable-graph",
+    };
+    for (const [field, value] of Object.entries(expectedScalars)) {
+      if (entry[field] !== value) {
+        errors.push(`dependency-repair.${field} must be ${JSON.stringify(value)}`);
       }
+    }
+
+    const expectedArrays = {
+      requiredPreconditions: REPAIR_REQUIRED_PRECONDITIONS,
+      allowedRepairs: REPAIR_ALLOWED_REPAIRS,
+      forbiddenRepairs: REPAIR_FORBIDDEN_REPAIRS,
+      unrecoverableDisposition: REPAIR_UNRECOVERABLE_DISPOSITION,
+    };
+    for (const [field, value] of Object.entries(expectedArrays)) {
+      if (!sameStringArray(entry[field], value)) {
+        errors.push(
+          `dependency-repair.${field} must be exactly ${JSON.stringify(value)}`,
+        );
+      }
+    }
+    if (entry.triggerEvents !== undefined) {
+      errors.push("dependency-repair must not declare triggerEvents");
+    }
+    if (entry.runtimeRoute !== undefined) {
+      errors.push("dependency-repair must not declare runtimeRoute");
+    }
+    if (
+      !sameStringArray(entry.adminCommands, [
+        "repairNarrativeDependencyDeclarations",
+      ])
+    ) {
+      errors.push(
+        "dependency-repair.adminCommands must be exactly ['repairNarrativeDependencyDeclarations']",
+      );
+    }
+    if (entry.implementationStatus?.state !== "wired") {
+      errors.push("dependency-repair.implementationStatus.state must be 'wired'");
+    }
+    if (
+      !sameStringArray(entry.implementationStatus?.productionEntryPoints, [
+        "repairNarrativeDependencyDeclarations",
+      ])
+    ) {
+      errors.push(
+        "dependency-repair.implementationStatus.productionEntryPoints must be exactly ['repairNarrativeDependencyDeclarations']",
+      );
     }
   } else {
     for (const field of repairOnlyFields) {
-      if (entry[field] !== undefined) {
-        errors.push(
-          `${entry.runKind} must not declare '${field}'; only dependency-repair may`,
-        );
-      }
+      if (entry[field] === undefined) continue;
+      errors.push(
+        `${entry.runKind} must not declare '${field}'; only dependency-repair may`,
+      );
     }
   }
 
@@ -389,6 +536,11 @@ function validateRunKindSpecificFields(entry, errors) {
 
 function validateApiSplit(policy, errors) {
   if (!isObject(policy?.apiSplit)) return;
+  if (!sameStringArray(policy.apiSplit.operations, API_SPLIT_OPERATIONS)) {
+    errors.push(
+      `apiSplit.operations must be exactly ${JSON.stringify(API_SPLIT_OPERATIONS)}`,
+    );
+  }
   const operations = new Set(policy.apiSplit.operations ?? []);
   for (const entry of policy.runKinds ?? []) {
     if (!isObject(entry) || !Array.isArray(entry.adminCommands)) continue;
