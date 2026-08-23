@@ -1,25 +1,55 @@
 //! C2A RED contract tests.
 //!
-//! These tests describe the public behavior that the C2A typed writer must
-//! add after D1 publishes the schema contract.  They intentionally use the
-//! existing Native extraction entry points so a later implementation cannot
-//! hide the behavior behind a renderer-only helper or a second persistence
-//! authority.
+//! These are Phase 1/TDD fixtures for the persistence and validation seam.
+//! They intentionally exercise only the existing Native facade and direct
+//! fixture rows.  The C2A lane does not run Cargo until the integration owner
+//! grants the shared Rust lane.
 //!
-//! This file is a Phase 1/TDD artifact.  The parallel C2A lane does not run
-//! Cargo until the integration owner grants the shared Rust lane.
+//! The V2 fixture is copied from the C1 Chronicle scene-event contract:
+//! `narrative.chronicle.scene-event`, `chronicle.create-event@1`, and the
+//! observation-derived semantic payload.  Every digest below is computed by
+//! the shared Native canonicalizer; there are no placeholder digests.
 
-use grimodex_core::canonical_json_digest;
+use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
-    self, AppendRevisionPayload, CreateRunPayload, CreateTaskSeed, FinishTaskPayload, ProposalSeed,
-    ReviseAndDecidePayload, SaveProposalSetPayload,
+    self, AppendRevisionPayload, ArtifactInput, CreateRunPayload, CreateTaskSeed,
+    FinishTaskPayload, ProposalSeed, SaveProposalSetPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
 
 const PROJECT_A: &str = "project-a";
 const PROJECT_B: &str = "project-b";
-const DIGEST: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const SCENE_ID: &str = "scene-1";
+const SCENE_B_ID: &str = "scene-2";
+
+// C1 Chronicle scene-event adapter constants.
+const PROPOSAL_KIND: &str = "chronicle.create-event@1";
+const PROPOSAL_SCHEMA_ID: &str = "narrative.chronicle-event.create";
+const ASSERTION_SCHEMA_ID: &str = "narrative.chronicle.scene-event";
+const ADAPTER_ID: &str = "chronicle.scene-event";
+const ADAPTER_VERSION: &str = "1";
+const ASSERTION_KIND: &str = "scene-event@1";
+const CONTEXT_SET_VERSION: &str = "chronicle.context-set/1";
+const COMPONENT_CONTRACT_ID: &str = "chronicle.event-synthesis.prompt";
+const EVENT_SYNTHESIS_STAGE_ID: &str = "narrative_event_synthesize";
+const OBSERVATION_STAGE_ID: &str = "narrative_observation_extract";
+
+// C1 stage provenance constants.
+const MODEL_BINDING_KIND: &str = "chronicle-stage-model-binding";
+const TERMINAL_RECEIPT_KIND: &str = "chronicle-stage-terminal-receipt";
+const CLOSURE_KIND: &str = "chronicle-stage-provenance-closure";
+const MODEL_BINDING_DOMAIN: &str = "chronicle-stage-model-binding/1";
+const TERMINAL_RECEIPT_DOMAIN: &str = "chronicle-stage-terminal-receipt/1";
+const CLOSURE_DOMAIN: &str = "chronicle-stage-provenance-closure/1";
+
+fn digest(value: &Value) -> String {
+    canonical_json_digest(value).expect("canonical digest")
+}
+
+fn canonical(value: &Value) -> String {
+    canonical_json_string(value).expect("canonical JSON")
+}
 
 fn migrated_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
@@ -33,10 +63,69 @@ fn migrated_db() -> Database {
             "INSERT INTO projects (id, title) VALUES (?1, ?2)",
             rusqlite::params![PROJECT_B, "Project B"],
         )?;
+        // These rows are the real scene-body resolver inputs.  The token is
+        // always read from version + updated_at, never invented in a test.
+        for (scene_id, project_id) in [(SCENE_ID, PROJECT_A), (SCENE_B_ID, PROJECT_B)] {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, node_type, title, content, version, updated_at)
+                 VALUES (?1, ?2, 'scene', 'Arrival', '{\"body\":\"Arrival.\"}', 0,
+                         '2026-01-01T00:00:00.000Z')",
+                rusqlite::params![scene_id, project_id],
+            )?;
+        }
         Ok(())
     })
-    .expect("seed projects");
+    .expect("seed projects and resolver-backed scenes");
     db
+}
+
+fn scene_id(project_id: &str) -> &'static str {
+    match project_id {
+        PROJECT_A => SCENE_ID,
+        PROJECT_B => SCENE_B_ID,
+        other => panic!("unknown fixture project {other}"),
+    }
+}
+
+fn scene_source_key(project_id: &str) -> String {
+    format!("project:scene:{}", scene_id(project_id))
+}
+
+/// Mirrors the registered `scene-body` resolver's token, from the live row.
+fn scene_revision_token(db: &Database, project_id: &str) -> String {
+    db.with_conn(|conn| {
+        let (version, updated_at): (i64, String) = conn.query_row(
+            "SELECT version, updated_at
+               FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            rusqlite::params![scene_id(project_id), project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok(format!("v{version}@{updated_at}"))
+    })
+    .expect("resolve scene-body revision token")
+}
+
+/// Advance the actual source row and resolve its new token.  A stale parent
+/// fixture retains the old token; C2A must not silently rewrite it or promote
+/// a child/current revision (those are C2B journeys).
+fn advance_scene_source(db: &Database, project_id: &str) -> (String, String) {
+    let before = scene_revision_token(db, project_id);
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE tree_nodes
+                SET version = version + 1,
+                    content = '{\"body\":\"Arrival changed.\"}',
+                    updated_at = '2099-01-01T00:00:00.000Z'
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            rusqlite::params![scene_id(project_id), project_id],
+        )?;
+        Ok(())
+    })
+    .expect("advance live scene-body source");
+    let after = scene_revision_token(db, project_id);
+    (before, after)
 }
 
 fn create_run(db: &Database, project_id: &str, run_id: &str, task_id: &str) {
@@ -64,23 +153,8 @@ fn create_run(db: &Database, project_id: &str, run_id: &str, task_id: &str) {
     .expect("create run");
 }
 
-fn semantic_payload(title: &str) -> Value {
-    json!({
-        "eventId": "event:arrival",
-        "title": title,
-        "note": null,
-        "actuality": "actual",
-        "significance": "major",
-        "evidenceAnchorIds": ["anchor:arrival"],
-        "evidenceDocumentRefs": ["document:1"],
-        "unresolvedMetadata": {
-            "participantSurfaces": [],
-            "locationSurface": null,
-            "temporalExpressions": []
-        }
-    })
-}
-
+/// Exact non-secret C1 fixture payload from
+/// `policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json`.
 fn proposal_payload(title: &str, secret: bool) -> Value {
     json!({
         "eventId": "event:arrival",
@@ -92,13 +166,38 @@ fn proposal_payload(title: &str, secret: bool) -> Value {
         "evidenceDocumentRefs": ["document:1"],
         "disclosure": {
             "secret": secret,
-            "revealDocumentRef": "document:3"
+            "revealDocumentRef": if secret { "document:3" } else { "document:1" }
         },
         "unresolvedMetadata": {
             "participantSurfaces": [],
             "locationSurface": null,
             "temporalExpressions": []
         }
+    })
+}
+
+/// Exact observation-derived C1 semantic payload.  Projection/disclosure
+/// fields deliberately do not cross into the assertion payload.
+fn semantic_payload() -> Value {
+    json!({
+        "eventId": "event:arrival",
+        "summary": "A arrives at the station.",
+        "actuality": "actual",
+        "significance": "major",
+        "attribution": "narrator",
+        "narrativeFrame": "story-world",
+        "observationRefs": ["observation:arrival"],
+        "originalObservationRefs": ["observation:arrival"],
+        "mergedObservationRefs": ["observation:arrival"],
+        "observationSummaries": [{
+            "observationRef": "observation:arrival",
+            "predicate": "arrival",
+            "semanticType": "arrival",
+            "participants": [{"surface": "A", "role": "subject"}],
+            "locationSurface": "station",
+            "temporalExpressions": ["morning"],
+            "durationKind": "instant"
+        }]
     })
 }
 
@@ -118,96 +217,237 @@ fn scope() -> Value {
     })
 }
 
-/// A valid Chronicle Envelope V2 fixture.  The semantic payload deliberately
-/// excludes disclosure fields; disclosure is a Scope input, not Assertion
-/// Core.  Native must recompute all digest domains before it persists this.
-fn envelope_v2(run_id: &str, task_id: &str, title: &str) -> Value {
+fn source_basis(project_id: &str, revision_token: &str) -> Value {
+    json!([{
+        "sourceKind": "scene-body",
+        "sourceKey": scene_source_key(project_id),
+        "revisionToken": revision_token
+    }])
+}
+
+fn evidence_set() -> Value {
+    json!([{
+        "evidenceRef": "anchor:arrival",
+        "documentRef": "document:1",
+        "quote": "Arrival.",
+        "quoteDigest": digest(&Value::String("Arrival.".to_owned())),
+        "sourceKey": "source:scene:1"
+    }])
+}
+
+fn context_set() -> Value {
+    json!([{
+        "contextId": "context:event-synthesis",
+        "inputRef": "source:scene:1",
+        "stageId": EVENT_SYNTHESIS_STAGE_ID,
+        "exposure": "model-visible",
+        "selector": {"kind": "whole-source"}
+    }])
+}
+
+fn component_contract() -> Value {
+    json!({
+        "contractId": COMPONENT_CONTRACT_ID,
+        "contractVersion": "1",
+        "instruction": "Extract the Chronicle scene event from the declared context.",
+        "outputShape": "JSON object matching chronicle.create-event@1."
+    })
+}
+
+fn context_set_digest() -> String {
+    digest(&json!({
+        "version": CONTEXT_SET_VERSION,
+        "entries": context_set()
+    }))
+}
+
+fn component_contract_digest() -> String {
+    digest(&json!({
+        "schemaVersion": 1,
+        "contextSetVersion": CONTEXT_SET_VERSION,
+        "stageId": EVENT_SYNTHESIS_STAGE_ID,
+        "componentContract": component_contract()
+    }))
+}
+
+fn final_request_digest() -> String {
+    digest(&json!({
+        "schemaVersion": 1,
+        "contextSetVersion": CONTEXT_SET_VERSION,
+        "stageId": EVENT_SYNTHESIS_STAGE_ID,
+        "contextSetDigest": context_set_digest(),
+        "componentContractDigest": component_contract_digest(),
+        "messages": [{
+            "role": "user",
+            "content": "Extract the Chronicle scene event from the declared context."
+        }]
+    }))
+}
+
+fn dependency_set() -> Value {
+    json!([
+        {
+            "dependencyId": "dependency:evidence",
+            "inputRef": "source:scene:1",
+            "contextIds": ["context:event-synthesis"],
+            "role": "direct-evidence",
+            "selector": {"kind": "whole-source"}
+        },
+        {
+            "dependencyId": "dependency:component-contract",
+            "inputRef": "component:chronicle.event-synthesis.prompt",
+            "contextIds": [],
+            "role": "component-contract",
+            "selector": {
+                "kind": "component-contract",
+                "contractId": COMPONENT_CONTRACT_ID,
+                "contractDigest": component_contract_digest()
+            }
+        }
+    ])
+}
+
+/// Build the canonical C1 envelope shape while computing every digest from
+/// its Native-owned domain.  C2A must recompute these values at persistence,
+/// even if a caller supplies forged digest strings.
+fn envelope_v2(db: &Database, project_id: &str, run_id: &str, task_id: &str, title: &str) -> Value {
+    let proposal = proposal_payload(title, false);
+    let semantic = semantic_payload();
+    let scope_value = scope();
+    let source = source_basis(project_id, &scene_revision_token(db, project_id));
+    let evidence = evidence_set();
+    let dependencies = dependency_set();
+    let producer = json!({
+        "kind": "reconciler-proposal",
+        "id": "chronicle.reconciler",
+        "version": "1"
+    });
+    let assertion_core_digest = digest(&json!({
+        "assertionKind": ASSERTION_KIND,
+        "payloadSchemaRef": {"id": ASSERTION_SCHEMA_ID, "version": "1"},
+        "typedSemanticPayload": semantic,
+        "modality": "modality-inference",
+        "polarity": "affirmative",
+        "supportClass": "direct-source",
+        "producer": producer
+    }));
+    let scope_digest = digest(&scope_value);
+    let assertion_digest = digest(&json!({
+        "assertionCoreDigest": assertion_core_digest,
+        "scopeDigest": scope_digest
+    }));
+    let dependency_set_digest = digest(&dependencies);
+    let material_basis_digest = digest(&json!({
+        "sourceBasis": source,
+        "evidenceSet": evidence,
+        "dependencySet": dependencies
+    }));
+    let context_digest = context_set_digest();
+    let component_digest = component_contract_digest();
+    let request_digest = final_request_digest();
+    let proposal_digest = digest(&proposal);
+
     json!({
         "schemaVersion": 2,
         "assertion": {
             "assertionId": null,
-            "assertionKind": "scene-event@1",
-            "payloadSchemaRef": {"id": "narrative.scene-event", "version": "1"},
-            "payload": semantic_payload(title),
-            "scope": scope(),
-            "modality": "modality-explicit-text",
+            "assertionKind": ASSERTION_KIND,
+            "payloadSchemaRef": {"id": ASSERTION_SCHEMA_ID, "version": "1"},
+            "payload": semantic,
+            "scope": scope_value,
+            "modality": "modality-inference",
             "polarity": "affirmative",
             "supportClass": "direct-source",
-            "producer": {
-                "kind": "reconciler-proposal",
-                "id": "grimodex.chronicle-extraction",
-                "version": "1"
-            }
+            "producer": producer
         },
         "assertionDigests": {
-            "assertionCoreDigest": DIGEST,
-            "scopeDigest": DIGEST,
-            "assertionDigest": DIGEST
+            "assertionCoreDigest": assertion_core_digest,
+            "scopeDigest": scope_digest,
+            "assertionDigest": assertion_digest
         },
         "changeIntent": {"changeKind": "add"},
         "effectiveMaterialBasis": {
-            "sourceBasis": [{
-                "sourceKind": "snapshot-document",
-                "sourceKey": format!("snapshot:{run_id}"),
-                "revisionToken": "snapshot-v2"
-            }],
-            "evidenceSet": [],
-            "dependencySet": [],
-            "dependencySetDigest": DIGEST,
-            "materialBasisDigest": DIGEST
+            "sourceBasis": source,
+            "evidenceSet": evidence,
+            "dependencySet": dependencies,
+            "dependencySetDigest": dependency_set_digest,
+            "materialBasisDigest": material_basis_digest
         },
         "revisionBasis": {
             "kind": "interpretation",
             "runId": run_id,
             "taskId": task_id,
-            "producer": {
-                "kind": "reconciler-proposal",
-                "id": "grimodex.chronicle-extraction",
-                "version": "1"
-            },
-            "contextSet": [],
-            "contextSetDigest": DIGEST,
-            "componentContractDigest": DIGEST,
-            "finalRequestDigest": DIGEST
+            "producer": producer,
+            "contextSet": context_set(),
+            "contextSetDigest": context_digest,
+            "componentContractDigest": component_digest,
+            "finalRequestDigest": request_digest
         },
         "projectionBinding": {
-            "proposalKind": "chronicle.create-event@1",
-            "proposalSchemaRef": {
-                "id": "narrative.chronicle-event.create",
-                "version": "1"
-            },
-            "proposalPayloadDigest": DIGEST,
-            "adapterContractId": "chronicle.scene-event",
-            "adapterContractVersion": "1"
+            "proposalKind": PROPOSAL_KIND,
+            "proposalSchemaRef": {"id": PROPOSAL_SCHEMA_ID, "version": "1"},
+            "proposalPayloadDigest": proposal_digest,
+            "adapterContractId": ADAPTER_ID,
+            "adapterContractVersion": ADAPTER_VERSION
         }
     })
 }
 
-fn legacy_v1_envelope(run_id: &str, task_id: &str) -> Value {
-    let source_key = format!("snapshot:{run_id}");
-    let read_set = json!([{
-        "kind": "snapshot-document",
-        "inputRef": source_key,
-        "revisionToken": "snapshot-v2"
-    }]);
-    json!({
-        "schemaVersion": 1,
-        "runId": run_id,
-        "taskId": task_id,
-        "reconcilerId": "test.reconciler",
-        "reconcilerVersion": "1.0.0",
-        "proposalSchemaId": "narrative.chronicle-event.create",
-        "proposalSchemaVersion": "1",
-        "sourceBasis": [{
-            "sourceKind": "snapshot-document",
-            "sourceKey": source_key,
-            "revisionToken": "snapshot-v2"
-        }],
-        "evidenceSet": [],
-        "readSet": read_set,
-        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
-        "changeKind": "add"
-    })
+fn assert_envelope_digest_fields(envelope: &Value) {
+    let assertion = &envelope["assertion"];
+    let semantic = &assertion["payload"];
+    let producer = &assertion["producer"];
+    let assertion_core = digest(&json!({
+        "assertionKind": assertion["assertionKind"],
+        "payloadSchemaRef": assertion["payloadSchemaRef"],
+        "typedSemanticPayload": semantic,
+        "modality": assertion["modality"],
+        "polarity": assertion["polarity"],
+        "supportClass": assertion["supportClass"],
+        "producer": producer
+    }));
+    let scope_digest = digest(&assertion["scope"]);
+    let assertion_digest = digest(&json!({
+        "assertionCoreDigest": assertion_core,
+        "scopeDigest": scope_digest
+    }));
+    assert_eq!(
+        envelope["assertionDigests"]["assertionCoreDigest"],
+        assertion_core
+    );
+    assert_eq!(envelope["assertionDigests"]["scopeDigest"], scope_digest);
+    assert_eq!(
+        envelope["assertionDigests"]["assertionDigest"],
+        assertion_digest
+    );
+
+    let material = &envelope["effectiveMaterialBasis"];
+    let dependency_digest = digest(&material["dependencySet"]);
+    let material_digest = digest(&json!({
+        "sourceBasis": material["sourceBasis"],
+        "evidenceSet": material["evidenceSet"],
+        "dependencySet": material["dependencySet"]
+    }));
+    assert_eq!(material["dependencySetDigest"], dependency_digest);
+    assert_eq!(material["materialBasisDigest"], material_digest);
+
+    let revision_basis = &envelope["revisionBasis"];
+    assert_eq!(
+        revision_basis["contextSetDigest"],
+        digest(&json!({
+            "version": CONTEXT_SET_VERSION,
+            "entries": revision_basis["contextSet"]
+        }))
+    );
+    assert_eq!(
+        revision_basis["componentContractDigest"],
+        component_contract_digest()
+    );
+    assert_eq!(revision_basis["finalRequestDigest"], final_request_digest());
+    assert_eq!(
+        envelope["projectionBinding"]["proposalPayloadDigest"],
+        digest(&proposal_payload("Arrival", false))
+    );
 }
 
 fn save_v2_root(
@@ -216,8 +456,9 @@ fn save_v2_root(
     run_id: &str,
     task_id: &str,
     proposal_id: &str,
-    title: &str,
 ) -> Value {
+    let envelope = envelope_v2(db, project_id, run_id, task_id, "Arrival");
+    assert_envelope_digest_fields(&envelope);
     narrative_extraction::narrative_extraction_save_proposal_set(
         db,
         SaveProposalSetPayload {
@@ -229,14 +470,101 @@ fn save_v2_root(
             proposals: vec![ProposalSeed {
                 proposal_id: Some(proposal_id.to_owned()),
                 proposal_key: "event:arrival:0".to_owned(),
-                kind: "chronicle.event.create@1".to_owned(),
-                payload_json: proposal_payload(title, false),
-                reconciliation_envelope: Some(envelope_v2(run_id, task_id, title)),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope),
             }],
         },
     )
-    .expect("C2A must persist a valid Envelope V2 root")["proposals"][0]
+    .expect("Native must persist a C1-compatible Envelope V2")["proposals"][0]
         .clone()
+}
+
+fn save_legacy_root(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    proposal_id: &str,
+) -> Value {
+    narrative_extraction::narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_owned(),
+            project_id: project_id.to_owned(),
+            proposal_set_id: Some(format!("set-{proposal_id}")),
+            set_kind: "chronicle.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_owned()),
+                proposal_key: format!("event:arrival:{task_id}"),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: None,
+            }],
+        },
+    )
+    .expect("save legacy fixture")["proposals"][0]
+        .clone()
+}
+
+fn seed_v2_parent(
+    db: &Database,
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    source_revision_token: &str,
+) -> Value {
+    create_run(db, project_id, run_id, task_id);
+    let envelope = envelope_v2(db, project_id, run_id, task_id, "Arrival");
+    let envelope_json = canonical(&envelope);
+    let envelope_digest = digest(&envelope);
+    let payload_json = canonical(&proposal_payload("Arrival", false));
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_proposal_sets
+                (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'chronicle.extract.review@1', '{}', datetime('now'), datetime('now'))",
+            rusqlite::params![format!("set-{proposal_id}"), run_id, project_id],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposals
+                (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                 current_revision_id, created_at, updated_at)
+             VALUES (?1, ?2, 'event:arrival:0', ?3, 'unreviewed', ?4, ?5,
+                     datetime('now'), datetime('now'))",
+            rusqlite::params![
+                proposal_id,
+                format!("set-{proposal_id}"),
+                PROPOSAL_KIND,
+                payload_json,
+                revision_id
+            ],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_proposal_revisions
+                (id, proposal_id, revision_number, payload_json, origin_kind,
+                 reconciliation_envelope_json, reconciliation_envelope_digest,
+                 created_at, created_by)
+             VALUES (?1, ?2, 1, ?3, 'enveloped', ?4, ?5, datetime('now'), 'chronicle')",
+            rusqlite::params![revision_id, proposal_id, payload_json, envelope_json, envelope_digest],
+        )?;
+        conn.execute(
+            "INSERT INTO narrative_revision_source_basis
+                (revision_id, ordinal, source_kind, source_key, revision_token)
+             VALUES (?1, 0, 'scene-body', ?2, ?3)",
+            rusqlite::params![revision_id, scene_source_key(project_id), source_revision_token],
+        )?;
+        Ok(())
+    })
+    .expect("seed V2 parent");
+    json!({
+        "revisionId": revision_id,
+        "envelopeDigest": envelope_digest,
+        "observedSourceRevisionToken": source_revision_token
+    })
 }
 
 fn claim_task(db: &Database, project_id: &str, run_id: &str) -> String {
@@ -257,28 +585,231 @@ fn claim_task(db: &Database, project_id: &str, run_id: &str) -> String {
         .to_owned()
 }
 
+fn observation_payload() -> Value {
+    json!({
+        "localId": "observation:arrival",
+        "evidence": [{"sourceRef": "source:scene:1", "quote": "Arrival."}],
+        "assertion": {"attribution": "narrator", "narrativeFrame": "story-world"},
+        "payload": {
+            "predicate": "arrival",
+            "semanticType": "arrival",
+            "actuality": "actual",
+            "participants": [{"surface": "A", "role": "subject"}],
+            "locationSurface": "station",
+            "temporalExpressions": ["morning"],
+            "durationKind": "instant"
+        }
+    })
+}
+
+fn model_binding() -> Value {
+    json!({
+        "kind": MODEL_BINDING_KIND,
+        "version": 1,
+        "provider": "ollama",
+        "endpointBindingId": null,
+        "requestedModel": "qwen3:8b",
+        "effectiveModel": null,
+        "modelFingerprint": null,
+        "apiVariant": null,
+        "reasoningMode": null,
+        "generationMode": "provider-default",
+        "resolutionStatus": "requested-only"
+    })
+}
+
+fn stage_receipt(
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    stage_id: &str,
+    stage_execution_id: &str,
+    context_digest: &str,
+    component_digest: &str,
+    request_digest: &str,
+    response: &Value,
+) -> Value {
+    let binding = model_binding();
+    let binding_digest = digest(&json!({
+        "domain": MODEL_BINDING_DOMAIN,
+        "binding": binding
+    }));
+    let response_digest = digest(response);
+    let stage_execution = json!({
+        "projectId": project_id,
+        "runId": run_id,
+        "taskId": task_id,
+        "attemptId": attempt_id,
+        "stageId": stage_id,
+        "stageExecutionId": stage_execution_id
+    });
+    let without_digest = json!({
+        "kind": TERMINAL_RECEIPT_KIND,
+        "version": 1,
+        "stageExecution": stage_execution,
+        "contextSetVersion": CONTEXT_SET_VERSION,
+        "contextSetDigest": context_digest,
+        "componentContractDigest": component_digest,
+        "finalRequestDigest": request_digest,
+        "modelExecutionBinding": binding,
+        "modelBindingDigest": binding_digest,
+        "responseDigest": response_digest,
+        "parseStatus": "parsed",
+        "terminalStatus": "succeeded"
+    });
+    let receipt_digest = digest(&json!({
+        "domain": TERMINAL_RECEIPT_DOMAIN,
+        "stageExecution": without_digest["stageExecution"],
+        "contextSetVersion": without_digest["contextSetVersion"],
+        "contextSetDigest": without_digest["contextSetDigest"],
+        "componentContractDigest": without_digest["componentContractDigest"],
+        "finalRequestDigest": without_digest["finalRequestDigest"],
+        "modelBindingDigest": without_digest["modelBindingDigest"],
+        "responseDigest": without_digest["responseDigest"],
+        "parseStatus": without_digest["parseStatus"],
+        "terminalStatus": without_digest["terminalStatus"]
+    }));
+    let mut receipt = without_digest;
+    receipt["stageExecutionReceiptDigest"] = Value::String(receipt_digest);
+    receipt
+}
+
+fn valid_stage_closure(
+    project_id: &str,
+    run_id: &str,
+    owner_task_id: &str,
+    owner_attempt_id: &str,
+    context_digest: &str,
+    component_digest: &str,
+    request_digest: &str,
+) -> Value {
+    let observation_receipt = stage_receipt(
+        project_id,
+        run_id,
+        "task:observation",
+        "attempt:observation",
+        OBSERVATION_STAGE_ID,
+        "stage:observation",
+        context_digest,
+        component_digest,
+        request_digest,
+        &json!({"observations": [observation_payload()]}),
+    );
+    let synthesis_receipt = stage_receipt(
+        project_id,
+        run_id,
+        owner_task_id,
+        owner_attempt_id,
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:event-synthesis",
+        context_digest,
+        component_digest,
+        request_digest,
+        &json!({"proposal": proposal_payload("Arrival", false)}),
+    );
+    // C1 requires canonical code-unit ordering by stageExecutionId.
+    let receipts = json!([synthesis_receipt, observation_receipt]);
+    let receipt_refs = json!([
+        {
+            "stageExecutionId": "stage:event-synthesis",
+            "stageExecutionReceiptDigest": receipts[0]["stageExecutionReceiptDigest"]
+        },
+        {
+            "stageExecutionId": "stage:observation",
+            "stageExecutionReceiptDigest": receipts[1]["stageExecutionReceiptDigest"]
+        }
+    ]);
+    let without_digest = json!({
+        "kind": CLOSURE_KIND,
+        "version": 1,
+        "projectId": project_id,
+        "runId": run_id,
+        "ownerTaskId": owner_task_id,
+        "ownerAttemptId": owner_attempt_id,
+        "receipts": receipts,
+        "receiptRefs": receipt_refs
+    });
+    let closure_digest = digest(&json!({
+        "domain": CLOSURE_DOMAIN,
+        "projectId": without_digest["projectId"],
+        "runId": without_digest["runId"],
+        "ownerTaskId": without_digest["ownerTaskId"],
+        "ownerAttemptId": without_digest["ownerAttemptId"],
+        "receipts": without_digest["receipts"],
+        "receiptRefs": without_digest["receiptRefs"]
+    }));
+    let mut closure = without_digest;
+    closure["stageProvenanceClosureDigest"] = Value::String(closure_digest);
+    closure
+}
+
+fn artifact(id: &str, kind: &str, payload: Value) -> ArtifactInput {
+    ArtifactInput {
+        artifact_id: Some(id.to_owned()),
+        artifact_kind: kind.to_owned(),
+        payload_storage: Some("inline-json".to_owned()),
+        payload_digest: Some(digest(&payload)),
+        payload_json: Some(payload),
+        payload_ref: None,
+    }
+}
+
+fn finish_bundle(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    closure: Value,
+) -> anyhow::Result<Value> {
+    let raw_observations = json!({
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [observation_payload()]
+    });
+    let output = json!({
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "stageProvenanceClosureDigest": closure["stageProvenanceClosureDigest"]
+    });
+    narrative_extraction::narrative_extraction_finish_task(
+        db,
+        FinishTaskPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            task_id: task_id.to_owned(),
+            attempt_id: attempt_id.to_owned(),
+            lease_owner: "c2a-test-worker".to_owned(),
+            output_json: Some(output),
+            artifacts: vec![
+                artifact(
+                    &format!("{task_id}-raw-observations"),
+                    "chronicle.raw-observations@1",
+                    raw_observations,
+                ),
+                artifact(
+                    &format!("{task_id}-stage-closure"),
+                    "chronicle.stage-provenance-closure@1",
+                    closure,
+                ),
+            ],
+        },
+    )
+}
+
 #[test]
-fn persists_a_native_canonical_envelope_v2_and_project_scoped_revision_identity() {
+fn persists_native_canonical_envelope_v2_and_project_qualified_identity() {
     let db = migrated_db();
     create_run(&db, PROJECT_A, "run-v2-a", "task-v2-a");
     create_run(&db, PROJECT_B, "run-v2-b", "task-v2-b");
+    let expected_a = envelope_v2(&db, PROJECT_A, "run-v2-a", "task-v2-a", "Arrival");
+    let expected_b = envelope_v2(&db, PROJECT_B, "run-v2-b", "task-v2-b", "Arrival");
+    assert_envelope_digest_fields(&expected_a);
+    assert_envelope_digest_fields(&expected_b);
 
-    let first = save_v2_root(
-        &db,
-        PROJECT_A,
-        "run-v2-a",
-        "task-v2-a",
-        "proposal-a",
-        "Arrival",
-    );
-    let second = save_v2_root(
-        &db,
-        PROJECT_B,
-        "run-v2-b",
-        "task-v2-b",
-        "proposal-b",
-        "Arrival",
-    );
+    let first = save_v2_root(&db, PROJECT_A, "run-v2-a", "task-v2-a", "proposal-a");
+    let second = save_v2_root(&db, PROJECT_B, "run-v2-b", "task-v2-b", "proposal-b");
     let first_revision = first["revisionId"].as_str().expect("first revision");
     let second_revision = second["revisionId"].as_str().expect("second revision");
     assert_ne!(
@@ -294,69 +825,146 @@ fn persists_a_native_canonical_envelope_v2_and_project_scoped_revision_identity(
                    FROM narrative_proposal_revisions r
                    JOIN narrative_proposals p ON p.id = r.proposal_id
                    JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-                  WHERE r.id = ?1",
-                [first_revision],
+                  WHERE r.id = ?1 AND s.project_id = ?2",
+                rusqlite::params![first_revision, PROJECT_A],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?)
         })
-        .expect("read V2 root");
+        .expect("read project-qualified V2 root");
     let persisted: Value = serde_json::from_str(&envelope_json).expect("canonical envelope");
     assert_eq!(origin, "enveloped");
-    assert_eq!(persisted["schemaVersion"], 2);
-    assert_eq!(
-        envelope_digest,
-        canonical_json_digest(&persisted).expect("envelope digest")
-    );
+    assert_eq!(persisted, expected_a);
+    assert_eq!(envelope_json, canonical(&expected_a));
+    assert_envelope_digest_fields(&persisted);
+    assert_eq!(envelope_digest, digest(&persisted));
     assert_eq!(first["reconciliationEnvelopeDigest"], envelope_digest);
     assert_eq!(project_id, PROJECT_A);
+    let wrong_project_lookup: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_proposal_revisions r
+                   JOIN narrative_proposals p ON p.id = r.proposal_id
+                   JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+                  WHERE r.id = ?1 AND s.project_id = ?2",
+                rusqlite::params![first_revision, PROJECT_B],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("project-qualified negative lookup");
+    assert_eq!(wrong_project_lookup, 0);
 }
 
 #[test]
-fn rejects_malformed_stage_provenance_atomically_with_task_output_and_artifact() {
+fn persists_a_valid_atomic_stage_bundle_with_receipts_bindings_output_and_artifact() {
     let db = migrated_db();
-    create_run(&db, PROJECT_A, "run-stage-atomic", "task-stage-atomic");
-    let attempt_id = claim_task(&db, PROJECT_A, "run-stage-atomic");
+    let run_id = "run-stage-valid";
+    let task_id = "task-stage-valid";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    assert_eq!(closure["receipts"].as_array().unwrap().len(), 2);
+    for receipt in closure["receipts"].as_array().expect("closure receipts") {
+        assert_eq!(
+            receipt["modelBindingDigest"],
+            digest(&json!({
+                "domain": MODEL_BINDING_DOMAIN,
+                "binding": receipt["modelExecutionBinding"]
+            }))
+        );
+        assert_eq!(
+            receipt["stageExecutionReceiptDigest"],
+            digest(&json!({
+                "domain": TERMINAL_RECEIPT_DOMAIN,
+                "stageExecution": receipt["stageExecution"],
+                "contextSetVersion": receipt["contextSetVersion"],
+                "contextSetDigest": receipt["contextSetDigest"],
+                "componentContractDigest": receipt["componentContractDigest"],
+                "finalRequestDigest": receipt["finalRequestDigest"],
+                "modelBindingDigest": receipt["modelBindingDigest"],
+                "responseDigest": receipt["responseDigest"],
+                "parseStatus": receipt["parseStatus"],
+                "terminalStatus": receipt["terminalStatus"]
+            }))
+        );
+    }
+    let expected_closure_digest = digest(&json!({
+        "domain": CLOSURE_DOMAIN,
+        "projectId": closure["projectId"],
+        "runId": closure["runId"],
+        "ownerTaskId": closure["ownerTaskId"],
+        "ownerAttemptId": closure["ownerAttemptId"],
+        "receipts": closure["receipts"],
+        "receiptRefs": closure["receiptRefs"]
+    }));
+    assert_eq!(
+        closure["stageProvenanceClosureDigest"],
+        expected_closure_digest
+    );
 
-    let malformed_closure = json!({
-        "kind": "chronicle-stage-provenance-closure",
-        "version": 1,
-        "projectId": PROJECT_A,
-        "runId": "run-stage-atomic",
-        "ownerTaskId": "task-stage-atomic",
-        "ownerAttemptId": attempt_id,
-        "receipts": [],
-        "receiptRefs": [],
-        "stageProvenanceClosureDigest": DIGEST
-    });
-    let error = narrative_extraction::narrative_extraction_finish_task(
-        &db,
-        FinishTaskPayload {
-            run_id: "run-stage-atomic".to_owned(),
-            project_id: PROJECT_A.to_owned(),
-            task_id: "task-stage-atomic".to_owned(),
-            attempt_id: attempt_id.clone(),
-            lease_owner: "c2a-test-worker".to_owned(),
-            output_json: Some(json!({
-                "stageProvenanceClosureDigest": DIGEST,
-                "output": "must roll back"
-            })),
-            artifacts: vec![narrative_extraction::ArtifactInput {
-                artifact_id: Some("artifact-stage-atomic".to_owned()),
-                artifact_kind: "chronicle.stage-provenance-closure@1".to_owned(),
-                payload_storage: Some("inline-json".to_owned()),
-                payload_json: Some(malformed_closure),
-                payload_ref: None,
-                payload_digest: None,
-            }],
-        },
-    )
-    .expect_err("malformed closure must fail closed");
+    finish_bundle(&db, run_id, task_id, &attempt_id, closure.clone())
+        .expect("valid C1 closure bundle must finish atomically");
+    let (task_status, attempt_status, output_json, artifact_count): (String, String, String, i64) =
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status, t.output_json,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .expect("read valid atomic bundle");
+    assert_eq!(task_status, "completed");
+    assert_eq!(attempt_status, "completed");
+    let output: Value = serde_json::from_str(&output_json).expect("task output JSON");
+    assert_eq!(
+        output["stageProvenanceClosureDigest"],
+        closure["stageProvenanceClosureDigest"]
+    );
+    assert_eq!(artifact_count, 2);
+}
+
+#[test]
+fn rejects_only_corrupt_closure_and_rolls_back_all_siblings() {
+    let db = migrated_db();
+    let run_id = "run-stage-corrupt";
+    let task_id = "task-stage-corrupt";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let mut corrupt_closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    // Only the closure's internal digest is corrupted; the outer artifact
+    // payload digest is still recomputed over that exact corrupted payload.
+    corrupt_closure["stageProvenanceClosureDigest"] =
+        Value::String(digest(&json!({"corrupt": "closure-only"})));
+    let error = finish_bundle(&db, run_id, task_id, &attempt_id, corrupt_closure)
+        .expect_err("closure validation must fail closed");
     assert!(
-        error.to_string().contains("stage") || error.to_string().contains("closure"),
+        error.to_string().contains("closure") || error.to_string().contains("provenance"),
         "unexpected closure error: {error:#}"
     );
 
-    let (status, task_output, attempt_output, artifact_count): (
+    let (task_status, attempt_status, task_output, attempt_output, artifact_count): (
+        String,
         String,
         Option<String>,
         Option<String>,
@@ -364,217 +972,126 @@ fn rejects_malformed_stage_provenance_atomically_with_task_output_and_artifact()
     ) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT t.status, t.output_json, a.output_json,
+                "SELECT t.status, a.status, t.output_json, a.output_json,
                         (SELECT COUNT(*) FROM narrative_extraction_artifacts
-                          WHERE id = 'artifact-stage-atomic')
+                          WHERE run_id = ?1 AND task_id = ?2)
                    FROM narrative_extraction_tasks t
-                   JOIN narrative_extraction_attempts a ON a.id = ?1
-                  WHERE t.id = 'task-stage-atomic'",
-                [attempt_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
             )?)
         })
-        .expect("read rolled back task");
-    assert_eq!(status, "running");
+        .expect("read rolled-back closure bundle");
+    assert_eq!(task_status, "running");
+    assert_eq!(attempt_status, "running");
     assert!(task_output.is_none());
     assert!(attempt_output.is_none());
-    assert_eq!(artifact_count, 0);
-}
-
-fn seed_v2_parent_for_human_writer(
-    db: &Database,
-    project_id: &str,
-    run_id: &str,
-    task_id: &str,
-    proposal_id: &str,
-    revision_id: &str,
-    source_revision_token: &str,
-) -> Value {
-    create_run(db, project_id, run_id, task_id);
-    let envelope = envelope_v2(run_id, task_id, "Arrival");
-    let envelope_json = serde_json::to_string(&envelope).expect("serialize parent envelope");
-    let envelope_digest = canonical_json_digest(&envelope).expect("parent digest");
-    let payload = proposal_payload("Arrival", false);
-    let payload_json = serde_json::to_string(&payload).expect("serialize parent payload");
-    db.with_conn(|conn| {
-        conn.execute(
-            "INSERT INTO narrative_proposal_sets
-                (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
-             VALUES (?1, ?2, ?3, 'chronicle.extract.review@1', '{}', datetime('now'), datetime('now'))",
-            rusqlite::params![format!("set-{proposal_id}"), run_id, project_id],
-        )?;
-        conn.execute(
-            "INSERT INTO narrative_proposals
-                (id, proposal_set_id, proposal_key, kind, status, payload_json,
-                 current_revision_id, created_at, updated_at)
-             VALUES (?1, ?2, 'event:arrival:0', 'chronicle.event.create@1',
-                     'unreviewed', ?3, ?4, datetime('now'), datetime('now'))",
-            rusqlite::params![proposal_id, format!("set-{proposal_id}"), payload_json, revision_id],
-        )?;
-        conn.execute(
-            "INSERT INTO narrative_proposal_revisions
-                (id, proposal_id, revision_number, payload_json, origin_kind,
-                 reconciliation_envelope_json, reconciliation_envelope_digest,
-                 created_at, created_by)
-             VALUES (?1, ?2, 1, ?3, 'enveloped', ?4, ?5, datetime('now'), 'chronicle')",
-            rusqlite::params![revision_id, proposal_id, payload_json, envelope_json, envelope_digest],
-        )?;
-        conn.execute(
-            "INSERT INTO narrative_revision_source_basis
-                (revision_id, ordinal, source_kind, source_key, revision_token)
-             VALUES (?1, 0, 'snapshot-document', ?2, ?3)",
-            rusqlite::params![revision_id, format!("snapshot:{run_id}"), source_revision_token],
-        )?;
-        Ok(())
-    })
-    .expect("seed V2 parent");
-    json!({"revisionId": revision_id, "envelopeDigest": envelope_digest})
+    assert_eq!(
+        artifact_count, 0,
+        "raw artifact and closure must roll back together"
+    );
 }
 
 #[test]
-fn native_human_writer_computes_mixed_scope_override_and_owns_child_material_basis() {
+fn resolver_advance_preserves_observed_parent_token_without_c2b_promotion() {
     let db = migrated_db();
-    let parent = seed_v2_parent_for_human_writer(
+    let run_id = "run-stale-parent";
+    let task_id = "task-stale-parent";
+    let old_token = scene_revision_token(&db, PROJECT_A);
+    let parent = seed_v2_parent(
         &db,
         PROJECT_A,
-        "run-human-derived",
-        "task-human-derived",
-        "proposal-human-derived",
-        "revision-human-parent",
-        "snapshot-v2",
+        run_id,
+        task_id,
+        "proposal-stale-parent",
+        "revision-stale-parent",
+        &old_token,
     );
-
-    let result = narrative_extraction::narrative_extraction_revise_and_decide_as_human(
-        &db,
-        ReviseAndDecidePayload {
-            run_id: "run-human-derived".to_owned(),
-            project_id: PROJECT_A.to_owned(),
-            proposal_id: "proposal-human-derived".to_owned(),
-            payload_json: proposal_payload("Arrival at Dawn", true),
-            // The client supplies only the edited Projection payload. Native
-            // must derive the child Envelope and material basis.
-            reconciliation_envelope: None,
-            inherit_reconciliation_envelope: None,
-            expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
-            decision: "held".to_owned(),
-            decision_json: None,
-            created_by: Some("chronicle-dialog".to_owned()),
-        },
-    )
-    .expect("Native human writer must accept title + secret");
-    let child_revision = result["revisionId"].as_str().expect("child revision");
-
-    let (origin, envelope_json, source_basis_count, edge_count): (String, String, i64, i64) = db
+    let (before, after) = advance_scene_source(&db, PROJECT_A);
+    assert_eq!(before, old_token);
+    assert_ne!(before, after, "resolver-backed source must advance");
+    let (observed_token, current_revision, child_edges): (String, String, i64) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT r.origin_kind, r.reconciliation_envelope_json,
-                        (SELECT COUNT(*) FROM narrative_revision_source_basis
-                          WHERE revision_id = r.id),
+                "SELECT b.revision_token, p.current_revision_id,
                         (SELECT COUNT(*) FROM narrative_dependency_edges
                           WHERE consumer_kind = 'proposal-revision'
-                            AND consumer_key = r.id)
-                   FROM narrative_proposal_revisions r
-                  WHERE r.id = ?1",
-                [child_revision],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                            AND consumer_key = 'revision-stale-parent')
+                   FROM narrative_revision_source_basis b
+                   JOIN narrative_proposals p ON p.id = 'proposal-stale-parent'
+                  WHERE b.revision_id = 'revision-stale-parent'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?)
         })
-        .expect("read human-derived child");
-    let child: Value = serde_json::from_str(&envelope_json).expect("child Envelope V2");
-    assert_eq!(origin, "enveloped");
-    assert_eq!(child["schemaVersion"], 2);
-    assert_eq!(child["revisionBasis"]["kind"], "human-derived");
+        .expect("read stale parent token and current identity");
+    assert_eq!(observed_token, parent["observedSourceRevisionToken"]);
+    assert_eq!(current_revision, "revision-stale-parent");
     assert_eq!(
-        child["revisionBasis"]["derivation"]["kind"],
-        "scope-override"
-    );
-    assert_eq!(
-        child["revisionBasis"]["derivation"]["proposalPayloadChangedPaths"],
-        json!(["/title", "/disclosure/secret"])
-    );
-    assert_eq!(child["revisionBasis"]["revisionActor"]["kind"], "human");
-    assert!(source_basis_count > 0, "child owns its Source Basis");
-    assert!(
-        edge_count > 0,
-        "child owns its proposal-revision Consumer Edges"
+        child_edges, 0,
+        "C2A must not own child Consumer declaration"
     );
 }
 
 #[test]
-fn native_human_writer_rejects_client_envelope_and_unsupported_assertion_edit() {
+fn zero_edge_parent_remains_dormant_until_c2b_child_declaration() {
     let db = migrated_db();
-    let parent = seed_v2_parent_for_human_writer(
+    let parent = seed_v2_parent(
         &db,
         PROJECT_A,
-        "run-human-boundary",
-        "task-human-boundary",
-        "proposal-human-boundary",
-        "revision-human-boundary-parent",
-        "snapshot-v2",
+        "run-zero-edge",
+        "task-zero-edge",
+        "proposal-zero-edge",
+        "revision-zero-edge",
+        &scene_revision_token(&db, PROJECT_A),
     );
-
-    let forged_envelope_error =
-        narrative_extraction::narrative_extraction_revise_and_decide_as_human(
-            &db,
-            ReviseAndDecidePayload {
-                run_id: "run-human-boundary".to_owned(),
-                project_id: PROJECT_A.to_owned(),
-                proposal_id: "proposal-human-boundary".to_owned(),
-                payload_json: proposal_payload("Forged envelope", false),
-                reconciliation_envelope: Some(legacy_v1_envelope(
-                    "run-human-boundary",
-                    "task-human-boundary",
-                )),
-                inherit_reconciliation_envelope: None,
-                expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
-                decision: "held".to_owned(),
-                decision_json: None,
-                created_by: Some("untrusted-renderer".to_owned()),
-            },
-        )
-        .expect_err("human clients cannot submit a completed envelope");
-    assert!(!forged_envelope_error.to_string().is_empty());
-
-    let mut unsupported_payload = proposal_payload("Unsupported edit", false);
-    unsupported_payload["actuality"] = json!("projected");
-    let unsupported_error = narrative_extraction::narrative_extraction_revise_and_decide_as_human(
-        &db,
-        ReviseAndDecidePayload {
-            run_id: "run-human-boundary".to_owned(),
-            project_id: PROJECT_A.to_owned(),
-            proposal_id: "proposal-human-boundary".to_owned(),
-            payload_json: unsupported_payload,
-            reconciliation_envelope: None,
-            inherit_reconciliation_envelope: None,
-            expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
-            decision: "held".to_owned(),
-            decision_json: None,
-            created_by: Some("chronicle-dialog".to_owned()),
-        },
-    )
-    .expect_err("human writer must reject assertion-affecting paths");
-    assert!(!unsupported_error.to_string().is_empty());
+    let (edge_count, current_revision): (i64, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_dependency_edges
+                      WHERE consumer_kind = 'proposal-revision'
+                        AND consumer_key = 'revision-zero-edge'),
+                    current_revision_id
+                   FROM narrative_proposals WHERE id = 'proposal-zero-edge'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read zero-edge parent");
+    assert_eq!(edge_count, 0);
+    assert_eq!(current_revision, parent["revisionId"]);
 }
 
 #[test]
-fn v2_lineage_rejects_legacy_unbound_children_and_sql_downgrade_inserts() {
+fn v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries() {
+    // No-envelope append from a V2 current must be rejected with the typed
+    // monotonicity code, not accepted as a legacy child.
     let db = migrated_db();
-    let parent = seed_v2_parent_for_human_writer(
+    let parent = seed_v2_parent(
         &db,
         PROJECT_A,
-        "run-monotonic",
-        "task-monotonic",
-        "proposal-monotonic",
-        "revision-monotonic-parent",
-        "snapshot-v2",
+        "run-monotonic-none",
+        "task-monotonic-none",
+        "proposal-monotonic-none",
+        "revision-monotonic-none-parent",
+        &scene_revision_token(&db, PROJECT_A),
     );
-
     let append_error = narrative_extraction::narrative_extraction_append_revision(
         &db,
         AppendRevisionPayload {
-            run_id: "run-monotonic".to_owned(),
+            run_id: "run-monotonic-none".to_owned(),
             project_id: PROJECT_A.to_owned(),
-            proposal_id: "proposal-monotonic".to_owned(),
+            proposal_id: "proposal-monotonic-none".to_owned(),
             payload_json: proposal_payload("Legacy downgrade", false),
             reconciliation_envelope: None,
             inherit_reconciliation_envelope: None,
@@ -582,86 +1099,86 @@ fn v2_lineage_rejects_legacy_unbound_children_and_sql_downgrade_inserts() {
             created_by: Some("legacy-client".to_owned()),
         },
     )
-    .expect_err("typed writer must reject V2 to legacy-unbound downgrade");
+    .expect_err("V2 to legacy-unbound append must be rejected");
     assert!(append_error
         .to_string()
         .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
 
+    // A legacy current cannot be upgraded by pretending to inherit an
+    // envelope; the boundary error is distinct and stable.
+    let db = migrated_db();
+    create_run(&db, PROJECT_A, "run-legacy-inherit", "task-legacy-inherit");
+    let legacy = save_legacy_root(
+        &db,
+        PROJECT_A,
+        "run-legacy-inherit",
+        "task-legacy-inherit",
+        "proposal-legacy-inherit",
+    );
+    let legacy_error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-legacy-inherit".to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_id: "proposal-legacy-inherit".to_owned(),
+            payload_json: proposal_payload("Inherited legacy", false),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: Some(
+                narrative_extraction::ReconciliationEnvelopeInheritance {
+                    parent_revision_id: legacy["revisionId"].as_str().unwrap().to_owned(),
+                    expected_envelope_digest: digest(&json!({"legacy": true})),
+                },
+            ),
+            expected_current_revision_id: legacy["revisionId"].as_str().unwrap().to_owned(),
+            created_by: Some("legacy-client".to_owned()),
+        },
+    )
+    .expect_err("legacy current must not accept explicit envelope inheritance");
+    assert!(legacy_error
+        .to_string()
+        .contains("NEX_REVISION_ENVELOPE_INHERIT_UNAVAILABLE"));
+
+    // Direct SQL cannot bypass the same monotonicity rule after D1 adds its
+    // trigger; the frozen base currently accepts this insert (RED).
+    let db = migrated_db();
+    let parent = seed_v2_parent(
+        &db,
+        PROJECT_A,
+        "run-monotonic-sql",
+        "task-monotonic-sql",
+        "proposal-monotonic-sql",
+        "revision-monotonic-sql-parent",
+        &scene_revision_token(&db, PROJECT_A),
+    );
     let sql_error = db
         .with_conn(|conn| {
             conn.execute(
                 "INSERT INTO narrative_proposal_revisions
                     (id, proposal_id, revision_number, payload_json, origin_kind,
                      created_at, created_by)
-                 VALUES ('revision-monotonic-sql', 'proposal-monotonic', 2, '{}',
+                 VALUES ('revision-monotonic-sql-child', 'proposal-monotonic-sql', 2, '{}',
                          'legacy-unbound', datetime('now'), 'sql-test')",
                 [],
             )?;
             Ok(())
         })
-        .expect_err("structural trigger must reject a non-V2 child after V2 current");
+        .expect_err("SQL downgrade insert must be blocked by the D1 trigger");
     assert!(sql_error
         .to_string()
         .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
+    assert_eq!(parent["revisionId"], "revision-monotonic-sql-parent");
 }
 
 #[test]
-fn stale_human_parent_can_be_edited_but_v2_production_activation_stays_disabled() {
-    // This test intentionally checks the persistence contract only.  The
-    // Chronicle production entry points remain V1 until C2B; a C2A writer is
-    // not allowed to turn this fixture into a production cutover.
-    let db = migrated_db();
-    let parent = seed_v2_parent_for_human_writer(
-        &db,
-        PROJECT_A,
-        "run-stale-human",
-        "task-stale-human",
-        "proposal-stale-human",
-        "revision-stale-parent",
-        "live-newer-token",
-    );
-
-    let result = narrative_extraction::narrative_extraction_revise_and_decide_as_human(
-        &db,
-        ReviseAndDecidePayload {
-            run_id: "run-stale-human".to_owned(),
-            project_id: PROJECT_A.to_owned(),
-            proposal_id: "proposal-stale-human".to_owned(),
-            payload_json: proposal_payload("Edited while stale", false),
-            reconciliation_envelope: None,
-            inherit_reconciliation_envelope: None,
-            expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
-            decision: "held".to_owned(),
-            decision_json: None,
-            created_by: Some("chronicle-dialog".to_owned()),
-        },
-    )
-    .expect("human-derived stale edit must not use interpretation live-token refusal");
-    let child_revision = result["revisionId"].as_str().expect("child revision");
-    let (origin, envelope_json): (String, String) = db
-        .with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT origin_kind, reconciliation_envelope_json
-                   FROM narrative_proposal_revisions
-                  WHERE id = ?1",
-                [child_revision],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .expect("read stale human-derived child");
-    let child: Value = serde_json::from_str(&envelope_json).expect("child Envelope V2");
-    assert_eq!(origin, "enveloped");
-    assert_eq!(child["schemaVersion"], 2);
-    assert_eq!(child["revisionBasis"]["kind"], "human-derived");
-
-    // Production activation is asserted by the policy/quality scanner.  Keep
-    // the marker vocabulary here as a test-level contract without adding any
-    // reserved activation marker to a production source file.
+fn c2a_stays_dormant_and_chronicle_v2_activation_is_disabled() {
     let activation = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../policies/narrative/narrative-ir-contract.json"
     ));
     assert!(activation.contains("\"state\": \"disabled\""));
+    assert!(activation.contains("\"productionEntryPoints\": []"));
     assert!(activation.contains("\"v2Emission\": \"blocked-until-c2b\""));
     assert!(activation.contains("\"humanDerivedV2Ui\": \"blocked-until-c2b\""));
+    assert!(activation.contains("\"currentRevisionPromotion\": \"blocked-until-c2b\""));
+    assert!(activation.contains("\"productionFallback\": \"existing-v1-path\""));
 }

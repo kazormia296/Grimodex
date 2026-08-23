@@ -1,54 +1,56 @@
 # NIR-0 C2A persistence impact matrix
 
 This matrix is the C2A Phase 1/TDD boundary for the frozen base
-`802b34423f071ae97ebd28b12e249b6f1ebfcf24`. It records the current call paths,
-the behavior that C2A must add, and the files that remain owned by D1 or a
-later lane. It does not select a schema version, migration number, or
+`802b34423f071ae97ebd28b12e249b6f1ebfcf24`. It records the call paths and
+observable contracts without selecting a migration number, schema version, or
 production activation point.
 
-## Current call paths
+## Dependency and hot-file map
 
-| Concern | Current public entry point | Current implementation path | C2A behavioral seam | Owner / dependency |
-| --- | --- | --- | --- | --- |
-| AI task completion | `narrative_extraction_finish_task` | `narrative_extraction::finish_task` → `repository::finish_task` → `task_leases::persist_task_artifacts` | Persist task output, extraction artifacts, model bindings/terminal receipts, and the stage-provenance closure in one transaction; reject a malformed closure without leaving any sibling row | C2A writer; D1 schema first |
-| Proposal-set root revision | `narrative_extraction_save_proposal_set` | `repository::save_proposal_set` → `insert_proposal_seed` → `reconciliation_envelope::validate_reconciliation_envelope` → source-basis and `proposal-revision` Edge writers | Accept and persist a Native-validated Envelope V2, recomputing payload/envelope digests and materializing the child Consumer identity | C2A; D1 schema first |
-| Revision append | `narrative_extraction_append_revision` | `repository::append_revision` → `append_revision_on_conn` | Preserve V2 once current; never permit V2 → V1/no-envelope/legacy-unbound; keep current-revision CAS atomic | C2A typed writer plus D1 trigger |
-| Human derivation | `narrative_extraction_revise_and_decide_as_human` (legacy review path) and the future C2A writer boundary | `repository::revise_and_decide_with_actor` currently delegates to the client-shaped append path | Native computes old/new diff, strongest classification, child Scope/digests, material basis, and project-scoped identity; client cannot submit derivation metadata | C2A; C3 owns later review/UI wiring |
-| Renderer/native bridge | `electron/native/grimodex-node` narrative extraction N-API methods; renderer `nativeApi.ts` and `proposalRepository.ts` | N-API JSON → typed `grimodex_db::narrative_extraction` facade; current renderer still sends V1 or legacy inheritance | Add/describe the typed C2A seam without wiring Chronicle production V2 before C2B | C2A N-API boundary; activation remains disabled |
-| Chronicle producer | `runChronicleExtractionCoordinator` → `saveChronicleProposalSet`; review edits → `recordChronicleProposalRevision` | `proposalRepository.ts` builds V1 and review edits call `appendRevision` | Keep these production entry points on the V1 fallback until C2B; pure V2 fixtures and Native tests are allowed | C1/E1 already own pure adapter; C2B owns activation |
+| Concern | Current call path on the frozen base | C2A seam under test | Owner / blocker |
+| --- | --- | --- | --- |
+| Task completion | `narrative_extraction_finish_task` → `repository::finish_task` → `task_leases::persist_task_artifacts` | One transaction for task output, real extraction artifact, terminal receipts/model bindings, and a validated stage-provenance closure; any closure failure rolls back every sibling | D1 tables/columns and C2A closure validator |
+| Envelope V2 root | `narrative_extraction_save_proposal_set` → `insert_proposal_seed` → `reconciliation_envelope::validate_reconciliation_envelope` → source-basis/edge writers | Native recomputes and stores canonical C1 Envelope V2, exact proposal kind/schema/adapter identity, all domain digests, and project-qualified revision identity | D1 schema contract, then C2A validator/writer |
+| Revision append | `narrative_extraction_append_revision` → `append_revision_on_conn` | CAS on the current revision; V2 current can never receive V1/no-envelope/legacy-unbound child; stable error code for downgrade and inheritance boundaries | D1 trigger + C2A typed writer |
+| Human derivation | Existing review facade currently accepts the client-shaped append DTO | New typed Native request carries only `proposalId`, `expectedCurrentRevisionId`, `parentRevisionId`, `expectedParentEnvelopeDigest`, projection payload, Adapter identity, and `surfaceId`; Native fixes actor/project boundaries and derives all metadata | Compile-RED in `narrative_c2a_human_request_compile_red.rs`; implementation waits for D1 |
+| Resolver freshness | `source_revision::resolve_source_revision` resolves `scene-body` as `v<version>@<updated_at>` | Parent stores the observed token; a later live resolver advance is visible as stale, but C2A does not create/promote a child | C2B owns child declarations, freshness convergence, and current-Epoch initialization |
+| Project identity | Proposal revisions are joined through `proposal_set.project_id` | Same payload in two projects has distinct row identity; lookup must include project boundary and never hash payload content | D1 identity/foreign-key contract |
+| Production Chronicle path | `runChronicleExtractionCoordinator` → `saveChronicleProposalSet`; review edits → `recordChronicleProposalRevision` | Remains on V1 fallback; fixtures only. No V2 production marker or current revision promotion | C2B/D2 activation gate |
 
-## Required C2A behavior
+## Required C2A behavior and RED coverage
 
-| Requirement | Observable contract | RED coverage in `narrative_c2a_persistence.rs` |
-| --- | --- | --- |
-| Envelope V2 persistence | A valid `schemaVersion: 2` Envelope is stored as canonical JSON with Native-computed digest and `origin_kind = enveloped`; Proposal kind/schema and payload digest remain distinct | root save round-trip and canonical digest assertions |
-| Atomic closure bundle | Task output, extraction artifact, and stage-provenance closure share the completion transaction; one invalid closure rolls back all three, while a valid bundle is the later green-path companion | invalid-closure rollback (the frozen API has no closure validator yet) |
-| Native-verified Human Derivation | Native rejects caller-supplied derivation/digest/Scope metadata, computes `/title`, `/note`, and disclosure paths, accepts mixed `title + secret` as `scope-override`, and rejects unknown/assertion-affecting paths | mixed scope override, forged envelope, unsupported path |
-| Material basis / Freshness | Child receives its own source/evidence/dependency declarations and Consumer identity; stale parent may be edited without live-token refusal; zero-edge child is rejected | child declaration and stale-parent cases |
-| Project-scoped identity | Revision identity is the persisted revision row ID, stable while its Project exists, and never inferred from payload content; deletion semantics are explicit | same payload in two projects and project-qualified lookup (deletion journey remains a D1/C2A follow-up) |
-| CAS and monotonicity | Parent/current revision CAS is required; once current is V2, child must be typed V2; structural downgrade is rejected with `NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN` | stale CAS, V2→V1/no-envelope, and trigger-defense cases |
-| Disabled activation | C2A merge alone does not make Chronicle production emit V2, expose Human-derived V2 UI, or promote a V2 current Revision | production entry-point/activation guard remains disabled |
+| Requirement | Observable contract | Fixture / test boundary | Status on frozen base |
+| --- | --- | --- | --- |
+| Exact Envelope V2 persistence | C1 constants are exact: `narrative.chronicle.scene-event`, `chronicle.create-event@1`, `chronicle.scene-event@1`; semantic payload is observation-derived; Native recomputes assertion core/scope/assertion/material/context/component/request/projection/outer digests and writes sorted canonical JSON | `persists_native_canonical_envelope_v2_and_project_qualified_identity` | RED: base accepts only V1 envelope shape |
+| Atomic closure bundle | Valid companion includes C1 observation + synthesis terminal receipts, model bindings, closure, output, and raw observation artifact; corrupt only closure digest and all task/attempt/output/artifacts remain unchanged | `persists_a_valid_atomic_stage_bundle_with_receipts_bindings_output_and_artifact`; `rejects_only_corrupt_closure_and_rolls_back_all_siblings` | Valid path is a companion; corrupt path RED until validator exists |
+| Typed Native Human Derivation | Request shape has `parentRevisionId`, `expectedParentEnvelopeDigest`, typed Adapter `{id,version}`, `surfaceId`, trusted project argument, and Native Human actor; no client derivation fields | `narrative_c2a_human_request_compile_red.rs` | Compile-RED: public API intentionally absent on frozen base |
+| Human negative boundaries | Wrong current, parent digest, project, adapter, surface, zero-edge parent, and stale CAS return stable NEX error codes; stale source token is retained rather than silently rewritten | Compile-RED typed request cases plus resolver fixture | Blocked on D1 API/schema |
+| Dormant persistence only | C2A must not promote `current_revision_id`, create child declarations, initialize current-Epoch, or wire review UI/production V2 | `resolver_advance_preserves_observed_parent_token_without_c2b_promotion`, `zero_edge_parent_remains_dormant_until_c2b_child_declaration`, activation-policy assertion | Green boundary fixture; promotion journey explicitly C2B |
+| Project-scoped identity | Revision row ID is project-qualified through the proposal set; cross-project lookup returns no row and same payload does not alias | Envelope root test | RED behind V2 persistence |
+| Monotonicity and downgrade | V2→V1/no-envelope append, legacy explicit inheritance, and direct SQL downgrade all fail with explicit boundary codes; stale current CAS is separate from source freshness | `v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries` plus typed stale-CAS case | RED for V2/SQL trigger; legacy inheritance boundary is explicit |
+| Zero-edge boundary | A dormant V2 parent has no C2A-owned child Consumer edge; typed Human writer rejects a zero-edge parent once D1 publishes the API | zero-edge runtime fixture + compile-RED case | C2B dependency |
+| Disabled activation | Policy says `state=disabled`, no production entry points, V2 emission/Human UI/current promotion blocked until C2B, V1 fallback retained | `c2a_stays_dormant_and_chronicle_v2_activation_is_disabled` | Green policy guard |
 
-## Hot-file and handoff boundary
+## Ownership and handoff
 
-The RED tests and this matrix do not edit these D1-owned or C2A hot files:
+The RED artifacts deliberately do not edit these D1-owned or shared hot files:
 
 - `src-tauri/crates/grimodex-db/src/migrate.rs`
 - `src-tauri/crates/grimodex-core/src/workspace_schema.rs`
-- `src/db/schema.ts` and generated schema contract
+- `src/db/schema.ts` and the generated schema contract
 - `src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs`
 - `src-tauri/crates/grimodex-db/src/narrative_extraction/reconciliation_envelope.rs`
 
-D1 must first publish the schema/table/column contract and migration
-checkpoint. C2A production work then owns the typed writer and envelope
-validator integration in the two C2A hot files, plus the N-API boundary if the
-public payload shape changes. C2B/D2 remain prerequisites for material-basis
-Freshness convergence and activation. Until those dependencies land, the
-Chronicle V1 save/review entry points must remain unchanged.
+D1 must publish the schema/table/column/trigger contract first. C2A production
+work then owns the typed writer and V2 validator integration; any N-API shape
+change follows that contract. C2B/D2 own child Consumer declarations,
+freshness convergence, current-Epoch initialization, review/UI wiring, and
+production activation. Until those lanes land, Chronicle entry points remain
+on the existing V1 path.
 
 ## Validation boundary
 
-This phase adds behavioral tests before implementation. Cargo is intentionally
-not run from the parallel lane until the integration owner grants the shared
-Rust lane. The RED commit therefore records the test contract and the frozen
-base evidence separately from any schema or runtime implementation.
+This is a test-only remediation of the earlier RED artifact. Cargo is
+intentionally not run from the parallel lane. The remediation commit records
+the exact fixture and expected failures; it does not claim implementation,
+schema readiness, or activation readiness.
