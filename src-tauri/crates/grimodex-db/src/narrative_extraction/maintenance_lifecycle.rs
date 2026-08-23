@@ -1022,17 +1022,43 @@ mod tests {
     }
 
     fn create(conn: &Connection, run_kind: &str) -> anyhow::Result<MaintenanceRunHandle> {
+        create_canonical(conn, run_kind)
+    }
+
+    fn create_canonical(conn: &Connection, run_kind: &str) -> anyhow::Result<MaintenanceRunHandle> {
         let (epoch_id, work_key) = work(run_kind);
+        let spec = canonical_spec(run_kind)?;
+        let spec_digest = format!("sha256:{}", super::super::commit::digest_plan(&spec));
         create_maintenance_run_in_tx(
             conn,
             "project-1",
             run_kind,
             epoch_id,
             work_key,
-            &json!({ "sealed": run_kind }),
-            "sha256:maintenance-test",
+            &spec,
+            &spec_digest,
             SystemRunWorkKeyReuse::RunningOnly,
         )
+    }
+
+    fn move_children_to_future(
+        conn: &Connection,
+        handle: &MaintenanceRunHandle,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "UPDATE narrative_extraction_tasks
+                SET created_at = '2099-01-01T00:00:00.000Z',
+                    started_at = '2099-01-01T00:00:01.000Z'
+              WHERE id = ?1",
+            params![handle.task_id],
+        )?;
+        conn.execute(
+            "UPDATE narrative_extraction_attempts
+                SET started_at = '2099-01-01T00:00:02.000Z'
+              WHERE id = ?1",
+            params![handle.attempt_id],
+        )?;
+        Ok(())
     }
 
     #[test]
@@ -1181,6 +1207,139 @@ mod tests {
             Ok(())
         })
         .expect("marker reuse validation");
+    }
+
+    #[test]
+    fn strict_loaders_reject_noncanonical_spec_and_digest_but_accept_marker_only_spec() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create_canonical(conn, "backfill")?;
+            let noncanonical = r#"{"sealed":"backfill"}"#;
+            conn.execute(
+                "UPDATE narrative_extraction_runs
+                    SET spec_json = ?1
+                  WHERE id = ?2",
+                params![noncanonical, handle.run_id],
+            )?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks
+                    SET input_json = ?1
+                  WHERE id = ?2",
+                params![noncanonical, handle.task_id],
+            )?;
+            let error = load_maintenance_run_in_tx(conn, &handle.run_id)
+                .expect_err("arbitrary phase spec must not load");
+            assert!(error
+                .to_string()
+                .contains("canonical maintenance phase contract"));
+            Ok(())
+        })
+        .expect("noncanonical spec rejection");
+
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create_canonical(conn, "backfill")?;
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET spec_digest = 'arbitrary-digest' WHERE id = ?1",
+                params![handle.run_id],
+            )?;
+            let error = load_maintenance_run_in_tx(conn, &handle.run_id)
+                .expect_err("arbitrary phase digest must not load");
+            assert!(error.to_string().contains("spec digest"));
+            Ok(())
+        })
+        .expect("noncanonical digest rejection");
+
+        let db = open_db();
+        let marker = NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1".to_string(),
+            authority_id: "authority-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-1".to_string(),
+            correlation: "correlation-1".to_string(),
+        };
+        db.with_conn(|conn| {
+            let handle =
+                super::super::maintenance_runtime::with_system_work_marker(Some(marker), || {
+                    create_canonical(conn, "backfill")
+                })?;
+            let loaded = load_maintenance_run_in_tx(conn, &handle.run_id)
+                .expect("canonical base plus native marker must load");
+            assert!(loaded.spec_json.contains("systemWork"));
+            Ok(())
+        })
+        .expect("marker-only canonical spec");
+    }
+
+    #[test]
+    fn future_child_lifecycle_instants_advance_success_and_failure_terminalizers() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create_canonical(conn, "backfill")?;
+            move_children_to_future(conn, &handle)?;
+            let terminal_at = complete_maintenance_run_in_tx(conn, &handle)?;
+            assert!(terminal_at.as_str() > "2099-01-01T00:00:02.000Z");
+            Ok(())
+        })
+        .expect("success terminalizer must follow future child evidence");
+
+        let db = open_db();
+        db.with_conn(|conn| {
+            let handle = create_canonical(conn, "dependency-verify")?;
+            move_children_to_future(conn, &handle)?;
+            let terminal_at = fail_maintenance_run_in_tx(
+                conn,
+                &handle,
+                MaintenanceFailureKind::Transient,
+                "future-child failure",
+            )?;
+            assert!(terminal_at.as_str() > "2099-01-01T00:00:02.000Z");
+            Ok(())
+        })
+        .expect("failure terminalizer must follow future child evidence");
+    }
+
+    #[test]
+    fn malformed_child_timestamp_fails_closed_and_rolls_back_a_batch() {
+        let db = open_db();
+        db.with_conn(|conn| {
+            let first = create_canonical(conn, "backfill")?;
+            let second = create_canonical(conn, "dependency-verify")?;
+            conn.execute(
+                "UPDATE narrative_extraction_tasks SET started_at = 'not-an-instant' WHERE id = ?1",
+                params![first.task_id],
+            )?;
+            let error = with_immediate_transaction(conn, |conn| {
+                let first_handle = load_maintenance_run_in_tx(conn, &first.run_id)?;
+                fail_maintenance_run_in_tx(
+                    conn,
+                    &first_handle,
+                    MaintenanceFailureKind::Interrupted,
+                    "malformed child timestamp",
+                )?;
+                let second_handle = load_maintenance_run_in_tx(conn, &second.run_id)?;
+                fail_maintenance_run_in_tx(
+                    conn,
+                    &second_handle,
+                    MaintenanceFailureKind::Interrupted,
+                    "second lifecycle",
+                )?;
+                Ok(())
+            })
+            .expect_err("malformed child timestamp must abort the batch");
+            assert!(error.to_string().contains("timestamp"));
+            let statuses: Vec<String> = conn
+                .prepare(
+                    "SELECT status FROM narrative_extraction_runs
+                      WHERE id IN (?1, ?2) ORDER BY id",
+                )?
+                .query_map(params![first.run_id, second.run_id], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(statuses, vec!["running", "running"]);
+            Ok(())
+        })
+        .expect("malformed timestamp rollback");
     }
 
     #[test]

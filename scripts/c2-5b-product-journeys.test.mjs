@@ -24,6 +24,7 @@ import {
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
+  assertForegroundLifecycle,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
   assertTransientAttemptEvidence,
@@ -82,8 +83,10 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     CREATE TABLE narrative_extraction_tasks (
       id TEXT PRIMARY KEY,
       run_id TEXT NOT NULL,
+      task_kind TEXT,
       status TEXT,
       input_json TEXT,
+      attempt_count INTEGER,
       created_at TEXT,
       started_at TEXT,
       completed_at TEXT
@@ -210,6 +213,45 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     "attempts from another task/Run must not contaminate any Run evidence",
   );
   database.close();
+});
+
+test("foreground lifecycle proof rejects wrong child identity and non-monotonic timestamps", () => {
+  const valid = {
+    id: "foreground-run",
+    runKind: "backfill",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    taskStatus: "completed",
+    lastAttemptStatus: "completed",
+    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000Z",
+    taskStartedAt: "2026-08-23T00:00:00.000Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
+    completedAt: "2026-08-23T00:00:01.000Z",
+    taskCompletedAt: "2026-08-23T00:00:01.000Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:01.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(valid, "completed", "valid foreground lifecycle"),
+  );
+  for (const [field, value] of [
+    ["taskKind", "wrong-kind"],
+    ["lastAttemptNumber", 2],
+    ["taskCount", 2],
+    ["taskStartedAt", "2099-01-01T00:00:00.000Z"],
+  ]) {
+    const corrupted = { ...valid, [field]: value };
+    assert.throws(
+      () => assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
+      new RegExp(field),
+    );
+  }
 });
 
 test("c2-5b runner set is explicit and preserves stable order", () => {
