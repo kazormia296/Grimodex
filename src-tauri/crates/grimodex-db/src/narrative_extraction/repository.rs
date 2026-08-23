@@ -360,7 +360,8 @@ pub(crate) fn create_system_run_in_tx(
     // maintenance owner through a process-local guard. It is merged before
     // insertion so the persisted JSON is immutable for the lifetime of the
     // Run; arbitrary callers cannot smuggle a conflicting marker.
-    let persisted_spec_json = super::maintenance_runtime::spec_with_active_system_work_marker(spec_json)?;
+    let persisted_spec_json =
+        super::maintenance_runtime::spec_with_active_system_work_marker(spec_json)?;
     let spec_json_text = serde_json::to_string(&persisted_spec_json)?;
     let scope_json_text = serde_json::to_string(&default_object_json())?;
     let coverage_json_text = serde_json::to_string(&default_object_json())?;

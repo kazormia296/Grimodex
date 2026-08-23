@@ -338,12 +338,18 @@ pub struct NarrativeSystemWorkMarker {
 
 impl NarrativeSystemWorkMarker {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.trigger.trim().is_empty(), "systemWork.trigger is required");
+        anyhow::ensure!(
+            !self.trigger.trim().is_empty(),
+            "systemWork.trigger is required"
+        );
         anyhow::ensure!(
             !self.canonical_work_key.trim().is_empty(),
             "systemWork.canonicalWorkKey is required"
         );
-        anyhow::ensure!(!self.authority_id.trim().is_empty(), "systemWork.authorityId is required");
+        anyhow::ensure!(
+            !self.authority_id.trim().is_empty(),
+            "systemWork.authorityId is required"
+        );
         anyhow::ensure!(
             self.generation > 0 && self.generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
             "systemWork.generation must be a safe non-zero integer"
@@ -352,7 +358,10 @@ impl NarrativeSystemWorkMarker {
             !self.product_journey_barrier_id.trim().is_empty(),
             "systemWork.productJourneyBarrierId is required"
         );
-        anyhow::ensure!(!self.correlation.trim().is_empty(), "systemWork.correlation is required");
+        anyhow::ensure!(
+            !self.correlation.trim().is_empty(),
+            "systemWork.correlation is required"
+        );
         Ok(())
     }
 }
@@ -764,7 +773,10 @@ pub struct MaintenanceWorkspaceBinding {
 
 impl MaintenanceWorkspaceBinding {
     pub fn validate(&self) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.authority_id.trim().is_empty(), "authorityId is required");
+        anyhow::ensure!(
+            !self.authority_id.trim().is_empty(),
+            "authorityId is required"
+        );
         anyhow::ensure!(
             self.generation > 0 && self.generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
             "generation must be a safe non-zero integer"
@@ -1643,9 +1655,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 } else {
                     None
                 };
-                with_system_work_marker(marker.clone(), || {
-                    dispatch_enabled_work(db, &item)
-                })?;
+                with_system_work_marker(marker.clone(), || dispatch_enabled_work(db, &item))?;
                 if marker.is_some() {
                     foreground_marker_available = false;
                 }
@@ -3051,10 +3061,7 @@ mod tests {
         let decision = db
             .with_conn(|conn| evaluate_completed_run_skip(conn, &expected))
             .expect("evaluate released Verify evidence");
-        assert!(matches!(
-            decision,
-            CompletedRunSkipDecision::Skip { .. }
-        ));
+        assert!(matches!(decision, CompletedRunSkipDecision::Skip { .. }));
 
         complete_foreground_system_work_run(&db, &barrier)
             .expect("duplicate exact release is idempotent");
