@@ -9,9 +9,10 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, decide_execution,
     decide_run_recovery, decide_run_recovery_for_epoch, discover_durable_maintenance_work,
     plan_maintenance_trigger, terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
-    terminalize_stale_interrupted_runs, AutomaticRunKind, FailureClass,
-    MaintenanceExecutionDecision, MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction,
-    RecoveryMode, StaleActiveRun, WorkKey, MAX_AUTOMATIC_RETRIES,
+    terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
+    AutomaticRunKind, FailureClass, MaintenanceExecutionDecision, MaintenanceExecutionMode,
+    MaintenanceTrigger, RecoveryAction, RecoveryMode, StaleActiveRun, WorkKey,
+    MAX_AUTOMATIC_RETRIES,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -425,11 +426,15 @@ fn startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
             "dependency-rebuild-derived",
             AutomaticRunKind::RebuildDerived,
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let run_id = format!("legacy-zero-child-current-{index}");
         let work = WorkKey::new(PROJECT_ID, automatic_kind, work_key).expect("valid work key");
         db.with_conn(|conn| {
-            insert_canonical_maintenance_run(conn, &run_id, "running", Some(EPOCH_ID), &work)
+            insert_canonical_maintenance_run(conn, &run_id, "running", Some(EPOCH_ID), &work)?;
+            Ok(())
         })
         .expect("seed zero-child running automatic Run");
 
@@ -458,12 +463,16 @@ fn stale_epoch_startup_recovery_synthesizes_zero_child_runs_for_all_automatic_ki
             AutomaticRunKind::RebuildDerived,
             "dependency-rebuild-derived",
         ),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let run_id = format!("legacy-zero-child-stale-{index}");
         let work = WorkKey::new_for_epoch(PROJECT_ID, automatic_kind, work_key, EPOCH_ID)
             .expect("valid epoch-bound work key");
         db.with_conn(|conn| {
-            insert_canonical_maintenance_run(conn, &run_id, "running", Some(OLD_EPOCH_ID), &work)
+            insert_canonical_maintenance_run(conn, &run_id, "running", Some(OLD_EPOCH_ID), &work)?;
+            Ok(())
         })
         .expect("seed stale zero-child running automatic Run");
 
@@ -488,7 +497,7 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Verify,
-        "dependency-verify:compatibility",
+        "dependency-verify:epoch-c2-5a",
     )
     .expect("valid work key");
     db.with_conn(|conn| {
@@ -498,7 +507,8 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
             "running",
             Some(EPOCH_ID),
             &work,
-        )
+        )?;
+        Ok(())
     })
     .expect("seed zero-child Run");
 
@@ -524,7 +534,7 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
     let rollback_work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:rollback",
+        "legacy-dependency-backfill:v2",
     )
     .expect("valid rollback work key");
     db.with_conn(|conn| {
@@ -534,7 +544,8 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
             "running",
             Some(EPOCH_ID),
             &rollback_work,
-        )
+        )?;
+        Ok(())
     })
     .expect("seed rollback Run");
     let rollback = terminalize_interrupted_runs_for_epoch(
