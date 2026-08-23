@@ -1542,14 +1542,13 @@ pub fn run_system_work_cycle_with_modes_and_config(
     let mut coalesced_active = false;
     let mut has_more = false;
     let mut foreground_marker_available = true;
-    // A successful adapter dispatch owns this canonical WorkKey until the
-    // cycle returns. Durable discovery can legitimately return that same key
-    // while a foreground product-journey Run is held in `running`; treating
-    // it as StartupRecovery before the N-API cycle ACK would terminalize the
-    // Run we just marked and create an unmarked replacement. This state is
-    // deliberately cycle-local so rows that predate this cycle still use the
-    // caller-selected StartupRecovery/SameProcessLive mode on a later wake.
-    let mut dispatched_work_keys = BTreeSet::new();
+    // Only the exact foreground Run created by this cycle may suppress its
+    // same-key rediscovery. A canonical-key-only set would also suppress the
+    // ordinary Verify confirmation after a Verify -> Rebuild phase chain.
+    // The durable lookup below keeps this ownership bounded to the marked Run
+    // while it is still running; pre-existing active rows remain subject to
+    // the caller-selected StartupRecovery/SameProcessLive mode.
+    let mut foreground_owned_run: Option<ForegroundSystemWorkRun> = None;
     let mut project_ids = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());
@@ -1563,10 +1562,26 @@ pub fn run_system_work_cycle_with_modes_and_config(
         }
         dequeue_count += 1;
 
-        if dispatched_work_keys.contains(&item.canonical_key()) {
-            // The adapter already accepted this WorkKey in this cycle. Do
-            // not rediscover/recover its held active Run until a later cycle
-            // after the foreground owner has released it.
+        let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
+            if owned.project_id != item.project_id
+                || owned.marker.canonical_work_key != item.canonical_key()
+            {
+                false
+            } else if let (Some(config), Some(binding)) =
+                (ci_config.as_ref(), request.workspace_binding.as_ref())
+            {
+                find_running_foreground_system_work_run(db, config, binding)?
+                    .as_ref()
+                    .is_some_and(|current| current == owned)
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if foreground_run_is_held {
+            // The exact marked Run is still durable and running. Do not feed
+            // it back through StartupRecovery before the N-API cycle ACK.
             continue;
         }
 
@@ -1671,7 +1686,23 @@ pub fn run_system_work_cycle_with_modes_and_config(
                     None
                 };
                 with_system_work_marker(marker.clone(), || dispatch_enabled_work(db, &item))?;
-                dispatched_work_keys.insert(item.canonical_key());
+                if let (Some(expected_marker), Some(config), Some(binding)) = (
+                    marker.as_ref(),
+                    ci_config.as_ref(),
+                    request.workspace_binding.as_ref(),
+                ) {
+                    if let Some(created) =
+                        find_running_foreground_system_work_run(db, config, binding)?
+                    {
+                        anyhow::ensure!(
+                            created.project_id == item.project_id
+                                && created.marker == *expected_marker
+                                && created.marker.canonical_work_key == item.canonical_key(),
+                            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_DISPATCH_MISMATCH: marked Run does not match the dispatched WorkKey"
+                        );
+                        foreground_owned_run = Some(created);
+                    }
+                }
                 if marker.is_some() {
                     foreground_marker_available = false;
                 }
