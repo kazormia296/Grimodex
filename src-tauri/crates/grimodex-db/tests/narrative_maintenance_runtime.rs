@@ -1034,7 +1034,10 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         "orphanedAttentionRehomeAmbiguities": [],
         "rebuildRequired": true,
     });
-    let report_digest = format!("sha256:{}", grimodex_db::narrative_extraction::digest_plan(&report_value));
+    let report_digest = format!(
+        "sha256:{}",
+        grimodex_db::narrative_extraction::digest_plan(&report_value)
+    );
     let mut tampered_report_value = report_value.clone();
     tampered_report_value["totalEdges"] = json!(999);
     let valid_outcome = json!({
