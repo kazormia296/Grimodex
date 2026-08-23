@@ -513,26 +513,28 @@ pub fn find_running_foreground_system_work_run(
     config: &NarrativeMaintenanceCiConfig,
     binding: &MaintenanceWorkspaceBinding,
 ) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
-    find_running_foreground_system_work_scoped(db, config, binding, true, true)
+    find_running_foreground_system_work_scoped(db, config, binding, true, true, true)
 }
 
 /// Find the durable marker that reserves the foreground slot for the current
-/// authority, including an older recovery generation left by a prior process.
-/// This is intentionally not an ownership lookup: the caller must still use
-/// [`find_running_foreground_system_work_run`] and a process-local Run handle
-/// before suppressing recovery or releasing a Run.
+/// authority, including an older recovery generation or terminalized phase
+/// row left by a prior cycle/process. This is intentionally not an ownership
+/// lookup: the caller must still use [`find_running_foreground_system_work_run`]
+/// and a process-local Run handle before suppressing recovery or releasing a
+/// Run.
 pub fn find_running_foreground_system_work_slot(
     db: &Database,
     config: &NarrativeMaintenanceCiConfig,
     binding: &MaintenanceWorkspaceBinding,
 ) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
-    find_running_foreground_system_work_scoped(db, config, binding, false, false)
+    find_running_foreground_system_work_scoped(db, config, binding, false, false, false)
 }
 
 fn find_running_foreground_system_work_scoped(
     db: &Database,
     config: &NarrativeMaintenanceCiConfig,
     binding: &MaintenanceWorkspaceBinding,
+    require_running_status: bool,
     require_current_generation: bool,
     require_current_epoch: bool,
 ) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
@@ -548,10 +550,9 @@ fn find_running_foreground_system_work_scoped(
         .ok_or_else(|| anyhow::anyhow!("foreground correlation is required"))?;
     db.with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json
+            "SELECT id, project_id, run_kind, work_key, semantic_epoch_id, spec_json, status
                FROM narrative_extraction_runs
-              WHERE status = 'running'
-                AND run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
+              WHERE run_kind IN ('backfill', 'dependency-verify', 'semantic-index-rebuild')
               ORDER BY created_at ASC, id ASC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -562,11 +563,15 @@ fn find_running_foreground_system_work_scoped(
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, String>(6)?,
             ))
         })?;
         let mut matches = Vec::new();
         for row in rows {
-            let (run_id, project_id, run_kind, work_key, epoch_id, spec_json) = row?;
+            let (run_id, project_id, run_kind, work_key, epoch_id, spec_json, status) = row?;
+            if require_running_status && status != "running" {
+                continue;
+            }
             let Some(spec_json) = spec_json else {
                 continue;
             };
@@ -614,7 +619,7 @@ fn find_running_foreground_system_work_scoped(
         }
         anyhow::ensure!(
             matches.len() <= 1,
-            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE: multiple running Runs matched the exact product-journey barrier"
+            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE: multiple durable Runs matched the exact product-journey barrier"
         );
         Ok(matches.pop())
     })
