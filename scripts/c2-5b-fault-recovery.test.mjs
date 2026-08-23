@@ -144,6 +144,11 @@ test("fault injection is gated by the current native planner identity", async ()
     plannerAt >= 0 && claimAt > plannerAt,
     "stale/epoch-bound Backfill requests must be planner-rejected before any claim or DB write",
   );
+  assert.match(
+    nativeSource,
+    /normalized_work\.as_slice\(\)[\s\S]*run_kind\.as_str\(\)\s*==\s*"backfill"/,
+    "fault injection must only consume a planner-valid single Backfill item, never a mixed batch",
+  );
 });
 
 test("fault journey production assertions cover durable triplets and no-recovery boundary", async () => {
