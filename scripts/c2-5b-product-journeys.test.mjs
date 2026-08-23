@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readdir, readFile } from "node:fs/promises";
 import test from "node:test";
 import initSqlJs from "sql.js/dist/sql-asm.js";
+import yaml from "js-yaml";
 
 import {
   NARRATIVE_MAINTENANCE_PRODUCT_JOURNEYS,
@@ -496,6 +497,93 @@ test("C2-5B runtime/semantic impact is direct for every launch owner path", asyn
       qualitySelection.suiteIds.includes("narrative-semantic-contract"),
       changedPath,
     );
+  }
+});
+
+test("current C2-5B scheduler owner tests route directly to product and quality gates", async () => {
+  const [entries, impactSource, qualityManifestSource] = await Promise.all([
+    readdir(new URL("../electron/main/", import.meta.url), {
+      withFileTypes: true,
+    }),
+    readFile(new URL("../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(
+      new URL("../evals/quality-manifest.yaml", import.meta.url),
+      "utf8",
+    ),
+  ]);
+  const currentOwnerTests = [
+    ...entries
+      .filter(
+        (entry) =>
+          entry.isFile() &&
+          entry.name.startsWith("narrativeMaintenance") &&
+          entry.name.endsWith(".test.ts"),
+      )
+      .map((entry) => `electron/main/${entry.name}`),
+    "electron/main/foregroundBarrierRelease.test.ts",
+  ].sort();
+  const qualityManifest = yaml.load(qualityManifestSource);
+  const requirements = new Map(
+    qualityManifest.requirements.map((requirement) => [
+      requirement.id,
+      requirement,
+    ]),
+  );
+  const impactMap = parseImpactMap(impactSource);
+  const expectedProductJourneyIds =
+    NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
+      (journey) => journey.id,
+    );
+  const expectedQualityRuleIds = [
+    "narrative-runtime-authority",
+    "narrative-semantic-contract",
+  ];
+  const expectedQualitySuiteIds = [
+    "narrative-runtime",
+    "narrative-semantic-contract",
+  ];
+
+  assert.ok(currentOwnerTests.length > 0);
+  for (const changedPath of currentOwnerTests) {
+    assert.ok(
+      NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS.includes(changedPath),
+      `${changedPath} must be an explicit C2-5B owner path`,
+    );
+    for (const requirementId of [
+      "GDX-POLICY-001",
+      "GDX-NARR-SEMANTIC-CONTRACT-001",
+    ]) {
+      assert.ok(
+        requirements.get(requirementId)?.implementedBy.includes(changedPath),
+        `${changedPath} must be traceable in ${requirementId}.implementedBy`,
+      );
+    }
+
+    const productSelection = selectProductJourneys({
+      catalog: PRODUCT_JOURNEY_CATALOG,
+      domainRules: PRODUCT_DOMAIN_RULES,
+      changedPaths: [changedPath],
+      mode: "affected",
+    });
+    assert.deepEqual(productSelection.journeyIds, expectedProductJourneyIds);
+    assert.equal(productSelection.fallback, false, changedPath);
+    assert.equal(productSelection.allSelected, false, changedPath);
+    assert.ok(
+      productSelection.matchedRuleIds.includes(
+        "narrative-maintenance-product-journeys",
+      ),
+      changedPath,
+    );
+
+    const qualitySelection = selectImpact(impactMap, [changedPath]);
+    assert.equal(qualitySelection.fallback, false, changedPath);
+    assert.deepEqual(qualitySelection.unmatchedPaths, [], changedPath);
+    for (const ruleId of expectedQualityRuleIds) {
+      assert.ok(qualitySelection.matchedRuleIds.includes(ruleId), changedPath);
+    }
+    for (const suiteId of expectedQualitySuiteIds) {
+      assert.ok(qualitySelection.suiteIds.includes(suiteId), changedPath);
+    }
   }
 });
 
