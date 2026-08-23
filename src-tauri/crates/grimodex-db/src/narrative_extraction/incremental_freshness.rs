@@ -33,7 +33,8 @@ use super::execution_state::{
 };
 use super::models::ClaimTaskPayload;
 use super::publish_runtime::{
-    publish_freshness_evaluation_edges_only_in_tx, verify_publish_reservation_in_tx,
+    publish_freshness_evaluation_edges_only_in_tx, seed_consumer_freshness_unknown_in_tx,
+    verify_publish_reservation_in_tx,
 };
 use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::restore_rebuild::{
@@ -158,6 +159,45 @@ pub fn run_incremental_freshness_cycle(
     })?;
 
     db.with_background_connection_priority(|| run_serialized_cycle(db))
+}
+
+/// Initialize one declared Application that produced no Source mutation.
+///
+/// `temporal.node.ensure` records an Application and Generic Edge even when
+/// the semantic node already exists, while the Change Feed intentionally
+/// omits that `ensure-existing` journal entity.  Keep the no-false-Feed
+/// contract by using the typed Generic owner to seed every declared Edge as
+/// `Unknown`/`Manual`; the next real Source mutation will use the normal
+/// Change Feed evaluator and publish path.  The current Semantic Epoch is
+/// read from the same authority connection, so no caller-shaped epoch can be
+/// attached to the seed.
+pub(crate) fn initialize_application_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    application_id: &str,
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    let epoch = get_current_epoch(conn, project_id)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_C2ZC_APPLICATION_INIT_EPOCH_MISSING: project '{project_id}' has no current Semantic Epoch"
+        )
+    })?;
+    let edges =
+        find_edges_by_consumer(conn, project_id, APPLICATION_CONSUMER_KIND, application_id)?;
+    anyhow::ensure!(
+        !edges.is_empty(),
+        "NEX_C2ZC_APPLICATION_INIT_EDGE_MISSING: Application '{application_id}' has no Generic Edge to initialize"
+    );
+    let edge_ids = edges.into_iter().map(|edge| edge.id).collect::<Vec<_>>();
+    seed_consumer_freshness_unknown_in_tx(
+        conn,
+        project_id,
+        APPLICATION_CONSUMER_KIND,
+        application_id,
+        &edge_ids,
+        &epoch.id,
+        updated_at,
+    )
 }
 
 fn run_serialized_cycle(db: &Database) -> anyhow::Result<IncrementalFreshnessCycleOutcome> {

@@ -47,6 +47,7 @@ use super::foreshadow_operations::{
     parse_patch as parse_foreshadow_patch, OP_KIND_FORESHADOW_AGGREGATE_CREATE,
     OP_KIND_FORESHADOW_AGGREGATE_PATCH,
 };
+use super::incremental_freshness::initialize_application_freshness_in_tx;
 use super::models::{
     ApplyCommitPayload, CommitApplicationRef, CommitOperation, EntityBindingSeed,
     GetCommitStatusPayload, PrepareCommitPayload,
@@ -1475,7 +1476,11 @@ pub fn narrative_extraction_apply_commit(
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = load_read_set_rows(&envelope)?;
                 let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
-                if is_generic_freshness_canonical(conn)? {
+                let generic_freshness_canonical = is_generic_freshness_canonical(conn)?;
+                let ensure_existing = operation_op_kinds
+                    .get(index)
+                    .is_some_and(|kind| journal_op_kind_wrote_nothing(kind));
+                if generic_freshness_canonical {
                     write_application_dependencies_in_tx(
                         conn,
                         &payload.project_id,
@@ -1484,6 +1489,14 @@ pub fn narrative_extraction_apply_commit(
                         &source_rows,
                         &now,
                     )?;
+                    if ensure_existing {
+                        initialize_application_freshness_in_tx(
+                            conn,
+                            &payload.project_id,
+                            &application_id,
+                            &now,
+                        )?;
+                    }
                 } else {
                     conn.execute(
                         "INSERT INTO narrative_projection_freshness

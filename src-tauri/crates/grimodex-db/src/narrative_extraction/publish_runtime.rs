@@ -52,7 +52,9 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
 use super::cursor_reservation::acknowledge_cursor_reservation_in_tx;
 use super::dependency_edges::consumer_dependency_set_digest;
-use super::evaluator::{BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode};
+use super::evaluator::{
+    unknown_edge_observation, BuildAction, EdgeObservation, EvidenceFreshness, FindingReasonCode,
+};
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::finding_identity::{
     material_basis_digest, observation_digest, stable_finding_identity, MaterialBasisInput,
@@ -243,6 +245,63 @@ pub(crate) fn write_consumer_freshness_in_tx(
             dependency_set_digest,
             updated_at,
         ],
+    )?;
+    Ok(())
+}
+
+/// Seed a declared Consumer whose operation wrote no Source mutation.
+///
+/// An idempotent `temporal.node.ensure` still owns a real Application and
+/// Generic Edge, but `change_feed::events_from_journal_entities` deliberately
+/// omits its `ensure-existing` journal entity.  This owner-level seed keeps
+/// the Consumer visible to the canonical read without inventing a Feed event:
+/// every declared Edge receives the ratified `Unknown`/`Manual` state, and
+/// the Generic Consumer row is written with the current dependency digest.
+/// A later real Source mutation re-enters the normal incremental evaluator.
+///
+/// Callers own the surrounding transaction.  This is the only writer path
+/// for this conservative initialization; callers must not issue raw SQL for
+/// either Generic Freshness table.
+pub(crate) fn seed_consumer_freshness_unknown_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edge_ids: &[String],
+    semantic_epoch_id: &str,
+    updated_at: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
+    anyhow::ensure!(
+        !edge_ids.is_empty(),
+        "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one declared Edge is required to seed Generic Freshness"
+    );
+    let observation = unknown_edge_observation();
+    for edge_id in edge_ids {
+        write_edge_state_in_tx(
+            conn,
+            project_id,
+            edge_id,
+            &observation,
+            semantic_epoch_id,
+            updated_at,
+        )?;
+    }
+    let dependency_set_digest =
+        consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
+    write_consumer_freshness_in_tx(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        &observation,
+        semantic_epoch_id,
+        None,
+        Some(&dependency_set_digest),
+        updated_at,
     )?;
     Ok(())
 }
