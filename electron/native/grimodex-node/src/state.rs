@@ -1333,6 +1333,79 @@ mod tests {
         assert!(pending.is_none(), "consumed state remains one-shot");
     }
 
+    #[test]
+    fn ci_fault_claim_is_globally_one_shot_while_any_distinct_key_is_pending() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-pending".to_string(),
+            generation: 11,
+        };
+        let first = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-one",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("first pending claim validation")
+            .expect("first pending claim");
+        let second = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::TransientIo,
+                &binding,
+                "project-two",
+                "backfill",
+                None,
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("distinct pending claim validation");
+        assert!(
+            second.is_none(),
+            "a second project must not reserve a globally one-shot pending fault"
+        );
+        seam.release_fault_claim(&first);
+    }
+
+    #[test]
+    fn failed_fault_claim_commit_releases_pending_reservation_for_retry() {
+        let seam = NarrativeMaintenanceCiSeamState::default();
+        let binding = MaintenanceWorkspaceBinding {
+            authority_id: "authority-commit-error".to_string(),
+            generation: 12,
+        };
+        let claim = seam
+            .claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("claim validation")
+            .expect("pending claim");
+        assert!(
+            seam.commit_fault_for_run(&claim, "run-one", Some("epoch-two"))
+                .is_err(),
+            "a mismatched commit must fail closed"
+        );
+        assert!(
+            seam.claim_fault_for_binding(
+                NarrativeMaintenanceCiFault::ContractViolation,
+                &binding,
+                "project-one",
+                "backfill",
+                Some("epoch-one"),
+                "legacy-dependency-backfill:v2",
+            )
+            .expect("retry claim validation")
+            .is_some(),
+            "a failed post-claim commit must not strand the one-shot reservation"
+        );
+    }
+
     /// テスト用の雑な一意サフィックス (uuid 依存を増やさない)。
     fn uuid_like() -> String {
         use std::time::{SystemTime, UNIX_EPOCH};

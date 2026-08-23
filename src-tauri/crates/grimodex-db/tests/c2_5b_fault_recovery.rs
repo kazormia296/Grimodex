@@ -6,9 +6,10 @@
 //! test-only database fabrication path.
 
 use grimodex_db::narrative_extraction::{
-    build_maintenance_inbox, ensure_test_schema, inject_legacy_backfill_fault_for_project,
-    run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind,
-    InboxEntryKind, LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
+    build_maintenance_inbox, discover_durable_maintenance_work, ensure_test_schema,
+    inject_legacy_backfill_fault_for_project, run_system_work_cycle,
+    terminalize_interrupted_runs_for_epoch, AutomaticRunKind, InboxEntryKind,
+    LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
     NarrativeMaintenanceCiFault, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
@@ -116,6 +117,69 @@ fn backfill_run_statuses(db: &Database) -> Vec<String> {
         Ok(statuses)
     })
     .expect("read backfill statuses")
+}
+
+#[test]
+fn project_fault_helper_must_not_follow_a_rotated_epoch_from_a_preflighted_work_item() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('fault-epoch-one', ?1, 0, 'initial',
+                     '2026-08-23T00:00:00.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed first Semantic Epoch");
+
+    let planned = discover_durable_maintenance_work(&db, PROJECT_ID, "durable-wake")
+        .expect("discover preflighted Backfill")
+        .expect("current Epoch without a completed Backfill needs Backfill");
+    assert_eq!(planned.run_kind, AutomaticRunKind::Backfill);
+    assert_eq!(
+        planned.semantic_epoch_id.as_deref(),
+        Some("fault-epoch-one")
+    );
+
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('fault-epoch-two', ?1, 1, 'restore',
+                     '2026-08-23T00:00:01.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("rotate Semantic Epoch after discovery");
+
+    let injected = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("legacy helper returns its durable fault result");
+    assert!(
+        matches!(&injected, LegacyBackfillFaultOutcome::NotInjected),
+        "a project-only helper must not inject the preflighted E1 fault into E2: {injected:?}"
+    );
+    let lifecycle_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill'",
+                [PROJECT_ID],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read fault lifecycle count");
+    assert_eq!(
+        lifecycle_count, 0,
+        "epoch TOCTOU must not create a Backfill lifecycle under a replacement Epoch"
+    );
 }
 
 #[test]

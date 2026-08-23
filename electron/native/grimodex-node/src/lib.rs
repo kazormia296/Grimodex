@@ -8114,6 +8114,134 @@ mod narrative_maintenance_epoch_event_tests {
 }
 
 #[cfg(test)]
+mod narrative_maintenance_fault_red_tests {
+    use super::*;
+    use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
+    use grimodex_db::state::{ActiveWorkspace, WorkspaceAuthority};
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    struct TestRoot(PathBuf);
+
+    impl Drop for TestRoot {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "grimodex-node-fault-red-{label}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default()
+        ))
+    }
+
+    fn backend_with_fresh_workspace(label: &str) -> (TestRoot, Backend) {
+        let root = test_root(label);
+        // Declare the guard before constructing Backend/WorkspaceAuthority so
+        // an assertion panic drops the database owner before cleanup runs.
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(workspace_path.join(".grimodex"))
+            .expect("workspace metadata directory");
+        std::fs::write(
+            workspace_path.join(".grimodex/workspace.json"),
+            serde_json::json!({
+                "id": format!("workspace-{label}"),
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+            .expect("app state");
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        *state.ws.inner.lock().expect("workspace lock") =
+            Some(ActiveWorkspace::new(Arc::clone(&authority)));
+        (
+            cleanup,
+            Backend {
+                state: Arc::new(state),
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn public_napi_fault_cycle_must_consume_discovered_fresh_workspace_backfill() {
+        let (cleanup, backend) = backend_with_fresh_workspace("public-discovery");
+        backend
+            .state
+            .narrative_maintenance_ci_seam
+            .configure(NarrativeMaintenanceCiConfig {
+                is_packaged: false,
+                ci: "true".to_string(),
+                owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+                fault: Some(NarrativeMaintenanceCiFault::ContractViolation),
+                trigger: None,
+                setup: None,
+                product_journey_barrier_id: None,
+                correlation: None,
+            })
+            .expect("configure fault seam");
+
+        let discovery: Value = serde_json::from_str(
+            &backend
+                .discover_narrative_maintenance_work("workspace-opened".to_string())
+                .await
+                .expect("public discovery"),
+        )
+        .expect("discovery JSON");
+        let discovered_work = discovery["pages"][0]["work"][0].clone();
+        assert_eq!(discovered_work["projectId"], "project-1");
+        assert_eq!(discovered_work["runKind"], "backfill");
+        assert_eq!(discovered_work["semanticEpochId"], Value::Null);
+
+        let cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [discovered_work],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": discovery["workspaceBinding"].clone(),
+                }))
+                .await
+                .expect("public fault cycle"),
+        )
+        .expect("cycle JSON");
+        assert_eq!(
+            cycle["status"], "ci-terminal-fault-handled",
+            "the configured fault must be reached through public discovery output"
+        );
+
+        drop(backend);
+        assert!(
+            !cleanup.0.exists(),
+            "fault seam fixture must clean up after Backend is dropped"
+        );
+    }
+}
+
+#[cfg(test)]
 mod narrative_maintenance_foreground_release_tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
