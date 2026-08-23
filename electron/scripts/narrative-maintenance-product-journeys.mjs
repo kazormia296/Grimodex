@@ -670,9 +670,19 @@ function canonicalWorkKeyForRun(run, label = "Run") {
     throw new Error(`${label} is missing canonical work identity fields`);
   }
   const base = `narrative-maintenance:v1/${run.runKind}/${run.projectId}/${run.workKey}`;
-  return run.semanticEpochId
-    ? `${base}/epoch/${run.semanticEpochId}`
-    : base;
+  // The native lifecycle contract keeps the legacy Backfill WorkKey
+  // epochless even though its durable Run records the current epoch. Verify
+  // and Rebuild are epoch-bound identities and must retain their suffix.
+  if (run.runKind === "backfill") return base;
+  if (
+    (run.runKind === "dependency-verify" ||
+      run.runKind === "semantic-index-rebuild") &&
+    (typeof run.semanticEpochId !== "string" ||
+      run.semanticEpochId.trim() === "")
+  ) {
+    throw new Error(`${label} is missing the epoch-bound canonical work identity`);
+  }
+  return run.semanticEpochId ? `${base}/epoch/${run.semanticEpochId}` : base;
 }
 
 function foregroundSystemWorkMarker(run, label = "foreground Run") {

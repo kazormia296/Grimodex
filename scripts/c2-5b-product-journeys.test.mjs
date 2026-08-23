@@ -1181,7 +1181,7 @@ test("foreground target setup rejects an old marked authority and requires one f
       systemWork: {
         trigger: expected.trigger,
         canonicalWorkKey:
-          "narrative-maintenance:v1/backfill/project-a/legacy-dependency-backfill:v2/epoch/epoch-a",
+          "narrative-maintenance:v1/backfill/project-a/legacy-dependency-backfill:v2",
         authorityId: "authority-old",
         generation: 1,
         productJourneyBarrierId: expected.barrierId,
@@ -1277,7 +1277,7 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
       systemWork: {
         trigger: "workspace-opened",
         canonicalWorkKey:
-          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1",
+          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2",
         authorityId: "authority-1",
         generation: 7,
         productJourneyBarrierId: expected.barrierId,
@@ -1326,6 +1326,84 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
         expected,
       ),
     /generation/,
+  );
+});
+
+test("foreground marker canonical keys follow native Backfill and epoch-bound phase contracts", () => {
+  const expected = {
+    barrierId: "canonical-key-barrier",
+    correlation: "canonical-key-correlation",
+    trigger: "workspace-opened",
+  };
+  const makeRun = (runKind, workKey, canonicalWorkKey) => ({
+    id: `${runKind}-marker`,
+    projectId: "project-1",
+    runKind,
+    workKey,
+    semanticEpochId: "epoch-1",
+    status: "running",
+    specJson: JSON.stringify({
+      systemWork: {
+        trigger: expected.trigger,
+        canonicalWorkKey,
+        authorityId: "authority-1",
+        generation: 1,
+        productJourneyBarrierId: expected.barrierId,
+        correlation: expected.correlation,
+      },
+    }),
+  });
+  const backfillKey =
+    "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2";
+  const backfill = makeRun(
+    "backfill",
+    "legacy-dependency-backfill:v2",
+    backfillKey,
+  );
+  assert.equal(
+    assertForegroundRunMarker(backfill, expected).canonicalWorkKey,
+    backfillKey,
+  );
+  assert.throws(
+    () =>
+      assertForegroundRunMarker(
+        makeRun("backfill", "legacy-dependency-backfill:v2", `${backfillKey}/epoch/epoch-1`),
+        expected,
+      ),
+    /canonicalWorkKey/,
+    "Backfill must remain epochless even when the durable Run has an epoch",
+  );
+
+  const verifyKey =
+    "narrative-maintenance:v1/dependency-verify/project-1/dependency-verify:epoch-1/epoch/epoch-1";
+  assert.equal(
+    assertForegroundRunMarker(
+      makeRun("dependency-verify", "dependency-verify:epoch-1", verifyKey),
+      expected,
+    ).canonicalWorkKey,
+    verifyKey,
+  );
+  const rebuildKey =
+    "narrative-maintenance:v1/semantic-index-rebuild/project-1/dependency-rebuild-derived/epoch/epoch-1";
+  assert.equal(
+    assertForegroundRunMarker(
+      makeRun("semantic-index-rebuild", "dependency-rebuild-derived", rebuildKey),
+      expected,
+    ).canonicalWorkKey,
+    rebuildKey,
+  );
+  assert.throws(
+    () =>
+      assertForegroundRunMarker(
+        makeRun(
+          "dependency-verify",
+          "dependency-verify:epoch-1",
+          "narrative-maintenance:v1/dependency-verify/project-1/dependency-verify:epoch-1",
+        ),
+        expected,
+      ),
+    /canonicalWorkKey/,
+    "Verify must retain its epoch-bound canonical identity",
   );
 });
 
@@ -1426,6 +1504,15 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
   const restoreJourneyBody = source.match(
     /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
   )?.[0];
+  const fixtureHelperBody = source.match(
+    /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
+  )?.[0];
+  assert.ok(fixtureHelperBody, "restore fixture helper must remain inspectable");
+  assert.match(
+    fixtureHelperBody,
+    /harness\.launch\(`\$\{id\}\/restore-fixture`\)/,
+    "restore fixture helper must launch its exact registered restore-fixture phase",
+  );
   assert.ok(restoreJourneyBody, "restore journey caller must remain inspectable");
   assert.match(
     restoreJourneyBody,
