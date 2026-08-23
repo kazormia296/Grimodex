@@ -26,6 +26,7 @@ mod incremental_freshness;
 mod legacy_backfill;
 pub mod maintenance_contracts;
 mod maintenance_lifecycle;
+pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub use maintenance_contracts::{
@@ -147,6 +148,11 @@ pub use incremental_freshness::{
 };
 #[allow(unused_imports)]
 pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
+pub use maintenance_route_registry::{
+    route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
+    route_id_for_run_kind, MaintenanceRouteDescriptor,
+    NARRATIVE_MAINTENANCE_ROUTE_REGISTRY_VERSION,
+};
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
