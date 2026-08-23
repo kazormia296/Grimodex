@@ -456,10 +456,12 @@ test("legacy naive timestamps preserve Chrono signed proleptic years", () => {
     ),
     -1,
   );
-  assert.doesNotThrow(() => parseInstant("-262144-01-01 00:00:00"));
-  assert.doesNotThrow(() => parseInstant("+262143-12-31 23:59:59"));
+  assert.doesNotThrow(() => parseInstant("-262143-01-01 00:00:00"));
+  assert.doesNotThrow(() => parseInstant("+262142-12-31 23:59:59"));
 
   for (const timestamp of [
+    "-262144-01-01 00:00:00",
+    "+262143-12-31 23:59:59",
     "-262145-01-01 00:00:00",
     "+262144-01-01 00:00:00",
     "262144-01-01 00:00:00",
