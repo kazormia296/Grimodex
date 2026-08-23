@@ -513,6 +513,29 @@ pub fn find_running_foreground_system_work_run(
     config: &NarrativeMaintenanceCiConfig,
     binding: &MaintenanceWorkspaceBinding,
 ) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
+    find_running_foreground_system_work_scoped(db, config, binding, true, true)
+}
+
+/// Find the durable marker that reserves the foreground slot for the current
+/// authority, including an older recovery generation left by a prior process.
+/// This is intentionally not an ownership lookup: the caller must still use
+/// [`find_running_foreground_system_work_run`] and a process-local Run handle
+/// before suppressing recovery or releasing a Run.
+pub fn find_running_foreground_system_work_slot(
+    db: &Database,
+    config: &NarrativeMaintenanceCiConfig,
+    binding: &MaintenanceWorkspaceBinding,
+) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
+    find_running_foreground_system_work_scoped(db, config, binding, false, false)
+}
+
+fn find_running_foreground_system_work_scoped(
+    db: &Database,
+    config: &NarrativeMaintenanceCiConfig,
+    binding: &MaintenanceWorkspaceBinding,
+    require_current_generation: bool,
+    require_current_epoch: bool,
+) -> anyhow::Result<Option<ForegroundSystemWorkRun>> {
     config.validate()?;
     binding.validate()?;
     let barrier_id = config
@@ -565,8 +588,8 @@ pub fn find_running_foreground_system_work_run(
             if marker.product_journey_barrier_id != barrier_id
                 || marker.correlation != correlation
                 || marker.authority_id != binding.authority_id
-                || marker.generation != binding.generation
                 || marker.trigger != "workspace-opened"
+                || (require_current_generation && marker.generation != binding.generation)
             {
                 continue;
             }
@@ -581,7 +604,7 @@ pub fn find_running_foreground_system_work_run(
                 &work_key,
                 epoch_id.as_deref(),
                 &spec_json,
-                true,
+                require_current_epoch,
             )?;
             matches.push(ForegroundSystemWorkRun {
                 run_id,
@@ -1980,6 +2003,16 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
         }
         _ => None,
     };
+    let foreground_slot_run = match (ci_config, request.workspace_binding.as_ref()) {
+        (Some(config), Some(binding))
+            if config.trigger == Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+                && config.product_journey_barrier_id.is_some()
+                && config.correlation.is_some() =>
+        {
+            find_running_foreground_system_work_slot(db, config, binding)?
+        }
+        _ => None,
+    };
     let mut foreground_owned_run = match (foreground_owner, foreground_durable_run.as_ref()) {
         (Some(owner), Some(current)) if owner == current => Some(owner.clone()),
         _ => None,
@@ -1989,7 +2022,7 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     // restarted Run still goes through StartupRecovery below, but any fresh
     // replacement is deliberately unmarked so recovery cannot create a
     // second running marker for the same barrier.
-    let mut foreground_marker_available = foreground_durable_run.is_none();
+    let mut foreground_marker_available = foreground_slot_run.is_none();
     // A durable terminal/manual outcome is a handled no-op for this
     // automatic identity. Keep the halt scoped to the canonical WorkKey so a
     // different project, phase, work-key version, or Semantic Epoch remains
