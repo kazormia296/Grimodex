@@ -61,6 +61,21 @@ test("rejects literal dynamic imports of the main or native backend", async () =
   }
 });
 
+test("rejects imports of the main narrative maintenance module family", async () => {
+  for (const source of [
+    "electron/main/narrativeMaintenanceBootstrap.js",
+    "electron/main/narrativeMaintenanceTriggers.js",
+  ]) {
+    for (const code of [
+      `void import("${source}");`,
+      `void import(\`${source}\`);`,
+    ]) {
+      const messages = await lintText(code, "src/features/example.ts");
+      assert.equal(boundaryMessages(messages).length, 1);
+    }
+  }
+});
+
 test("rejects static template imports of the main and native backend", async () => {
   for (const source of [
     "electron/main/narrativeMaintenance.js",

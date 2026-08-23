@@ -1,9 +1,7 @@
 import path from "node:path";
 
-const PRIVATE_MODULE_SEGMENTS = [
-  "/electron/main/narrativeMaintenance",
-  "/electron/native/grimodex-node",
-];
+const PRIVATE_MAIN_MODULE_PREFIX = "/electron/main/narrativeMaintenance";
+const PRIVATE_NATIVE_MODULE_SEGMENT = "/electron/native/grimodex-node";
 
 const PRIVATE_METHOD_NAMES = new Set([
   "discoverNarrativeMaintenanceWork",
@@ -46,16 +44,16 @@ function isPrivateModule(filename, source) {
     ? normalizePath(path.resolve(path.dirname(normalizedFilename), source))
     : source;
   const modulePath = `/${resolvedSource.replace(/^\/+/, "")}`;
-  return PRIVATE_MODULE_SEGMENTS.some((segment) => {
-    const segmentStart = modulePath.indexOf(segment);
-    if (segmentStart < 0) return false;
-    const segmentEnd = segmentStart + segment.length;
-    return (
-      segmentEnd === modulePath.length ||
-      modulePath[segmentEnd] === "/" ||
-      modulePath[segmentEnd] === "."
-    );
-  });
+  if (modulePath.includes(PRIVATE_MAIN_MODULE_PREFIX)) return true;
+  const nativeSegmentStart = modulePath.indexOf(PRIVATE_NATIVE_MODULE_SEGMENT);
+  if (nativeSegmentStart < 0) return false;
+  const nativeSegmentEnd =
+    nativeSegmentStart + PRIVATE_NATIVE_MODULE_SEGMENT.length;
+  return (
+    nativeSegmentEnd === modulePath.length ||
+    modulePath[nativeSegmentEnd] === "/" ||
+    modulePath[nativeSegmentEnd] === "."
+  );
 }
 
 function propertyName(node) {
