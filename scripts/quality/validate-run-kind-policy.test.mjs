@@ -233,6 +233,28 @@ describe("validate-run-kind-policy", () => {
     );
   });
 
+  it("rejects the C2-ZC condition in Backfill current triggerEvents", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "dependency-backfill").triggerEvents = [
+      "before-c2z-cutover",
+    ];
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("before-c2z-cutover")),
+    );
+  });
+
+  it("rejects the C2-ZC condition in incremental current triggerEvents", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "incremental-freshness").triggerEvents = [
+      "before-c2z-cutover",
+    ];
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("before-c2z-cutover")),
+    );
+  });
+
   it("requires the explicit C2-ZC obligation on Verify and Rebuild-Derived", () => {
     const policy = bundledPolicy();
     delete runKind(policy, "dependency-verify").futureTriggerObligations;

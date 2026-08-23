@@ -276,6 +276,11 @@ function validateImplementationStatus(entry, errors) {
 
 function validateFutureTriggerObligations(entry, errors) {
   const obligations = entry.futureTriggerObligations;
+  if (entry.triggerEvents?.includes("before-c2z-cutover")) {
+    errors.push(
+      `${entry.runKind} must keep 'before-c2z-cutover' out of current triggerEvents; record it only as a futureTriggerObligation`,
+    );
+  }
   if (C2ZC_FUTURE_OBLIGATION_RUN_KINDS.has(entry.runKind)) {
     const obligation = obligations?.length === 1 ? obligations[0] : null;
     if (
@@ -303,11 +308,6 @@ function validateFutureTriggerObligations(entry, errors) {
       if (obligation.satisfiesCurrentWiredStatus !== false) {
         errors.push(
           `${entry.runKind}.futureTriggerObligations.before-c2z-cutover cannot satisfy current wired status`,
-        );
-      }
-      if (entry.triggerEvents?.includes("before-c2z-cutover")) {
-        errors.push(
-          `${entry.runKind} must keep 'before-c2z-cutover' out of current triggerEvents; record it only as a futureTriggerObligation`,
         );
       }
     }
