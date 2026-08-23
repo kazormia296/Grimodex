@@ -380,6 +380,10 @@ fn repair_integrity_chains_from_a_canonical_codex_feed_head() {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES
                  ('canonical-repair-p1', 'One'), ('canonical-repair-p2', 'Two');
+             INSERT INTO narrative_semantic_epochs
+                 (id, project_id, epoch_number, reason, created_at)
+             VALUES
+                 ('canonical-repair-epoch-p1', 'canonical-repair-p1', 0, 'initial', '2026-08-23T00:00:00.000Z');
              INSERT INTO chat_sessions (id, project_id, title)
                VALUES ('canonical-repair-session', 'canonical-repair-p2', 'Foreign session');
              INSERT INTO chat_messages (id, session_id, role, content)
@@ -450,6 +454,10 @@ fn repair_integrity_chains_from_a_canonical_snippet_feed_head() {
         conn.execute_batch(
             "INSERT INTO projects (id, title) VALUES
                  ('canonical-snippet-p1', 'One'), ('canonical-snippet-p2', 'Two');
+             INSERT INTO narrative_semantic_epochs
+                 (id, project_id, epoch_number, reason, created_at)
+             VALUES
+                 ('canonical-snippet-epoch-p1', 'canonical-snippet-p1', 0, 'initial', '2026-08-23T00:00:00.000Z');
              INSERT INTO chat_sessions (id, project_id, title)
                VALUES ('canonical-snippet-session', 'canonical-snippet-p1', 'Local session');
              INSERT INTO chat_messages (id, session_id, role, content)
