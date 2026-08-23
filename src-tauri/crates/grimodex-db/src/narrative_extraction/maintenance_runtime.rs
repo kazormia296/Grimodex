@@ -1916,6 +1916,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
     let mut dequeue_count = 0usize;
     let mut dispatched_any = false;
     let mut coalesced_active = false;
+    let mut handled_non_coalesced = false;
     let mut has_more = false;
     let mut foreground_marker_available = true;
     // A durable terminal/manual outcome is a handled no-op for this
@@ -2007,7 +2008,10 @@ pub fn run_system_work_cycle_with_modes_and_config(
                         // on the dispatch path instead of reusing the clean
                         // pre-Rebuild evidence a second time.
                     }
-                    None => continue,
+                    None => {
+                        handled_non_coalesced = true;
+                        continue;
+                    }
                 }
             }
         }
@@ -2020,6 +2024,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 continue;
             }
             RecoveryAction::SkipCompleted { .. } => {
+                handled_non_coalesced = true;
                 // Backfill's completed row is only the durable marker for the
                 // next Verify phase. No completed Rebuild can enter this arm.
                 if item.run_kind == AutomaticRunKind::Backfill {
@@ -2041,6 +2046,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 // The durable Run already owns the terminal failure and its
                 // Inbox projection. It is not a delivery failure and must
                 // not be retried or converted into an automatic Repair.
+                handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
                 continue;
             }
@@ -2068,6 +2074,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 if backfill_requires_rediscovery
                     || current_epoch.as_deref() != item.semantic_epoch_id.as_deref()
                 {
+                    handled_non_coalesced = true;
                     if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
@@ -2147,7 +2154,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
             }
         }
     }
-    Ok(if !dispatched_any && coalesced_active {
+    Ok(if !dispatched_any && coalesced_active && !handled_non_coalesced {
         MaintenanceCycleResult::coalesced(has_more)
     } else {
         MaintenanceCycleResult::accepted(has_more)

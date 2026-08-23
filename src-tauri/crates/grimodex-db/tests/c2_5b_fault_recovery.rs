@@ -483,6 +483,50 @@ fn terminal_halt_does_not_suppress_unrelated_project_work() {
 }
 
 #[test]
+fn mixed_terminal_halt_and_live_coalesce_is_accepted_not_coalesced() {
+    let db = fixture_db();
+    const RUNNING_PROJECT_ID: &str = "project-c2-5b-live-coalesced";
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES (?1, 'Live coalesced project')",
+            [RUNNING_PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed live coalesced project");
+    inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("inject terminal fault");
+    let running_run_id = match inject_legacy_backfill_fault_for_project(
+        &db,
+        RUNNING_PROJECT_ID,
+        NarrativeMaintenanceCiFault::ProcessInterruption,
+    )
+    .expect("seed live running fault")
+    {
+        LegacyBackfillFaultOutcome::Running { run_id, .. } => run_id,
+        other => panic!("expected durable running lifecycle, got {other:?}"),
+    };
+
+    let mut request = backfill_request_for(PROJECT_ID, None, "terminal");
+    request.work.push(
+        backfill_request_for(RUNNING_PROJECT_ID, None, "live-coalesced")
+            .work
+            .into_iter()
+            .next()
+            .expect("live coalesced work item"),
+    );
+    let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+        .expect("terminal halt and live coalescing are handled outcomes");
+
+    assert_eq!(result, MaintenanceCycleResult::accepted(true));
+    assert_eq!(lifecycle_snapshot(&db, &running_run_id).run_status, "running");
+}
+
+#[test]
 fn terminal_halt_is_scoped_to_the_sealed_semantic_epoch_identity() {
     let db = fixture_db();
     let outcome = inject_legacy_backfill_fault_for_project(
