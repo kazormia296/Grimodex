@@ -16,6 +16,7 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
 };
 use grimodex_db::Database;
 use rusqlite::params;
+use serde_json::json;
 
 const PROJECT_ID: &str = "project-c2-5a";
 const EPOCH_ID: &str = "epoch-c2-5a";
@@ -1010,6 +1011,142 @@ fn discovery_rejects_same_lifecycle_instant_instead_of_using_uuid_order() {
     assert!(error
         .to_string()
         .contains("NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS"));
+}
+
+#[test]
+fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
+    let db = fixture_db();
+    let report_value = json!({
+        "totalEdges": 0,
+        "edgeIdsWithMissingSource": [],
+        "duplicateEdgeKeys": [],
+        "edgeIdsWithCrossProjectConsumer": [],
+        "edgeIdsWithMalformedKeys": [],
+        "edgeStateIdsOutsideCurrentEpoch": [],
+        "edgeIdsWithoutCurrentEpochState": [],
+        "findingObservationIdsOutsideCurrentEpoch": [],
+        "consumerKeysWithoutCurrentEpochFreshness": [],
+        "duplicateEdgeIdsToDeactivate": [],
+        "edgeIdsWithUnresolvableConsumerScope": [],
+        "consumerKeysWithStaleDependencySetDigest": [],
+        "consumerKeysWithUncomputedDependencySetDigest": [],
+        "orphanedAttentionFindingKeys": [],
+        "orphanedAttentionRehomeAmbiguities": [],
+        "rebuildRequired": true,
+    });
+    let report_digest = format!("sha256:{}", grimodex_db::narrative_extraction::digest_plan(&report_value));
+    let mut tampered_report_value = report_value.clone();
+    tampered_report_value["totalEdges"] = json!(999);
+    let valid_outcome = json!({
+        "verifyContractVersion": "6",
+        "semanticEpochId": OLD_EPOCH_ID,
+        "reportDigest": report_digest,
+        "report": report_value.clone(),
+    });
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('discovery-backfill-marker', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:00.000Z',
+                     '2026-08-23T09:00:01.000Z',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+            params![PROJECT_ID, OLD_EPOCH_ID],
+        )?;
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('discovery-verify', ?1, 'maintenance', '{}',
+                     '{"verifyContractVersion":"6"}', 'digest', 'completed', '{}',
+                     '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z',
+                     '2026-08-23T10:00:01.000Z', ?2,
+                     'dependency-verify', ?3, ?4)"#,
+            params![
+                PROJECT_ID,
+                valid_outcome.to_string(),
+                OLD_EPOCH_ID,
+                format!("dependency-verify:{OLD_EPOCH_ID}"),
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed valid Verify outcome requiring Rebuild");
+
+    let valid = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+        .expect("valid Verify outcome discovery")
+        .expect("valid Rebuild follow-up");
+    assert_eq!(valid.run_kind, AutomaticRunKind::RebuildDerived);
+
+    for (label, replacement) in [
+        (
+            "reportDigest",
+            json!({
+                "verifyContractVersion": "6",
+                "semanticEpochId": OLD_EPOCH_ID,
+                "reportDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                "report": report_value.clone(),
+            }),
+        ),
+        (
+            "semanticEpochId",
+            json!({
+                "verifyContractVersion": "6",
+                "semanticEpochId": "wrong-epoch",
+                "reportDigest": report_digest.clone(),
+                "report": report_value.clone(),
+            }),
+        ),
+        (
+            "verifyContractVersion",
+            json!({
+                "verifyContractVersion": "0",
+                "semanticEpochId": OLD_EPOCH_ID,
+                "reportDigest": report_digest.clone(),
+                "report": report_value.clone(),
+            }),
+        ),
+        (
+            "report",
+            json!({
+                "verifyContractVersion": "6",
+                "semanticEpochId": OLD_EPOCH_ID,
+                "reportDigest": report_digest.clone(),
+                "report": tampered_report_value.clone(),
+            }),
+        ),
+    ] {
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET outcome_summary_json = ?1 WHERE id = 'discovery-verify'",
+                [replacement.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("tamper Verify outcome");
+        let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "restore-completed")
+            .expect("tampered Verify discovery must fail closed")
+            .expect("tampered Verify must request a fresh Verify");
+        assert_eq!(
+            discovered.run_kind,
+            AutomaticRunKind::Verify,
+            "tampered {label} must never route directly to Rebuild"
+        );
+        assert_ne!(discovered.run_kind, AutomaticRunKind::RebuildDerived);
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_runs SET outcome_summary_json = ?1 WHERE id = 'discovery-verify'",
+                [valid_outcome.to_string()],
+            )?;
+            Ok(())
+        })
+        .expect("restore valid Verify outcome");
+    }
 }
 
 #[test]

@@ -31,6 +31,7 @@ import {
   foregroundMarkedRuns,
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
+import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
@@ -292,6 +293,25 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
       "legacy naive timestamp lifecycle",
     ),
   );
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(
+      {
+        ...valid,
+        taskStatus: "completed",
+        lastAttemptStatus: "completed",
+        createdAt: "2026-08-23T09:00:00.000000001+09:00",
+        startedAt: "2026-08-23T00:00:00.000000002Z",
+        taskCreatedAt: "2026-08-23T00:00:00.000000003Z",
+        taskStartedAt: "2026-08-23T00:00:00.000000004Z",
+        lastAttemptStartedAt: "2026-08-23T00:00:00.000000004Z",
+        completedAt: "2026-08-23T00:00:00.000000005Z",
+        taskCompletedAt: "2026-08-23T00:00:00.000000005Z",
+        lastAttemptCompletedAt: "2026-08-23T00:00:00.000000005Z",
+      },
+      "completed",
+      "sub-millisecond timestamp lifecycle",
+    ),
+  );
   for (const timestamp of [
     "2026-08-23T00:00:00+0900",
     "2026-08-23T00:00:00.000Z ",
@@ -315,6 +335,91 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
       /timestamp/,
     );
   }
+});
+
+test("transient retry validates every distinct same-work lifecycle in order", () => {
+  const sequenceValidator =
+    narrativeMaintenanceProductJourneys.assertTransientRunSequence;
+  assert.equal(
+    typeof sequenceValidator,
+    "function",
+    "the product journey must expose the exact transient sequence validator",
+  );
+  const base = {
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-1",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    specJson: '{"backfillAlgorithmVersion":"2"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
+    taskStartedAt: "2026-08-23T00:00:00.000000003Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000000003Z",
+  };
+  const failed = {
+    ...base,
+    id: "failed-run",
+    status: "failed",
+    taskStatus: "failed",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    createdAt: "2026-08-23T00:00:00.000000001Z",
+    completedAt: "2026-08-23T00:00:00.000000004Z",
+    taskCompletedAt: "2026-08-23T00:00:00.000000004Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:00.000000004Z",
+  };
+  const completed = {
+    ...base,
+    id: "completed-run",
+    status: "completed",
+    taskStatus: "completed",
+    lastAttemptStatus: "completed",
+    createdAt: "2026-08-23T00:00:01.000000001Z",
+    completedAt: "2026-08-23T00:00:01.000000004Z",
+    taskCompletedAt: "2026-08-23T00:00:01.000000004Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:01.000000004Z",
+    outcomeSummaryJson: JSON.stringify({
+      maintenancePhase: "backfill-complete",
+      backfillAlgorithmVersion: "2",
+      semanticEpochId: "epoch-1",
+      summary: {
+        epoch_created: false,
+        contributions_created: 0,
+        edges_created: 0,
+        applications_without_run_id: 0,
+      },
+    }),
+  };
+  assert.doesNotThrow(() => sequenceValidator([failed, completed]));
+  assert.throws(
+    () =>
+      sequenceValidator([
+        failed,
+        { ...completed, taskKind: "wrong-kind" },
+      ]),
+    /Task kind/,
+  );
+  assert.throws(
+    () => sequenceValidator([failed, completed, { ...failed, id: "third-run", lastAttemptNumber: 2 }]),
+    /Attempt #1/,
+  );
+  assert.throws(
+    () => sequenceValidator([{ ...failed, createdAt: completed.createdAt }, completed]),
+    /strictly increasing/,
+  );
+  assert.throws(
+    () => sequenceValidator([failed, completed, { ...completed, id: "third-completed" }, { ...completed, id: "fourth-completed" }]),
+    /at most three/,
+  );
+  assert.throws(
+    () => sequenceValidator([failed, completed, { ...failed, id: "third-failed", createdAt: "2026-08-23T00:00:02.000000001Z" }]),
+    /completed Run must be final/,
+  );
 });
 
 test("c2-5b runner set is explicit and preserves stable order", () => {
