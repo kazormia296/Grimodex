@@ -2661,14 +2661,11 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     if (!restoredContext) {
       throw new Error("restore reload did not rebind a hydrated project context");
     }
-    await waitForReadiness(
-      restoredContext,
-      "restore/reload settled",
-      {
-        baselineRuns: beforeRestoreRuns,
-        requireMaintenanceSettled: true,
-      },
-    );
+    // The restored fixture intentionally has no post-restore Freshness Run:
+    // the automatic restore chain is Verify -> Rebuild -> Verify.  The
+    // Settings UI helper and contextForLaunch above already prove renderer /
+    // workspace hydration; waitForRestorePhaseRows below is the durable
+    // settled boundary for this restored database.
     context.record("restore-epoch-trigger-observed", {
       backupName: fixtureEvidence.backupName,
     });
