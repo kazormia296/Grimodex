@@ -53,6 +53,17 @@ export type NarrativeMaintenanceCiSeam =
   | { readonly active: false }
   | ({ readonly active: true } & NarrativeMaintenanceCiConfig);
 
+/**
+ * The setup marker belongs to one product-journey configure launch only. It
+ * is intentionally evaluated in main, after the owner/CI gate, so an
+ * ordinary launch cannot inherit the marker or disable its scheduler.
+ */
+export function shouldDisableNarrativeMaintenanceForLaunch(
+  seam: NarrativeMaintenanceCiSeam,
+): boolean {
+  return seam.active && seam.setup === "disabled";
+}
+
 export interface NarrativeMaintenanceCiEnvironment {
   readonly isPackaged: boolean;
   readonly env: NodeJS.ProcessEnv;

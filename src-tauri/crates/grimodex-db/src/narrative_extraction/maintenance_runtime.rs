@@ -18,7 +18,10 @@ use super::legacy_backfill::{
     is_valid_completed_backfill_marker, parse_maintenance_instant, BackfillSummary,
     CompletedBackfillMarker, LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
-use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_contracts::{
+    current_maintenance_coordinates, derive_ci_coordinate_mismatch_digest,
+    MaintenanceContractCoordinates,
+};
 use super::maintenance_lifecycle::{
     ensure_recovery_lifecycle_is_empty_in_tx, fail_maintenance_run_in_tx,
     load_maintenance_run_in_tx, synthesize_recovery_lifecycle_in_tx, MaintenanceFailureKind,
@@ -32,9 +35,9 @@ use super::maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
-    rebuild_narrative_derived_state_for_project, run_dependency_verify_for_project,
-    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
-    REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
+    rebuild_narrative_derived_state_for_project, DependencyGraphVerifyReport,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
 use crate::Database;
@@ -330,6 +333,47 @@ fn validate_ci_identifier(value: &str, name: &str) -> anyhow::Result<()> {
     anyhow::ensure!(value == value.trim(), "{name} must be trimmed");
     anyhow::ensure!(!value.contains('\0'), "{name} must not contain NUL");
     Ok(())
+}
+
+/// Resolve the one effective coordinate set for a live maintenance operation.
+/// The baseline values come from the compiled Rust contracts. A CI trigger may
+/// deterministically perturb exactly one selected coordinate, but no caller
+/// can provide a digest value. Production and ordinary launches always use the
+/// unmodified current coordinates.
+pub fn effective_maintenance_coordinates(
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+) -> anyhow::Result<MaintenanceContractCoordinates> {
+    let mut coordinates = current_maintenance_coordinates()?;
+    let Some(config) = ci_config else {
+        return Ok(coordinates);
+    };
+    config.validate()?;
+    match config.trigger {
+        Some(NarrativeMaintenanceCiTrigger::GraphContractDigestChanged) => {
+            coordinates.graph_contract_digest = derive_ci_coordinate_mismatch_digest(
+                "graphContractDigest",
+                &coordinates.graph_contract_digest,
+            )?;
+        }
+        Some(NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged) => {
+            coordinates.rule_registry_digest = derive_ci_coordinate_mismatch_digest(
+                "ruleRegistryDigest",
+                &coordinates.rule_registry_digest,
+            )?;
+        }
+        Some(NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged) => {
+            coordinates.producer_generation_set_digest = derive_ci_coordinate_mismatch_digest(
+                "producerGenerationSetDigest",
+                &coordinates.producer_generation_set_digest,
+            )?;
+        }
+        Some(
+            NarrativeMaintenanceCiTrigger::DependencyGap
+            | NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake,
+        )
+        | None => {}
+    }
+    Ok(coordinates)
 }
 
 /// Immutable metadata stored under `Run.spec_json.systemWork`. This is
@@ -1441,6 +1485,19 @@ pub fn discover_durable_maintenance_work(
     project_id: &str,
     reason: &str,
 ) -> anyhow::Result<Option<DesiredWork>> {
+    discover_durable_maintenance_work_with_coordinates(db, project_id, reason, None)
+}
+
+/// Discover durable work using one effective coordinate set selected by the
+/// native caller. The coordinate set is computed once per live authority
+/// operation and is used only for Verify skip evidence; the durable ledger
+/// remains the sole source of phase identity.
+pub fn discover_durable_maintenance_work_with_coordinates(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<Option<DesiredWork>> {
     let project_id = require_component(project_id.to_string(), "projectId")?;
     let reason = require_component(reason.to_string(), "reason")?;
     db.with_conn(|conn| {
@@ -1448,7 +1505,7 @@ pub fn discover_durable_maintenance_work(
         // clean-skip decision on one SQLite snapshot. A concurrent writer
         // must not change report/reportDigest/epoch between those decisions.
         with_immediate_transaction(conn, |conn| {
-            discover_durable_maintenance_work_in_tx(conn, &project_id, &reason)
+            discover_durable_maintenance_work_in_tx(conn, &project_id, &reason, coordinates)
         })
     })
 }
@@ -1457,6 +1514,7 @@ fn discover_durable_maintenance_work_in_tx(
     conn: &Connection,
     project_id: &str,
     reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<Option<DesiredWork>> {
     let (current_epoch_id, latest, active, completed_backfill) = {
         let current_epoch_id =
@@ -1576,7 +1634,7 @@ fn discover_durable_maintenance_work_in_tx(
             // evidence is present and current; old reports are re-run once
             // to seal the current coordinates.
             if report.is_clean() {
-                let expected = verify_skip_expectation(project_id, &current_epoch_id)?;
+                let expected = verify_skip_expectation(project_id, &current_epoch_id, coordinates)?;
                 let decision = evaluate_completed_run_skip(conn, &expected)?;
                 if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
                     return Ok(None);
@@ -1629,6 +1687,20 @@ fn validate_discovered_verify_outcome(
             .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
     )
     .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")
+}
+
+/// Discover durable work with a CI-only trigger resolved by Native. This
+/// adapter keeps configuration parsing and coordinate selection out of the
+/// renderer-facing DTO while allowing the product journey to exercise the
+/// same skip-evidence mismatch as a real contract change.
+pub fn discover_durable_maintenance_work_with_config(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let coordinates = effective_maintenance_coordinates(ci_config)?;
+    discover_durable_maintenance_work_with_coordinates(db, project_id, reason, Some(&coordinates))
 }
 
 fn durable_run_work(
@@ -1686,16 +1758,20 @@ fn is_backfill_wake(reason: &str) -> bool {
 fn verify_skip_expectation(
     project_id: &str,
     semantic_epoch_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<CompletedRunSkipExpectation> {
-    let coordinates = current_maintenance_coordinates()?;
+    let owned_coordinates = match coordinates {
+        Some(coordinates) => coordinates.clone(),
+        None => current_maintenance_coordinates()?,
+    };
     Ok(CompletedRunSkipExpectation {
         project_id: project_id.to_string(),
         run_kind: VERIFY_RUN_KIND.to_string(),
         work_key: format!("{VERIFY_RUN_KIND}:{semantic_epoch_id}"),
         semantic_epoch_id: semantic_epoch_id.to_string(),
-        graph_contract_digest: coordinates.graph_contract_digest,
-        rule_registry_digest: coordinates.rule_registry_digest,
-        producer_generation_set_digest: coordinates.producer_generation_set_digest,
+        graph_contract_digest: owned_coordinates.graph_contract_digest,
+        rule_registry_digest: owned_coordinates.rule_registry_digest,
+        producer_generation_set_digest: owned_coordinates.producer_generation_set_digest,
         run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
         report_digest: None,
     })
@@ -1743,6 +1819,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
+    let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     if let Some(binding) = request.workspace_binding.as_ref() {
         binding.validate()?;
     }
@@ -1753,7 +1830,12 @@ pub fn run_system_work_cycle_with_modes_and_config(
     );
     if work.is_empty() {
         for project_id in &request.wake_project_ids {
-            if let Some(next) = discover_durable_maintenance_work(db, project_id, "durable-wake")? {
+            if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                db,
+                project_id,
+                "durable-wake",
+                Some(&effective_coordinates),
+            )? {
                 work.push(next);
             }
         }
@@ -1820,16 +1902,18 @@ pub fn run_system_work_cycle_with_modes_and_config(
             let expected = verify_skip_expectation(
                 &item.project_id,
                 item.semantic_epoch_id.as_deref().unwrap_or_default(),
+                Some(&effective_coordinates),
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
-                if let Some(next) = discover_durable_maintenance_work(
+                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
                     item.reasons
                         .first()
                         .map(String::as_str)
                         .unwrap_or("durable-wake"),
+                    Some(&effective_coordinates),
                 )? {
                     if next.run_kind != AutomaticRunKind::Verify
                         || next.semantic_epoch_id != item.semantic_epoch_id
@@ -1852,13 +1936,14 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 // Backfill's completed row is only the durable marker for the
                 // next Verify phase. No completed Rebuild can enter this arm.
                 if item.run_kind == AutomaticRunKind::Backfill {
-                    if let Some(next) = discover_durable_maintenance_work(
+                    if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
                         item.reasons
                             .first()
                             .map(String::as_str)
                             .unwrap_or("durable-wake"),
+                        Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
                     }
@@ -1892,13 +1977,14 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 if backfill_requires_rediscovery
                     || current_epoch.as_deref() != item.semantic_epoch_id.as_deref()
                 {
-                    if let Some(next) = discover_durable_maintenance_work(
+                    if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                         db,
                         &item.project_id,
                         item.reasons
                             .first()
                             .map(String::as_str)
                             .unwrap_or("durable-wake"),
+                        Some(&effective_coordinates),
                     )? {
                         queue.push_back(next);
                     }
@@ -1914,7 +2000,9 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 } else {
                     None
                 };
-                with_system_work_marker(marker.clone(), || dispatch_enabled_work(db, &item))?;
+                with_system_work_marker(marker.clone(), || {
+                    dispatch_enabled_work(db, &item, Some(&effective_coordinates))
+                })?;
                 if let (Some(expected_marker), Some(config), Some(binding)) = (
                     marker.as_ref(),
                     ci_config.as_ref(),
@@ -1936,13 +2024,14 @@ pub fn run_system_work_cycle_with_modes_and_config(
                     foreground_marker_available = false;
                 }
                 dispatched_any = true;
-                if let Some(next) = discover_durable_maintenance_work(
+                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
                     item.reasons
                         .first()
                         .map(String::as_str)
                         .unwrap_or("durable-wake"),
+                    Some(&effective_coordinates),
                 )? {
                     queue.push_back(next);
                 }
@@ -1953,7 +2042,14 @@ pub fn run_system_work_cycle_with_modes_and_config(
     has_more |= !queue.is_empty();
     if !has_more {
         for project_id in project_ids {
-            if discover_durable_maintenance_work(db, &project_id, "durable-wake")?.is_some() {
+            if discover_durable_maintenance_work_with_coordinates(
+                db,
+                &project_id,
+                "durable-wake",
+                Some(&effective_coordinates),
+            )?
+            .is_some()
+            {
                 has_more = true;
                 break;
             }
@@ -2051,7 +2147,11 @@ fn validate_dispatch_contract(item: &DesiredWork) -> anyhow::Result<()> {
     }
 }
 
-fn dispatch_enabled_work(db: &Database, item: &DesiredWork) -> anyhow::Result<()> {
+fn dispatch_enabled_work(
+    db: &Database,
+    item: &DesiredWork,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<()> {
     validate_dispatch_contract(item)?;
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
@@ -2062,7 +2162,11 @@ fn dispatch_enabled_work(db: &Database, item: &DesiredWork) -> anyhow::Result<()
             Ok(())
         }
         AutomaticRunKind::Verify => {
-            run_dependency_verify_for_project(db, &item.project_id)?;
+            super::restore_rebuild::run_dependency_verify_for_project_with_coordinates(
+                db,
+                &item.project_id,
+                coordinates,
+            )?;
             Ok(())
         }
         AutomaticRunKind::RebuildDerived => {
@@ -3109,6 +3213,7 @@ mod tests {
     use crate::narrative_extraction::legacy_backfill::LEGACY_BACKFILL_ALGORITHM_VERSION;
     use crate::narrative_extraction::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
     use crate::narrative_extraction::restore_rebuild::DependencyGraphVerifyReport;
+    use crate::narrative_extraction::run_dependency_verify_for_project;
     use crate::Database;
     use rusqlite::params;
     use serde_json::json;
@@ -3772,5 +3877,235 @@ mod tests {
             .expect("completed rebuild must request confirmation Verify");
         assert_eq!(next.run_kind, AutomaticRunKind::Verify);
         assert_eq!(next.semantic_epoch_id.as_deref(), Some("epoch-1"));
+    }
+
+    fn ci_config(trigger: NarrativeMaintenanceCiTrigger) -> NarrativeMaintenanceCiConfig {
+        NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger: Some(trigger),
+            setup: None,
+            product_journey_barrier_id: None,
+            correlation: None,
+        }
+    }
+
+    #[test]
+    fn ci_coordinate_trigger_changes_exactly_one_effective_coordinate() {
+        let baseline = current_maintenance_coordinates().expect("baseline coordinates");
+        let cases = [
+            (
+                NarrativeMaintenanceCiTrigger::GraphContractDigestChanged,
+                "graph",
+            ),
+            (
+                NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged,
+                "rule",
+            ),
+            (
+                NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged,
+                "producer",
+            ),
+        ];
+
+        for (trigger, target) in cases {
+            let effective = effective_maintenance_coordinates(Some(&ci_config(trigger)))
+                .expect("effective coordinates");
+            let changed = [
+                effective.graph_contract_digest != baseline.graph_contract_digest,
+                effective.rule_registry_digest != baseline.rule_registry_digest,
+                effective.producer_generation_set_digest != baseline.producer_generation_set_digest,
+            ];
+            assert_eq!(
+                changed.iter().filter(|value| **value).count(),
+                1,
+                "{target}"
+            );
+            assert_eq!(
+                effective.graph_contract_digest != baseline.graph_contract_digest,
+                target == "graph",
+                "{target} must select only the graph coordinate",
+            );
+            assert_eq!(
+                effective.rule_registry_digest != baseline.rule_registry_digest,
+                target == "rule",
+                "{target} must select only the rule coordinate",
+            );
+            assert_eq!(
+                effective.producer_generation_set_digest != baseline.producer_generation_set_digest,
+                target == "producer",
+                "{target} must select only the producer coordinate",
+            );
+            assert!(
+                effective.graph_contract_digest.starts_with("sha256:")
+                    && effective.rule_registry_digest.starts_with("sha256:")
+                    && effective
+                        .producer_generation_set_digest
+                        .starts_with("sha256:")
+            );
+        }
+    }
+
+    #[test]
+    fn ci_coordinate_trigger_is_deterministic_and_not_js_supplied() {
+        let config = ci_config(NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged);
+        let first = effective_maintenance_coordinates(Some(&config)).expect("first coordinates");
+        let second = effective_maintenance_coordinates(Some(&config)).expect("second coordinates");
+        assert_eq!(first, second);
+        assert_eq!(
+            effective_maintenance_coordinates(None).expect("no trigger"),
+            current_maintenance_coordinates().expect("baseline coordinates")
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn ci_coordinate_mismatch_reaches_discovery_after_baseline_evidence() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, outcome_summary_json, created_at, completed_at,
+                     run_kind, semantic_epoch_id, work_key)
+                 VALUES ('backfill-complete', 'project-1', 'maintenance', ?1, ?1,
+                         'sha256:backfill', 'completed', '{}', ?2,
+                         '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
+                         'backfill', 'epoch-1', ?3)",
+                params![
+                    json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION })
+                        .to_string(),
+                    json!({
+                        "maintenancePhase": "backfill-complete",
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION,
+                        "semanticEpochId": "epoch-1",
+                        "summary": {
+                            "epoch_created": true,
+                            "contributions_created": 0,
+                            "edges_created": 0,
+                            "applications_without_run_id": 0
+                        }
+                    })
+                    .to_string(),
+                    LEGACY_BACKFILL_WORK_KEY,
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .expect("seed completed backfill boundary");
+
+        run_dependency_verify_for_project(&db, "project-1")
+            .expect("baseline Verify must persist skip evidence");
+        assert!(discover_durable_maintenance_work_with_config(
+            &db,
+            "project-1",
+            "workspace-opened",
+            None,
+        )
+        .expect("baseline discovery")
+        .is_none());
+        let changed = discover_durable_maintenance_work_with_config(
+            &db,
+            "project-1",
+            "workspace-opened",
+            Some(&ci_config(
+                NarrativeMaintenanceCiTrigger::GraphContractDigestChanged,
+            )),
+        )
+        .expect("changed discovery");
+        let changed = changed.expect("changed coordinate must request Verify");
+        assert_eq!(changed.run_kind, AutomaticRunKind::Verify);
+        assert_eq!(changed.semantic_epoch_id.as_deref(), Some("epoch-1"));
+
+        let changed_config = ci_config(NarrativeMaintenanceCiTrigger::GraphContractDigestChanged);
+        let cycle = run_system_work_cycle_with_modes_and_config(
+            &db,
+            &MaintenanceCycleRequest {
+                work: vec![MaintenanceWorkRequest {
+                    project_id: changed.project_id.clone(),
+                    run_kind: changed.run_kind,
+                    work_key: changed.work_key.clone(),
+                    semantic_epoch_id: changed.semantic_epoch_id.clone(),
+                    reasons: changed.reasons.clone(),
+                }],
+                wake_project_ids: Vec::new(),
+                workspace_binding: None,
+            },
+            |_| RecoveryMode::StartupRecovery,
+            Some(&changed_config),
+        )
+        .expect("changed coordinate cycle");
+        assert_eq!(cycle.status, MaintenanceCycleStatus::Accepted);
+
+        let outcome_json: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT outcome_summary_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'dependency-verify'
+                        AND status = 'completed'
+                   ORDER BY rowid DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read changed Verify outcome");
+        let evidence = serde_json::from_str::<Value>(&outcome_json)
+            .expect("outcome JSON")
+            .get("skipEvidence")
+            .cloned()
+            .expect("changed Verify must persist skip evidence");
+        let baseline = current_maintenance_coordinates().expect("baseline coordinates");
+        let effective = effective_maintenance_coordinates(Some(&changed_config))
+            .expect("effective changed coordinates");
+        assert_eq!(
+            evidence["graphContractDigest"],
+            effective.graph_contract_digest
+        );
+        assert_eq!(
+            evidence["ruleRegistryDigest"],
+            baseline.rule_registry_digest
+        );
+        assert_eq!(
+            evidence["producerGenerationSetDigest"],
+            baseline.producer_generation_set_digest
+        );
+        assert!(discover_durable_maintenance_work_with_config(
+            &db,
+            "project-1",
+            "workspace-opened",
+            Some(&changed_config),
+        )
+        .expect("rediscover changed evidence")
+        .is_none());
+    }
+
+    #[test]
+    fn ci_setup_and_production_misuse_fail_closed_at_native_boundary() {
+        let mut config = ci_config(NarrativeMaintenanceCiTrigger::DependencyGap);
+        config.is_packaged = true;
+        assert!(config.validate().is_err());
+        config.is_packaged = false;
+        config.ci = "false".to_string();
+        assert!(config.validate().is_err());
+        config.ci = "true".to_string();
+        config.owner_token = "forged-owner".to_string();
+        assert!(config.validate().is_err());
     }
 }
