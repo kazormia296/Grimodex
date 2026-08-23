@@ -94,8 +94,6 @@ use super::maintenance_runtime::{
     discover_durable_maintenance_work_in_tx, validate_phase_success_outcome, AutomaticRunKind,
     NarrativeMaintenanceCiFault, WorkKey,
 };
-#[cfg(test)]
-use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
@@ -1935,22 +1933,21 @@ mod tests {
                 seed_project(conn, "project-1");
                 with_immediate_transaction(conn, |conn| {
                     let epoch_id = create_epoch_in_tx(conn, "project-1", "initial", None)?;
-                    let created = create_system_run_in_tx(
+                    let spec = json!({
+                        "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION
+                    });
+                    let spec_digest = format!("sha256:{}", digest_plan(&spec));
+                    let created = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         "backfill",
                         &epoch_id,
                         LEGACY_BACKFILL_WORK_KEY,
-                        &json!({ "phase": "transform-committed" }),
-                        "backfill-spec-digest",
+                        &spec,
+                        &spec_digest,
                         SystemRunWorkKeyReuse::RunningAndCompleted,
-                        None,
                     )?;
-                    let run_id = created["runId"]
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("missing backfill run id"))?
-                        .to_string();
-                    Ok(run_id)
+                    Ok(created.run_id)
                 })
             })
             .expect("create phase-gap Backfill Run");
