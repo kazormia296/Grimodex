@@ -8570,6 +8570,26 @@ mod narrative_maintenance_foreground_release_tests {
             .expect("seed Verify rebuild follow-up");
     }
 
+    fn seed_project_epoch(authority: &PinnedWorkspaceDb, project_id: &str, epoch_id: &str) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, ?2)",
+                    [project_id, project_id],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES (?1, ?2, 0, 'initial',
+                             '2026-01-01T00:00:00.000Z')",
+                    [epoch_id, project_id],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project epoch");
+    }
+
     fn backend_from_existing_workspace(root: &std::path::Path) -> Backend {
         let workspace_path = root.join("workspace");
         let resources = root.join("resources");
@@ -8854,6 +8874,164 @@ mod narrative_maintenance_foreground_release_tests {
     }
 
     #[tokio::test]
+    async fn napi_held_a_blocks_marker_on_b_only_cycle_but_remains_releasable() {
+        let (backend, root) = backend_with_workspace("held-a-b-only");
+        let (run_a, authority) = start_foreground_run(&backend).await;
+        seed_project_epoch(&authority, "project-2", "epoch-2");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+
+        let b_cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-2",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-2",
+                        "semanticEpochId": "epoch-2",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("B-only cycle must execute ordinarily"),
+        )
+        .expect("B-only cycle JSON");
+        assert_eq!(b_cycle["status"], "accepted");
+
+        let b_rows: Vec<(String, String, String)> = authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, status, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-2'
+                        AND run_kind = 'dependency-verify'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read B ledger");
+        assert_eq!(b_rows.len(), 1, "B must not spin replacement Runs");
+        assert_eq!(b_rows[0].1, "completed");
+        let b_spec: Value = serde_json::from_str(&b_rows[0].2).expect("B spec JSON");
+        assert!(
+            b_spec.get("systemWork").is_none(),
+            "B must not claim A's foreground marker"
+        );
+        assert_eq!(run_status(&authority, &run_a), "running");
+
+        let claimed: Value = serde_json::from_str(
+            &backend
+                .claim_narrative_maintenance_foreground_barrier("project-1".to_string())
+                .await
+                .expect("A remains claimable"),
+        )
+        .expect("A claim JSON");
+        assert_eq!(claimed["status"], "claimed");
+        assert_eq!(claimed["runId"], run_a);
+        let released: Value = serde_json::from_str(
+            &backend
+                .release_narrative_maintenance_foreground_barrier(
+                    "project-1".to_string(),
+                    run_a.clone(),
+                )
+                .await
+                .expect("A remains releasable"),
+        )
+        .expect("A release JSON");
+        assert_eq!(released["status"], "completed");
+        assert_eq!(run_status(&authority, &run_a), "completed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_foreground_owner_selects_current_run_when_stale_pending_exists() {
+        let (backend, root) = backend_with_workspace("stale-pending-current");
+        let (run_a, authority) = start_foreground_run(&backend).await;
+        let config = backend
+            .state
+            .narrative_maintenance_ci_seam
+            .config()
+            .expect("configured seam");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let stale = narrative_extraction::find_running_foreground_system_work_run(
+            &authority,
+            &config,
+            &binding,
+        )
+        .expect("find initial marker")
+        .expect("initial marker is running");
+
+        let released: Value = serde_json::from_str(
+            &backend
+                .release_narrative_maintenance_foreground_barrier(
+                    "project-1".to_string(),
+                    run_a.clone(),
+                )
+                .await
+                .expect("release initial Run"),
+        )
+        .expect("initial release JSON");
+        assert_eq!(released["status"], "completed");
+        backend
+            .state
+            .narrative_maintenance_foreground_barrier
+            .remember(stale)
+            .expect("retain stale process-local handle");
+
+        duplicate_running_foreground_run(&authority, &run_a, "run-current");
+        let current = narrative_extraction::find_running_foreground_system_work_run(
+            &authority,
+            &config,
+            &binding,
+        )
+        .expect("find replacement marker")
+        .expect("replacement marker is running");
+        assert_eq!(current.run_id, "run-current");
+        backend
+            .state
+            .narrative_maintenance_foreground_barrier
+            .remember(current.clone())
+            .expect("retain current process-local handle");
+
+        let follow_up: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [],
+                    "wakeProjectIds": ["project-1"],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("current owner follow-up cycle"),
+        )
+        .expect("follow-up JSON");
+        assert_eq!(follow_up["status"], "accepted");
+        assert_eq!(run_status(&authority, "run-current"), "running");
+        assert_eq!(
+            narrative_extraction::find_running_foreground_system_work_run(
+                &authority,
+                &config,
+                &narrative_maintenance_binding_for_authority(&backend.state, &authority),
+            )
+            .expect("find current marker after follow-up")
+            .expect("current marker remains running")
+            .run_id,
+            "run-current"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn napi_release_rejects_old_binding_after_workspace_replacement() {
         let (backend, root) = backend_with_workspace("swap");
         let (run_id, old_authority) = start_foreground_run(&backend).await;
@@ -8945,23 +9123,44 @@ mod narrative_maintenance_foreground_release_tests {
             &config,
             &narrative_maintenance_binding_for_authority(&backend.state, &restarted_authority),
         )
-        .expect("find replacement marker")
-        .expect("startup recovery creates a new held Run");
-        assert_ne!(replacement.run_id, run_id);
-
-        let completed = backend
-            .release_narrative_maintenance_foreground_barrier(
-                "project-1".to_string(),
-                replacement.run_id.clone(),
-            )
-            .await
-            .expect("durable marker rediscovery");
-        let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
-        assert_eq!(completed["status"], "completed");
-        assert_eq!(completed["runId"], replacement.run_id);
-        assert_eq!(
-            run_status(&restarted_authority, &replacement.run_id),
-            "completed"
+        .expect("inspect replacement marker");
+        assert!(
+            replacement.is_none(),
+            "startup recovery must not create a duplicate foreground marker"
+        );
+        let replacement_rows: Vec<(String, String, String)> = restarted_authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, status, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'dependency-verify'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read restart recovery rows");
+        assert_eq!(replacement_rows.len(), 2);
+        let replacement = replacement_rows
+            .iter()
+            .find(|(id, _, _)| id != &run_id)
+            .expect("startup recovery creates one ordinary replacement");
+        assert_eq!(replacement.1, "completed");
+        let replacement_spec: Value =
+            serde_json::from_str(&replacement.2).expect("replacement spec JSON");
+        assert!(
+            replacement_spec.get("systemWork").is_none(),
+            "restart replacement must be unmarked"
         );
         let _ = std::fs::remove_dir_all(root);
     }
