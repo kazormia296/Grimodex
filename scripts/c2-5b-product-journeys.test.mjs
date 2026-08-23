@@ -820,6 +820,55 @@ test("restore fixture captures the derived-state gap before the normal launch se
   );
 });
 
+test("restore fixture requires a typed completed legacy Backfill boundary", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const seedBody = source.match(
+    /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
+  )?.[0];
+  assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
+  const backfillRouteAt = seedBody.indexOf(
+    '"retry_narrative_legacy_backfill"',
+  );
+  const ownerRunAt = seedBody.indexOf(
+    '"narrative_extraction_create_run"',
+  );
+  const gapAt = seedBody.indexOf("createRestoreFixtureDerivedStateGap(context");
+  const backupAt = seedBody.indexOf("createRestoreBackupFixture(workspace)");
+  assert.ok(
+    backfillRouteAt >= 0,
+    "restore fixture must seed legacy Backfill through the typed production route",
+  );
+  assert.ok(
+    backfillRouteAt < ownerRunAt && backfillRouteAt < gapAt,
+    "the canonical Backfill boundary must precede fixture-only ownership and the derived-state gap",
+  );
+  assert.ok(
+    gapAt < backupAt,
+    "the gap must be captured only after the completed Backfill boundary",
+  );
+  assert.match(
+    seedBody,
+    /backfillOutcome\.outcome\s*!==\s*"ran"/,
+    "the fixture must reject a missing or reused Backfill outcome",
+  );
+  assert.match(
+    seedBody,
+    /runKind\s*!==\s*"backfill"[\s\S]*status\s*!==\s*"completed"/,
+    "the fixture must validate the durable completed Backfill Run lifecycle",
+  );
+  assert.match(
+    seedBody,
+    /(?:Number\()?initialEpoch\.epochNumber\)?\s*!==\s*0[\s\S]*initialEpoch\.reason\s*!==\s*"initial"/,
+    "the fixture must validate the initial Semantic Epoch created by Backfill",
+  );
+});
+
 test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoch", () => {
   const beforeEpochs = [
     { id: "epoch-initial", epochNumber: 0, reason: "initial" },
