@@ -203,6 +203,9 @@ fn seed_completed_rebuild(db: &Database) {
 fn automatic_success_owns_exactly_one_task_and_attempt_and_finalizes_atomically() {
     for run_kind in AutomaticRunKind::all() {
         let db = fixture_db();
+        if run_kind == AutomaticRunKind::Verify {
+            seed_completed_backfill(&db);
+        }
         run_system_work_cycle(&db, &request(run_kind), RecoveryMode::SameProcessLive)
             .expect("automatic phase succeeds");
 
