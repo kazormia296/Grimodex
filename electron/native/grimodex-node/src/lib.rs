@@ -9251,11 +9251,9 @@ mod narrative_maintenance_foreground_release_tests {
             }))
             .await
             .expect_err("duplicate exact markers must fail closed");
-        assert!(
-            error
-                .to_string()
-                .contains("NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE")
-        );
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE"));
         assert_eq!(run_status(&authority, &run_a), "completed");
         assert_eq!(run_status(&authority, "run-duplicate"), "running");
         let _ = std::fs::remove_dir_all(root);
