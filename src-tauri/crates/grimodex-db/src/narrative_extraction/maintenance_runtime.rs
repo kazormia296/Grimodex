@@ -16,6 +16,9 @@ use super::legacy_backfill::{
     LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_lifecycle::{
+    fail_maintenance_run_in_tx, load_maintenance_run_in_tx, MaintenanceFailureKind,
+};
 use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, CompletedRunSkipDecision, CompletedRunSkipExpectation,
 };
@@ -1497,6 +1500,16 @@ pub struct FailureClassification {
 /// deliberately contract/manual failures (fail closed).
 pub fn classify_failure(message: &str) -> FailureClassification {
     let lower = message.to_ascii_lowercase();
+    let explicit_code = message
+        .split(|character: char| character == ':' || character.is_whitespace())
+        .find(|token| token.starts_with("NEX_"));
+    if explicit_code == Some("NEX_MAINTENANCE_INTERRUPTED") {
+        return FailureClassification {
+            class: FailureClass::Transient,
+            code: "NEX_MAINTENANCE_INTERRUPTED".to_string(),
+            retryable: true,
+        };
+    }
     let transient = [
         "sqlite_busy",
         "sqlite_locked",
@@ -1527,9 +1540,7 @@ pub fn classify_failure(message: &str) -> FailureClassification {
         };
     }
 
-    let code = message
-        .split(|character: char| character == ':' || character.is_whitespace())
-        .find(|token| token.starts_with("NEX_"))
+    let code = explicit_code
         .unwrap_or("NEX_MAINTENANCE_UNCLASSIFIED")
         .to_string();
     if matches!(
@@ -1983,8 +1994,9 @@ pub struct InterruptedRunTerminalization {
 }
 
 /// Safely terminalize explicit active Run IDs discovered by startup recovery.
-/// The operation is one `BEGIN IMMEDIATE` transaction and touches only the
-/// Run rows; it never creates or mutates Task/Attempt rows.
+/// The operation is one IMMEDIATE transaction. Running maintenance rows are
+/// terminalized through their owned Task/Attempt pair; pending compatibility
+/// rows are cancelled at Run level because they have not started an Attempt.
 pub fn terminalize_interrupted_runs(
     db: &Database,
     project_id: &str,
@@ -2173,27 +2185,32 @@ fn terminalize_interrupted_runs_impl(
                 cancelled_pending_run_ids: Vec::new(),
             };
             for (run_id, status) in active {
-                let target = match status {
+                match status {
                     NarrativeRunStatus::Running => {
                         result.failed_run_ids.push(run_id.clone());
-                        NarrativeRunStatus::Failed
+                        let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                        fail_maintenance_run_in_tx(
+                            conn,
+                            &handle,
+                            MaintenanceFailureKind::Interrupted,
+                            "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+                        )?;
                     }
                     NarrativeRunStatus::Pending => {
                         result.cancelled_pending_run_ids.push(run_id.clone());
-                        NarrativeRunStatus::Cancelled
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Cancelled)?;
+                        anyhow::ensure!(
+                            conn.execute(
+                                "UPDATE narrative_extraction_runs
+                                    SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
+                                  WHERE id = ?1 AND status = 'cancelled'",
+                                params![run_id],
+                            )? == 1,
+                            "run terminalization lost its row: '{run_id}'"
+                        );
                     }
                     _ => unreachable!("active status was validated above"),
-                };
-                transition_run_status_in_tx(conn, &run_id, target)?;
-                anyhow::ensure!(
-                    conn.execute(
-                        "UPDATE narrative_extraction_runs
-                            SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
-                          WHERE id = ?1 AND status = ?2",
-                        params![run_id, target.as_str()],
-                    )? == 1,
-                    "run terminalization lost its row: '{run_id}'"
-                );
+                }
             }
             Ok(result)
         })

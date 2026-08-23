@@ -29,6 +29,10 @@ use super::finding_identity::{
     MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_lifecycle::{
+    canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    fail_maintenance_run_in_tx, load_maintenance_run_in_tx, MaintenanceFailureKind,
+};
 use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
@@ -550,13 +554,18 @@ fn finalize_rebuild_run(
                     Some(&error),
                 );
                 record_run_outcome_in_tx(conn, run_id, &outcome)?;
-                let finalized_at =
-                    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                let finalized_at = fail_maintenance_run_in_tx(
+                    conn,
+                    &handle,
+                    MaintenanceFailureKind::Transient,
+                    &error,
+                )?;
                 project_terminal_failure_for_run_in_tx(
                     conn,
                     project_id,
                     run_id,
-                    &error,
+                    &canonical_failure_message(MaintenanceFailureKind::Transient, &error),
                     &finalized_at,
                     true,
                 )?;
@@ -581,17 +590,10 @@ fn finalize_rebuild_run(
                 ),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
-            let finalized_at = transition_run_status_in_tx(
-                conn,
-                run_id,
-                if work_result.is_ok() {
-                    NarrativeRunStatus::Completed
-                } else {
-                    NarrativeRunStatus::Failed
-                },
-            )?;
             match work_result {
                 Ok(_) => {
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
                     resolve_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
@@ -600,11 +602,16 @@ fn finalize_rebuild_run(
                     )?;
                 }
                 Err(error) => {
+                    let message = error.to_string();
+                    let failure_kind = maintenance_failure_kind_for_message(&message);
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at =
+                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         run_id,
-                        &error.to_string(),
+                        &canonical_failure_message(failure_kind, &message),
                         &finalized_at,
                         true,
                     )?;
@@ -618,6 +625,17 @@ fn finalize_rebuild_run(
         anyhow::bail!(error);
     }
     Ok(())
+}
+
+fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
+    let classification = super::maintenance_runtime::classify_failure(message);
+    if classification.code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classification.retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
+    }
 }
 
 /// Version of the durable outcome written by the manual Rebuild-Derived
@@ -731,7 +749,7 @@ pub fn rebuild_narrative_derived_state_for_project(
                 .id;
             let spec = json!({});
             let spec_digest = format!("sha256:{}", digest_plan(&spec));
-            let created = create_system_run_in_tx(
+            let handle = create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 "semantic-index-rebuild",
@@ -740,16 +758,8 @@ pub fn rebuild_narrative_derived_state_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
-                // No request identity: this Run is started by the system
-                // itself, not by an addressable caller request.
-                None,
             )?;
-            let run_id = created["runId"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-                .to_string();
-            let already_running = created["reused"].as_bool().unwrap_or(false);
-            Ok((run_id, epoch_id, already_running))
+            Ok((handle.run_id, epoch_id, handle.reused))
         })
     })?;
 
@@ -1220,7 +1230,7 @@ pub fn run_dependency_verify_for_project(
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
     let created = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            create_system_run_in_tx(
+            create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 VERIFY_RUN_KIND,
@@ -1229,15 +1239,11 @@ pub fn run_dependency_verify_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
-                None,
             )
         })
     })?;
-    let run_id = created["runId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-        .to_string();
-    if created["reused"].as_bool().unwrap_or(false) {
+    let run_id = created.run_id;
+    if created.reused {
         anyhow::bail!(
             "NEX_VERIFY_ALREADY_RUNNING: dependency-verify Run '{run_id}' is already running"
         );
@@ -1258,8 +1264,6 @@ pub fn run_dependency_verify_for_project(
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
-                    let finalized_at =
-                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
                     if report.is_clean() {
                         let coordinates = current_maintenance_coordinates()?;
                         persist_completed_run_skip_evidence_in_tx(
@@ -1279,6 +1283,8 @@ pub fn run_dependency_verify_for_project(
                             },
                         )?;
                     }
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
                     resolve_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
@@ -1303,13 +1309,16 @@ pub fn run_dependency_verify_for_project(
                         &run_id,
                         &json!({ "failure": error.to_string() }),
                     )?;
+                    let message = error.to_string();
+                    let failure_kind = maintenance_failure_kind_for_message(&message);
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
                     let finalized_at =
-                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         &run_id,
-                        &error.to_string(),
+                        &canonical_failure_message(failure_kind, &message),
                         &finalized_at,
                         true,
                     )?;
