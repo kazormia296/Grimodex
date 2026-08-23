@@ -8134,6 +8134,25 @@ mod narrative_maintenance_foreground_release_tests {
             .expect("run terminal reason")
     }
 
+    fn seed_verify_rebuild_work(authority: &PinnedWorkspaceDb) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at)
+                     VALUES ('edge-rebuild-seam', 'project-1',
+                             'narrative-extraction-run', 'run-1',
+                             'project:scene:missing', '[]',
+                             '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed Verify rebuild follow-up");
+    }
+
     fn backend_from_existing_workspace(root: &std::path::Path) -> Backend {
         let workspace_path = root.join("workspace");
         let resources = root.join("resources");
@@ -8272,6 +8291,108 @@ mod narrative_maintenance_foreground_release_tests {
         let stale_timer: Value = serde_json::from_str(&stale_timer).expect("stale JSON");
         assert_eq!(stale_timer["status"], "not-held");
         assert_eq!(run_status(&authority, "run-b"), "running");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_first_foreground_cycle_keeps_its_marked_run_until_exact_release() {
+        let (backend, root) = backend_with_workspace("runtime-seam");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        seed_verify_rebuild_work(&authority);
+        configure_foreground_seam(&backend);
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+
+        let cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-1",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-1",
+                        "semanticEpochId": "epoch-1",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("foreground cycle"),
+        )
+        .expect("cycle response JSON");
+        assert_eq!(cycle["status"], "accepted");
+
+        let rows: Vec<(String, String, String)> = authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, status, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'dependency-verify'
+                        AND work_key = 'dependency-verify:epoch-1'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read Verify rows");
+        assert_eq!(
+            rows.len(),
+            1,
+            "the first cycle must not dispatch a replacement"
+        );
+        assert_eq!(rows[0].1, "running");
+        let spec: Value = serde_json::from_str(&rows[0].2).expect("Verify spec JSON");
+        assert!(
+            spec.get("systemWork").is_some(),
+            "Run must retain its marker"
+        );
+        assert_eq!(run_terminal_reason(&authority, &rows[0].0), None);
+
+        let claimed: Value = serde_json::from_str(
+            &backend
+                .claim_narrative_maintenance_foreground_barrier("project-1".to_string())
+                .await
+                .expect("exact foreground claim"),
+        )
+        .expect("claim JSON");
+        assert_eq!(claimed["status"], "claimed");
+        assert_eq!(claimed["runId"], rows[0].0);
+
+        let released: Value = serde_json::from_str(
+            &backend
+                .release_narrative_maintenance_foreground_barrier(
+                    "project-1".to_string(),
+                    rows[0].0.clone(),
+                )
+                .await
+                .expect("exact foreground release"),
+        )
+        .expect("release JSON");
+        assert_eq!(released["status"], "completed");
+        assert_eq!(released["runId"], rows[0].0);
+        assert_eq!(run_status(&authority, &rows[0].0), "completed");
+
+        let next = narrative_extraction::discover_durable_maintenance_work(
+            &authority,
+            "project-1",
+            "durable-wake",
+        )
+        .expect("discover after exact release")
+        .expect("Verify report must advance to Rebuild");
+        assert_eq!(
+            next.run_kind,
+            grimodex_db::narrative_extraction::AutomaticRunKind::RebuildDerived
+        );
+        assert_eq!(next.semantic_epoch_id.as_deref(), Some("epoch-1"));
         let _ = std::fs::remove_dir_all(root);
     }
 
