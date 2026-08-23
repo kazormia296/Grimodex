@@ -1924,6 +1924,32 @@ pub fn run_system_work_cycle_with_modes_and_config(
     mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner(
+        db,
+        request,
+        mode_for,
+        ci_config,
+        None,
+    )
+}
+
+/// Execute a cycle while retaining one exact foreground Run owned by an
+/// earlier cycle in the same process.  The owner is never trusted from the
+/// caller alone: it must still be the unique running durable marker for the
+/// current CI seam and workspace binding before it can suppress recovery.
+///
+/// A fresh process passes `None`, so a durable running row is still handled by
+/// [`RecoveryMode::StartupRecovery`].  This is the narrow seam needed for the
+/// Electron `hasMore` follow-up cycle: the process-local N-API state carries
+/// the exact Run ID and immutable marker across cycles without making a
+/// canonical WorkKey a substitute for Run identity.
+pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
+    db: &Database,
+    request: &MaintenanceCycleRequest,
+    mode_for: impl Fn(&DesiredWork) -> RecoveryMode,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    foreground_owner: Option<&ForegroundSystemWorkRun>,
+) -> anyhow::Result<MaintenanceCycleResult> {
     let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     if let Some(binding) = request.workspace_binding.as_ref() {
         binding.validate()?;
@@ -1948,7 +1974,27 @@ pub fn run_system_work_cycle_with_modes_and_config(
     let mut coalesced_active = false;
     let mut handled_non_coalesced = false;
     let mut has_more = false;
-    let mut foreground_marker_available = true;
+    let mut foreground_owned_run = match (
+        foreground_owner,
+        ci_config,
+        request.workspace_binding.as_ref(),
+    ) {
+        (
+            Some(owner),
+            Some(config),
+            Some(binding),
+        ) if config.trigger == Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+            && config.product_journey_barrier_id.is_some()
+            && config.correlation.is_some() => {
+            let current = find_running_foreground_system_work_run(db, config, binding)?;
+            (current.as_ref() == Some(owner)).then(|| owner.clone())
+        }
+        _ => None,
+    };
+    // An existing process-local owner already consumed this cycle's one
+    // foreground marker slot.  This prevents an unrelated project/phase in a
+    // mixed follow-up batch from receiving the same barrier marker.
+    let mut foreground_marker_available = foreground_owned_run.is_none();
     // A durable terminal/manual outcome is a handled no-op for this
     // automatic identity. Keep the halt scoped to the canonical WorkKey so a
     // different project, phase, work-key version, or Semantic Epoch remains
@@ -1956,13 +2002,12 @@ pub fn run_system_work_cycle_with_modes_and_config(
     // durable rediscovery check from turning a terminal Inbox item into a
     // scheduler retry wake.
     let mut terminal_halted_work = BTreeSet::new();
-    // Only the exact foreground Run created by this cycle may suppress its
+    // Only the exact foreground Run created by this process may suppress its
     // same-key rediscovery. A canonical-key-only set would also suppress the
     // ordinary Verify confirmation after a Verify -> Rebuild phase chain.
     // The durable lookup below keeps this ownership bounded to the marked Run
     // while it is still running; pre-existing active rows remain subject to
     // the caller-selected StartupRecovery/SameProcessLive mode.
-    let mut foreground_owned_run: Option<ForegroundSystemWorkRun> = None;
     let mut project_ids = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());

@@ -2107,7 +2107,32 @@ impl Backend {
                     }
                 }
             }
-            let result = narrative_extraction::run_system_work_cycle_with_modes_and_config(
+            let foreground_owner = ci_config.as_ref().and_then(|config| {
+                if config.trigger
+                    != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+                {
+                    return None;
+                }
+                let barrier_id = config.product_journey_barrier_id.as_deref()?;
+                let correlation = config.correlation.as_deref()?;
+                let binding = request.workspace_binding.as_ref()?;
+                normalized_work
+                    .iter()
+                    .map(|item| item.project_id.as_str())
+                    .chain(request.wake_project_ids.iter().map(String::as_str))
+                    .find_map(|project_id| {
+                        state
+                            .narrative_maintenance_foreground_barrier
+                            .pending_for_project_and_binding(
+                                project_id,
+                                &binding.authority_id,
+                                binding.generation,
+                                barrier_id,
+                                correlation,
+                            )
+                    })
+            });
+            let result = narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 authority.db(),
                 &request,
                 |item| {
@@ -2116,6 +2141,7 @@ impl Backend {
                         .mode_for_binding(request_binding, &item.canonical_key())
                 },
                 ci_config.as_ref(),
+                foreground_owner.as_ref(),
             )?;
             if matches!(
                 result.status,

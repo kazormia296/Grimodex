@@ -11,6 +11,7 @@ use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     run_system_work_cycle, run_system_work_cycle_with_modes_and_config,
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner,
     terminalize_interrupted_runs_for_epoch, AutomaticRunKind, MaintenanceCycleRequest,
     MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     NarrativeMaintenanceCiTrigger, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
@@ -368,6 +369,69 @@ fn foreground_backfill_stays_running_when_same_cycle_rediscovery_binds_epoch() {
             .0,
         "completed"
     );
+}
+
+#[test]
+fn foreground_backfill_stays_running_across_followup_cycle_only_for_exact_owner() {
+    let db = fixture_db_without_epoch();
+    let binding = MaintenanceWorkspaceBinding {
+        authority_id: "authority-c2-5b-lifecycle-followup".to_string(),
+        generation: 23,
+    };
+    let config = foreground_config();
+    let mut foreground_request = request(AutomaticRunKind::Backfill);
+    foreground_request.workspace_binding = Some(binding.clone());
+
+    let first = run_system_work_cycle_with_modes_and_config(
+        &db,
+        &foreground_request,
+        |_| RecoveryMode::StartupRecovery,
+        Some(&config),
+    )
+    .expect("first foreground Backfill cycle succeeds");
+    assert_eq!(first.status, MaintenanceCycleStatus::Accepted);
+    let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
+        .expect("find exact foreground owner")
+        .expect("first cycle must leave one held Run");
+
+    let followup = MaintenanceCycleRequest {
+        work: Vec::new(),
+        wake_project_ids: vec![PROJECT_ID.to_string()],
+        workspace_binding: Some(binding.clone()),
+    };
+    let second = run_system_work_cycle_with_modes_and_config_and_foreground_owner(
+        &db,
+        &followup,
+        |_| RecoveryMode::StartupRecovery,
+        Some(&config),
+        Some(&barrier),
+    )
+    .expect("same-process follow-up keeps the exact owner held");
+    assert_eq!(second.status, MaintenanceCycleStatus::Accepted);
+
+    let rows: Vec<(String, String, Option<String>)> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT id, status, terminal_reason_code
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill'
+                  ORDER BY created_at, id",
+            )?;
+            let rows = statement
+                .query_map([PROJECT_ID], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read follow-up Backfill ledger");
+    assert_eq!(rows.len(), 1, "follow-up must not replace the held Run");
+    assert_eq!(rows[0].0, barrier.run_id);
+    assert_eq!(rows[0].1, "running");
+    assert_eq!(rows[0].2, None);
+
+    complete_foreground_system_work_run(&db, &barrier)
+        .expect("release exact owner after the follow-up cycle");
 }
 
 #[test]

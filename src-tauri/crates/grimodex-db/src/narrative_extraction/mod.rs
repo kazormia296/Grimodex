@@ -172,9 +172,10 @@ pub use maintenance_runtime::{
 pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     run_system_work_cycle, run_system_work_cycle_with_modes,
-    run_system_work_cycle_with_modes_and_config, ForegroundSystemWorkRun, MaintenanceCycleRequest,
-    MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
-    MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    run_system_work_cycle_with_modes_and_config,
+    run_system_work_cycle_with_modes_and_config_and_foreground_owner, ForegroundSystemWorkRun,
+    MaintenanceCycleRequest, MaintenanceCycleResult, MaintenanceCycleStatus,
+    MaintenanceWorkRequest, MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 #[allow(unused_imports)]
 pub(crate) use publish_runtime::{
