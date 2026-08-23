@@ -258,7 +258,7 @@ pub(crate) fn with_immediate_transaction<T>(
     conn.execute_batch("BEGIN IMMEDIATE")?;
     match operation(conn) {
         Ok(value) => {
-            conn.execute_batch("COMMIT")?;
+            grimodex_core::commit_or_rollback(conn)?;
             Ok(value)
         }
         Err(error) => {

@@ -160,6 +160,10 @@ pub fn write_dependency_declaration_set_in_tx(
     conn: &Connection,
     request: DependencyDeclarationSetRequest,
 ) -> anyhow::Result<DependencyDeclarationSetReceipt> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NEX_DECLARATION_TRANSACTION_REQUIRED: declaration set writes require a caller-owned transaction"
+    );
     let prepared = prepare_request(&request)?;
     let digest_entries = prepared
         .iter()
@@ -180,31 +184,43 @@ pub fn write_dependency_declaration_set_in_tx(
     )?;
 
     if let Some(head) = &current_head {
+        // Every head must agree with the sealed set it points at before it can
+        // participate in replay or monotonicity checks.  A corrupt head must
+        // fail closed rather than authorising a new set or forging a receipt.
+        let existing = load_verified_set_by_id(
+            conn,
+            &head.active_declaration_set_id,
+            Some((
+                &request.project_id,
+                &request.consumer_kind,
+                &request.consumer_key,
+            )),
+        )?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_DECLARATION_HEAD_INCOHERENT: active head does not point to a verified sealed declaration set"
+            )
+        })?;
+        anyhow::ensure!(
+            head_matches_set(head, &existing),
+            "NEX_DECLARATION_HEAD_INCOHERENT: active head does not match its pointed sealed declaration set"
+        );
+
         // Replays are safe only when they identify the exact currently active
         // generation and the active set still verifies end-to-end.  A stale
         // expected version alone never authorises a new write.
         if head.producer_generation == request.producer_generation
             && head.producer_id == request.producer_id
         {
-            if let Some(existing) = load_verified_set_by_id(
-                conn,
-                &head.active_declaration_set_id,
-                Some((
-                    &request.project_id,
-                    &request.consumer_kind,
-                    &request.consumer_key,
-                )),
-            )? {
-                if existing.dependency_set_digest == dependency_set_digest {
-                    return Ok(DependencyDeclarationSetReceipt {
-                        declaration_set_id: existing.declaration_set_id,
-                        state: DependencyDeclarationSetState::Sealed,
-                        dependency_set_digest: existing.dependency_set_digest,
-                        producer_id: head.producer_id.clone(),
-                        producer_generation: head.producer_generation,
-                        head_version: head.version,
-                    });
-                }
+            if existing.dependency_set_digest == dependency_set_digest {
+                return Ok(DependencyDeclarationSetReceipt {
+                    declaration_set_id: existing.declaration_set_id,
+                    state: DependencyDeclarationSetState::Sealed,
+                    dependency_set_digest: existing.dependency_set_digest,
+                    producer_id: head.producer_id.clone(),
+                    producer_generation: head.producer_generation,
+                    head_version: head.version,
+                });
             }
         }
 
@@ -360,11 +376,18 @@ pub fn read_active_dependency_declaration_set(
         let Some(head) = load_head(conn, project_id, consumer_kind, consumer_key)? else {
             return Ok(None);
         };
-        load_verified_set_by_id(
+        let Some(active_set) = load_verified_set_by_id(
             conn,
             &head.active_declaration_set_id,
             Some((project_id, consumer_kind, consumer_key)),
-        )
+        )?
+        else {
+            return Ok(None);
+        };
+        if !head_matches_set(&head, &active_set) {
+            return Ok(None);
+        }
+        Ok(Some(active_set))
     })
 }
 
@@ -501,6 +524,13 @@ fn load_set_row(conn: &Connection, set_id: &str) -> anyhow::Result<Option<Declar
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn head_matches_set(head: &DeclarationHeadRow, set: &ActiveDependencyDeclarationSet) -> bool {
+    head.active_declaration_set_id == set.declaration_set_id
+        && head.producer_id == set.producer_id
+        && head.producer_generation == set.producer_generation
+        && head.version >= 1
 }
 
 fn row_to_set(row: &Row<'_>) -> rusqlite::Result<DeclarationSetRow> {
