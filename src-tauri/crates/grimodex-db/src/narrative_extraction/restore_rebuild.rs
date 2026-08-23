@@ -1337,6 +1337,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                                 rule_registry_digest: effective_coordinates.rule_registry_digest,
                                 producer_generation_set_digest: effective_coordinates
                                     .producer_generation_set_digest,
+                                rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                                 run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                                 report_digest: report_digest.clone(),
                             },
@@ -1391,6 +1392,10 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// checks behind it changes in a way that makes an older stored report
 /// unsafe to seal a Repair plan from.
 ///
+/// `"7"` additionally records the Rebuild contract version in completed
+/// Verify skip evidence, so a current Verify cannot seal a stale Rebuild
+/// outcome after the Rebuild contract changes.
+///
 /// `"6"` explicitly records whether the current derived state requires a
 /// conditional Rebuild, including missing current-epoch Edge State and
 /// Consumer Freshness rows.
@@ -1414,7 +1419,8 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// `"2"` existed only on the branch that built this Gate, as the state after
 /// the first two fields and before the third. No build carrying it was
 /// released, so no stored report can be at `"2"` -- it is skipped rather than
-/// preserved. Released workspaces therefore move `"1"` -> `"3"` -> `"4"` -> `"5"`;
+/// preserved. Released workspaces therefore move `"1"` -> `"3"` -> `"4"` -> `"5"` ->
+/// `"6"` -> `"7"`;
 /// `"2"` remains a branch-only value.
 ///
 /// A stored report under an older version is refused by `repair.rs`'s
@@ -1423,7 +1429,7 @@ pub fn run_dependency_verify_for_project_with_coordinates(
 /// `#[serde(default)]`) and may assert a clean bill of health over less
 /// evidence. The operational consequence is that an in-flight Verify result
 /// does not survive this upgrade: re-run Verify before sealing a Repair.
-pub(crate) const VERIFY_CONTRACT_VERSION: &str = "6";
+pub(crate) const VERIFY_CONTRACT_VERSION: &str = "7";
 
 /// `narrative_extraction_runs.run_kind` value a Verify Run is stored
 /// under. Shared with `repair.rs` so the writer and the reader that

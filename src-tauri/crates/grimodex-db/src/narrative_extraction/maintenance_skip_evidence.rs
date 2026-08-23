@@ -55,6 +55,7 @@ pub struct CompletedRunSkipEvidence {
     pub graph_contract_digest: String,
     pub rule_registry_digest: String,
     pub producer_generation_set_digest: String,
+    pub rebuild_contract_version: String,
     pub run_kind_contract_version: String,
     #[serde(alias = "successfulTerminalDigest", alias = "terminalDigest")]
     pub report_digest: String,
@@ -74,6 +75,7 @@ pub struct CompletedRunSkipExpectation {
     pub graph_contract_digest: String,
     pub rule_registry_digest: String,
     pub producer_generation_set_digest: String,
+    pub rebuild_contract_version: String,
     pub run_kind_contract_version: String,
     pub report_digest: Option<String>,
 }
@@ -96,6 +98,7 @@ pub enum CompletedRunSkipReason {
     GraphContractMismatch,
     RuleRegistryMismatch,
     ProducerGenerationMismatch,
+    RebuildContractMismatch,
     RunKindContractMismatch,
     ReportDigestMismatch,
     DerivedStateInvalid,
@@ -363,6 +366,13 @@ pub fn evaluate_completed_run_skip(
             reason: CompletedRunSkipReason::ProducerGenerationMismatch,
         });
     }
+    if evidence.rebuild_contract_version != expected.rebuild_contract_version
+        || expected.rebuild_contract_version != REBUILD_RUN_KIND_CONTRACT_VERSION
+    {
+        return Ok(CompletedRunSkipDecision::Rerun {
+            reason: CompletedRunSkipReason::RebuildContractMismatch,
+        });
+    }
     if evidence.run_kind_contract_version != expected.run_kind_contract_version
         || expected.run_kind_contract_version
             != supported_run_kind_contract_version(&expected.run_kind)
@@ -485,6 +495,7 @@ pub fn read_completed_run_skip_evidence(
         || parsed.run_kind != row_run_kind
         || parsed.semantic_epoch_id != row_epoch_id
         || parsed.work_key != work_key.clone().unwrap_or_default()
+        || parsed.rebuild_contract_version != REBUILD_RUN_KIND_CONTRACT_VERSION
         || parsed.run_kind_contract_version
             != supported_run_kind_contract_version(row_run_kind.as_str())
     {
@@ -562,6 +573,11 @@ pub fn persist_completed_run_skip_evidence_in_tx(
         "NEX_MAINTENANCE_SKIP_CONTRACT_VERSION_UNSUPPORTED: '{}' is not the current contract version for '{}'",
         evidence.run_kind_contract_version,
         evidence.run_kind
+    );
+    ensure!(
+        evidence.rebuild_contract_version == REBUILD_RUN_KIND_CONTRACT_VERSION,
+        "NEX_MAINTENANCE_SKIP_REBUILD_CONTRACT_VERSION_UNSUPPORTED: '{}' is not the current Rebuild contract version",
+        evidence.rebuild_contract_version
     );
     let row: Option<PersistRunRow> = conn
         .query_row(
@@ -711,6 +727,7 @@ fn validate_expectation_shape(expected: &CompletedRunSkipExpectation) -> Result<
         &expected.producer_generation_set_digest,
         "producerGenerationSetDigest",
     )?;
+    validate_component(&expected.rebuild_contract_version, "rebuildContractVersion")?;
     validate_component(
         &expected.run_kind_contract_version,
         "runKindContractVersion",
@@ -738,6 +755,7 @@ fn validate_evidence_shape(evidence: &CompletedRunSkipEvidence) -> Result<()> {
         graph_contract_digest: evidence.graph_contract_digest.clone(),
         rule_registry_digest: evidence.rule_registry_digest.clone(),
         producer_generation_set_digest: evidence.producer_generation_set_digest.clone(),
+        rebuild_contract_version: evidence.rebuild_contract_version.clone(),
         run_kind_contract_version: evidence.run_kind_contract_version.clone(),
         report_digest: Some(evidence.report_digest.clone()),
     };

@@ -343,7 +343,7 @@ fn insert_canonical_maintenance_run(
 ) -> rusqlite::Result<()> {
     let spec_json = match work.run_kind {
         AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
-        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"6"}"#,
+        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"7"}"#,
         AutomaticRunKind::RebuildDerived => "{}",
     };
     insert_run_with_spec(conn, id, status, epoch_id, work, spec_json, "digest")
@@ -1041,7 +1041,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
     let mut tampered_report_value = report_value.clone();
     tampered_report_value["totalEdges"] = json!(999);
     let valid_outcome = json!({
-        "verifyContractVersion": "6",
+        "verifyContractVersion": "7",
         "semanticEpochId": OLD_EPOCH_ID,
         "reportDigest": report_digest,
         "report": report_value.clone(),
@@ -1066,7 +1066,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
                  status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('discovery-verify', ?1, 'maintenance', '{}',
-                     '{"verifyContractVersion":"6"}', 'digest', 'completed', '{}',
+                     '{"verifyContractVersion":"7"}', 'digest', 'completed', '{}',
                      '2026-08-23T10:00:00.000Z', '2026-08-23T10:00:00.000Z',
                      '2026-08-23T10:00:01.000Z', ?2,
                      'dependency-verify', ?3, ?4)"#,
@@ -1090,7 +1090,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "reportDigest",
             json!({
-                "verifyContractVersion": "6",
+                "verifyContractVersion": "7",
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 "report": report_value.clone(),
@@ -1099,7 +1099,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "semanticEpochId",
             json!({
-                "verifyContractVersion": "6",
+                "verifyContractVersion": "7",
                 "semanticEpochId": "wrong-epoch",
                 "reportDigest": report_digest.clone(),
                 "report": report_value.clone(),
@@ -1117,7 +1117,7 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
         (
             "report",
             json!({
-                "verifyContractVersion": "6",
+                "verifyContractVersion": "7",
                 "semanticEpochId": OLD_EPOCH_ID,
                 "reportDigest": report_digest.clone(),
                 "report": tampered_report_value.clone(),

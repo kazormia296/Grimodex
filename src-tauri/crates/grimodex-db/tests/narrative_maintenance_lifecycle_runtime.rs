@@ -17,8 +17,9 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::narrative_extraction::{
-    current_maintenance_coordinates, evaluate_completed_run_skip, CompletedRunSkipDecision,
-    CompletedRunSkipExpectation, VERIFY_RUN_KIND_CONTRACT_VERSION,
+    current_maintenance_coordinates, evaluate_completed_run_skip,
+    run_dependency_verify_for_project, CompletedRunSkipDecision, CompletedRunSkipExpectation,
+    REBUILD_RUN_KIND_CONTRACT_VERSION, VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -148,10 +149,63 @@ fn outcome_for_run(db: &Database, run_id: &str) -> anyhow::Result<Option<String>
     })
 }
 
+fn seed_completed_backfill(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('lifecycle-backfill-completed', ?1, 'maintenance', '{}',
+                     '{\"backfillAlgorithmVersion\":\"2\"}', 'digest',
+                     'completed', '{}', '2026-08-21T00:00:00.000Z',
+                     '2026-08-21T00:00:01.000Z',
+                     '{\"maintenancePhase\":\"backfill-complete\",\"backfillAlgorithmVersion\":\"2\",\"semanticEpochId\":\"epoch-c2-5b-lifecycle\",\"summary\":{\"epoch_created\":false,\"contributions_created\":0,\"edges_created\":0,\"applications_without_run_id\":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v2')",
+            params![PROJECT_ID, EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed completed Backfill boundary");
+}
+
+fn seed_completed_rebuild(db: &Database) {
+    let summary = json!({
+        "consumersEvaluated": 0,
+        "edgesEvaluated": 0,
+        "consumersSkippedUnresolvableScope": 0,
+        "edgesSkippedUnresolvableScope": 0
+    });
+    let outcome = json!({
+        "rebuildContractVersion": "0",
+        "semanticEpochId": EPOCH_ID,
+        "summaryDigest": format!("sha256:{}", digest_plan(&summary)),
+        "summary": summary
+    });
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('lifecycle-rebuild-stale', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'completed', '{}', '2026-08-22T00:00:00.000Z',
+                     '2026-08-22T00:00:01.000Z', ?2, 'semantic-index-rebuild', ?3,
+                     'dependency-rebuild-derived')",
+            params![PROJECT_ID, outcome.to_string(), EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed stale completed Rebuild");
+}
+
 #[test]
 fn automatic_success_owns_exactly_one_task_and_attempt_and_finalizes_atomically() {
     for run_kind in AutomaticRunKind::all() {
         let db = fixture_db();
+        if run_kind == AutomaticRunKind::Verify {
+            seed_completed_backfill(&db);
+        }
         run_system_work_cycle(&db, &request(run_kind), RecoveryMode::SameProcessLive)
             .expect("automatic phase succeeds");
 
@@ -263,6 +317,105 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
 }
 
 #[test]
+fn foreground_explicit_verify_holds_rebuild_before_confirmation_without_overlap() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    seed_completed_rebuild(&db);
+    run_dependency_verify_for_project(&db, PROJECT_ID)
+        .expect("current Verify must seal skip evidence before foreground dispatch");
+
+    let binding = MaintenanceWorkspaceBinding {
+        authority_id: "authority-c2-5b-lifecycle-rebuild-first".to_string(),
+        generation: 18,
+    };
+    let config = foreground_config();
+    let mut foreground_request = request(AutomaticRunKind::Verify);
+    foreground_request.workspace_binding = Some(binding.clone());
+
+    run_system_work_cycle_with_modes_and_config(
+        &db,
+        &foreground_request,
+        |_| RecoveryMode::SameProcessLive,
+        Some(&config),
+    )
+    .expect("foreground explicit Verify must hold the queued Rebuild");
+
+    let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
+        .expect("find exact foreground Rebuild")
+        .expect("Rebuild must be the first held phase");
+    let held_identity: (String, String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT id, run_kind, work_key
+                   FROM narrative_extraction_runs
+                  WHERE id = ?1",
+                [barrier.run_id.as_str()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read exact held Run identity");
+    assert_eq!(
+        held_identity,
+        (
+            barrier.run_id.clone(),
+            AutomaticRunKind::RebuildDerived.as_str().to_string(),
+            REBUILD_DERIVED_WORK_KEY.to_string(),
+        ),
+        "the foreground barrier must own the queued Rebuild Run exactly"
+    );
+
+    let active_kinds: Vec<String> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT run_kind
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND status IN ('pending', 'running')
+                  ORDER BY run_kind",
+            )?;
+            let rows = statement
+                .query_map([PROJECT_ID], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read active foreground phases");
+    assert_eq!(
+        active_kinds,
+        vec![AutomaticRunKind::RebuildDerived.as_str().to_string()],
+        "foreground Verify/Rebuild phases must never overlap"
+    );
+
+    complete_foreground_system_work_run(&db, &barrier)
+        .expect("release the exact held Rebuild before confirmation Verify");
+    run_system_work_cycle(
+        &db,
+        &request(AutomaticRunKind::Verify),
+        RecoveryMode::SameProcessLive,
+    )
+    .expect("confirmation Verify must proceed after Rebuild release");
+
+    let (verify_count, rebuild_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read released foreground phase sequence");
+    assert_eq!(
+        verify_count, 2,
+        "one seeded Verify plus one confirmation Verify"
+    );
+    assert_eq!(
+        rebuild_count, 2,
+        "one stale Rebuild plus one repaired Rebuild"
+    );
+}
+
+#[test]
 fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
     for run_kind in AutomaticRunKind::all() {
         for tamper in ["null", "empty", "wrong-coordinate-or-digest"] {
@@ -363,6 +516,7 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
                     graph_contract_digest: coordinates.graph_contract_digest,
                     rule_registry_digest: coordinates.rule_registry_digest,
                     producer_generation_set_digest: coordinates.producer_generation_set_digest,
+                    rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
                     run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_string(),
                     report_digest: None,
                 };
@@ -408,11 +562,11 @@ fn foreground_release_rejects_null_partial_and_wrong_epoch_success_outcomes() {
             vec![
                 None,
                 Some(json!({
-                    "verifyContractVersion": "6",
+                    "verifyContractVersion": "7",
                     "semanticEpochId": EPOCH_ID
                 })),
                 Some(json!({
-                    "verifyContractVersion": "6",
+                    "verifyContractVersion": "7",
                     "semanticEpochId": "wrong-epoch",
                     "report": {},
                     "reportDigest": "sha256:tampered"

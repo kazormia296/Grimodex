@@ -962,6 +962,7 @@ pub fn complete_foreground_system_work_run(
                             rule_registry_digest: coordinates.rule_registry_digest,
                             producer_generation_set_digest: coordinates
                                 .producer_generation_set_digest,
+                            rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
                             run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                             report_digest: report_digest.to_string(),
                         },
@@ -1516,7 +1517,7 @@ fn discover_durable_maintenance_work_in_tx(
     reason: &str,
     coordinates: Option<&MaintenanceContractCoordinates>,
 ) -> anyhow::Result<Option<DesiredWork>> {
-    let (current_epoch_id, latest, active, completed_backfill) = {
+    let (current_epoch_id, latest, active, completed_backfill, latest_completed_rebuild) = {
         let current_epoch_id =
             super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
         let runs = load_durable_maintenance_runs(conn, project_id)?;
@@ -1540,7 +1541,17 @@ fn discover_durable_maintenance_work_in_tx(
             select_latest_relevant_run(&runs, current_epoch_id.as_deref(), false, |run| {
                 completed_backfill.is_some() || run.run_kind != "backfill"
             })?;
-        (current_epoch_id, latest, active, completed_backfill)
+        let latest_completed_rebuild =
+            select_latest_relevant_run(&runs, current_epoch_id.as_deref(), false, |run| {
+                run.run_kind == "semantic-index-rebuild" && run.status == "completed"
+            })?;
+        (
+            current_epoch_id,
+            latest,
+            active,
+            completed_backfill,
+            latest_completed_rebuild,
+        )
     };
 
     if let Some(active) = active {
@@ -1636,10 +1647,21 @@ fn discover_durable_maintenance_work_in_tx(
             if report.is_clean() {
                 let expected = verify_skip_expectation(project_id, &current_epoch_id, coordinates)?;
                 let decision = evaluate_completed_run_skip(conn, &expected)?;
-                if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
-                    return Ok(None);
+                if !matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
+                    return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
                 }
-                return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
+                if latest_completed_rebuild.as_ref().is_some_and(|run| {
+                    !completed_rebuild_outcome_is_current(project_id, &current_epoch_id, run)
+                }) {
+                    return Ok(Some(DesiredWork::new_with_epoch(
+                        project_id.to_string(),
+                        AutomaticRunKind::RebuildDerived,
+                        REBUILD_DERIVED_WORK_KEY,
+                        Some(current_epoch_id),
+                        reason.to_string(),
+                    )?));
+                }
+                return Ok(None);
             }
             Ok(None)
         }
@@ -1658,6 +1680,35 @@ fn discover_durable_maintenance_work_in_tx(
         }
         _ => Ok(Some(verify_work(project_id, &current_epoch_id, reason)?)),
     }
+}
+
+/// A completed Rebuild is a prerequisite for reusing a clean Verify result
+/// only when its terminal success evidence is still understood by this
+/// writer.  Treat every missing, malformed, stale, or non-canonical outcome
+/// as a rebuild request; discovery remains fail-closed and never trusts a
+/// contract coordinate merely because the Run is marked `completed`.
+fn completed_rebuild_outcome_is_current(
+    project_id: &str,
+    semantic_epoch_id: &str,
+    run: &DurableMaintenanceRun,
+) -> bool {
+    let Some(outcome_json) = run.outcome_summary_json.as_deref() else {
+        return false;
+    };
+    let Ok(outcome) = serde_json::from_str::<Value>(outcome_json) else {
+        return false;
+    };
+    if outcome.get("failure").is_some() {
+        return false;
+    }
+    validate_phase_success_outcome(
+        "semantic-index-rebuild",
+        project_id,
+        run.work_key.as_deref().unwrap_or_default(),
+        Some(semantic_epoch_id),
+        &outcome,
+    )
+    .is_ok()
 }
 
 fn validate_discovered_verify_outcome(
@@ -1772,6 +1823,7 @@ fn verify_skip_expectation(
         graph_contract_digest: owned_coordinates.graph_contract_digest,
         rule_registry_digest: owned_coordinates.rule_registry_digest,
         producer_generation_set_digest: owned_coordinates.producer_generation_set_digest,
+        rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
         run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
         report_digest: None,
     })
@@ -1906,7 +1958,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
-                if let Some(next) = discover_durable_maintenance_work_with_coordinates(
+                let next = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
                     item.reasons
@@ -1914,14 +1966,23 @@ pub fn run_system_work_cycle_with_modes_and_config(
                         .map(String::as_str)
                         .unwrap_or("durable-wake"),
                     Some(&effective_coordinates),
-                )? {
-                    if next.run_kind != AutomaticRunKind::Verify
-                        || next.semantic_epoch_id != item.semantic_epoch_id
+                )?;
+                match next {
+                    Some(next)
+                        if next.run_kind != AutomaticRunKind::Verify
+                            || next.semantic_epoch_id != item.semantic_epoch_id =>
                     {
                         queue.push_back(next);
+                        continue;
                     }
+                    Some(_) => {
+                        // Discovery returned this same Verify as a required
+                        // confirmation after a newer Rebuild. Keep the item
+                        // on the dispatch path instead of reusing the clean
+                        // pre-Rebuild evidence a second time.
+                    }
+                    None => continue,
                 }
-                continue;
             }
         }
 
@@ -3227,11 +3288,15 @@ mod tests {
         WorkKey::new_for_epoch("project-1", kind, work_key, epoch_id).expect("recovery work")
     }
 
-    fn recovery_spec(kind: AutomaticRunKind) -> &'static str {
+    fn recovery_spec(kind: AutomaticRunKind) -> String {
         match kind {
-            AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
-            AutomaticRunKind::Verify => r#"{"verifyContractVersion":"6"}"#,
-            AutomaticRunKind::RebuildDerived => "{}",
+            AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#.to_string(),
+            AutomaticRunKind::Verify => {
+                // Keep the recovery fixture tied to the same Rust-owned
+                // contract as maintenance lifecycle creation.
+                format!(r#"{{"verifyContractVersion":"{VERIFY_CONTRACT_VERSION}"}}"#)
+            }
+            AutomaticRunKind::RebuildDerived => "{}".to_string(),
         }
     }
 
@@ -3748,6 +3813,7 @@ mod tests {
             graph_contract_digest: coordinates.graph_contract_digest,
             rule_registry_digest: coordinates.rule_registry_digest,
             producer_generation_set_digest: coordinates.producer_generation_set_digest,
+            rebuild_contract_version: REBUILD_CONTRACT_VERSION.to_string(),
             run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
             report_digest: Some(outcome.report_digest),
         };
