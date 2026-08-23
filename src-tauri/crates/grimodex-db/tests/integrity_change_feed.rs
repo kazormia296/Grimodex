@@ -1,8 +1,50 @@
 use std::path::Path;
 
+use grimodex_db::agent_writes::{agent_codex_create_impl, AgentCodexCreatePayload};
 use grimodex_db::narrative_extraction::change_feed::narrative_snapshot_digest;
 use grimodex_db::{Database, RepairIntegrityPayload};
-use serde_json::json;
+
+fn canonical_codex_digest(db: &Database, project_id: &str, entry_id: &str) -> String {
+    db.with_conn(|conn| {
+        let raw: String = conn.query_row(
+            "SELECT json_object(
+                'id', id, 'projectId', project_id, 'type', type, 'name', name,
+                'summary', summary, 'content', content, 'aliases', aliases,
+                'excludedAliases', excluded_aliases, 'readings', readings,
+                'tagsCache', tags_cache, 'parentId', parent_id, 'icon', icon,
+                'contextMode', context_mode, 'childrenBudget', children_budget,
+                'sourceChatMessageId', source_chat_message_id, 'notes', notes,
+                'createdAt', created_at, 'version', version
+             ) FROM codex_entries WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![entry_id, project_id],
+            |row| row.get(0),
+        )?;
+        let snapshot: serde_json::Value = serde_json::from_str(&raw)?;
+        Ok(narrative_snapshot_digest(&snapshot)?)
+    })
+    .expect("read canonical Codex snapshot")
+}
+
+fn canonical_snippet_digest(db: &Database, project_id: &str, snippet_id: &str) -> String {
+    db.with_conn(|conn| {
+        let raw: String = conn.query_row(
+            "SELECT json_object(
+                'id', id, 'projectId', project_id, 'title', title,
+                'content', content, 'tagsCache', tags_cache,
+                'contentSource', content_source, 'sceneId', scene_id,
+                'sourceChatMessageId', source_chat_message_id,
+                'createdAt', created_at,
+                'updatedAt', updated_at, 'version', version
+             ) FROM snippets WHERE id = ?1 AND project_id = ?2",
+            rusqlite::params![snippet_id, project_id],
+            |row| row.get(0),
+        )?;
+        let snapshot: serde_json::Value = serde_json::from_str(&raw)?;
+        Ok(narrative_snapshot_digest(&snapshot)?)
+    })
+    .expect("read canonical Snippet snapshot")
+}
+
 fn fixture() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open database");
     db.migrate().expect("migrate database");
@@ -66,11 +108,15 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
     assert_eq!(before["orphanedCodexSources"], 2);
     assert_eq!(before["orphanedSnippetSources"], 2);
     assert_eq!(before["orphanedSnippetScenes"], 1);
+    let codex_b_before = canonical_codex_digest(&db, "repair-p1", "codex-b");
+    let snippet_b_before = canonical_snippet_digest(&db, "repair-p1", "snippet-b");
     let first = db.repair_integrity(payload()).expect("repair project");
     assert_eq!(first.codex_sources_fixed, 2);
     assert_eq!(first.snippet_sources_fixed, 2);
     assert_eq!(first.snippet_scenes_fixed, 1);
     assert!(first.maintenance_transaction_id.is_some());
+    let codex_b_after = canonical_codex_digest(&db, "repair-p1", "codex-b");
+    let snippet_b_after = canonical_snippet_digest(&db, "repair-p1", "snippet-b");
 
     let mut replay_payload = payload();
     replay_payload.session_id = "repair-session-after-restart".to_string();
@@ -214,44 +260,10 @@ fn repair_integrity_is_atomic_idempotent_deterministic_and_project_scoped() {
             serde_json::from_str::<Vec<String>>(&event_keys[4].1)?,
             vec!["/sceneId", "/sourceChatMessageId"]
         );
-        assert_eq!(
-            event_keys[2].2,
-            narrative_snapshot_digest(&json!({
-                "id": "codex-b",
-                "sourceChatMessageId": "cross-project-message",
-                "updatedAt": "2026-08-12T01:00:00.000Z",
-                "version": 4,
-            }))?
-        );
-        assert_eq!(
-            event_keys[2].3,
-            narrative_snapshot_digest(&json!({
-                "id": "codex-b",
-                "sourceChatMessageId": null,
-                "updatedAt": "2026-08-13T10:00:00.000Z",
-                "version": 5,
-            }))?
-        );
-        assert_eq!(
-            event_keys[4].2,
-            narrative_snapshot_digest(&json!({
-                "id": "snippet-b",
-                "sceneId": "cross-project-scene",
-                "sourceChatMessageId": "cross-project-message",
-                "updatedAt": "2026-08-12T04:00:00.000Z",
-                "version": 7,
-            }))?
-        );
-        assert_eq!(
-            event_keys[4].3,
-            narrative_snapshot_digest(&json!({
-                "id": "snippet-b",
-                "sceneId": null,
-                "sourceChatMessageId": null,
-                "updatedAt": "2026-08-13T10:00:00.000Z",
-                "version": 8,
-            }))?
-        );
+        assert_eq!(event_keys[2].2, codex_b_before);
+        assert_eq!(event_keys[2].3, codex_b_after);
+        assert_eq!(event_keys[4].2, snippet_b_before);
+        assert_eq!(event_keys[4].3, snippet_b_after);
 
         let counts: (i64, i64, i64, i64) = conn.query_row(
             "SELECT
@@ -357,4 +369,74 @@ fn repair_integrity_feed_failure_rolls_back_domain_canonical_and_retry_ledger() 
         Ok(())
     })
     .expect("verify complete rollback");
+}
+
+#[test]
+fn repair_integrity_chains_from_a_canonical_codex_feed_head() {
+    let db = Database::new(Path::new(":memory:")).expect("open database");
+    db.migrate().expect("migrate database");
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO projects (id, title) VALUES
+                 ('canonical-repair-p1', 'One'), ('canonical-repair-p2', 'Two');
+             INSERT INTO chat_sessions (id, project_id, title)
+               VALUES ('canonical-repair-session', 'canonical-repair-p2', 'Foreign session');
+             INSERT INTO chat_messages (id, session_id, role, content)
+               VALUES ('canonical-repair-message', 'canonical-repair-session', 'user', 'Foreign');",
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical repair projects and source message");
+
+    agent_codex_create_impl(
+        &db,
+        AgentCodexCreatePayload {
+            request_id: Some("canonical-repair-codex-create".to_string()),
+            entry_id: Some("canonical-repair-codex".to_string()),
+            project_id: "canonical-repair-p1".to_string(),
+            session_id: "canonical-repair-session-p1".to_string(),
+            surface: None,
+            type_slug: "character".to_string(),
+            name: "Foreign source".to_string(),
+            summary: Some(String::new()),
+            content: Some("{}".to_string()),
+            aliases: None,
+            excluded_aliases: None,
+            readings: None,
+            tags_cache: None,
+            parent_id: None,
+            source_chat_message_id: Some("canonical-repair-message".to_string()),
+            model: None,
+            chat_message_id: None,
+            trace_id: None,
+            authorship_spans: Vec::new(),
+        },
+    )
+    .expect("canonical Codex create with cross-project source");
+
+    let repaired = db
+        .repair_integrity(RepairIntegrityPayload {
+            project_id: "canonical-repair-p1".to_string(),
+            request_id: "canonical-repair-request".to_string(),
+            session_id: "canonical-repair-session-p1".to_string(),
+            event_uid: "canonical-repair-event".to_string(),
+            occurred_at: "2026-08-23T00:00:00.000Z".to_string(),
+            authority_route: "restore-or-migration".to_string(),
+            caller: "integrity-repair".to_string(),
+            controls: vec![
+                "exclusive-system-operation".to_string(),
+                "semantic-epoch-event".to_string(),
+                "full-rebuild-marker".to_string(),
+            ],
+            provenance: None,
+            writes_authority_protected_field: false,
+        })
+        .expect("repair must chain from the canonical Codex Feed head");
+    assert_eq!(repaired.codex_sources_fixed, 1);
+    assert_eq!(repaired.snippet_sources_fixed, 0);
+    assert_eq!(repaired.snippet_scenes_fixed, 0);
+    assert_eq!(
+        repaired.change_event_uid.as_deref(),
+        Some("canonical-repair-event")
+    );
 }
