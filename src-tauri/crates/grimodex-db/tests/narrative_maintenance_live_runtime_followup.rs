@@ -11,7 +11,7 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
 };
 use grimodex_db::narrative_extraction::{
     bootstrap_legacy_dependency_backfill_for_project, ensure_test_schema,
-    LegacyBackfillBootstrapOutcome,
+    run_dependency_verify_for_project, LegacyBackfillBootstrapOutcome,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -206,6 +206,66 @@ fn empty_wake_reports_durable_active_work_as_coalesced_continuation() {
         .expect("durable wake cycle");
 
     assert_eq!(result, MaintenanceCycleResult::coalesced(true));
+}
+
+#[test]
+fn completed_verify_skip_followed_by_live_rebuild_is_accepted_not_coalesced() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    run_dependency_verify_for_project(&db, PROJECT_ID)
+        .expect("clean Verify must seal reusable skip evidence");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('followup-rebuild-running', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'running', '{}', '2026-08-23T00:00:00.000Z',
+                     '2026-08-23T00:00:01.000Z', 'semantic-index-rebuild', ?2,
+                     'dependency-rebuild-derived')",
+            params![PROJECT_ID, EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed live Rebuild owned by another scheduler invocation");
+
+    let request: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
+        "work": [{
+            "projectId": PROJECT_ID,
+            "runKind": "dependency-verify",
+            "workKey": format!("dependency-verify:{EPOCH_ID}"),
+            "semanticEpochId": EPOCH_ID,
+            "reasons": ["verify-requested"]
+        }],
+        "wakeProjectIds": []
+    }))
+    .expect("valid Verify request");
+
+    let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+        .expect("Verify skip plus live Rebuild coalescing must finish");
+    assert_eq!(
+        result,
+        MaintenanceCycleResult::accepted(true),
+        "the handled Verify skip means this mixed cycle is accepted, not wholly coalesced"
+    );
+    let (verify_count, rebuild_count, running_rebuilds): (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' AND status = 'running' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read mixed Verify/Rebuild ledger");
+    assert_eq!(verify_count, 1, "the completed Verify must be reused");
+    assert_eq!(rebuild_count, 1, "the existing Rebuild must not be duplicated");
+    assert_eq!(running_rebuilds, 1, "the live Rebuild remains owned by its caller");
 }
 
 #[test]

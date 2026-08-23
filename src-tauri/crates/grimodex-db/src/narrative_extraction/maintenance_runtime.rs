@@ -1985,6 +1985,11 @@ pub fn run_system_work_cycle_with_modes_and_config(
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
+                // Reusing a completed Verify is a handled item even when
+                // rediscovery hands the cycle to another phase.  Mark it
+                // before branching so a live follow-up Rebuild cannot make
+                // the mixed cycle look wholly coalesced.
+                handled_non_coalesced = true;
                 let next = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
@@ -2008,10 +2013,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                         // on the dispatch path instead of reusing the clean
                         // pre-Rebuild evidence a second time.
                     }
-                    None => {
-                        handled_non_coalesced = true;
-                        continue;
-                    }
+                    None => continue,
                 }
             }
         }
