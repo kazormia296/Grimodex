@@ -17,6 +17,7 @@ use grimodex_db::narrative_extraction::{
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
+use sha2::{Digest as Sha2Digest, Sha256};
 
 const PROJECT_A: &str = "project-a";
 const PROJECT_B: &str = "project-b";
@@ -34,6 +35,12 @@ const CONTEXT_SET_VERSION: &str = "chronicle.context-set/1";
 const COMPONENT_CONTRACT_ID: &str = "chronicle.event-synthesis.prompt";
 const EVENT_SYNTHESIS_STAGE_ID: &str = "narrative_event_synthesize";
 const OBSERVATION_STAGE_ID: &str = "narrative_observation_extract";
+const ARRIVAL_QUOTE_DIGEST: &str =
+    "sha256:61b3366c3dc326b93fb56073b11453dea0d2db2fe6f79588ce266188edd24c67";
+// One canonical C2A error for a syntactically valid but Native-forged nested
+// digest.  The frozen V1 validator cannot emit it yet, so the RED path must
+// fail if it is masked by the V1 schema gate or any unrelated error.
+const ENVELOPE_NESTED_DIGEST_MISMATCH_CODE: &str = "NEX_ENVELOPE_DIGEST_MISMATCH";
 
 // C1 stage provenance constants.
 const MODEL_BINDING_KIND: &str = "chronicle-stage-model-binding";
@@ -49,6 +56,10 @@ fn digest(value: &Value) -> String {
 
 fn canonical(value: &Value) -> String {
     canonical_json_string(value).expect("canonical JSON")
+}
+
+fn raw_sha256_digest(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
 fn migrated_db() -> Database {
@@ -226,11 +237,13 @@ fn source_basis(project_id: &str, revision_token: &str) -> Value {
 }
 
 fn evidence_set() -> Value {
+    let quote_digest = raw_sha256_digest(b"Arrival.");
+    assert_eq!(quote_digest, ARRIVAL_QUOTE_DIGEST);
     json!([{
         "evidenceRef": "anchor:arrival",
         "documentRef": "document:1",
         "quote": "Arrival.",
-        "quoteDigest": digest(&Value::String("Arrival.".to_owned())),
+        "quoteDigest": quote_digest,
         "sourceKey": "source:scene:1"
     }])
 }
@@ -393,6 +406,38 @@ fn envelope_v2(db: &Database, project_id: &str, run_id: &str, task_id: &str, tit
     })
 }
 
+/// A complete V1 envelope whose read-set token resolves against the same live
+/// scene row as the V2 fixture. C2A must reject this as a V2-current
+/// downgrade before the legacy V1 validator gets to accept it.
+fn envelope_v1(db: &Database, project_id: &str, run_id: &str, task_id: &str) -> Value {
+    let source_key = scene_source_key(project_id);
+    let revision_token = scene_revision_token(db, project_id);
+    let read_set = json!([{
+        "kind": "snapshot-document",
+        "sourceKind": "scene-body",
+        "inputRef": source_key,
+        "revisionToken": revision_token
+    }]);
+    json!({
+        "schemaVersion": 1,
+        "runId": run_id,
+        "taskId": task_id,
+        "reconcilerId": "chronicle.reconciler",
+        "reconcilerVersion": "1",
+        "proposalSchemaId": PROPOSAL_SCHEMA_ID,
+        "proposalSchemaVersion": "1",
+        "sourceBasis": [{
+            "sourceKind": "scene-body",
+            "sourceKey": source_key,
+            "revisionToken": revision_token
+        }],
+        "evidenceSet": [],
+        "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", narrative_extraction::digest_plan(&read_set)),
+        "changeKind": "revise"
+    })
+}
+
 fn assert_envelope_digest_fields(envelope: &Value) {
     let assertion = &envelope["assertion"];
     let semantic = &assertion["payload"];
@@ -478,6 +523,129 @@ fn save_v2_root(
     )
     .expect("Native must persist a C1-compatible Envelope V2")["proposals"][0]
         .clone()
+}
+
+const FORGED_DIGEST: &str =
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+
+fn forge_envelope_digest(envelope: &mut Value, field: &str) {
+    let slot = match field {
+        "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
+            &mut envelope["assertionDigests"][field]
+        }
+        "dependencySetDigest" | "materialBasisDigest" => {
+            &mut envelope["effectiveMaterialBasis"][field]
+        }
+        "contextSetDigest" => &mut envelope["revisionBasis"][field],
+        "proposalPayloadDigest" => &mut envelope["projectionBinding"][field],
+        other => panic!("unknown Envelope digest field {other}"),
+    };
+    *slot = Value::String(FORGED_DIGEST.to_owned());
+}
+
+fn assert_forged_digest_was_not_persisted(
+    db: &Database,
+    result: anyhow::Result<Value>,
+    proposal_id: &str,
+    expected_envelope: &Value,
+    field: &str,
+) {
+    match result {
+        Ok(saved) => {
+            let revision_id = saved["proposals"][0]["revisionId"]
+                .as_str()
+                .expect("saved revision id");
+            let (stored_json, stored_digest): (String, String) = db
+                .with_conn(|conn| {
+                    Ok(conn.query_row(
+                        "SELECT reconciliation_envelope_json,
+                                reconciliation_envelope_digest
+                           FROM narrative_proposal_revisions
+                          WHERE id = ?1",
+                        [revision_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )?)
+                })
+                .expect("read persisted forged-digest fixture");
+            let stored: Value = serde_json::from_str(&stored_json).expect("stored Envelope JSON");
+            let stored_field = match field {
+                "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
+                    &stored["assertionDigests"][field]
+                }
+                "dependencySetDigest" | "materialBasisDigest" => {
+                    &stored["effectiveMaterialBasis"][field]
+                }
+                "contextSetDigest" => &stored["revisionBasis"][field],
+                "proposalPayloadDigest" => &stored["projectionBinding"][field],
+                other => panic!("unknown Envelope digest field {other}"),
+            };
+            assert_ne!(
+                stored_field,
+                &Value::String(FORGED_DIGEST.to_owned()),
+                "Native must not persist a forged nested digest ({field})"
+            );
+            assert_eq!(&stored, expected_envelope);
+            assert_eq!(stored_json, canonical(expected_envelope));
+            assert_eq!(stored_digest, digest(&stored));
+        }
+        Err(error) => {
+            assert!(
+                error
+                    .to_string()
+                    .contains(ENVELOPE_NESTED_DIGEST_MISMATCH_CODE),
+                "forged {field} must fail with {ENVELOPE_NESTED_DIGEST_MISMATCH_CODE}, got {error:#}"
+            );
+        }
+    }
+}
+
+#[test]
+fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
+    const DIGEST_FIELDS: &[&str] = &[
+        "assertionCoreDigest",
+        "scopeDigest",
+        "assertionDigest",
+        "dependencySetDigest",
+        "materialBasisDigest",
+        "contextSetDigest",
+        "proposalPayloadDigest",
+    ];
+
+    for (index, field) in DIGEST_FIELDS.iter().enumerate() {
+        let db = migrated_db();
+        let run_id = format!("run-forged-digest-{index}");
+        let task_id = format!("task-forged-digest-{index}");
+        let proposal_id = format!("proposal-forged-digest-{index}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let expected_envelope = envelope_v2(&db, PROJECT_A, &run_id, &task_id, "Arrival");
+        assert_envelope_digest_fields(&expected_envelope);
+        let mut forged_envelope = expected_envelope.clone();
+        forge_envelope_digest(&mut forged_envelope, field);
+        let result = narrative_extraction::narrative_extraction_save_proposal_set(
+            &db,
+            SaveProposalSetPayload {
+                run_id,
+                project_id: PROJECT_A.to_owned(),
+                proposal_set_id: Some(format!("set-{proposal_id}")),
+                set_kind: "chronicle.extract.review@1".to_owned(),
+                summary_json: None,
+                proposals: vec![ProposalSeed {
+                    proposal_id: Some(proposal_id.clone()),
+                    proposal_key: format!("event:arrival:{index}"),
+                    kind: PROPOSAL_KIND.to_owned(),
+                    payload_json: proposal_payload("Arrival", false),
+                    reconciliation_envelope: Some(forged_envelope),
+                }],
+            },
+        );
+        assert_forged_digest_was_not_persisted(
+            &db,
+            result,
+            &proposal_id,
+            &expected_envelope,
+            field,
+        );
+    }
 }
 
 fn save_legacy_root(
@@ -1101,6 +1269,77 @@ fn v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries() {
     )
     .expect_err("V2 to legacy-unbound append must be rejected");
     assert!(append_error
+        .to_string()
+        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
+
+    // A real, live-token-bound V1 envelope is also forbidden from a V2
+    // current. This is distinct from the no-envelope case above: the frozen
+    // V1 validator can otherwise accept this request and create a downgrade.
+    let db = migrated_db();
+    let parent = seed_v2_parent(
+        &db,
+        PROJECT_A,
+        "run-monotonic-v1",
+        "task-monotonic-v1",
+        "proposal-monotonic-v1",
+        "revision-monotonic-v1-parent",
+        &scene_revision_token(&db, PROJECT_A),
+    );
+    let v1_error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-monotonic-v1".to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_id: "proposal-monotonic-v1".to_owned(),
+            payload_json: proposal_payload("V1 downgrade", false),
+            reconciliation_envelope: Some(envelope_v1(
+                &db,
+                PROJECT_A,
+                "run-monotonic-v1",
+                "task-monotonic-v1",
+            )),
+            inherit_reconciliation_envelope: None,
+            expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
+            created_by: Some("legacy-v1-client".to_owned()),
+        },
+    )
+    .expect_err("V2 current must reject a real V1-envelope child");
+    assert!(v1_error
+        .to_string()
+        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
+
+    // The legacy `inheritReconciliationEnvelope` request is itself a
+    // forbidden V2 transition, even when its expected parent digest matches.
+    let db = migrated_db();
+    let parent = seed_v2_parent(
+        &db,
+        PROJECT_A,
+        "run-monotonic-inherit",
+        "task-monotonic-inherit",
+        "proposal-monotonic-inherit",
+        "revision-monotonic-inherit-parent",
+        &scene_revision_token(&db, PROJECT_A),
+    );
+    let inherit_error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: "run-monotonic-inherit".to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_id: "proposal-monotonic-inherit".to_owned(),
+            payload_json: proposal_payload("Legacy inheritance", false),
+            reconciliation_envelope: None,
+            inherit_reconciliation_envelope: Some(
+                narrative_extraction::ReconciliationEnvelopeInheritance {
+                    parent_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
+                    expected_envelope_digest: parent["envelopeDigest"].as_str().unwrap().to_owned(),
+                },
+            ),
+            expected_current_revision_id: parent["revisionId"].as_str().unwrap().to_owned(),
+            created_by: Some("legacy-inherit-client".to_owned()),
+        },
+    )
+    .expect_err("V2 current must reject legacy envelope inheritance");
+    assert!(inherit_error
         .to_string()
         .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
 
