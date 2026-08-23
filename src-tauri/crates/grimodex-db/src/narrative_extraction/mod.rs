@@ -24,6 +24,7 @@ mod foreshadow_undo;
 mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
+mod maintenance_lifecycle;
 pub mod maintenance_contracts;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
