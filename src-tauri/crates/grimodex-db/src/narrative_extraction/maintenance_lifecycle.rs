@@ -241,6 +241,8 @@ pub(crate) fn create_maintenance_run_in_tx(
     );
     let task_kind = maintenance_task_kind(run_kind)?;
     let full_spec = spec_with_active_system_work_marker(spec_json)?;
+    let requested_full_spec_json = serde_json::to_string(&full_spec)?;
+    let requested_marker_present = full_spec.get("systemWork").is_some();
     let requested_spec_base = strip_validated_system_work_marker(
         &full_spec,
         project_id,
@@ -280,7 +282,8 @@ pub(crate) fn create_maintenance_run_in_tx(
             && handle.semantic_epoch_id == semantic_epoch_id
             && handle.work_key == work_key
             && persisted_base == requested_spec_base
-            && handle.spec_digest == spec_digest)
+            && handle.spec_digest == spec_digest
+            && (!requested_marker_present || handle.spec_json == requested_full_spec_json))
         {
             return Err(ownership_error(format!(
                 "reused Run '{run_id}' does not match the requested sealed work"
@@ -1147,6 +1150,37 @@ mod tests {
             Ok(())
         })
         .expect("reuse validation");
+    }
+
+    #[test]
+    fn reuse_rejects_a_different_foreground_marker_for_the_same_work() {
+        let db = open_db();
+        let marker = |barrier: &str| {
+            NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1".to_string(),
+            authority_id: "authority-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: barrier.to_string(),
+            correlation: format!("correlation-{barrier}"),
+        }
+        };
+        db.with_conn(|conn| {
+            super::super::maintenance_runtime::with_system_work_marker(
+                Some(marker("barrier-1")),
+                || create(conn, "backfill"),
+            )?;
+            let error = super::super::maintenance_runtime::with_system_work_marker(
+                Some(marker("barrier-2")),
+                || create(conn, "backfill"),
+            )
+            .expect_err("a reused Run must not accept a different immutable marker");
+            assert!(error
+                .to_string()
+                .contains("NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID"));
+            Ok(())
+        })
+        .expect("marker reuse validation");
     }
 
     #[test]
