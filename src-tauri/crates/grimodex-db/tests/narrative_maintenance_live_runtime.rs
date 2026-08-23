@@ -5,6 +5,7 @@
 //! for this path.
 
 use grimodex_db::narrative_extraction::ensure_test_schema;
+use grimodex_db::narrative_extraction::maintenance_route_registry::route_descriptors;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     run_system_work_cycle, AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleResult,
     MaintenanceCycleStatus, RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
@@ -201,4 +202,64 @@ fn cycle_request_rejects_repair_and_path_separators() {
 #[test]
 fn automatic_kind_set_matches_dispatch_surface() {
     assert_eq!(AutomaticRunKind::all().len(), 3);
+}
+
+#[test]
+fn production_cycle_dispatches_the_closed_route_registry() {
+    let descriptors = route_descriptors();
+    assert_eq!(
+        descriptors
+            .iter()
+            .map(|descriptor| descriptor.route_id)
+            .collect::<Vec<_>>(),
+        vec![
+            "dependency-backfill",
+            "dependency-verify",
+            "dependency-rebuild-derived"
+        ]
+    );
+
+    let db = fixture_db();
+    run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
+        .expect("production Backfill route");
+    let verify_and_rebuild: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
+        "work": [
+            {
+                "projectId": PROJECT_ID,
+                "runKind": "dependency-verify",
+                "workKey": "dependency-verify:epoch-c2-5b-live",
+                "semanticEpochId": EPOCH_ID,
+                "reasons": ["verify-requested"]
+            },
+            {
+                "projectId": PROJECT_ID,
+                "runKind": "semantic-index-rebuild",
+                "workKey": "dependency-rebuild-derived",
+                "semanticEpochId": EPOCH_ID,
+                "reasons": ["derived-state-invalid"]
+            }
+        ],
+        "wakeProjectIds": []
+    }))
+    .expect("valid production route request");
+    run_system_work_cycle(&db, &verify_and_rebuild, RecoveryMode::SameProcessLive)
+        .expect("production Verify/Rebuild routes");
+
+    let counts: (i64, i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN run_kind = 'backfill' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read registry dispatch evidence");
+    assert!(counts.0 >= 1, "Backfill route must create durable evidence");
+    assert!(counts.1 >= 1, "Verify route must create durable evidence");
+    assert!(counts.2 >= 1, "Rebuild route must create durable evidence");
 }

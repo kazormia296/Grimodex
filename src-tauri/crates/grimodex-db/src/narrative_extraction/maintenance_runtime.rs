@@ -35,8 +35,7 @@ use super::maintenance_skip_evidence::{
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
 };
 use super::restore_rebuild::{
-    rebuild_narrative_derived_state_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
+    DependencyGraphVerifyReport, RebuildDerivedStateSummary, REBUILD_CONTRACT_VERSION,
     VERIFY_CONTRACT_VERSION, VERIFY_RUN_KIND,
 };
 use super::task_leases::with_immediate_transaction;
@@ -62,6 +61,13 @@ impl AutomaticRunKind {
             Self::Verify => "dependency-verify",
             Self::RebuildDerived => "semantic-index-rebuild",
         }
+    }
+
+    /// Stable product route identity. This is intentionally distinct from
+    /// [`Self::as_str`], whose values are persisted SQLite Run Kind values.
+    pub fn route_id(self) -> &'static str {
+        super::maintenance_route_registry::route_id_for_run_kind(self)
+            .expect("every AutomaticRunKind must have a registered route")
     }
 
     /// All automatic kinds.  Keeping this list closed is an architecture
@@ -2224,26 +2230,7 @@ fn dispatch_enabled_work(
     // This adapter uses the exact Database supplied by the live
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
-    match item.run_kind {
-        AutomaticRunKind::Backfill => {
-            super::bootstrap_legacy_dependency_backfill_for_project(db, &item.project_id)?;
-            Ok(())
-        }
-        AutomaticRunKind::Verify => {
-            super::restore_rebuild::run_dependency_verify_for_project_with_coordinates(
-                db,
-                &item.project_id,
-                coordinates,
-            )?;
-            Ok(())
-        }
-        AutomaticRunKind::RebuildDerived => {
-            match rebuild_narrative_derived_state_for_project(db, &item.project_id)? {
-                RebuildDerivedStateOutcome::AlreadyRunning { .. }
-                | RebuildDerivedStateOutcome::Ran { .. } => Ok(()),
-            }
-        }
-    }
+    super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates)
 }
 
 /// Trigger vocabulary consumed by the pure desired-work planner.
