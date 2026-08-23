@@ -3205,4 +3205,99 @@ mod tests {
         assert_eq!(next.run_kind, AutomaticRunKind::Verify);
         assert_eq!(next.semantic_epoch_id.as_deref(), Some("epoch-1"));
     }
+
+    fn ci_config(trigger: NarrativeMaintenanceCiTrigger) -> NarrativeMaintenanceCiConfig {
+        NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger: Some(trigger),
+            setup: None,
+            product_journey_barrier_id: None,
+            correlation: None,
+        }
+    }
+
+    #[test]
+    fn ci_coordinate_trigger_changes_exactly_one_effective_coordinate() {
+        let baseline = current_maintenance_coordinates().expect("baseline coordinates");
+        let cases = [
+            (
+                NarrativeMaintenanceCiTrigger::GraphContractDigestChanged,
+                "graph",
+            ),
+            (
+                NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged,
+                "rule",
+            ),
+            (
+                NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged,
+                "producer",
+            ),
+        ];
+
+        for (trigger, target) in cases {
+            let effective = effective_maintenance_coordinates(Some(&ci_config(trigger)))
+                .expect("effective coordinates");
+            let changed = [
+                effective.graph_contract_digest != baseline.graph_contract_digest,
+                effective.rule_registry_digest != baseline.rule_registry_digest,
+                effective.producer_generation_set_digest
+                    != baseline.producer_generation_set_digest,
+            ];
+            assert_eq!(changed.iter().filter(|value| **value).count(), 1, "{target}");
+            assert_eq!(
+                effective.graph_contract_digest != baseline.graph_contract_digest,
+                target == "graph",
+                "{target} must select only the graph coordinate",
+            );
+            assert_eq!(
+                effective.rule_registry_digest != baseline.rule_registry_digest,
+                target == "rule",
+                "{target} must select only the rule coordinate",
+            );
+            assert_eq!(
+                effective.producer_generation_set_digest
+                    != baseline.producer_generation_set_digest,
+                target == "producer",
+                "{target} must select only the producer coordinate",
+            );
+            assert!(
+                effective
+                    .graph_contract_digest
+                    .starts_with("sha256:")
+                    && effective.rule_registry_digest.starts_with("sha256:")
+                    && effective
+                        .producer_generation_set_digest
+                        .starts_with("sha256:")
+            );
+        }
+    }
+
+    #[test]
+    fn ci_coordinate_trigger_is_deterministic_and_not_js_supplied() {
+        let config = ci_config(NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged);
+        let first = effective_maintenance_coordinates(Some(&config)).expect("first coordinates");
+        let second = effective_maintenance_coordinates(Some(&config)).expect("second coordinates");
+        assert_eq!(first, second);
+        assert_eq!(
+            effective_maintenance_coordinates(None).expect("no trigger"),
+            current_maintenance_coordinates().expect("baseline coordinates")
+        );
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn ci_setup_and_production_misuse_fail_closed_at_native_boundary() {
+        let mut config = ci_config(NarrativeMaintenanceCiTrigger::DependencyGap);
+        config.is_packaged = true;
+        assert!(config.validate().is_err());
+        config.is_packaged = false;
+        config.ci = "false".to_string();
+        assert!(config.validate().is_err());
+        config.ci = "true".to_string();
+        config.owner_token = "forged-owner".to_string();
+        assert!(config.validate().is_err());
+    }
 }

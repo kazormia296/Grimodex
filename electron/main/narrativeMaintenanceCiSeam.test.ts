@@ -5,6 +5,7 @@ import {
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
   configureNarrativeMaintenanceCiSeam,
   parseNarrativeMaintenanceCiSeam,
+  shouldDisableNarrativeMaintenanceForLaunch,
 } from "./narrativeMaintenanceCiSeam.js";
 
 const baseEnv = {
@@ -114,5 +115,33 @@ describe("C2-5B main-only CI seam", () => {
       productJourneyBarrierId: null,
       correlation: null,
     });
+  });
+
+  it("suppresses only the setup launch and never normal or inactive launches", () => {
+    expect(
+      shouldDisableNarrativeMaintenanceForLaunch({
+        active: true,
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+        fault: null,
+        trigger: null,
+        setup: "disabled",
+        productJourneyBarrierId: null,
+        correlation: null,
+      }),
+    ).toBe(true);
+    expect(
+      shouldDisableNarrativeMaintenanceForLaunch({
+        active: true,
+        ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+        fault: null,
+        trigger: null,
+        setup: null,
+        productJourneyBarrierId: null,
+        correlation: null,
+      }),
+    ).toBe(false);
+    expect(shouldDisableNarrativeMaintenanceForLaunch({ active: false })).toBe(
+      false,
+    );
   });
 });
