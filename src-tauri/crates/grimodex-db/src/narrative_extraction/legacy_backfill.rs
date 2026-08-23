@@ -73,7 +73,7 @@
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::application_contributions::{
@@ -276,7 +276,8 @@ pub enum LegacyBackfillBootstrapOutcome {
 pub(crate) const LEGACY_BACKFILL_FIELD_PATH: &str = "/legacy-application";
 
 /// Outcome of one `backfill_project_semantic_build_graph_in_tx` call.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackfillSummary {
     /// Whether this call minted the project's `initial` Semantic Epoch.
     /// `false` means the project already had at least one epoch.

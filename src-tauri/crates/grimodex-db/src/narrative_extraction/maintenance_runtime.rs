@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::commit::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::legacy_backfill::{
-    is_valid_completed_backfill_marker, parse_maintenance_instant, CompletedBackfillMarker,
-    LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
+    is_valid_completed_backfill_marker, parse_maintenance_instant, BackfillSummary,
+    CompletedBackfillMarker, LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
 use super::maintenance_lifecycle::{
@@ -610,16 +610,6 @@ fn validate_foreground_run_identity(
     Ok(())
 }
 
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct BackfillSuccessSummary {
-    epoch_created: bool,
-    contributions_created: usize,
-    edges_created: usize,
-    applications_without_run_id: usize,
-}
-
 /// Validate the immutable success evidence produced by one automatic phase.
 ///
 /// This is intentionally shared by normal completion and foreground release:
@@ -674,7 +664,7 @@ pub(crate) fn validate_phase_success_outcome(
                     "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome summary is missing"
                 )
             })?;
-            serde_json::from_value::<BackfillSuccessSummary>(summary.clone()).map_err(|error| {
+            serde_json::from_value::<BackfillSummary>(summary.clone()).map_err(|error| {
                 anyhow::anyhow!(
                     "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill outcome summary is invalid: {error}"
                 )
