@@ -3,12 +3,12 @@
 //! These tests pin the Rust-owned coordinate, durable discovery, completion
 //! evidence, and same-Database phase dispatch boundary.
 
-use grimodex_db::narrative_extraction::{digest_plan, ensure_test_schema};
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     discover_durable_maintenance_work, plan_maintenance_trigger, run_system_work_cycle,
     AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceTrigger,
     RecoveryMode, REBUILD_DERIVED_WORK_KEY,
 };
+use grimodex_db::narrative_extraction::{digest_plan, ensure_test_schema};
 use grimodex_db::narrative_extraction::{
     run_dependency_verify_for_project, REBUILD_RUN_KIND_CONTRACT_VERSION,
 };
@@ -113,8 +113,8 @@ fn seed_completed_rebuild(db: &Database, outcome_json: &str) {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('phase1-rebuild-completed', ?1, 'maintenance', '{}', '{}', 'digest',
-                     'completed', '{}', '2026-08-22T00:00:00.000Z',
-                     '2026-08-22T00:00:01.000Z', ?2, 'semantic-index-rebuild', ?3,
+                     'completed', '{}', '2026-08-22T00:01:00.000Z',
+                     '2026-08-22T00:01:01.000Z', ?2, 'semantic-index-rebuild', ?3,
                      'dependency-rebuild-derived')",
             params![PROJECT_ID, outcome_json, EPOCH_ID],
         )?;
@@ -191,7 +191,10 @@ fn old_same_epoch_rebuild_runs_verify_rebuild_and_confirmation_verify() {
         })
         .expect("read Rebuild contract repair sequence");
     assert_eq!(verify_count, 2, "Verify must bracket the repaired Rebuild");
-    assert_eq!(rebuild_count, 2, "one new Rebuild must follow the old contract");
+    assert_eq!(
+        rebuild_count, 2,
+        "one new Rebuild must follow the old contract"
+    );
     assert!(
         discover_durable_maintenance_work(&db, PROJECT_ID, "durable-wake")
             .expect("rediscover repaired maintenance")

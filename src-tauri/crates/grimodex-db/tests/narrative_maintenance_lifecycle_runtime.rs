@@ -18,7 +18,8 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
 };
 use grimodex_db::narrative_extraction::{
     current_maintenance_coordinates, evaluate_completed_run_skip, CompletedRunSkipDecision,
-    CompletedRunSkipExpectation, VERIFY_RUN_KIND_CONTRACT_VERSION,
+    CompletedRunSkipExpectation, REBUILD_RUN_KIND_CONTRACT_VERSION,
+    VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -363,6 +364,7 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
                     graph_contract_digest: coordinates.graph_contract_digest,
                     rule_registry_digest: coordinates.rule_registry_digest,
                     producer_generation_set_digest: coordinates.producer_generation_set_digest,
+                    rebuild_contract_version: REBUILD_RUN_KIND_CONTRACT_VERSION.to_string(),
                     run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_string(),
                     report_digest: None,
                 };
@@ -408,11 +410,11 @@ fn foreground_release_rejects_null_partial_and_wrong_epoch_success_outcomes() {
             vec![
                 None,
                 Some(json!({
-                    "verifyContractVersion": "6",
+                    "verifyContractVersion": "7",
                     "semanticEpochId": EPOCH_ID
                 })),
                 Some(json!({
-                    "verifyContractVersion": "6",
+                    "verifyContractVersion": "7",
                     "semanticEpochId": "wrong-epoch",
                     "report": {},
                     "reportDigest": "sha256:tampered"

@@ -16,6 +16,7 @@ use super::maintenance_runtime::{
     canonical_work_key_for_epoch, spec_with_active_system_work_marker, NarrativeSystemWorkMarker,
 };
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
+use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
 
 const FAILURE_POLICY_VERSION: &str = "v1";
 const BACKFILL_RUN_KIND: &str = "backfill";
@@ -28,7 +29,6 @@ const BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
 const REBUILD_WORK_KEY: &str = "dependency-rebuild-derived";
 const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 const BACKFILL_ALGORITHM_VERSION: &str = "2";
-const VERIFY_CONTRACT_VERSION: &str = "6";
 
 /// The bounded failure policy understood by an automatic maintenance owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
