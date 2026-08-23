@@ -9180,6 +9180,12 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(before_recovery["status"], "not-held");
         assert_eq!(run_status(&restarted_authority, &run_id), "running");
 
+        grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+            &restarted_authority,
+            "project-1",
+        )
+        .expect("seed completed Backfill boundary");
+
         let binding =
             narrative_maintenance_binding_for_authority(&backend.state, &restarted_authority);
         let cycle: Value = serde_json::from_str(
