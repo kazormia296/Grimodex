@@ -427,6 +427,21 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     sourceChatMessageId: "repair-event-message",
     authorshipSpans: [],
   });
+  const codexObjectIdentity = JSON.stringify({
+    kind: "codex-entry",
+    entryId: "repair-event-codex",
+  });
+  const codexHeadsBeforeRepair = await dbRows(
+    `SELECT after_version, after_digest
+       FROM narrative_change_object_heads
+      WHERE project_id = ? AND object_identity = ?`,
+    ["repair-event-p1", codexObjectIdentity],
+  );
+  assert.equal(codexHeadsBeforeRepair.length, 1);
+  const codexHeadBeforeRepair = codexHeadsBeforeRepair[0];
+  assert.equal(codexHeadBeforeRepair.after_version, 1);
+  assert.equal(typeof codexHeadBeforeRepair.after_digest, "string");
+  assert.match(codexHeadBeforeRepair.after_digest, /^sha256:[0-9a-f]{64}$/);
   const payload = {
     projectId: "repair-event-p1",
     requestId: "repair-event-request",
@@ -487,10 +502,15 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     );
   });
   assert.ok(codexFeed, "repair must append a Codex Feed event");
-  assert.equal(codexFeed.before_version, 1);
-  assert.equal(codexFeed.after_version, 2);
+  assert.equal(codexFeed.before_version, codexHeadBeforeRepair.after_version);
+  assert.equal(codexFeed.before_digest, codexHeadBeforeRepair.after_digest);
+  assert.equal(
+    codexFeed.after_version,
+    codexHeadBeforeRepair.after_version + 1,
+  );
   assert.equal(typeof codexFeed.before_digest, "string");
   assert.equal(typeof codexFeed.after_digest, "string");
+  assert.notEqual(codexFeed.before_digest, codexFeed.after_digest);
 
   const codexHeads = await dbRows(
     `SELECT after_version, after_digest
@@ -541,13 +561,41 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
 
 test("non-noop snapshot restore emits once, replay emits none, and first no-op emits none", async () => {
   const projectId = "snapshot-event-p1";
+  const controlProjectId = "snapshot-event-p2";
   const snapshotId = "snapshot-event-s1";
   await backend.projectCreate(projectPayload(projectId));
+  await backend.projectCreate(projectPayload(controlProjectId));
+  for (const [id, name, color] of [
+    ["snapshot-event-label-a", "Before A", "#111111"],
+    ["snapshot-event-label-b", "Before B", "#222222"],
+  ]) {
+    await backend.dbExecute(
+      "INSERT INTO labels (id, project_id, name, color) VALUES (?, ?, ?, ?)",
+      [id, projectId, name, color],
+      "run",
+    );
+  }
   await backend.dbExecute(
     "INSERT INTO labels (id, project_id, name, color) VALUES (?, ?, ?, ?)",
-    ["snapshot-event-label", projectId, "Before", "#111111"],
+    ["snapshot-event-label-control", controlProjectId, "Control", "#333333"],
     "run",
   );
+  const expectedSnapshotLabels = await dbRows(
+    "SELECT * FROM labels WHERE project_id = ? ORDER BY id",
+    [projectId],
+  );
+  const controlLabelsBeforeRestore = await dbRows(
+    "SELECT * FROM labels WHERE project_id = ? ORDER BY id",
+    [controlProjectId],
+  );
+  assert.equal(expectedSnapshotLabels.length, 2);
+  assert.deepEqual(
+    expectedSnapshotLabels.map((row) => row.project_id),
+    [projectId, projectId],
+  );
+  assert.deepEqual(controlLabelsBeforeRestore.map((row) => row.project_id), [
+    controlProjectId,
+  ]);
   await backend.projectSnapshotCreate({
     projectId,
     snapshotId,
@@ -569,11 +617,35 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
   );
   const labelsScope = context.auxRows.find(({ scope }) => scope === "labels");
   assert.ok(labelsScope);
-  const inserts = JSON.parse(labelsScope.payloadJson).rows.map((row) => ({
+  const snapshotLabelRows = JSON.parse(labelsScope.payloadJson).rows.sort((a, b) =>
+    String(a.id).localeCompare(String(b.id)),
+  );
+  assert.deepEqual(snapshotLabelRows, expectedSnapshotLabels);
+  assert.equal(new Set(snapshotLabelRows.map((row) => row.id)).size, 2);
+  assert.ok(snapshotLabelRows.every((row) => row.project_id === projectId));
+  assert.ok(
+    snapshotLabelRows.every(
+      (row) => row.id !== "snapshot-event-label-control",
+    ),
+  );
+  const inserts = snapshotLabelRows.map((row) => ({
     table: "labels",
     row,
     mode: "insert",
   }));
+  assert.deepEqual(
+    inserts.map(({ row }) => row),
+    expectedSnapshotLabels,
+  );
+  assert.ok(
+    inserts.every(
+      (insert) =>
+        insert.table === "labels" &&
+        insert.mode === "insert" &&
+        insert.row.project_id === projectId &&
+        insert.row.id !== "snapshot-event-label-control",
+    ),
+  );
   const payload = {
     requestId: "snapshot-event-request",
     sessionId: "snapshot-event-session",
@@ -602,6 +674,16 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
   );
   assert.equal(restored.noOp, false);
   assert.equal(typeof restored.changeEventUid, "string");
+  const restoredSnapshotLabels = await dbRows(
+    "SELECT * FROM labels WHERE project_id = ? ORDER BY id",
+    [projectId],
+  );
+  assert.deepEqual(restoredSnapshotLabels, expectedSnapshotLabels);
+  const controlLabelsAfterRestore = await dbRows(
+    "SELECT * FROM labels WHERE project_id = ? ORDER BY id",
+    [controlProjectId],
+  );
+  assert.deepEqual(controlLabelsAfterRestore, controlLabelsBeforeRestore);
   const firstEvent = await waitForMaintenanceEventAfter(
     restoreBaseline,
     maintenanceEventPredicate({
