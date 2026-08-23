@@ -1,6 +1,7 @@
 //! Compile-RED contract for the C2A Native Human Derivation writer.
 //!
-//! D1 must publish the public typed request/API before this file can compile.
+//! C2A must publish the public typed request/API after D1 publishes the
+//! sealed declaration storage/schema before this file can compile.
 //! The tests intentionally use only the policy-shaped request and the
 //! trusted Native project argument.  They do not route forged actor or
 //! derivation metadata through the legacy decision JSON facade.
@@ -683,6 +684,17 @@ fn stale_cas_is_distinct_from_stale_source_observation() {
 fn stale_resolver_parent_reaches_typed_writer_without_rewriting_observed_token() {
     let db = fixture_db();
     let observed_before = source_revision_token(&db);
+    let parent_envelope_digest_before: String = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT reconciliation_envelope_digest
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1 AND proposal_id = ?2",
+                rusqlite::params![PARENT_REVISION_ID, PROPOSAL_ID],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read persisted parent Envelope digest before source advance");
     let (before, observed_after) = advance_source(&db);
     assert_eq!(before, observed_before);
     assert_ne!(observed_before, observed_after);
@@ -693,7 +705,7 @@ fn stale_resolver_parent_reaches_typed_writer_without_rewriting_observed_token()
         request(
             PARENT_REVISION_ID,
             PARENT_REVISION_ID,
-            &parent_envelope_digest(&db),
+            &parent_envelope_digest_before,
         ),
     )
     .expect("stale parent must reach the typed Human writer");

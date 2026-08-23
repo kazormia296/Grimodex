@@ -1377,7 +1377,7 @@ fn v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries() {
         .to_string()
         .contains("NEX_REVISION_ENVELOPE_INHERIT_UNAVAILABLE"));
 
-    // Direct SQL cannot bypass the same monotonicity rule after D1 adds its
+    // Direct SQL cannot bypass the same monotonicity rule once C2A adds its
     // trigger; the frozen base currently accepts this insert (RED).
     let db = migrated_db();
     let parent = seed_v2_parent(
@@ -1401,7 +1401,7 @@ fn v2_to_v1_downgrade_and_legacy_inheritance_have_stable_boundaries() {
             )?;
             Ok(())
         })
-        .expect_err("SQL downgrade insert must be blocked by the D1 trigger");
+        .expect_err("SQL downgrade insert must be blocked by the C2A trigger");
     assert!(sql_error
         .to_string()
         .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"));
