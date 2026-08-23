@@ -514,8 +514,9 @@ backfillAlgorithmVersion}` at creation. Editing is never blocked while
 - **`dependency-verify`** (Lane N's `rebuild_verify_dependency_edges`; no
   existing `run_kind` value, new) — automatic after Backfill completes, a
   Restore or Migration Semantic Epoch rotation, an Integrity Repair, or a
-  Dependency/Rule/Normalizer contract digest change, and once more right
-  before a C2-Z cutover attempt; manual re-run is also allowed. Skips
+  Dependency/Rule/Normalizer contract digest change; the later C2-ZC check is
+  recorded as a future obligation, not a current trigger. Manual re-run is
+  also allowed. Skips
   re-running when the same Epoch, graph contract, and Producer generation
   set already passed. Read-only: may write only Run status, typed
   diagnostics, Finding Observations, and its own report digest — it must
@@ -568,16 +569,19 @@ ordinary editing is never blocked either way, only C2's own Structure
 Health/Freshness UI degrades to "semantic index is being prepared" or
 "semantic graph requires repair".
 
-This is a policy/schema-cross-check contract only — `validate-run-kind-policy.mjs`
-confirms internal consistency (all four Run Kinds present, repair-only
+This is a policy/schema contract only — `validate-run-kind-policy.mjs`
+confirms internal consistency (all five Run Kinds present, repair-only
 fields confined to `dependency-repair`, `dependency-verify` is
 diagnostics-only and side-effect-free, every `adminCommands` entry is
-covered by the five named operations) and that every
-`existingRunKindColumnValue` it claims is actually accepted by the real
-`narrative_extraction_runs.run_kind` CHECK constraint in `migrate.rs`. It
-does not yet assert that Backfill/Verify/Rebuild/Repair Run creation, the
-post-open bootstrap trigger, the exclusive-lease/backup/sealed-plan Repair
-flow, or the five IPC operations exist. `dependency-backfill` and
+covered by the five named operations), requires the stable
+`narrative-maintenance-route/v1` metadata for the three automatic maintenance
+Run Kinds, and keeps the C2-ZC cutover condition in an explicit future
+obligation that cannot establish current wired status. `triggerEvents` names
+semantic database/runtime discovery conditions, not literal emitter names.
+The validator is intentionally JSON-only: it does not parse TypeScript, Rust,
+SQL, call graphs, aliases, callbacks, or execution order. Electron integration
+tests own wake, durable rediscovery, and route reachability evidence.
+`dependency-backfill` and
 `dependency-rebuild-derived` reuse the existing `'backfill'`/
 `'semantic-index-rebuild'` column values with no schema change needed;
 `dependency-verify` and `dependency-repair` are genuinely new values the

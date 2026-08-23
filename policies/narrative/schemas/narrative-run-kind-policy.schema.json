@@ -20,6 +20,30 @@
       "maxItems": 5,
       "allOf": [
         {
+          "if": {
+            "properties": {
+              "runKind": {
+                "enum": ["dependency-verify", "dependency-rebuild-derived"]
+              }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": ["futureTriggerObligations"],
+            "properties": {
+              "futureTriggerObligations": {
+                "const": [
+                  {
+                    "condition": "before-c2z-cutover",
+                    "gate": "C2-ZC",
+                    "satisfiesCurrentWiredStatus": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
           "contains": {
             "properties": { "runKind": { "const": "dependency-backfill" } },
             "required": ["runKind"]
@@ -157,10 +181,31 @@
         },
         "triggerDetail": { "type": "string", "minLength": 1 },
         "triggerEvents": {
+          "description": "Semantic database/runtime discovery conditions. These are not literal Electron emitter names; the main process wakes and asks the durable planner to rediscover work.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
+        },
+        "futureTriggerObligations": {
+          "description": "Conditions reserved for a later gate. They are not current shipping trigger conditions and cannot establish current wired status.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": [
+              "condition",
+              "gate",
+              "satisfiesCurrentWiredStatus"
+            ],
+            "properties": {
+              "condition": { "type": "string", "minLength": 1 },
+              "gate": { "type": "string", "minLength": 1 },
+              "satisfiesCurrentWiredStatus": { "const": false }
+            },
+            "additionalProperties": false
+          }
         },
         "manualTriggerAllowed": { "type": "boolean" },
         "sameWorkKeyReuse": {
@@ -357,16 +402,35 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "runtimeRoute": {
+          "description": "Stable route registry metadata for automatic maintenance. Presence describes the contract; it does not prove source reachability.",
+          "type": "object",
+          "required": [
+            "registryVersion",
+            "routeId",
+            "productionEntryPoint"
+          ],
+          "properties": {
+            "registryVersion": {
+              "const": "narrative-maintenance-route/v1"
+            },
+            "routeId": { "type": "string", "minLength": 1 },
+            "productionEntryPoint": {
+              "const": "run_narrative_maintenance_cycle"
+            }
+          },
+          "additionalProperties": false
+        },
         "implementationStatus": {
           "type": "object",
-          "description": "Whether this Run Kind's declared trigger is actually wired in the shipping runtime. Declared per Run Kind so the contract cannot silently describe a future state as if it were live; validate-run-kind-policy.mjs cross-checks it against the real Rust call graph in both directions.",
+          "description": "Whether this Run Kind's declared route is wired in the shipping runtime. The policy validator checks only this JSON contract and does not infer wiring from source reachability.",
           "required": ["state", "productionEntryPoints"],
           "properties": {
             "state": { "enum": ["wired", "unwired-blocked"] },
             "triggerSymbol": {
               "type": "string",
               "minLength": 1,
-              "description": "Rust function an automatic trigger must call for this Run Kind to count as wired. Required when trigger is automatic-*."
+              "description": "Stable internal symbol retained only for the incremental freshness contract; the JSON validator does not resolve it against source."
             },
             "productionEntryPoints": {
               "type": "array",
@@ -387,6 +451,40 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runKind": {
+                "enum": [
+                  "dependency-backfill",
+                  "dependency-verify",
+                  "dependency-rebuild-derived"
+                ]
+              }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": ["runtimeRoute"],
+            "properties": {
+              "runtimeRoute": {
+                "required": [
+                  "registryVersion",
+                  "routeId",
+                  "productionEntryPoint"
+                ],
+                "properties": {
+                  "registryVersion": {
+                    "const": "narrative-maintenance-route/v1"
+                  },
+                  "productionEntryPoint": {
+                    "const": "run_narrative_maintenance_cycle"
+                  }
+                }
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": { "runKind": { "const": "incremental-freshness" } },
