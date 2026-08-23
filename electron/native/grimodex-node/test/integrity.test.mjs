@@ -207,28 +207,80 @@ test("maintenance event pollers inspect events delivered during the final sleep"
   assert.equal(noEventSleepCount, 1);
 });
 
-function mutationIdentity(requestId) {
+function mutationIdentity(requestId, projectId = PROJECT, origin = "human") {
+  const isInteractiveAgent = origin === "ai-apply";
   return {
     requestId,
-    projectId: PROJECT,
+    projectId,
     sessionId: `${requestId}:session`,
     eventUid: `${requestId}:event`,
-    origin: "human",
-    authorityRoute: "human-direct",
-    caller: "manual-wrapper",
-    controls: [
-      "runtime-policy",
-      "actor-context",
-      "typed-writer",
-      "occ",
-      "change-event",
-      "change-feed",
-    ],
-    provenance: null,
+    origin,
+    authorityRoute: isInteractiveAgent
+      ? "interactive-agent-command"
+      : "human-direct",
+    caller: isInteractiveAgent ? "chat-tool-executor" : "manual-wrapper",
+    controls: isInteractiveAgent
+      ? [
+          "knowledge-write-policy",
+          "stable-request-id",
+          "agent-provenance",
+          "field-authority",
+          "typed-writer",
+          "occ",
+          "undo-journal",
+          "change-event",
+          "change-feed",
+        ]
+      : [
+          "runtime-policy",
+          "actor-context",
+          "typed-writer",
+          "occ",
+          "change-event",
+          "change-feed",
+        ],
+    provenance: isInteractiveAgent
+      ? {
+          requestId,
+          traceId: `${requestId}:trace`,
+          executionId: `${requestId}:execution`,
+          mainOwnedProvenanceId: `${requestId}:main-provenance`,
+        }
+      : null,
     writesAuthorityProtectedField: false,
     originalTransactionId: null,
     undoJournalId: null,
   };
+}
+
+async function dbRows(sql, params) {
+  const result = JSON.parse(await backend.dbExecute(sql, params, "all"));
+  assert.ok(Array.isArray(result.rows), "dbExecute all must return rows");
+  return result.rows;
+}
+
+async function seedActiveSemanticEpoch(projectId) {
+  const backfill = JSON.parse(
+    await backend.retryNarrativeLegacyBackfill({ projectId }),
+  );
+  assert.equal(backfill.outcome, "ran");
+
+  const epochs = await dbRows(
+    `SELECT id, project_id, epoch_number, reason
+       FROM narrative_semantic_epochs
+      WHERE project_id = ?
+      ORDER BY epoch_number DESC
+      LIMIT 1`,
+    [projectId],
+  );
+  assert.equal(epochs.length, 1);
+  assert.deepEqual(epochs[0], {
+    id: epochs[0].id,
+    project_id: projectId,
+    epoch_number: 0,
+    reason: "initial",
+  });
+  return epochs[0];
 }
 
 test("workspace 未オープンの ftsSearch は 'No workspace is open' マーカーで reject する", async () => {
@@ -333,11 +385,22 @@ test("failed snapshot restore emits no epoch wake", async () => {
 test("non-noop repair emits one observer-only epoch wake and replay emits none", async () => {
   await backend.projectCreate(projectPayload("repair-event-p1"));
   await backend.projectCreate(projectPayload("repair-event-p2"));
-  await backend.dbExecute(
-    "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order) VALUES (?, ?, ?, ?, ?)",
-    ["repair-event-scene", "repair-event-p2", "scene", "Foreign scene", "a0"],
-    "run",
-  );
+  const repairProjectEpoch = await seedActiveSemanticEpoch("repair-event-p1");
+  await seedActiveSemanticEpoch("repair-event-p2");
+  await backend.treeNodeCreate({
+    ...mutationIdentity("repair-event-scene-create", "repair-event-p2"),
+    id: "repair-event-scene",
+    projectId: "repair-event-p2",
+    parentId: null,
+    nodeType: "scene",
+    title: "Foreign scene",
+    sortOrder: "a0",
+    synopsis: null,
+    status: null,
+    sourceUri: null,
+    sourceMtime: null,
+    content: "{}",
+  });
   await backend.dbExecute(
     "INSERT INTO chat_sessions (id, project_id, title) VALUES (?, ?, ?)",
     ["repair-event-session", "repair-event-p2", "Foreign session"],
@@ -348,19 +411,22 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
     ["repair-event-message", "repair-event-session", "user", "Foreign"],
     "run",
   );
-  await backend.dbExecute(
-    "INSERT INTO codex_entries (id, project_id, type, name, source_chat_message_id, version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [
-      "repair-event-codex",
+  await backend.agentCodexCreate({
+    ...mutationIdentity(
+      "repair-event-codex-create",
       "repair-event-p1",
-      "character",
-      "Foreign source",
-      "repair-event-message",
-      1,
-      "2026-08-23T00:00:00.000Z",
-    ],
-    "run",
-  );
+      "ai-apply",
+    ),
+    entryId: "repair-event-codex",
+    projectId: "repair-event-p1",
+    sessionId: "repair-event-codex-session",
+    typeSlug: "character",
+    name: "Foreign source",
+    summary: "",
+    content: "{}",
+    sourceChatMessageId: "repair-event-message",
+    authorshipSpans: [],
+  });
   const payload = {
     projectId: "repair-event-p1",
     requestId: "repair-event-request",
@@ -383,6 +449,64 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
   const baselineCount = maintenanceEventBaseline();
   const report = JSON.parse(await backend.repairIntegrity(payload));
   assert.ok(report.codexSourcesFixed > 0);
+
+  const currentEpochs = await dbRows(
+    `SELECT id, project_id, epoch_number, reason, triggered_by_change_event_uid
+       FROM narrative_semantic_epochs
+      WHERE project_id = ?
+      ORDER BY epoch_number DESC
+      LIMIT 1`,
+    [payload.projectId],
+  );
+  assert.equal(currentEpochs.length, 1);
+  assert.notEqual(currentEpochs[0].id, repairProjectEpoch.id);
+  assert.equal(
+    currentEpochs[0].epoch_number,
+    repairProjectEpoch.epoch_number + 1,
+  );
+  assert.equal(currentEpochs[0].project_id, payload.projectId);
+  assert.equal(currentEpochs[0].reason, "migration");
+  assert.equal(
+    currentEpochs[0].triggered_by_change_event_uid,
+    payload.eventUid,
+  );
+
+  const feedRows = await dbRows(
+    `SELECT object_key_json, before_version, before_digest,
+            after_version, after_digest
+       FROM narrative_change_events
+      WHERE project_id = ? AND canonical_change_event_uid = ?
+      ORDER BY event_ordinal`,
+    [payload.projectId, payload.eventUid],
+  );
+  const codexFeed = feedRows.find((row) => {
+    const objectKey = JSON.parse(row.object_key_json);
+    return (
+      objectKey.kind === "codex-entry" &&
+      objectKey.entryId === "repair-event-codex"
+    );
+  });
+  assert.ok(codexFeed, "repair must append a Codex Feed event");
+  assert.equal(codexFeed.before_version, 1);
+  assert.equal(codexFeed.after_version, 2);
+  assert.equal(typeof codexFeed.before_digest, "string");
+  assert.equal(typeof codexFeed.after_digest, "string");
+
+  const codexHeads = await dbRows(
+    `SELECT after_version, after_digest
+       FROM narrative_change_object_heads
+      WHERE project_id = ? AND object_identity = ?`,
+    [
+      payload.projectId,
+      JSON.stringify({ kind: "codex-entry", entryId: "repair-event-codex" }),
+    ],
+  );
+  assert.deepEqual(codexHeads, [
+    {
+      after_version: codexFeed.after_version,
+      after_digest: codexFeed.after_digest,
+    },
+  ]);
   const firstEvent = await waitForMaintenanceEventAfter(
     baselineCount,
     maintenanceEventPredicate({
@@ -436,8 +560,8 @@ test("non-noop snapshot restore emits once, replay emits none, and first no-op e
     versionIds: [],
   });
   await backend.dbExecute(
-    "DELETE FROM labels WHERE id = ?",
-    ["snapshot-event-label"],
+    "DELETE FROM labels WHERE project_id = ?",
+    [projectId],
     "run",
   );
   const context = JSON.parse(
