@@ -2,6 +2,7 @@ use std::path::Path;
 
 use grimodex_db::agent_writes::{agent_codex_create_impl, AgentCodexCreatePayload};
 use grimodex_db::narrative_extraction::change_feed::narrative_snapshot_digest;
+use grimodex_db::snippet_writes::{create as snippet_create, SnippetCreatePayload};
 use grimodex_db::{Database, RepairIntegrityPayload};
 
 fn canonical_codex_digest(db: &Database, project_id: &str, entry_id: &str) -> String {
@@ -438,5 +439,97 @@ fn repair_integrity_chains_from_a_canonical_codex_feed_head() {
     assert_eq!(
         repaired.change_event_uid.as_deref(),
         Some("canonical-repair-event")
+    );
+}
+
+#[test]
+fn repair_integrity_chains_from_a_canonical_snippet_feed_head() {
+    let db = Database::new(Path::new(":memory:")).expect("open database");
+    db.migrate().expect("migrate database");
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO projects (id, title) VALUES
+                 ('canonical-snippet-p1', 'One'), ('canonical-snippet-p2', 'Two');
+             INSERT INTO chat_sessions (id, project_id, title)
+               VALUES ('canonical-snippet-session', 'canonical-snippet-p1', 'Local session');
+             INSERT INTO chat_messages (id, session_id, role, content)
+               VALUES ('canonical-snippet-message', 'canonical-snippet-session', 'user', 'Local');",
+        )?;
+        Ok(())
+    })
+    .expect("seed canonical snippet projects and source message");
+
+    snippet_create(
+        &db,
+        SnippetCreatePayload {
+            request_id: "canonical-snippet-create".to_string(),
+            session_id: "canonical-snippet-session".to_string(),
+            event_uid: "canonical-snippet-create-event".to_string(),
+            origin: grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin::Human,
+            authority_route: "human-direct".to_string(),
+            caller: "human-ui".to_string(),
+            controls: vec![
+                "runtime-policy".to_string(),
+                "actor-context".to_string(),
+                "typed-writer".to_string(),
+                "occ".to_string(),
+                "change-event".to_string(),
+                "change-feed".to_string(),
+            ],
+            provenance: None,
+            writes_authority_protected_field: false,
+            original_transaction_id: None,
+            undo_journal_id: None,
+            project_id: "canonical-snippet-p1".to_string(),
+            snippet_id: "canonical-snippet".to_string(),
+            title: "Foreign source after drift".to_string(),
+            content: "{}".to_string(),
+            tags_cache: None,
+            content_source: Some("human".to_string()),
+            scene_id: None,
+            source_chat_message_id: Some("canonical-snippet-message".to_string()),
+            canonical_payload: None,
+        },
+    )
+    .expect("canonical Snippet create with local source");
+
+    // The canonical writer records the complete Snippet Feed head. Simulate
+    // legacy ownership drift through the unprotected chat-session fixture row;
+    // the Snippet row and its prior canonical head remain unchanged, while
+    // Integrity Repair now observes the source as cross-project.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE chat_sessions SET project_id = 'canonical-snippet-p2'
+              WHERE id = 'canonical-snippet-session'",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("create cross-project source drift");
+
+    let repaired = db
+        .repair_integrity(RepairIntegrityPayload {
+            project_id: "canonical-snippet-p1".to_string(),
+            request_id: "canonical-snippet-repair".to_string(),
+            session_id: "canonical-snippet-repair-session".to_string(),
+            event_uid: "canonical-snippet-repair-event".to_string(),
+            occurred_at: "2026-08-23T00:00:00.000Z".to_string(),
+            authority_route: "restore-or-migration".to_string(),
+            caller: "integrity-repair".to_string(),
+            controls: vec![
+                "exclusive-system-operation".to_string(),
+                "semantic-epoch-event".to_string(),
+                "full-rebuild-marker".to_string(),
+            ],
+            provenance: None,
+            writes_authority_protected_field: false,
+        })
+        .expect("repair must chain from the canonical Snippet Feed head");
+    assert_eq!(repaired.codex_sources_fixed, 0);
+    assert_eq!(repaired.snippet_sources_fixed, 1);
+    assert_eq!(repaired.snippet_scenes_fixed, 0);
+    assert_eq!(
+        repaired.change_event_uid.as_deref(),
+        Some("canonical-snippet-repair-event")
     );
 }
