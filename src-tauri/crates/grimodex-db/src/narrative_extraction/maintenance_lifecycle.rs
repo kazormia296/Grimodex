@@ -212,6 +212,39 @@ fn ownership_error(message: impl Into<String>) -> anyhow::Error {
     )
 }
 
+fn recovery_lifecycle_counts_in_tx(conn: &Connection, run_id: &str) -> anyhow::Result<(i64, i64)> {
+    let task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let attempt_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_extraction_attempts a
+           JOIN narrative_extraction_tasks t ON t.id = a.task_id
+          WHERE t.run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    Ok((task_count, attempt_count))
+}
+
+/// Verify that a legacy/imported maintenance Run has no lifecycle children.
+/// Recovery may cancel such a pending parent, but it must never discard or
+/// reinterpret a Task/Attempt pair that already exists under that Run.
+pub(crate) fn ensure_recovery_lifecycle_is_empty_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<()> {
+    let (task_count, attempt_count) = recovery_lifecycle_counts_in_tx(conn, run_id)?;
+    if task_count != 0 || attempt_count != 0 {
+        return Err(ownership_error(format!(
+            "Run '{run_id}' has {task_count} Tasks and {attempt_count} Attempts; recovery requires zero children"
+        )));
+    }
+    Ok(())
+}
+
 /// Create or reuse a maintenance Run and, on a fresh Run, its exact one
 /// running Task and running Attempt #1. Callers must hold the surrounding
 /// IMMEDIATE transaction.
@@ -425,19 +458,7 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
         )));
     }
 
-    let task_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
-        params![run_id],
-        |row| row.get(0),
-    )?;
-    let attempt_count: i64 = conn.query_row(
-        "SELECT COUNT(*)
-           FROM narrative_extraction_attempts a
-           JOIN narrative_extraction_tasks t ON t.id = a.task_id
-          WHERE t.run_id = ?1",
-        params![run_id],
-        |row| row.get(0),
-    )?;
+    let (task_count, attempt_count) = recovery_lifecycle_counts_in_tx(conn, run_id)?;
     if task_count != 0 || attempt_count != 0 {
         return Err(ownership_error(format!(
             "Run '{run_id}' has {task_count} Tasks and {attempt_count} Attempts; recovery synthesis requires zero children"

@@ -17,8 +17,9 @@ use super::legacy_backfill::{
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
 use super::maintenance_lifecycle::{
-    fail_maintenance_run_in_tx, load_maintenance_run_in_tx, synthesize_recovery_lifecycle_in_tx,
-    MaintenanceFailureKind, MaintenanceRunHandle,
+    ensure_recovery_lifecycle_is_empty_in_tx, fail_maintenance_run_in_tx,
+    load_maintenance_run_in_tx, synthesize_recovery_lifecycle_in_tx, MaintenanceFailureKind,
+    MaintenanceRunHandle,
 };
 use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, CompletedRunSkipDecision, CompletedRunSkipExpectation,
@@ -2198,6 +2199,7 @@ fn terminalize_interrupted_runs_impl(
                         )?;
                     }
                     NarrativeRunStatus::Pending => {
+                        ensure_recovery_lifecycle_is_empty_in_tx(conn, &run_id)?;
                         result.cancelled_pending_run_ids.push(run_id.clone());
                         transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Cancelled)?;
                         anyhow::ensure!(
