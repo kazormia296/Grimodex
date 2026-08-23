@@ -2266,6 +2266,138 @@ mod tests {
     use rusqlite::params;
     use serde_json::json;
 
+    fn recovery_work(kind: AutomaticRunKind, epoch_id: &str) -> WorkKey {
+        let work_key = match kind {
+            AutomaticRunKind::Backfill => LEGACY_BACKFILL_WORK_KEY.to_owned(),
+            AutomaticRunKind::Verify => format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}"),
+            AutomaticRunKind::RebuildDerived => REBUILD_DERIVED_WORK_KEY.to_owned(),
+        };
+        WorkKey::new_for_epoch("project-1", kind, work_key, epoch_id).expect("recovery work")
+    }
+
+    fn recovery_spec(kind: AutomaticRunKind) -> &'static str {
+        match kind {
+            AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
+            AutomaticRunKind::Verify => r#"{"verifyContractVersion":"6"}"#,
+            AutomaticRunKind::RebuildDerived => "{}",
+        }
+    }
+
+    fn recovery_task_kind(kind: AutomaticRunKind) -> &'static str {
+        match kind {
+            AutomaticRunKind::Backfill => "maintenance-backfill",
+            AutomaticRunKind::Verify => "maintenance-dependency-verify",
+            AutomaticRunKind::RebuildDerived => "maintenance-semantic-index-rebuild",
+        }
+    }
+
+    fn open_pending_recovery_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z'),
+                        ('epoch-stale', 'project-1', 1, 'restore',
+                         '2026-01-02T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed pending recovery project");
+        db
+    }
+
+    fn insert_pending_recovery_run(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+        kind: AutomaticRunKind,
+        epoch_id: &str,
+        work_key: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at, version,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES (?1, 'project-1', 'maintenance', '{}', ?2, ?3,
+                     'pending', '{}', '2026-01-03T00:00:00.000Z', NULL, NULL, 0,
+                     ?4, ?5, ?6)",
+            params![
+                run_id,
+                recovery_spec(kind),
+                format!("digest:{run_id}"),
+                kind.as_str(),
+                epoch_id,
+                work_key,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn insert_recovery_children(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+        kind: AutomaticRunKind,
+        with_attempt: bool,
+    ) -> anyhow::Result<()> {
+        let task_id = format!("task-{run_id}");
+        conn.execute(
+            "INSERT INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, input_json, priority, attempt_count,
+                 created_at, started_at, version)
+             VALUES (?1, ?2, ?3, 'running', ?4, 0, ?5,
+                     '2026-01-03T00:00:00.000Z', '2026-01-03T00:00:00.000Z', 0)",
+            params![
+                task_id,
+                run_id,
+                recovery_task_kind(kind),
+                recovery_spec(kind),
+                if with_attempt { 1 } else { 0 },
+            ],
+        )?;
+        if with_attempt {
+            conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at)
+                 VALUES (?1, ?2, 1, 'running', '2026-01-03T00:00:00.000Z')",
+                params![format!("attempt-{run_id}"), task_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn recovery_shape(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+    ) -> anyhow::Result<(String, i64, i64)> {
+        let status = conn.query_row(
+            "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let task_count = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let attempt_count = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok((status, task_count, attempt_count))
+    }
+
     #[test]
     fn automatic_kind_set_is_closed() {
         assert_eq!(AutomaticRunKind::all().len(), 3);
@@ -2279,6 +2411,144 @@ mod tests {
             serde_json::to_string(&AutomaticRunKind::RebuildDerived).expect("serialize kind"),
             "\"semantic-index-rebuild\""
         );
+    }
+
+    #[test]
+    fn pending_interrupted_recovery_accepts_canonical_zero_child_runs_for_all_kinds() {
+        for kind in AutomaticRunKind::all() {
+            for stale in [false, true] {
+                let db = open_pending_recovery_db();
+                let run_id = format!("pending-{}-{}", kind.as_str(), stale);
+                let work = recovery_work(kind, "epoch-current");
+                let row_epoch = if stale {
+                    "epoch-stale"
+                } else {
+                    "epoch-current"
+                };
+                db.with_conn(|conn| {
+                    insert_pending_recovery_run(conn, &run_id, kind, row_epoch, &work.work_key)
+                })
+                .expect("seed canonical pending run");
+
+                let result = if stale {
+                    terminalize_stale_interrupted_runs_for_epoch(
+                        &db,
+                        "project-1",
+                        &work,
+                        "epoch-current",
+                        &[StaleActiveRun {
+                            run_id: run_id.clone(),
+                            semantic_epoch_id: Some("epoch-stale".to_owned()),
+                        }],
+                    )
+                } else {
+                    terminalize_interrupted_runs_for_epoch(
+                        &db,
+                        "project-1",
+                        &work,
+                        Some("epoch-current"),
+                        std::slice::from_ref(&run_id),
+                    )
+                };
+                let result = result.expect("canonical pending recovery succeeds");
+                assert_eq!(result.failed_run_ids, Vec::<String>::new());
+                assert_eq!(result.cancelled_pending_run_ids, vec![run_id.clone()]);
+                db.with_conn(|conn| {
+                    let (status, task_count, attempt_count) = recovery_shape(conn, &run_id)?;
+                    assert_eq!(status, "cancelled");
+                    assert_eq!(task_count, 0);
+                    assert_eq!(attempt_count, 0);
+                    Ok(())
+                })
+                .expect("inspect canonical pending recovery");
+            }
+        }
+    }
+
+    #[test]
+    fn pending_interrupted_recovery_rejects_owned_children_and_rolls_back_batch() {
+        for kind in AutomaticRunKind::all() {
+            for stale in [false, true] {
+                for with_attempt in [false, true] {
+                    let db = open_pending_recovery_db();
+                    let valid_id = format!("valid-{}-{}-{}", kind.as_str(), stale, with_attempt);
+                    let malformed_id =
+                        format!("malformed-{}-{}-{}", kind.as_str(), stale, with_attempt);
+                    let work = recovery_work(kind, "epoch-current");
+                    let row_epoch = if stale {
+                        "epoch-stale"
+                    } else {
+                        "epoch-current"
+                    };
+                    db.with_conn(|conn| {
+                        insert_pending_recovery_run(
+                            conn,
+                            &valid_id,
+                            kind,
+                            row_epoch,
+                            &work.work_key,
+                        )?;
+                        insert_pending_recovery_run(
+                            conn,
+                            &malformed_id,
+                            kind,
+                            row_epoch,
+                            &work.work_key,
+                        )?;
+                        insert_recovery_children(conn, &malformed_id, kind, with_attempt)
+                    })
+                    .expect("seed malformed pending batch");
+
+                    let result = if stale {
+                        terminalize_stale_interrupted_runs_for_epoch(
+                            &db,
+                            "project-1",
+                            &work,
+                            "epoch-current",
+                            &[
+                                StaleActiveRun {
+                                    run_id: valid_id.clone(),
+                                    semantic_epoch_id: Some("epoch-stale".to_owned()),
+                                },
+                                StaleActiveRun {
+                                    run_id: malformed_id.clone(),
+                                    semantic_epoch_id: Some("epoch-stale".to_owned()),
+                                },
+                            ],
+                        )
+                    } else {
+                        terminalize_interrupted_runs_for_epoch(
+                            &db,
+                            "project-1",
+                            &work,
+                            Some("epoch-current"),
+                            &[valid_id.clone(), malformed_id.clone()],
+                        )
+                    };
+                    let error = result.expect_err("owned pending children must be rejected");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID"),
+                        "unexpected error: {error:#}"
+                    );
+                    db.with_conn(|conn| {
+                        let (valid_status, valid_tasks, valid_attempts) =
+                            recovery_shape(conn, &valid_id)?;
+                        assert_eq!(valid_status, "pending");
+                        assert_eq!(valid_tasks, 0);
+                        assert_eq!(valid_attempts, 0);
+                        let (malformed_status, malformed_tasks, malformed_attempts) =
+                            recovery_shape(conn, &malformed_id)?;
+                        assert_eq!(malformed_status, "pending");
+                        assert_eq!(malformed_tasks, 1);
+                        assert_eq!(malformed_attempts, if with_attempt { 1 } else { 0 });
+                        Ok(())
+                    })
+                    .expect("malformed pending recovery rolls back all mutations");
+                }
+            }
+        }
     }
 
     #[test]
