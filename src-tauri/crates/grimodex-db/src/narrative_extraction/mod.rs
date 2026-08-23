@@ -4,6 +4,7 @@ pub(crate) mod application_contributions;
 mod attention;
 mod c2z_preparation;
 pub(crate) mod c2zb_application_rekey;
+mod c2zc_canonical_cutover;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
@@ -148,6 +149,13 @@ pub use c2z_preparation::{
     ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
     RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
     WorkspaceCutoverReadiness, REQUIRED_VERIFY_CHECKS,
+};
+pub use c2zc_canonical_cutover::{
+    canonical_application_freshness, cut_over_workspace_freshness,
+    inspect_workspace_cutover_readiness_with_liveness, record_live_scheduler_heartbeat,
+    CanonicalCutoverReadiness, CanonicalCutoverReceipt, CanonicalFreshnessAuthority,
+    CanonicalFreshnessRow, SchedulerLivenessEvidence, C2_ZC_CUTOVER_CONTRACT_VERSION,
+    C2_ZC_CUTOVER_MIGRATION_ID,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{

@@ -11,6 +11,9 @@ use super::application_contributions::{
     contribution_target_identity_for_application, record_contribution_in_tx, ContributionField,
     ContributionProvenance, ContributionTargetState, FieldAuthorityCoordinate,
 };
+use super::c2zc_canonical_cutover::{
+    is_generic_freshness_canonical, write_application_dependencies_in_tx,
+};
 use super::change_feed::{
     append_narrative_change_transaction_in_tx, events_from_journal_entities,
     journal_op_kind_wrote_nothing, AppendNarrativeChangeTransactionInput, NarrativeChangeCauseKind,
@@ -1471,25 +1474,37 @@ pub fn narrative_extraction_apply_commit(
                 )?;
                 let envelope: Value = serde_json::from_str(&envelope_json)?;
                 let read_set = load_read_set_rows(&envelope)?;
-                conn.execute(
-                    "INSERT INTO narrative_projection_freshness
-                        (application_id, status, reason_json, version, updated_at)
-                     VALUES (?1, 'fresh', NULL, 0, ?2)",
-                    params![application_id, now],
-                )?;
-                for source in source_basis.into_iter().chain(read_set) {
-                    conn.execute(
-                        "INSERT OR IGNORE INTO narrative_projection_dependencies
-                            (application_id, source_kind, source_key,
-                             observed_revision_token, propagation)
-                         VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
-                        params![
-                            application_id,
-                            source.source_kind,
-                            source.source_key,
-                            source.revision_token,
-                        ],
+                let source_rows = source_basis.into_iter().chain(read_set).collect::<Vec<_>>();
+                if is_generic_freshness_canonical(conn)? {
+                    write_application_dependencies_in_tx(
+                        conn,
+                        &payload.project_id,
+                        &application_id,
+                        &payload.run_id,
+                        &source_rows,
+                        &now,
                     )?;
+                } else {
+                    conn.execute(
+                        "INSERT INTO narrative_projection_freshness
+                            (application_id, status, reason_json, version, updated_at)
+                         VALUES (?1, 'fresh', NULL, 0, ?2)",
+                        params![application_id, now],
+                    )?;
+                    for source in source_rows {
+                        conn.execute(
+                            "INSERT OR IGNORE INTO narrative_projection_dependencies
+                                (application_id, source_kind, source_key,
+                                 observed_revision_token, propagation)
+                             VALUES (?1, ?2, ?3, ?4, 'freshness-only')",
+                            params![
+                                application_id,
+                                source.source_kind,
+                                source.source_key,
+                                source.revision_token,
+                            ],
+                        )?;
+                    }
                 }
                 application_ids.push(application_id);
             }

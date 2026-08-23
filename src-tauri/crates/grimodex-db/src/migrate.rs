@@ -12,6 +12,64 @@ enum ConvergedPreviousFinalize {
 }
 
 impl Database {
+    /// C2-ZC's activation marker is deliberately kept behind the schema-owner
+    /// module.  `schema_data_migrations` is not a general-purpose runtime
+    /// table: C2-ZB and every later schema/data contract must serialize its
+    /// writes through this owner so a cutover cannot race a migration
+    /// checkpoint or silently acquire a second marker-writing authority.
+    pub(crate) const C2_ZC_CUTOVER_MIGRATION_ID: &'static str =
+        "narrative-c2-canonical-freshness-v1";
+    pub(crate) const C2_ZC_CUTOVER_CONTRACT_VERSION: i64 = 1;
+
+    pub(crate) fn read_c2zc_cutover_marker(conn: &Connection) -> anyhow::Result<Option<i64>> {
+        let table_exists: bool = conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                  WHERE type = 'table' AND name = 'schema_data_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !table_exists {
+            anyhow::bail!("NEX_C2ZC_CUTOVER_MARKER_MISSING: schema_data_migrations is unavailable");
+        }
+        conn.query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [Self::C2_ZC_CUTOVER_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn record_c2zc_cutover_marker(
+        conn: &Connection,
+        applied_at: &str,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !applied_at.trim().is_empty() && applied_at.trim() == applied_at,
+            "NEX_C2ZC_CUTOVER_MARKER_TIMESTAMP_INVALID: appliedAt must be non-empty and unpadded"
+        );
+        let current = Self::read_c2zc_cutover_marker(conn)?;
+        if let Some(version) = current {
+            anyhow::ensure!(
+                version == Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                "NEX_C2ZC_CUTOVER_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+            );
+            return Ok(());
+        }
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, ?2, ?3)",
+            params![
+                Self::C2_ZC_CUTOVER_MIGRATION_ID,
+                Self::C2_ZC_CUTOVER_CONTRACT_VERSION,
+                applied_at,
+            ],
+        )?;
+        Ok(())
+    }
+
     pub fn migrate(&self) -> anyhow::Result<()> {
         self.migrate_impl(false)
     }

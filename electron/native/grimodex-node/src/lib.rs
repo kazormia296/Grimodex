@@ -137,6 +137,10 @@ fn narrative_maintenance_binding_for_authority(
         .binding_for_authority(&narrative_authority_id(authority))
 }
 
+fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
+    error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
+}
+
 fn idempotency_receipt_exists(
     db: &Database,
     domain: &str,
@@ -1702,7 +1706,63 @@ impl Backend {
                 ) => return Ok(None),
                 Err(error) => return Err(error),
             };
-            match narrative_extraction::run_incremental_freshness_cycle(authority.db())? {
+            let binding = narrative_maintenance_binding_for_authority(&state, &authority);
+            binding.validate()?;
+            // Liveness is minted only after the bounded cycle has returned
+            // successfully.  A failed graph evaluation, cursor reservation,
+            // or publication therefore cannot attest a live scheduler or
+            // activate the canonical authority.
+            let cycle_outcome =
+                narrative_extraction::run_incremental_freshness_cycle(authority.db())?;
+            // A workspace swap may complete while the bounded cycle is
+            // evaluating its pinned old authority.  Re-resolve the active
+            // authority before minting liveness so that a late old cycle can
+            // never activate the database that is no longer current.
+            let _workspace_open_guard = state
+                .ws
+                .open_lock
+                .lock()
+                .map_err(|error| AppError::Anyhow(anyhow::anyhow!("{error}")))?;
+            let current_authority = match active_database(&state.ws) {
+                Ok(current_authority) => current_authority,
+                Err(
+                    AppError::NoWorkspace | AppError::WorkspaceSwitching | AppError::SafeModeActive,
+                ) => return Ok(None),
+                Err(error) => return Err(error),
+            };
+            if current_authority.identity() != authority.identity() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_C2ZC_SCHEDULER_AUTHORITY_CHANGED: active workspace authority changed during freshness cycle"
+                )));
+            }
+            let current_binding =
+                narrative_maintenance_binding_for_authority(&state, &current_authority);
+            if current_binding != binding {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_C2ZC_SCHEDULER_BINDING_CHANGED: maintenance authority binding changed during freshness cycle"
+                )));
+            }
+            let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
+                current_authority.db(),
+                &binding.authority_id,
+                binding.generation,
+            )?;
+
+            // This existing main-only scheduler wake is the production owner
+            // of automatic C2-ZC activation.  Readiness is deliberately
+            // fail-soft until all durable per-workspace gates pass; malformed
+            // evidence, a marker/schema problem, or any other unexpected
+            // failure remains visible to the scheduler caller.
+            let cutover_result = current_authority.db().with_conn(|conn| {
+                narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
+            });
+            if let Err(error) = cutover_result {
+                if !is_expected_c2zc_cutover_not_ready(&error) {
+                    return Err(AppError::Anyhow(error));
+                }
+            }
+
+            match cycle_outcome {
                 narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),
                 narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
                     Ok(Some(
