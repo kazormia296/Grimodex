@@ -246,11 +246,73 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     ["taskCount", 2],
     ["taskStartedAt", "2099-01-01T00:00:00.000Z"],
     ["taskCreatedAt", "2025-01-01T00:00:00.000Z"],
+    ["startedAt", "2026-08-23T00:00:02.000Z"],
   ]) {
     const corrupted = { ...valid, [field]: value };
     assert.throws(
       () => assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
       new RegExp(field),
+    );
+  }
+});
+
+test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
+  const valid = {
+    id: "timestamp-run",
+    runKind: "backfill",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    taskStatus: "running",
+    lastAttemptStatus: "running",
+    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000Z",
+    taskStartedAt: "2026-08-23T00:00:00.000Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(valid, "running", "canonical timestamp lifecycle"),
+  );
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(
+      {
+        ...valid,
+        createdAt: "2026-08-23 00:00:00.000",
+        startedAt: "2026-08-23 00:00:00.000",
+        taskCreatedAt: "2026-08-23 00:00:00.000",
+        taskStartedAt: "2026-08-23 00:00:00.000",
+        lastAttemptStartedAt: "2026-08-23 00:00:00.000",
+      },
+      "running",
+      "legacy naive timestamp lifecycle",
+    ),
+  );
+  for (const timestamp of [
+    "2026-08-23T00:00:00+0900",
+    "2026-08-23T00:00:00.000Z ",
+    "2026-02-30T00:00:00.000Z",
+    "2026-08-23T00:00:00",
+  ]) {
+    assert.throws(
+      () =>
+        assertForegroundLifecycle(
+          {
+            ...valid,
+            createdAt: timestamp,
+            startedAt: timestamp,
+            taskCreatedAt: timestamp,
+            taskStartedAt: timestamp,
+            lastAttemptStartedAt: timestamp,
+          },
+          "running",
+          `malformed timestamp ${timestamp}`,
+        ),
+      /timestamp/,
     );
   }
 });
@@ -381,6 +443,22 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
       ),
     /productJourneyBarrierId/,
   );
+  assert.throws(
+    () =>
+      assertForegroundRunMarker(
+        {
+          ...markedRun,
+          specJson: JSON.stringify({
+            systemWork: {
+              ...JSON.parse(markedRun.specJson).systemWork,
+              generation: 0,
+            },
+          }),
+        },
+        expected,
+      ),
+    /generation/,
+  );
 });
 
 test("transient and terminal validators reject fallback and same-millisecond false greens", () => {
@@ -394,6 +472,33 @@ test("transient and terminal validators reject fallback and same-millisecond fal
         maxAttemptNumber: 2,
       }),
     /exact NEX_MAINTENANCE_TRANSIENT/,
+  );
+  const oneAttemptTransient = {
+    status: "failed",
+    taskCount: 1,
+    attemptCount: 1,
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+  };
+  assert.doesNotThrow(() => assertTransientAttemptEvidence(oneAttemptTransient));
+  assert.throws(
+    () =>
+      assertTransientAttemptEvidence({
+        ...oneAttemptTransient,
+        attemptCount: 2,
+      }),
+    /exactly one Task and Attempt/,
+  );
+  assert.throws(
+    () =>
+      assertTransientAttemptEvidence({
+        ...oneAttemptTransient,
+        maxAttemptNumber: 2,
+      }),
+    /Attempt #1/,
   );
   assert.throws(
     () =>

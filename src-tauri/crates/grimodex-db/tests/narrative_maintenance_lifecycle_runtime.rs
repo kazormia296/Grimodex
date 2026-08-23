@@ -8,6 +8,10 @@
 
 use grimodex_db::narrative_extraction::digest_plan;
 use grimodex_db::narrative_extraction::ensure_test_schema;
+use grimodex_db::narrative_extraction::{
+    current_maintenance_coordinates, evaluate_completed_run_skip, CompletedRunSkipDecision,
+    CompletedRunSkipExpectation, VERIFY_RUN_KIND_CONTRACT_VERSION,
+};
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     run_system_work_cycle, run_system_work_cycle_with_modes_and_config,
@@ -131,6 +135,19 @@ fn lifecycle_rows_for_run(
     })
 }
 
+fn outcome_for_run(db: &Database, run_id: &str) -> anyhow::Result<Option<String>> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT outcome_summary_json
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            [run_id],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+    })
+}
+
 #[test]
 fn automatic_success_owns_exactly_one_task_and_attempt_and_finalizes_atomically() {
     for run_kind in AutomaticRunKind::all() {
@@ -243,6 +260,123 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
         complete_foreground_system_work_run(&db, &barrier).is_err(),
         "duplicate release must validate the completed Task/Attempt pair"
     );
+}
+
+#[test]
+fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
+    for run_kind in AutomaticRunKind::all() {
+        for tamper in ["null", "empty", "wrong-coordinate-or-digest"] {
+            let db = if run_kind == AutomaticRunKind::Backfill {
+                fixture_db_without_epoch()
+            } else {
+                fixture_db()
+            };
+            let binding = MaintenanceWorkspaceBinding {
+                authority_id: "authority-c2-5b-lifecycle".to_string(),
+                generation: 17,
+            };
+            let config = foreground_config();
+            let mut foreground_request = request(run_kind);
+            foreground_request.workspace_binding = Some(binding.clone());
+            run_system_work_cycle_with_modes_and_config(
+                &db,
+                &foreground_request,
+                |_| RecoveryMode::SameProcessLive,
+                Some(&config),
+            )
+            .expect("foreground phase succeeds before completed duplicate test");
+            let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
+                .expect("find exact foreground Run")
+                .expect("foreground Run remains held");
+            complete_foreground_system_work_run(&db, &barrier)
+                .expect("first release accepts the native phase outcome");
+            let lifecycle_before_tamper =
+                lifecycle_rows_for_run(&db, &barrier.run_id).expect("read completed lifecycle");
+            assert_eq!(
+                (
+                    lifecycle_before_tamper.0.as_str(),
+                    lifecycle_before_tamper.1.as_str(),
+                    lifecycle_before_tamper.2.as_str(),
+                ),
+                ("completed", "completed", "completed")
+            );
+            let original_outcome = outcome_for_run(&db, &barrier.run_id)
+                .expect("read completed outcome")
+                .expect("completed release records an outcome");
+            let tampered_outcome = match tamper {
+                "null" => None,
+                "empty" => Some("{}".to_string()),
+                "wrong-coordinate-or-digest" => {
+                    let mut outcome: serde_json::Value =
+                        serde_json::from_str(&original_outcome).expect("parse native outcome");
+                    match run_kind {
+                        AutomaticRunKind::Backfill => {
+                            outcome["semanticEpochId"] = json!("tampered-epoch");
+                        }
+                        AutomaticRunKind::Verify => {
+                            outcome["reportDigest"] = json!("sha256:tampered");
+                        }
+                        AutomaticRunKind::RebuildDerived => {
+                            outcome["summaryDigest"] = json!("sha256:tampered");
+                        }
+                    }
+                    Some(outcome.to_string())
+                }
+                other => unreachable!("unknown completed outcome tamper {other}"),
+            };
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs
+                        SET outcome_summary_json = ?1
+                      WHERE id = ?2",
+                    params![tampered_outcome, barrier.run_id],
+                )?;
+                Ok(())
+            })
+            .expect("tamper completed phase outcome");
+
+            assert!(
+                complete_foreground_system_work_run(&db, &barrier).is_err(),
+                "completed duplicate must reject {tamper} outcome for {:?}",
+                run_kind
+            );
+            let lifecycle_after_duplicate =
+                lifecycle_rows_for_run(&db, &barrier.run_id).expect("read lifecycle after reject");
+            assert_eq!(
+                lifecycle_after_duplicate,
+                lifecycle_before_tamper,
+                "rejected duplicate must not mutate any lifecycle timestamp/status"
+            );
+            assert_eq!(
+                outcome_for_run(&db, &barrier.run_id).expect("read outcome after reject"),
+                tampered_outcome,
+                "rejected duplicate must not repair or overwrite tampered evidence"
+            );
+
+            if run_kind == AutomaticRunKind::Verify {
+                let coordinates =
+                    current_maintenance_coordinates().expect("read current contract coordinates");
+                let expected = CompletedRunSkipExpectation {
+                    project_id: PROJECT_ID.to_string(),
+                    run_kind: AutomaticRunKind::Verify.as_str().to_string(),
+                    work_key: format!("{VERIFY_WORK_KEY_PREFIX}{EPOCH_ID}"),
+                    semantic_epoch_id: EPOCH_ID.to_string(),
+                    graph_contract_digest: coordinates.graph_contract_digest,
+                    rule_registry_digest: coordinates.rule_registry_digest,
+                    producer_generation_set_digest: coordinates.producer_generation_set_digest,
+                    run_kind_contract_version: VERIFY_RUN_KIND_CONTRACT_VERSION.to_string(),
+                    report_digest: None,
+                };
+                let decision = db
+                    .with_conn(|conn| evaluate_completed_run_skip(conn, &expected))
+                    .expect("evaluate tampered completed Verify for rediscovery");
+                assert!(
+                    matches!(decision, CompletedRunSkipDecision::Rerun { .. }),
+                    "partial/tampered completed Verify outcome must never be reused: {decision:?}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
