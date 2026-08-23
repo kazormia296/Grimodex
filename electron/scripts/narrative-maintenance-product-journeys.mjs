@@ -271,22 +271,22 @@ export function assertForegroundLifecycle(
     run.lastAttemptStartedAt,
     `${label} Attempt startedAt`,
   );
-  if (runCreatedAt > runStartedAt) {
+  if (compareInstantValues(runCreatedAt, runStartedAt) > 0) {
     throw new Error(`${label} Run createdAt must not be after startedAt`);
   }
-  if (runCreatedAt > taskCreatedAt) {
+  if (compareInstantValues(runCreatedAt, taskCreatedAt) > 0) {
     throw new Error(`${label} Run createdAt must not be after Task createdAt`);
   }
-  if (runStartedAt > taskCreatedAt) {
+  if (compareInstantValues(runStartedAt, taskCreatedAt) > 0) {
     throw new Error(`${label} Run startedAt must not be after Task createdAt`);
   }
-  if (taskCreatedAt > taskStartedAt) {
+  if (compareInstantValues(taskCreatedAt, taskStartedAt) > 0) {
     throw new Error(`${label} Task createdAt must not be after startedAt`);
   }
-  if (runStartedAt > taskStartedAt) {
+  if (compareInstantValues(runStartedAt, taskStartedAt) > 0) {
     throw new Error(`${label} Task startedAt must not be before Run startedAt`);
   }
-  if (taskStartedAt !== attemptStartedAt) {
+  if (compareInstantValues(taskStartedAt, attemptStartedAt) !== 0) {
     throw new Error(
       `${label} taskStartedAt and lastAttemptStartedAt must share one lifecycle instant: ${JSON.stringify({
         taskStartedAt: run?.taskStartedAt,
@@ -297,8 +297,20 @@ export function assertForegroundLifecycle(
   if (expectedStatus === "completed" || expectedStatus === "failed") {
     if (
       !run.completedAt ||
-      run.taskCompletedAt !== run.completedAt ||
-      run.lastAttemptCompletedAt !== run.completedAt
+      !run.taskCompletedAt ||
+      !run.lastAttemptCompletedAt ||
+      compareInstants(
+        run.taskCompletedAt,
+        run.completedAt,
+        `${label} Task completedAt`,
+        `${label} Run completedAt`,
+      ) !== 0 ||
+      compareInstants(
+        run.lastAttemptCompletedAt,
+        run.completedAt,
+        `${label} Attempt completedAt`,
+        `${label} Run completedAt`,
+      ) !== 0
     ) {
       throw new Error(
         `${label} Run, Task, and Attempt did not share one terminal timestamp: ${JSON.stringify({
@@ -317,7 +329,13 @@ export function assertForegroundLifecycle(
       ["Task.startedAt", run.taskStartedAt],
       ["Attempt.startedAt", run.lastAttemptStartedAt],
     ]) {
-      if (value && terminalAt <= parseInstant(value, `${label} ${field}`)) {
+      if (
+        value &&
+        compareInstantValues(
+          terminalAt,
+          parseInstant(value, `${label} ${field}`),
+        ) <= 0
+      ) {
         throw new Error(
           `${label} terminal completedAt must be after ${field}`,
         );
@@ -408,7 +426,95 @@ function parseOutcome(value) {
   }
 }
 
-function parseInstant(value, label) {
+function isParsedInstant(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    typeof value.epochSeconds === "bigint" &&
+    typeof value.nanoseconds === "bigint"
+  );
+}
+
+function compareInstantValues(left, right) {
+  if (left.epochSeconds < right.epochSeconds) return -1;
+  if (left.epochSeconds > right.epochSeconds) return 1;
+  if (left.nanoseconds < right.nanoseconds) return -1;
+  if (left.nanoseconds > right.nanoseconds) return 1;
+  return 0;
+}
+
+function coerceInstant(value, label) {
+  return isParsedInstant(value) ? value : parseInstant(value, label);
+}
+
+export function compareInstants(left, right, leftLabel = "left", rightLabel = "right") {
+  return compareInstantValues(
+    coerceInstant(left, leftLabel),
+    coerceInstant(right, rightLabel),
+  );
+}
+
+function wallClockInstant(milliseconds, label) {
+  if (
+    typeof milliseconds !== "number" ||
+    !Number.isFinite(milliseconds) ||
+    !Number.isInteger(milliseconds)
+  ) {
+    throw new Error(`${label} must be a finite integer millisecond timestamp`);
+  }
+  const totalNanoseconds = BigInt(milliseconds) * 1_000_000n;
+  let epochSeconds = totalNanoseconds / 1_000_000_000n;
+  let nanoseconds = totalNanoseconds % 1_000_000_000n;
+  if (nanoseconds < 0n) {
+    epochSeconds -= 1n;
+    nanoseconds += 1_000_000_000n;
+  }
+  return { epochSeconds, nanoseconds };
+}
+
+export function assertWallClockLowerBound(
+  timestamp,
+  lowerBoundMilliseconds,
+  label = "timestamp",
+) {
+  const observed = parseInstant(timestamp, `${label} timestamp`);
+  const lowerBound = wallClockInstant(
+    lowerBoundMilliseconds,
+    `${label} lower bound`,
+  );
+  if (compareInstantValues(observed, lowerBound) < 0) {
+    throw new Error(`${label} timestamp predates its wall-clock lower bound`);
+  }
+  return observed;
+}
+
+export function assertWallClockIntervalContains(
+  wallClockStartMilliseconds,
+  wallClockEndMilliseconds,
+  intervalStart,
+  intervalEnd,
+  label = "wall-clock interval",
+) {
+  const wallClockStart = wallClockInstant(
+    wallClockStartMilliseconds,
+    `${label} start`,
+  );
+  const wallClockEnd = wallClockInstant(
+    wallClockEndMilliseconds,
+    `${label} end`,
+  );
+  const instantStart = parseInstant(intervalStart, `${label} interval start`);
+  const instantEnd = parseInstant(intervalEnd, `${label} interval end`);
+  if (
+    compareInstantValues(wallClockStart, instantStart) < 0 ||
+    compareInstantValues(wallClockEnd, instantEnd) > 0
+  ) {
+    throw new Error(`${label} wall-clock interval did not overlap the Run interval`);
+  }
+  return { start: wallClockStart, end: wallClockEnd };
+}
+
+export function parseInstant(value, label = "timestamp") {
   const text = typeof value === "string" ? value : "";
   const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(
     text,
@@ -460,11 +566,14 @@ function parseInstant(value, label) {
     );
   }
   const fraction = fractionText ?? "";
-  // Chrono stores RFC3339 fractions at nanosecond precision and ignores only
-  // digits beyond the ninth. Keep that precision as an integer timeline;
-  // converting to milliseconds makes distinct lifecycle instants compare
-  // equal and can turn a reversed row into a false green.
-  const nanoseconds = BigInt((fraction.slice(0, 9) + "000000000").slice(0, 9));
+  // Rust's durable timestamps are nanosecond values. Reject sub-nanosecond
+  // text rather than silently dropping precision during lifecycle ordering.
+  if (fraction.length > 9) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const nanoseconds = BigInt((fraction + "000000000").slice(0, 9));
   let offsetMinutes = 0;
   if (offsetText && !/^[Zz]$/.test(offsetText)) {
     const offsetMatch = /^[+\-−](\d{2}):(\d{2})$/.exec(offsetText);
@@ -492,12 +601,16 @@ function parseInstant(value, label) {
       `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
     );
   }
-  const timestamp =
-    BigInt(Math.trunc(timestampMilliseconds / 1_000)) * 1_000_000_000n +
-    nanoseconds +
-    (second === 60 ? 1_000_000_000n : 0n) -
-    BigInt(offsetMinutes) * 60n * 1_000_000_000n;
-  return timestamp;
+  // Chrono stores 23:59:60 as the preceding non-leap epoch second with a
+  // nanosecond component in [1e9, 2e9). Keeping those components separate
+  // makes the leap second sort after 23:59:59 and before the next minute;
+  // adding one second would incorrectly collapse it onto 00:00:00.
+  return {
+    epochSeconds:
+      BigInt(Math.trunc(timestampMilliseconds / 1_000)) -
+      BigInt(offsetMinutes) * 60n,
+    nanoseconds: nanoseconds + (second === 60 ? 1_000_000_000n : 0n),
+  };
 }
 
 function parseRunSpec(run, label) {
@@ -708,7 +821,10 @@ export function assertTransientRunSequence(runs, label = "transient retry") {
       }
     }
     const createdAt = parseInstant(run.createdAt, `${label} Run ${run.id} createdAt`);
-    if (previousCreatedAt !== null && createdAt <= previousCreatedAt) {
+    if (
+      previousCreatedAt !== null &&
+      compareInstantValues(createdAt, previousCreatedAt) <= 0
+    ) {
       throw new Error(`${label} same-work Runs must have strictly increasing createdAt instants`);
     }
     previousCreatedAt = createdAt;
@@ -1740,8 +1856,10 @@ async function runTransientRetry(harness, configureWorkspace) {
               row.runKind === failed.runKind &&
               row.workKey === failed.workKey &&
               row.status === "completed" &&
-              parseInstant(row.createdAt, "transient completed Run createdAt") >
+              compareInstantValues(
+                parseInstant(row.createdAt, "transient completed Run createdAt"),
                 failedCreatedAt,
+              ) > 0,
           );
           return completed ? allRows : null;
         },
@@ -1768,10 +1886,13 @@ async function runTransientRetry(harness, configureWorkspace) {
                 row.runKind === failed.runKind &&
                 row.workKey === failed.workKey &&
                 row.status === "completed" &&
-                parseInstant(
-                  row.createdAt,
-                  "transient completed Run createdAt",
-                ) > failedCreatedAt,
+                compareInstantValues(
+                  parseInstant(
+                    row.createdAt,
+                    "transient completed Run createdAt",
+                  ),
+                  failedCreatedAt,
+                ) > 0,
             );
           })()
         : null;
@@ -1792,7 +1913,8 @@ async function runTransientRetry(harness, configureWorkspace) {
       );
       const sameWorkRunsAreOrdered = sameWorkCreatedAt.every(
         (createdAt, index) =>
-          index === 0 || createdAt > sameWorkCreatedAt[index - 1],
+          index === 0 ||
+          compareInstantValues(createdAt, sameWorkCreatedAt[index - 1]) > 0,
       );
       const distinctSameWorkRunCount = sameWorkRunIds.size;
       if (
@@ -2117,8 +2239,10 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
             row.workKey === stale.workKey &&
             row.semanticEpochId === stale.semanticEpochId &&
             row.status === "completed" &&
-            parseInstant(row.createdAt, "interruption recovery Run createdAt") >
+            compareInstantValues(
+              parseInstant(row.createdAt, "interruption recovery Run createdAt"),
               staleCompletedAt,
+            ) > 0,
         );
         return recovery ? { rows, stale, recovery } : null;
       },
@@ -2243,11 +2367,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
             `foreground barrier marker was attached to an unexpected Run kind: ${candidate.runKind}`,
           );
         }
-        if (parseInstant(candidate.createdAt, "workspace wake marked Run createdAt") < openRequestLowerBound) {
-          throw new Error(
-            "foreground barrier marker predates the workspace-open request lower bound",
-          );
-        }
+        assertWallClockLowerBound(
+          candidate.createdAt,
+          openRequestLowerBound,
+          "foreground barrier marker",
+        );
         return candidate.status === "running" ? candidate : null;
       },
       "foreground workspace wake scheduler running barrier",
@@ -2331,26 +2455,24 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       "completed",
       "foreground completed lifecycle",
     );
-    const schedulerStartedAt = parseInstant(
-      completedSchedulerRun.startedAt,
-      "foreground scheduler startedAt",
-    );
-    const schedulerCompletedAt = parseInstant(
-      completedSchedulerRun.completedAt,
-      "foreground scheduler completedAt",
-    );
-    if (
-      foregroundPatchStartedAt < schedulerStartedAt ||
-      foregroundPatchCompletedAt > schedulerCompletedAt
-    ) {
+    try {
+      assertWallClockIntervalContains(
+        foregroundPatchStartedAt,
+        foregroundPatchCompletedAt,
+        completedSchedulerRun.startedAt,
+        completedSchedulerRun.completedAt,
+        "foreground writer",
+      );
+    } catch (error) {
       throw new Error(
         `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify({
           schedulerRunId: schedulerRun.id,
-          schedulerStartedAt: schedulerStartedAt.toString(),
+          schedulerStartedAt: completedSchedulerRun.startedAt,
           foregroundPatchStartedAt,
           foregroundPatchCompletedAt,
-          schedulerCompletedAt: schedulerCompletedAt.toString(),
+          schedulerCompletedAt: completedSchedulerRun.completedAt,
         })}`,
+        { cause: error },
       );
     }
     const freshAfterWake = rowsAfter(await context.runs(), wakeBaseline);
@@ -2429,7 +2551,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       barrierId,
       correlation,
       foregroundPatchCompletedAt,
-      schedulerCompletedAt: schedulerCompletedAt.toString(),
+      schedulerCompletedAt: completedSchedulerRun.completedAt,
       runCount: runs.length,
     });
   } finally {
