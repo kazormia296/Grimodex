@@ -1160,6 +1160,89 @@ export function selectInterruptedRunFromExitSnapshot(
 }
 
 /**
+ * Select the one recovery Run from a settled post-reopen ledger.  The first
+ * qualifying recovery can be observed before a duplicate or a late
+ * non-terminal Run is inserted, so this helper deliberately counts every
+ * post-exit same-work candidate before accepting the lifecycle.
+ */
+export function selectInterruptedRecoveryFromStableLedger(
+  stableRows,
+  postExitRows = [],
+  staleRun,
+  label = "process interruption recovery",
+) {
+  const rows = Array.isArray(stableRows) ? stableRows : [];
+  const stale = rows.find((row) => row.id === staleRun?.id);
+  if (
+    !stale ||
+    stale.status !== "failed" ||
+    stale.terminalReasonCode !== NARRATIVE_MAINTENANCE_INTERRUPTED_CODE ||
+    !stale.completedAt
+  ) {
+    throw new Error(
+      `${label}: stale Run did not persist the interrupted terminal lifecycle; ` +
+        `observed=${JSON.stringify(summarizeRuns(rows))}`,
+    );
+  }
+  assertForegroundLifecycle(stale, "failed", `${label} stale Run`);
+  const staleCompletedAt = parseInstant(
+    stale.completedAt,
+    `${label} stale Run completedAt`,
+  );
+  const candidates = rowsAfter(rows, postExitRows).filter(
+    (row) =>
+      row.runKind === stale.runKind &&
+      row.workKey === stale.workKey &&
+      row.semanticEpochId === stale.semanticEpochId,
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      `${label} must leave exactly one new same-work recovery Run after reopen; ` +
+        `observed=${JSON.stringify(summarizeRuns(candidates))}`,
+    );
+  }
+  const [recovery] = candidates;
+  if (recovery.status !== "completed") {
+    throw new Error(
+      `${label} recovery Run ${recovery.id} did not complete; ` +
+        `observed=${JSON.stringify(summarizeRuns(candidates))}`,
+    );
+  }
+  if (
+    compareInstantValues(
+      parseInstant(recovery.createdAt, `${label} recovery Run createdAt`),
+      staleCompletedAt,
+    ) <= 0
+  ) {
+    throw new Error(
+      `${label} recovery Run ${recovery.id} was created at or before the stale Run completedAt`,
+    );
+  }
+  assertForegroundLifecycle(recovery, "completed", `${label} recovery Run`);
+  return recovery;
+}
+
+/**
+ * A Verify/Rebuild observation must remain free of the human-only Repair Run
+ * kind across the whole settled ledger, including delayed follow-up work.
+ */
+export function assertNoAutomaticRepair(
+  stableRows,
+  label = "automatic maintenance",
+) {
+  const rows = Array.isArray(stableRows) ? stableRows : [];
+  const repairs = rows.filter((row) => row.runKind === "dependency-repair");
+  if (repairs.length > 0) {
+    throw new Error(
+      `${label} reached the human-only Repair Run kind: ${JSON.stringify(
+        summarizeRuns(repairs),
+      )}`,
+    );
+  }
+  return stableRows;
+}
+
+/**
  * Acknowledging a reservation clears the reservation's epoch as well as its
  * Run/range columns. The completed Freshness Run carries the epoch binding;
  * a released cursor must therefore not be compared to that Run's epoch.
@@ -2818,11 +2901,8 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
           stale.completedAt,
           "interrupted stale Run completedAt",
         );
-        const postExitIds = new Set(postExitRuns.map((row) => row.id));
-        const recovery = rows.find(
+        const hasRecovery = rowsAfter(rows, postExitRuns).some(
           (row) =>
-            !postExitIds.has(row.id) &&
-            row.id !== interruptedRun.id &&
             row.runKind === stale.runKind &&
             row.workKey === stale.workKey &&
             row.semanticEpochId === stale.semanticEpochId &&
@@ -2832,21 +2912,24 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
               staleCompletedAt,
             ) > 0,
         );
-        return recovery ? { rows, stale, recovery } : null;
+        return hasRecovery ? { rows, stale } : null;
       },
       "process interruption durable recovery",
     );
-    const {
-      rows: recoveredRows,
-      stale: staleRun,
-      recovery: recoveryRun,
-    } = recoveryEvidence;
-    assertForegroundLifecycle(staleRun, "failed", "interrupted stale Run");
-    assertForegroundLifecycle(
-      recoveryRun,
-      "completed",
-      "interruption recovery Run",
+    const stableRows = await waitForStableLedger(
+      recoveredContext,
+      postExitRuns,
+      "process interruption durable recovery settled",
     );
+    const {
+      stale: staleRun,
+    } = recoveryEvidence;
+    const recoveryRun = selectInterruptedRecoveryFromStableLedger(
+      stableRows,
+      postExitRuns,
+      staleRun,
+    );
+    const recoveredRows = stableRows;
     recoveredContext.record("interrupted-run-recovered", {
       interruptedRunId: interruptedRun.id,
       recoveredRunId: recoveryRun.id,
@@ -2868,19 +2951,19 @@ async function runNoAutomaticRepair(harness, configureWorkspace) {
     configureWorkspace,
     "c2-5b-no-automatic-repair",
     async (context) => {
-      const rows = await waitForRunSequence(
+      await waitForRunSequence(
         context,
         ["dependency-verify", "semantic-index-rebuild"],
         "automatic Verify/Rebuild without Repair",
       );
-      const allRows = await context.runs();
-      if (allRows.some((row) => row.runKind === "dependency-repair")) {
-        throw new Error(
-          "automatic maintenance reached the human-only Repair Run kind",
-        );
-      }
+      const stableRows = await waitForStableLedger(
+        context,
+        context.baselineRuns,
+        "automatic Verify/Rebuild without Repair settled",
+      );
+      assertNoAutomaticRepair(stableRows);
       context.record("automatic-repair-absent", {
-        runKinds: allRows.map((row) => row.runKind),
+        runKinds: stableRows.map((row) => row.runKind),
       });
     },
     {

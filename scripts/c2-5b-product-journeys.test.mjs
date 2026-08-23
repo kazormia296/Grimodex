@@ -33,8 +33,10 @@ import {
   assertTransientAttemptEvidence,
   foregroundMarkedRuns,
   isSettledFreshnessCursor,
+  assertNoAutomaticRepair,
   selectForegroundTargetMarker,
   selectInterruptedRunFromExitSnapshot,
+  selectInterruptedRecoveryFromStableLedger,
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
@@ -1036,6 +1038,132 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
   );
 });
 
+test("settled interruption recovery rejects duplicate, non-terminal, and stale recovery Runs", () => {
+  const makeRun = ({
+    id,
+    status,
+    createdAt,
+    completedAt = null,
+    terminalReasonCode = null,
+  }) => ({
+    id,
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-1",
+    status,
+    terminalReasonCode,
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    taskStatus: status,
+    lastAttemptStatus: status,
+    specJson: '{"backfillAlgorithmVersion":"2"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    createdAt,
+    startedAt: createdAt,
+    taskCreatedAt: createdAt,
+    taskStartedAt: createdAt,
+    lastAttemptStartedAt: createdAt,
+    completedAt,
+    taskCompletedAt: completedAt,
+    lastAttemptCompletedAt: completedAt,
+    lastAttemptFailureCode:
+      status === "failed" ? NARRATIVE_MAINTENANCE_INTERRUPTED_CODE : null,
+  });
+  const stale = makeRun({
+    id: "stale-interrupted",
+    status: "failed",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_INTERRUPTED_CODE,
+    createdAt: "2026-08-23T00:00:00.000Z",
+    completedAt: "2026-08-23T00:00:02.000Z",
+  });
+  const postExit = [{ id: "interrupted-running" }, stale];
+  const recovery = makeRun({
+    id: "recovery",
+    status: "completed",
+    createdAt: "2026-08-23T00:00:03.000Z",
+    completedAt: "2026-08-23T00:00:04.000Z",
+  });
+
+  assert.equal(
+    selectInterruptedRecoveryFromStableLedger(
+      [...postExit, recovery],
+      postExit,
+      stale,
+    ).id,
+    "recovery",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRecoveryFromStableLedger(
+        [...postExit, recovery, { ...recovery, id: "duplicate-recovery" }],
+        postExit,
+        stale,
+      ),
+    /exactly one new same-work recovery Run/,
+    "a delayed duplicate recovery must not be hidden by first-match selection",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRecoveryFromStableLedger(
+        [
+          ...postExit,
+          makeRun({
+            id: "running-recovery",
+            status: "running",
+            createdAt: "2026-08-23T00:00:03.000Z",
+          }),
+        ],
+        postExit,
+        stale,
+      ),
+    /did not complete/,
+    "a same-work recovery that is still running must remain red",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRecoveryFromStableLedger(
+        [
+          ...postExit,
+          makeRun({
+            id: "before-stale-completion",
+            status: "completed",
+            createdAt: "2026-08-23T00:00:01.000Z",
+            completedAt: "2026-08-23T00:00:01.500Z",
+          }),
+        ],
+        postExit,
+        stale,
+      ),
+    /at or before the stale Run completedAt/,
+    "a recovery created before stale completion must remain red",
+  );
+});
+
+test("stable no-automatic-repair assertion rejects a delayed Repair Run", () => {
+  const stableRows = [
+    { id: "verify", runKind: "dependency-verify", status: "completed" },
+    {
+      id: "rebuild",
+      runKind: "semantic-index-rebuild",
+      status: "completed",
+    },
+    { id: "delayed-repair", runKind: "dependency-repair", status: "completed" },
+  ];
+  assert.throws(
+    () => assertNoAutomaticRepair(stableRows),
+    /human-only Repair Run kind/,
+    "a Repair Run arriving after Verify/Rebuild must fail the settled ledger assertion",
+  );
+  assert.doesNotThrow(() =>
+    assertNoAutomaticRepair(stableRows.slice(0, 2)),
+  );
+});
+
 test("foreground target setup rejects an old marked authority and requires one fresh target marker", () => {
   const expected = {
     barrierId: "target-barrier",
@@ -1295,17 +1423,50 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     ),
     "utf8",
   );
-  for (const phase of [
-    "c2-5b-restore-verify-rebuild-verify/restore-fixture",
-    "c2-5b-no-automatic-repair/restore-fixture",
-    "c2-5b-foreground-write-workspace-wake/settle-primary",
-  ]) {
-    const [, launchSuffix] = phase.split("/");
-    assert.ok(
-      source.includes(`harness.launch(\`\${id}/${launchSuffix}\`)`),
-      `runner must contain the registered launch expression for ${phase}`,
-    );
-  }
+  const restoreJourneyBody = source.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(restoreJourneyBody, "restore journey caller must remain inspectable");
+  assert.match(
+    restoreJourneyBody,
+    /const id = "c2-5b-restore-verify-rebuild-verify";/,
+    "restore journey must bind its fixture to its own journey id",
+  );
+  assert.match(
+    restoreJourneyBody,
+    /seedRestoreFixtureEvidence\(\s*harness,\s*workspace,\s*id,\s*\)/,
+    "restore journey must seed its own restore-fixture caller",
+  );
+  assert.match(
+    restoreJourneyBody,
+    /harness\.launch\(`\$\{id\}\/open`\)/,
+    "restore journey must launch its own open phase after fixture setup",
+  );
+
+  const noRepairJourneyBody = source.match(
+    /async function runNoAutomaticRepair\([\s\S]*?\n}\n\nasync function runForegroundWriteWorkspaceWake/,
+  )?.[0];
+  assert.ok(
+    noRepairJourneyBody,
+    "no-automatic-repair journey caller must remain inspectable",
+  );
+  assert.match(
+    noRepairJourneyBody,
+    /seedRestoreFixtureEvidence\(\s*harness,\s*preparedWorkspace,\s*"c2-5b-no-automatic-repair"\s*,\s*\)/,
+    "no-automatic-repair must bind fixture setup to its own journey id",
+  );
+  const foregroundJourneyBody = source.match(
+    /async function runForegroundWriteWorkspaceWake\([\s\S]*?\n}\n\nasync function runIncrementalLiveness/,
+  )?.[0];
+  assert.ok(
+    foregroundJourneyBody,
+    "foreground workspace-wake journey caller must remain inspectable",
+  );
+  assert.match(
+    foregroundJourneyBody,
+    /harness\.launch\(`\$\{id\}\/settle-primary`\)/,
+    "foreground workspace-wake must retain its settle-primary launch phase",
+  );
 });
 
 test("c2-5b runner IDs are wired to the central catalog and impact selector", () => {
