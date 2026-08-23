@@ -44,6 +44,12 @@ export const NARRATIVE_MAINTENANCE_INTERRUPTED_CODE =
 export const NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS = 1_250;
 const RESTORE_FIXTURE_CONSUMER_KIND = "narrative-extraction-run";
 const RESTORE_FIXTURE_SPEC_DIGEST = "sha256:c2-5b-restore-fixture-v1";
+const RESTORE_AUTOMATIC_PHASE_RUN_KINDS = new Set([
+  "backfill",
+  "dependency-verify",
+  "semantic-index-rebuild",
+  "dependency-repair",
+]);
 export const NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER = "workspace-opened";
 export const NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER = Object.freeze(
   [
@@ -92,6 +98,7 @@ export const NARRATIVE_MAINTENANCE_JOURNEY_IDS = Object.freeze(
 );
 export const NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES = Object.freeze([
   "c2-5b-schema-backfill-verify/open",
+  "c2-5b-restore-verify-rebuild-verify/restore-fixture",
   "c2-5b-restore-verify-rebuild-verify/open",
   "c2-5b-graph-digest-no-skip/baseline",
   "c2-5b-graph-digest-no-skip/changed",
@@ -104,7 +111,9 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES = Object.freeze([
   "c2-5b-terminal-failure-inbox/reopened",
   "c2-5b-interrupted-run-recovery/interrupted",
   "c2-5b-interrupted-run-recovery/recovered",
+  "c2-5b-no-automatic-repair/restore-fixture",
   "c2-5b-no-automatic-repair/open",
+  "c2-5b-foreground-write-workspace-wake/settle-primary",
   "c2-5b-foreground-write-workspace-wake/authoring",
   "c2-5b-incremental-liveness/before-restart",
   "c2-5b-incremental-liveness/after-restart",
@@ -754,6 +763,51 @@ export function foregroundMarkedRuns(
   });
 }
 
+/**
+ * A target workspace's baseline is captured before its explicit open.  A
+ * marked Run already present there belongs to an old authority and must not
+ * be allowed to satisfy the target-open barrier after an authority swap.
+ */
+export function assertForegroundTargetBaseline(
+  baselineRows,
+  expected,
+  label = "foreground target workspace",
+) {
+  const oldMarked = foregroundMarkedRuns(baselineRows, [], expected);
+  if (oldMarked.length > 0) {
+    throw new Error(
+      `${label} baseline contains an old marked authority Run: ${JSON.stringify(
+        summarizeRuns(oldMarked),
+      )}`,
+    );
+  }
+  return baselineRows;
+}
+
+/**
+ * Select the one immutable marker created after the target workspace open.
+ * The baseline check and exact-one check stay together so a page or SQLite
+ * observation cannot silently reuse an old-authority Run.
+ */
+export function selectForegroundTargetMarker(
+  rows,
+  baselineRows,
+  expected,
+) {
+  assertForegroundTargetBaseline(baselineRows, expected);
+  const candidates = foregroundMarkedRuns(rows, baselineRows, expected);
+  if (candidates.length !== 1) {
+    throw new Error(
+      `foreground target open must leave exactly one fresh target marker: ${JSON.stringify(
+        summarizeRuns(candidates),
+      )}`,
+    );
+  }
+  const [candidate] = candidates;
+  assertForegroundRunMarker(candidate, expected);
+  return candidate;
+}
+
 export function assertTransientAttemptEvidence(run) {
   if (run?.lastAttemptStatus !== "failed") {
     throw new Error(
@@ -1011,6 +1065,7 @@ export function assertRestoreVerifyRebuildVerifyCausality(
     `${label} restore Epoch createdAt`,
   );
   let previousCreatedAt = null;
+  let previousCompletedAt = null;
   if (
     sequence.some(
       (run) =>
@@ -1030,19 +1085,53 @@ export function assertRestoreVerifyRebuildVerifyCausality(
       run.createdAt,
       `${label} phase ${index + 1} createdAt`,
     );
+    const completedAt = parseInstant(
+      run.completedAt,
+      `${label} phase ${index + 1} completedAt`,
+    );
+    if (compareInstantValues(createdAt, completedAt) >= 0) {
+      throw new Error(
+        `${label}: phase ${run.id} completedAt must be after createdAt; ` +
+          `observed=${JSON.stringify({ run, restoreEpoch })}`,
+      );
+    }
     if (compareInstantValues(createdAt, restoreEpochCreatedAt) < 0) {
       throw new Error(
         `${label}: phase ${run.id} predates the restore Epoch; ` +
           `observed=${JSON.stringify({ run, restoreEpoch })}`,
       );
     }
-    if (previousCreatedAt && compareInstantValues(createdAt, previousCreatedAt) < 0) {
+    if (
+      previousCreatedAt &&
+      compareInstantValues(createdAt, previousCreatedAt) <= 0
+    ) {
       throw new Error(
-        `${label}: phase creation timestamps are not monotonic; ` +
+        `${label}: phase creation timestamps are not strictly monotonic; ` +
+        `observed=${JSON.stringify({ sequence: summarizeRuns(sequence) })}`,
+      );
+    }
+    if (
+      previousCompletedAt &&
+      compareInstantValues(createdAt, previousCompletedAt) <= 0
+    ) {
+      throw new Error(
+        `${label}: phase ${run.id} starts before the prior phase completed ` +
+          `(lifecycle overlap); observed=${JSON.stringify({
+            sequence: summarizeRuns(sequence),
+          })}`,
+      );
+    }
+    if (
+      previousCompletedAt &&
+      compareInstantValues(completedAt, previousCompletedAt) <= 0
+    ) {
+      throw new Error(
+        `${label}: phase completion timestamps are not strictly monotonic; ` +
           `observed=${JSON.stringify({ sequence: summarizeRuns(sequence) })}`,
       );
     }
     previousCreatedAt = createdAt;
+    previousCompletedAt = completedAt;
   }
   return restoreEpoch;
 }
@@ -1159,6 +1248,39 @@ async function waitForRunSequence(
     },
     `${label} durable Run sequence`,
     timeoutMs,
+  );
+}
+
+async function waitForRestorePhaseRows(context, baselineRows) {
+  await waitForLedger(
+    context,
+    (rows) => {
+      const phaseRows = rowsAfter(rows, baselineRows).filter((row) =>
+        RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind),
+      );
+      if (
+        phaseRows.length < 3 ||
+        phaseRows.some((row) => row.status !== "completed")
+      ) {
+        return null;
+      }
+      return phaseRows;
+    },
+    "restore/epoch complete automatic phase rows",
+  );
+
+  // A three-row observation is not the settled boundary: a later confirmation
+  // or repair Run can be inserted immediately after the first V -> R -> V
+  // completes.  Hold the observation until the complete post-restore ledger
+  // is stable, then return every fresh automatic phase row for the exact-chain
+  // assertion instead of selecting a matching subsequence.
+  const stableRows = await waitForStableLedger(
+    context,
+    baselineRows,
+    "restore/epoch settled automatic phase rows",
+  );
+  return rowsAfter(stableRows, baselineRows).filter((row) =>
+    RESTORE_AUTOMATIC_PHASE_RUN_KINDS.has(row.runKind),
   );
 }
 
@@ -1802,6 +1924,15 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       sourceObjectIdentity: edge.sourceObjectIdentity,
       owningRunId: edge.owningRunId,
     });
+    // The restore image must preserve the canonical Edge while its derived
+    // state is genuinely absent.  Capture that WAL-safe image before any
+    // ordinary launch can settle the live workspace, so the later restore
+    // necessarily replays Verify -> Rebuild -> confirmation Verify.
+    await createRestoreFixtureDerivedStateGap(context, {
+      edgeId,
+      consumerKey,
+    });
+    const backupName = await createRestoreBackupFixture(workspace);
     return {
       edgeId,
       consumerKey,
@@ -1809,6 +1940,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       owningRunId: runId,
       readSetToken,
       sceneId: scene.id,
+      backupName,
     };
   } finally {
     await harness.close(
@@ -1820,11 +1952,11 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
 }
 
 /**
- * Turn an already-settled workspace into a restore image with a real derived
- * state gap.  The completed Backfill/Verify evidence remains in the image,
- * while the Edge/Freshness projections are removed so the restored Epoch's
- * first Verify must request Rebuild.  The owner is a fixture-only Consumer,
- * therefore these deletes cannot affect another journey's graph.
+ * Turn the seeded fixture workspace into a restore image with a real derived
+ * state gap.  The canonical Edge and Source remain in the image while the
+ * Edge/Freshness projections are removed so the restored Epoch's first Verify
+ * must request Rebuild.  The owner is a fixture-only Consumer, therefore
+ * these deletes cannot affect another journey's graph.
  */
 async function createRestoreFixtureDerivedStateGap(context, evidence) {
   await context.harness.invokeOk(context.page, "db_execute", {
@@ -1935,15 +2067,8 @@ async function readRunSnapshot(workspace) {
 async function readRunLedgerSnapshot(workspace) {
   return readRunSnapshotQuery(
     workspace,
-    `SELECT id,
-            project_id AS projectId,
-            run_kind AS runKind,
-            work_key AS workKey,
-            semantic_epoch_id AS semanticEpochId,
-            status,
-            created_at AS createdAt,
-            completed_at AS completedAt
-       FROM narrative_extraction_runs
+    `SELECT ${RUN_COLUMNS}
+       FROM narrative_extraction_runs r
       ORDER BY created_at, id;`,
   );
 }
@@ -2153,18 +2278,15 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     });
     const beforeRestoreRuns = await context.runs();
     const beforeEpochs = await context.epochs();
-    await createRestoreFixtureDerivedStateGap(context, fixtureEvidence);
-    const backupName = await createRestoreBackupFixture(workspace);
     await context.harness.invokeOk(context.page, "restore_backup", {
-      fileName: backupName,
+      fileName: fixtureEvidence.backupName,
     });
-    context.record("restore-epoch-trigger-observed", { backupName });
-    const sequence = await waitForRunSequence(
+    context.record("restore-epoch-trigger-observed", {
+      backupName: fixtureEvidence.backupName,
+    });
+    const sequence = await waitForRestorePhaseRows(
       context,
-      ["dependency-verify", "semantic-index-rebuild", "dependency-verify"],
-      "restore/epoch verify-first rebuild confirmation",
-      NARRATIVE_MAINTENANCE_WAIT_MS,
-      { baselineRows: beforeRestoreRuns },
+      beforeRestoreRuns,
     );
     const epochs = await context.epochs();
     const restoreEpoch = assertRestoreVerifyRebuildVerifyCausality(
@@ -2788,9 +2910,52 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     correlation,
     trigger: NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER,
   };
-  await configureJourneyWorkspace(harness, configureWorkspace, workspaceA, {
-    additionalWorkspaces: [workspaceB],
+  // Make B the last-active authority. Its ordinary owner-token launch is
+  // settled before the foreground seam starts, so startup cannot consume the
+  // marked Run intended for the later explicit A open.
+  await configureJourneyWorkspace(harness, configureWorkspace, workspaceB, {
+    additionalWorkspaces: [workspaceA],
   });
+
+  const settledPrimary = await withLaunchEnvironment(
+    { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
+    () => harness.launch(`${id}/settle-primary`),
+  );
+  try {
+    const settledContext = await contextForLaunch(
+      harness,
+      settledPrimary,
+      workspaceB,
+      id,
+    );
+    // An empty setup-disabled workspace has no Freshness Run to satisfy the
+    // readiness contract. Seed the ordinary B authoring Source before the
+    // barrier; this launch is outside the foreground marker seam.
+    await createSceneIfNeeded(settledContext, "foreground-primary-settled");
+    await waitForReadiness(settledContext, "foreground primary settled", {
+      requireMaintenanceSettled: true,
+    });
+    settledContext.record("foreground-primary-settled", {
+      workspace: workspaceB,
+    });
+  } finally {
+    await harness.close(
+      settledPrimary.app,
+      settledPrimary.page,
+      `${id}/settle-primary`,
+    );
+  }
+
+  // Capture A before its explicit open. A marked row here belongs to an old
+  // authority and must fail the fixture rather than satisfy the target gate.
+  const targetBaseline = await readRunLedgerSnapshot(workspaceA);
+  assertForegroundTargetBaseline(
+    targetBaseline,
+    markerExpectation,
+    "foreground target A",
+  );
+  const primaryBaseline = await readRunLedgerSnapshot(workspaceB);
+
   const first = await withLaunchEnvironment(
     {
       trigger: "foreground-workspace-wake",
@@ -2801,28 +2966,51 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
     () => harness.launch(`${id}/authoring`),
   );
   try {
-    const context = await contextForLaunch(harness, first, workspaceA, id);
-    const scene = await createSceneIfNeeded(context, "foreground-authoring");
-    const body = `C2-5B-FOREGROUND-${Date.now()}`;
-    const wakeBaseline = await context.runs();
-    await harness.invokeOk(first.page, "open_workspace", {
-      path: workspaceB,
-    });
-    context.record("workspace-switched-to-secondary", {
+    const primaryContext = await contextForLaunch(
+      harness,
+      first,
+      workspaceB,
+      id,
+      primaryBaseline,
+    );
+    const primaryRows = await primaryContext.runs();
+    const primaryMarked = foregroundMarkedRuns(
+      primaryRows,
+      primaryBaseline,
+      markerExpectation,
+    );
+    if (primaryMarked.length !== 0) {
+      throw new Error(
+        `foreground startup on settled B consumed the target marker: ${JSON.stringify(
+          summarizeRuns(primaryMarked),
+        )}`,
+      );
+    }
+    primaryContext.record("foreground-primary-opened-without-marker", {
       workspace: workspaceB,
+      baselineRunCount: primaryBaseline.length,
     });
+
     const openRequestLowerBound = Date.now();
     await harness.invokeOk(first.page, "open_workspace", {
       path: workspaceA,
     });
     const workspaceOpenedAt = Date.now();
-    context.record("workspace-opened-primary", {
+    const context = await contextForLaunch(
+      harness,
+      first,
+      workspaceA,
+      id,
+      targetBaseline,
+    );
+    const scene = await createSceneIfNeeded(context, "foreground-authoring");
+    const body = `C2-5B-FOREGROUND-${Date.now()}`;
+    const wakeBaseline = targetBaseline;
+    context.record("workspace-opened-target", {
       workspace: workspaceA,
       workspaceOpenedAt,
-    });
-    await new Promise((resolve) => setTimeout(resolve, 250));
-    context.record("workspace-opened-scheduler-grace-elapsed", {
-      delayMs: 250,
+      openRequestLowerBound,
+      targetBaselineRunCount: targetBaseline.length,
     });
     const schedulerRun = await waitForLedger(
       context,
@@ -2860,6 +3048,19 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       },
       "foreground workspace wake scheduler running barrier",
     );
+    const selectedTargetRun = selectForegroundTargetMarker(
+      await context.runs(),
+      wakeBaseline,
+      markerExpectation,
+    );
+    if (selectedTargetRun.id !== schedulerRun.id) {
+      throw new Error(
+        `foreground target marker selection changed Run identity: ${JSON.stringify({
+          selectedTargetRun: selectedTargetRun.id,
+          schedulerRun: schedulerRun.id,
+        })}`,
+      );
+    }
     const originalMarker = assertForegroundRunMarker(
       schedulerRun,
       markerExpectation,
@@ -3019,10 +3220,23 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       30_000,
       100,
     );
-    const cleanFeed = await context.feedAndCursor();
+    const cleanFeed = await harness.waitUntil(
+      async () => {
+        const feedAndCursor = await context.feedAndCursor();
+        return feedAndCursor.feedHead ===
+          Number(feedAndCursor.cursor?.acknowledgedThrough ?? -1) &&
+          isSettledFreshnessCursor(feedAndCursor.cursor)
+          ? feedAndCursor
+          : null;
+      },
+      "foreground wake clean cursor",
+      NARRATIVE_MAINTENANCE_WAIT_MS,
+      100,
+    );
     if (
-      cleanFeed.cursor?.activeRunId != null ||
-      cleanFeed.cursor?.lastError != null
+      cleanFeed.feedHead !==
+        Number(cleanFeed.cursor?.acknowledgedThrough ?? -1) ||
+      !isSettledFreshnessCursor(cleanFeed.cursor)
     ) {
       throw new Error(
         `foreground wake did not release to a clean cursor state: ${JSON.stringify(cleanFeed)}`,

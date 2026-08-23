@@ -27,11 +27,13 @@ import {
   assertRestoreFixtureEvidence,
   assertRestoreVerifyRebuildVerifyCausality,
   assertForegroundLifecycle,
+  assertForegroundTargetBaseline,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
   assertTransientAttemptEvidence,
   foregroundMarkedRuns,
   isSettledFreshnessCursor,
+  selectForegroundTargetMarker,
   selectInterruptedRunFromExitSnapshot,
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
@@ -63,6 +65,19 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
   );
   const runColumns = source.match(/const RUN_COLUMNS = `([\s\S]*?)`;/)?.[1];
   assert.ok(runColumns, "RUN_COLUMNS must remain a SQL projection contract");
+  const directSnapshotReader = source.match(
+    /async function readRunLedgerSnapshot\([\s\S]*?\n}\n/,
+  )?.[0];
+  assert.match(
+    directSnapshotReader ?? "",
+    /SELECT \$\{RUN_COLUMNS\}/,
+    "direct post-exit snapshots must reuse the complete Run ledger projection",
+  );
+  assert.match(
+    directSnapshotReader ?? "",
+    /FROM narrative_extraction_runs r/,
+    "direct post-exit snapshots must preserve the Run alias used by RUN_COLUMNS",
+  );
 
   const SQL = await initSqlJs();
   const database = new SQL.Database();
@@ -771,6 +786,38 @@ test("restore fixture evidence is canonical and an empty fixture stays red", () 
   );
 });
 
+test("restore fixture captures the derived-state gap before the normal launch settles it", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const seedBody = source.match(
+    /async function seedRestoreFixtureEvidence\([\s\S]*?\n}\n\n\/\*\*/,
+  )?.[0];
+  assert.ok(seedBody, "restore fixture seeding helper must remain inspectable");
+  assert.ok(
+    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") >= 0,
+    "restore fixture must create a real derived-state gap before backup",
+  );
+  assert.ok(
+    seedBody.indexOf("createRestoreFixtureDerivedStateGap(context") <
+      seedBody.indexOf("createRestoreBackupFixture(workspace)"),
+    "the gap must be captured in the WAL-safe backup",
+  );
+  const journeyBody = source.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(journeyBody, "restore journey helper must remain inspectable");
+  assert.equal(
+    journeyBody.includes("createRestoreFixtureDerivedStateGap(context"),
+    false,
+    "normal launch must restore the pre-settled gap image, not create a post-settle clean backup",
+  );
+});
+
 test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoch", () => {
   const beforeEpochs = [
     { id: "epoch-initial", epochNumber: 0, reason: "initial" },
@@ -781,20 +828,35 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
     reason: "restore",
     createdAt: "2026-08-23T00:00:00.000Z",
   };
-  const phase = (id, runKind, semanticEpochId = restoreEpoch.id) => ({
+  const instantAtSecond = (second) => {
+    const milliseconds = Math.round(second * 1_000);
+    const wholeSeconds = Math.floor(milliseconds / 1_000);
+    const millisecondPart = milliseconds % 1_000;
+    return `2026-08-23T00:00:${String(wholeSeconds).padStart(
+      2,
+      "0",
+    )}.${String(millisecondPart).padStart(3, "0")}Z`;
+  };
+  const phase = (
+    id,
+    runKind,
+    semanticEpochId = restoreEpoch.id,
+    createdSecond = 1,
+    completedSecond = createdSecond + 0.5,
+  ) => ({
     id,
     runKind,
     semanticEpochId,
     status: "completed",
-    createdAt: `2026-08-23T00:00:0${id.endsWith("1") ? "1" : "2"}.000Z`,
-    completedAt: `2026-08-23T00:00:0${id.slice(-1)}.000Z`,
+    createdAt: instantAtSecond(createdSecond),
+    completedAt: instantAtSecond(completedSecond),
   });
   assert.doesNotThrow(() =>
     assertRestoreVerifyRebuildVerifyCausality(
       [
-        phase("verify-1", "dependency-verify"),
-        phase("rebuild-1", "semantic-index-rebuild"),
-        phase("verify-2", "dependency-verify"),
+        phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
+        phase("rebuild-1", "semantic-index-rebuild", restoreEpoch.id, 2),
+        phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
       ],
       beforeEpochs,
       [...beforeEpochs, restoreEpoch],
@@ -803,7 +865,7 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
   assert.throws(
     () =>
       assertRestoreVerifyRebuildVerifyCausality(
-        [phase("verify-only", "dependency-verify")],
+        [phase("verify-only", "dependency-verify", restoreEpoch.id, 1)],
         beforeEpochs,
         [...beforeEpochs, restoreEpoch],
       ),
@@ -814,9 +876,9 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
     () =>
       assertRestoreVerifyRebuildVerifyCausality(
         [
-          phase("verify-old", "dependency-verify", "epoch-initial"),
-          phase("rebuild-new", "semantic-index-rebuild"),
-          phase("verify-new", "dependency-verify"),
+          phase("verify-old", "dependency-verify", "epoch-initial", 1),
+          phase("rebuild-new", "semantic-index-rebuild", restoreEpoch.id, 2),
+          phase("verify-new", "dependency-verify", restoreEpoch.id, 3),
         ],
         beforeEpochs,
         [...beforeEpochs, restoreEpoch],
@@ -828,18 +890,93 @@ test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoc
     () =>
       assertRestoreVerifyRebuildVerifyCausality(
         [
-          phase("verify-1", "dependency-verify"),
+          phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
           {
-            ...phase("rebuild-1", "semantic-index-rebuild"),
+            ...phase(
+              "rebuild-1",
+              "semantic-index-rebuild",
+              restoreEpoch.id,
+              2,
+            ),
             createdAt: "2026-08-23T00:00:00.500Z",
           },
-          phase("verify-2", "dependency-verify"),
+          phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
         ],
         beforeEpochs,
         [...beforeEpochs, restoreEpoch],
       ),
-    /not monotonic/,
+    /not strictly monotonic|predates/,
     "a sequence with out-of-order durable creation timestamps must stay red",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
+          {
+            ...phase(
+              "rebuild-overlap",
+              "semantic-index-rebuild",
+              restoreEpoch.id,
+              2,
+            ),
+            createdAt: "2026-08-23T00:00:01.400Z",
+          },
+          phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /lifecycle overlap|prior phase completed/,
+    "a phase created before the prior phase completed must stay red",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
+          phase(
+            "rebuild-equal-completed",
+            "semantic-index-rebuild",
+            restoreEpoch.id,
+            1.5,
+          ),
+          phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /lifecycle overlap|prior phase completed/,
+    "a phase created exactly when the prior phase completed must stay red",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
+          phase("rebuild-equal", "semantic-index-rebuild", restoreEpoch.id, 1),
+          phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /not strictly monotonic/,
+    "equal lifecycle timestamps must not masquerade as Verify/Rebuild causality",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-1", "dependency-verify", restoreEpoch.id, 1),
+          phase("rebuild-1", "semantic-index-rebuild", restoreEpoch.id, 2),
+          phase("verify-2", "dependency-verify", restoreEpoch.id, 3),
+          phase("verify-extra", "dependency-verify", restoreEpoch.id, 4),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /exactly Verify -> Rebuild -> confirmation Verify/,
+    "an extra post-restore phase must not be hidden by subsequence selection",
   );
 });
 
@@ -855,14 +992,36 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
     id: "interrupted",
     projectId: "project-1",
     runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-1",
     status: "running",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    taskStatus: "running",
+    lastAttemptStatus: "running",
+    specJson: '{"backfillAlgorithmVersion":"2"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    createdAt: "2026-08-23T00:00:00.000Z",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000Z",
+    taskStartedAt: "2026-08-23T00:00:00.000Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
   };
-  assert.equal(
-    selectInterruptedRunFromExitSnapshot(
-      [...baseline, interrupted],
-      baseline,
-    ).id,
-    "interrupted",
+  const selected = selectInterruptedRunFromExitSnapshot(
+    [...baseline, interrupted],
+    baseline,
+  );
+  assert.equal(selected.id, "interrupted");
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(
+      selected,
+      "running",
+      "complete direct post-exit Run/Task/Attempt snapshot",
+    ),
   );
   assert.throws(
     () =>
@@ -874,6 +1033,66 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
         [],
       ),
     /exactly one new running Backfill Run/,
+  );
+});
+
+test("foreground target setup rejects an old marked authority and requires one fresh target marker", () => {
+  const expected = {
+    barrierId: "target-barrier",
+    correlation: "target-correlation",
+    trigger: "workspace-opened",
+  };
+  const marked = {
+    id: "old-authority-run",
+    projectId: "project-a",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-a",
+    status: "running",
+    specJson: JSON.stringify({
+      systemWork: {
+        trigger: expected.trigger,
+        canonicalWorkKey:
+          "narrative-maintenance:v1/backfill/project-a/legacy-dependency-backfill:v2/epoch/epoch-a",
+        authorityId: "authority-old",
+        generation: 1,
+        productJourneyBarrierId: expected.barrierId,
+        correlation: expected.correlation,
+      },
+    }),
+  };
+  const targetMarked = {
+    ...marked,
+    id: "target-authority-run",
+    specJson: JSON.stringify({
+      systemWork: {
+        ...JSON.parse(marked.specJson).systemWork,
+        authorityId: "authority-target",
+        generation: 2,
+      },
+    }),
+  };
+  assert.throws(
+    () => assertForegroundTargetBaseline([marked], expected, "target A"),
+    /old marked authority/,
+    "an initial marked Run from the old authority cannot be the target A pre-open baseline",
+  );
+  assert.doesNotThrow(() =>
+    assertForegroundTargetBaseline([], expected, "target A"),
+  );
+  assert.equal(
+    selectForegroundTargetMarker([targetMarked], [], expected).id,
+    "target-authority-run",
+  );
+  assert.throws(
+    () =>
+      selectForegroundTargetMarker(
+        [targetMarked, { ...targetMarked, id: "duplicate-target-run" }],
+        [],
+        expected,
+      ),
+    /exactly one fresh target marker/,
+    "one target open must not accept duplicate marked Runs",
   );
 });
 
@@ -1052,7 +1271,7 @@ test("transient and terminal validators reject fallback and same-millisecond fal
   );
 });
 
-test("every actual C2-5B Electron launch phase is registered for diagnostics", () => {
+test("every actual C2-5B Electron launch phase is registered for diagnostics", async () => {
   assert.equal(
     new Set(NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES).size,
     NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES.length,
@@ -1069,6 +1288,24 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", (
     NARRATIVE_MAINTENANCE_ELECTRON_LAUNCH_PHASES,
     "C2-5B launch phase registry must stay in parity with the runner",
   );
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  for (const phase of [
+    "c2-5b-restore-verify-rebuild-verify/restore-fixture",
+    "c2-5b-no-automatic-repair/restore-fixture",
+    "c2-5b-foreground-write-workspace-wake/settle-primary",
+  ]) {
+    const [, launchSuffix] = phase.split("/");
+    assert.ok(
+      source.includes(`harness.launch(\`\${id}/${launchSuffix}\`)`),
+      `runner must contain the registered launch expression for ${phase}`,
+    );
+  }
 });
 
 test("c2-5b runner IDs are wired to the central catalog and impact selector", () => {
