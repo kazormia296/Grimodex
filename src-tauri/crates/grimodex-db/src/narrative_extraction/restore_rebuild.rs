@@ -581,6 +581,13 @@ fn finalize_rebuild_run(
                 ),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
+            if work_result.is_ok()
+                && super::maintenance_runtime::foreground_system_work_barrier_requested()
+            {
+                // The native foreground barrier owns the terminal transition
+                // until the ordinary authoring write commits.
+                return Ok(None);
+            }
             let finalized_at = transition_run_status_in_tx(
                 conn,
                 run_id,
@@ -1258,6 +1265,13 @@ pub fn run_dependency_verify_for_project(
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
+                    if super::maintenance_runtime::foreground_system_work_barrier_requested() {
+                        // The native product-journey barrier owns the terminal
+                        // transition until the ordinary authoring write has
+                        // committed. Keep the real Verify outcome durable now;
+                        // release seals skip evidence after status completion.
+                        return Ok(());
+                    }
                     let finalized_at =
                         transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
                     if report.is_clean() {

@@ -118,6 +118,158 @@ export const NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_MAX_RETRIES = 3;
 export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
 
+/**
+ * Main-only post-response owner for the C2-5B foreground maintenance barrier.
+ *
+ * Native owns the durable Run and the exact authority binding. Main owns only
+ * the deterministic response boundary: the release is scheduled after a
+ * successful ordinary tree-node patch has returned to the renderer. This
+ * helper is intentionally kept in this canonical main-only maintenance module
+ * and is never exposed through preload or the renderer IPC contract.
+ */
+interface NarrativeMaintenanceForegroundReleaseBackend {
+  claimNarrativeMaintenanceForegroundBarrier?(
+    projectId: string,
+  ): Promise<unknown> | unknown;
+  releaseNarrativeMaintenanceForegroundBarrier?(
+    projectId: string,
+    expectedRunId: string,
+  ): Promise<unknown> | unknown;
+}
+
+type ForegroundBarrierReleaseScheduler = (callback: () => void) => unknown;
+
+/**
+ * Gives the renderer/product runner one deterministic ledger observation
+ * after the successful patch response before the native terminal transition.
+ * This is only used by the authorized CI product-journey seam.
+ */
+export const NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS = 100;
+
+const isNonEmptyTrimmedString = (value: unknown): value is string =>
+  typeof value === "string" &&
+  value.trim().length > 0 &&
+  value === value.trim();
+
+type ForegroundBarrierClaimStatus =
+  | { status: "claimed"; runId: string }
+  | { status: "not-held" }
+  | { status: "ignored" }
+  | { status: "workspace-unavailable"; reason?: string };
+
+function parseForegroundBarrierClaim(raw: unknown): ForegroundBarrierClaimStatus {
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw) as unknown;
+    } catch {
+      throw new Error("native foreground barrier claim returned malformed JSON");
+    }
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    typeof (value as Record<string, unknown>).status !== "string"
+  ) {
+    throw new Error("native foreground barrier claim returned invalid status");
+  }
+  const record = value as Record<string, unknown>;
+  switch (record.status) {
+    case "claimed":
+      if (
+        Object.keys(record).some((key) => key !== "status" && key !== "runId") ||
+        !isNonEmptyTrimmedString(record.runId)
+      ) {
+        throw new Error("native foreground barrier claim returned invalid claimed status");
+      }
+      return { status: "claimed", runId: record.runId };
+    case "not-held":
+    case "ignored":
+      if (Object.keys(record).some((key) => key !== "status")) {
+        throw new Error("native foreground barrier claim returned invalid status");
+      }
+      return { status: record.status };
+    case "workspace-unavailable":
+      if (
+        Object.keys(record).some((key) => key !== "status" && key !== "reason") ||
+        (record.reason !== undefined && typeof record.reason !== "string")
+      ) {
+        throw new Error("native foreground barrier claim returned invalid status");
+      }
+      return {
+        status: "workspace-unavailable",
+        ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
+      };
+    default:
+      throw new Error("native foreground barrier claim returned unknown status");
+  }
+}
+
+/**
+ * Main-only exact claim gate. The native response is parsed strictly before
+ * the caller is allowed to arm the delayed release timer; false, malformed,
+ * unavailable, and rejected claims all fail closed.
+ */
+export async function claimNarrativeMaintenanceForegroundRelease(
+  backend: unknown,
+  projectId: string,
+): Promise<string | null> {
+  if (!isNonEmptyTrimmedString(projectId)) return null;
+  const claim = (
+    backend as NarrativeMaintenanceForegroundReleaseBackend | null
+  )?.claimNarrativeMaintenanceForegroundBarrier;
+  if (typeof claim !== "function") return null;
+  try {
+    const result = parseForegroundBarrierClaim(
+      await claim.call(backend, projectId),
+    );
+    return result.status === "claimed" ? result.runId : null;
+  } catch (error) {
+    console.warn("[grim:invoke] foreground barrier claim failed", error);
+    return null;
+  }
+}
+
+/**
+ * Schedule the native foreground barrier only after a successful ordinary
+ * tree_node_patch has returned its response to the renderer. A failed native
+ * release is deliberately swallowed at this boundary: Native retains the
+ * durable marker and exact pending Run for retry/recovery.
+ */
+export function scheduleNarrativeMaintenanceForegroundRelease(
+  backend: unknown,
+  projectId: string,
+  expectedRunId: string,
+  schedule: ForegroundBarrierReleaseScheduler = (callback) => {
+    setTimeout(
+      callback,
+      NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
+    );
+  },
+): void {
+  if (
+    !isNonEmptyTrimmedString(projectId) ||
+    !isNonEmptyTrimmedString(expectedRunId)
+  ) {
+    return;
+  }
+  const release = (
+    backend as NarrativeMaintenanceForegroundReleaseBackend | null
+  )?.releaseNarrativeMaintenanceForegroundBarrier;
+  if (typeof release !== "function") return;
+  schedule(() => {
+    void Promise.resolve()
+      .then(() => release.call(backend, projectId, expectedRunId))
+      .catch((error: unknown) => {
+        console.warn(
+          "[grim:invoke] foreground barrier release failed",
+          error,
+        );
+      });
+  });
+}
+
 const AUTOMATIC_RUN_KINDS = new Set<NarrativeMaintenanceRunKind>([
   "backfill",
   "dependency-verify",

@@ -7,13 +7,16 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::Notify;
 
 use grimodex_db::events::EventSink;
 use grimodex_db::ime_export::ImeExportRequestGate;
-use grimodex_db::narrative_extraction::{MaintenanceWorkspaceBinding, RecoveryMode};
+use grimodex_db::narrative_extraction::{
+    ForegroundSystemWorkRun, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
+    RecoveryMode, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+};
 use grimodex_db::{GlobalSettingsPath, WorkspaceState};
 use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
@@ -116,11 +119,227 @@ pub struct NarrativeMaintenanceRecoveryGate {
     state: Mutex<NarrativeMaintenanceRecoveryState>,
 }
 
+// The generation is process-local, but it must not restart at the same value
+// after a fresh Backend is created.  A durable foreground marker from an old
+// process therefore cannot be released merely because the workspace metadata
+// (and hence authority ID) is unchanged; StartupRecovery gets the first say.
+fn checked_next_narrative_maintenance_generation(current: u64) -> u64 {
+    if current == 0 || current >= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION {
+        1
+    } else {
+        current + 1
+    }
+}
+
+static NARRATIVE_MAINTENANCE_GENERATION_SEED: OnceLock<u64> = OnceLock::new();
+static NARRATIVE_MAINTENANCE_GENERATION_CURSOR: AtomicU64 = AtomicU64::new(0);
+static NARRATIVE_MAINTENANCE_GENERATION_USED: OnceLock<Mutex<HashSet<u64>>> = OnceLock::new();
+
+fn process_narrative_maintenance_generation_seed() -> u64 {
+    *NARRATIVE_MAINTENANCE_GENERATION_SEED.get_or_init(|| {
+        let random_bits = uuid::Uuid::new_v4().as_u128();
+        let masked = random_bits & u128::from(NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION);
+        match u64::try_from(masked) {
+            Ok(seed) if seed > 0 => seed,
+            _ => 1,
+        }
+    })
+}
+
+fn cursor_narrative_maintenance_generation() -> u64 {
+    let seed = process_narrative_maintenance_generation_seed();
+    let previous = match NARRATIVE_MAINTENANCE_GENERATION_CURSOR.fetch_update(
+        Ordering::AcqRel,
+        Ordering::Acquire,
+        |current| {
+            Some(if current == 0 {
+                seed
+            } else {
+                checked_next_narrative_maintenance_generation(current)
+            })
+        },
+    ) {
+        Ok(previous) => previous,
+        Err(_) => 0,
+    };
+    if previous == 0 {
+        seed
+    } else {
+        checked_next_narrative_maintenance_generation(previous)
+    }
+}
+
+/// Allocate a generation that is safe to serialize through JavaScript's
+/// Number representation. The registry closes the small race where a
+/// workspace-swap rollover and a fresh Backend allocation would otherwise
+/// choose the same value; it also makes every same-process allocation unique
+/// until the complete 53-bit space is exhausted.
+fn allocate_narrative_maintenance_generation(preferred: Option<u64>) -> u64 {
+    let used = NARRATIVE_MAINTENANCE_GENERATION_USED.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut candidate = preferred
+        .filter(|value| *value > 0 && *value <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION)
+        .unwrap_or_else(cursor_narrative_maintenance_generation);
+    loop {
+        let inserted = used
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(candidate);
+        if inserted {
+            return candidate;
+        }
+        candidate = cursor_narrative_maintenance_generation();
+    }
+}
+
+/// One-shot native storage for the authorized product-journey configuration.
+/// Main performs the launch gate, while this state validates it again and
+/// rejects every second configuration attempt.
+pub struct NarrativeMaintenanceCiSeamState {
+    configured: AtomicBool,
+    config: Mutex<Option<NarrativeMaintenanceCiConfig>>,
+}
+
+impl Default for NarrativeMaintenanceCiSeamState {
+    fn default() -> Self {
+        Self {
+            configured: AtomicBool::new(false),
+            config: Mutex::new(None),
+        }
+    }
+}
+
+impl NarrativeMaintenanceCiSeamState {
+    pub fn configure(&self, config: NarrativeMaintenanceCiConfig) -> anyhow::Result<()> {
+        config.validate()?;
+        if self.configured.swap(true, Ordering::AcqRel) {
+            anyhow::bail!(
+                "NEX_MAINTENANCE_CI_SEAM_ALREADY_CONFIGURED: product journey seam is one-shot"
+            );
+        }
+        let mut slot = self
+            .config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(config);
+        Ok(())
+    }
+
+    pub fn config(&self) -> Option<NarrativeMaintenanceCiConfig> {
+        self.config
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+/// Process-local retry handles for foreground Runs selected by the
+/// product-journey barrier. The durable marker remains the source of truth;
+/// these handles only avoid rediscovery after transient post-response
+/// failures, including an old authority retained across a workspace swap.
+pub struct NarrativeMaintenanceForegroundBarrierState {
+    pending: Mutex<HashMap<String, ForegroundSystemWorkRun>>,
+}
+
+impl Default for NarrativeMaintenanceForegroundBarrierState {
+    fn default() -> Self {
+        Self {
+            pending: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl NarrativeMaintenanceForegroundBarrierState {
+    pub fn remember(&self, barrier: ForegroundSystemWorkRun) -> anyhow::Result<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(existing) = pending.get(&barrier.run_id) {
+            anyhow::ensure!(
+                existing == &barrier,
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PENDING_CONFLICT: another exact foreground Run is awaiting release"
+            );
+            return Ok(());
+        }
+        pending.insert(barrier.run_id.clone(), barrier);
+        Ok(())
+    }
+
+    pub fn pending_for_project_and_binding(
+        &self,
+        project_id: &str,
+        authority_id: &str,
+        generation: u64,
+        product_journey_barrier_id: &str,
+        correlation: &str,
+    ) -> Option<ForegroundSystemWorkRun> {
+        self.pending_for_binding(
+            project_id,
+            authority_id,
+            generation,
+            product_journey_barrier_id,
+            correlation,
+        )
+    }
+
+    pub fn pending_for_run_and_binding(
+        &self,
+        run_id: &str,
+        project_id: &str,
+        authority_id: &str,
+        generation: u64,
+        product_journey_barrier_id: &str,
+        correlation: &str,
+    ) -> Option<ForegroundSystemWorkRun> {
+        let pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let barrier = pending.get(run_id)?;
+        (barrier.project_id == project_id
+            && barrier.marker.authority_id == authority_id
+            && barrier.marker.generation == generation
+            && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
+            && barrier.marker.correlation == correlation)
+            .then(|| barrier.clone())
+    }
+
+    fn pending_for_binding(
+        &self,
+        project_id: &str,
+        authority_id: &str,
+        generation: u64,
+        product_journey_barrier_id: &str,
+        correlation: &str,
+    ) -> Option<ForegroundSystemWorkRun> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .find(|barrier| {
+                barrier.project_id == project_id
+                    && barrier.marker.authority_id == authority_id
+                    && barrier.marker.generation == generation
+                    && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
+                    && barrier.marker.correlation == correlation
+            })
+            .cloned()
+    }
+
+    pub fn clear_if_run(&self, run_id: &str) {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(run_id);
+    }
+}
+
 impl Default for NarrativeMaintenanceRecoveryGate {
     fn default() -> Self {
         Self {
             state: Mutex::new(NarrativeMaintenanceRecoveryState {
-                workspace_generation: 0,
+                workspace_generation: allocate_narrative_maintenance_generation(None),
                 authority_id: None,
                 recovered_work_keys: HashSet::new(),
             }),
@@ -140,7 +359,9 @@ impl NarrativeMaintenanceRecoveryGate {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         if state.authority_id.as_deref() != Some(authority_id) {
             if state.authority_id.is_some() {
-                state.workspace_generation = state.workspace_generation.wrapping_add(1);
+                state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+                    checked_next_narrative_maintenance_generation(state.workspace_generation),
+                ));
             }
             state.authority_id = Some(authority_id.to_string());
             state.recovered_work_keys.clear();
@@ -203,7 +424,9 @@ impl NarrativeMaintenanceRecoveryGate {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        state.workspace_generation = state.workspace_generation.wrapping_add(1);
+        state.workspace_generation = allocate_narrative_maintenance_generation(Some(
+            checked_next_narrative_maintenance_generation(state.workspace_generation),
+        ));
         state.authority_id = None;
         state.recovered_work_keys.clear();
         state.workspace_generation
@@ -427,6 +650,13 @@ pub struct AppState {
     /// Workspace-generation-scoped startup-recovery gate for the main-only
     /// narrative maintenance cycle.
     pub narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate,
+    /// One-shot, CI-only product-journey configuration. This is deliberately
+    /// not part of the renderer/preload bridge or shared IPC contract.
+    pub narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState,
+    /// Exact native-owned foreground Run awaiting the post-response authoring
+    /// write. A failed release remains here for a later retry; a process
+    /// restart can rediscover the same durable marker from SQLite.
+    pub narrative_maintenance_foreground_barrier: NarrativeMaintenanceForegroundBarrierState,
     /// Serializes the two N-API mutation adapters that may rotate a
     /// Narrative Semantic Epoch. The lock covers the idempotency preflight
     /// and the shared-Rust transaction so exactly one first execution emits
@@ -510,6 +740,9 @@ impl AppState {
                 reranker_resource_root,
             )),
             narrative_maintenance_recovery_gate: NarrativeMaintenanceRecoveryGate::default(),
+            narrative_maintenance_ci_seam: NarrativeMaintenanceCiSeamState::default(),
+            narrative_maintenance_foreground_barrier:
+                NarrativeMaintenanceForegroundBarrierState::default(),
             narrative_maintenance_mutation_lock: Mutex::new(()),
         })
     }
@@ -612,6 +845,121 @@ mod tests {
     }
 
     #[test]
+    fn foreground_barrier_retry_state_is_exact_run_scoped() {
+        let state = NarrativeMaintenanceForegroundBarrierState::default();
+        let marker = grimodex_db::narrative_extraction::NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/dependency-verify/project-1/dependency-verify:epoch-1/epoch/epoch-1".to_string(),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-1".to_string(),
+            correlation: "correlation-1".to_string(),
+        };
+        let barrier = ForegroundSystemWorkRun {
+            run_id: "run-1".to_string(),
+            project_id: "project-1".to_string(),
+            marker,
+        };
+
+        state
+            .remember(barrier.clone())
+            .expect("remember exact barrier");
+        assert_eq!(
+            state
+                .pending_for_project_and_binding(
+                    "project-1",
+                    "authority:workspace-1",
+                    1,
+                    "barrier-1",
+                    "correlation-1",
+                )
+                .expect("pending exact barrier"),
+            barrier
+        );
+        assert_eq!(
+            state
+                .pending_for_run_and_binding(
+                    "run-1",
+                    "project-1",
+                    "authority:workspace-1",
+                    1,
+                    "barrier-1",
+                    "correlation-1",
+                )
+                .expect("run-key lookup finds the exact barrier"),
+            barrier
+        );
+        assert!(state
+            .pending_for_run_and_binding(
+                "unrelated-run",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+        state.clear_if_run("unrelated-run");
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state
+            .remember(barrier.clone())
+            .expect("duplicate exact barrier is idempotent");
+        let mut conflicting = barrier.clone();
+        conflicting.run_id = "run-2".to_string();
+        state
+            .remember(conflicting)
+            .expect("a distinct durable Run is retained independently");
+        state.clear_if_run("run-1");
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-1",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+        assert!(state
+            .pending_for_run_and_binding(
+                "run-2",
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_some());
+        state.clear_if_run("run-2");
+        assert!(state
+            .pending_for_project_and_binding(
+                "project-1",
+                "authority:workspace-1",
+                1,
+                "barrier-1",
+                "correlation-1",
+            )
+            .is_none());
+    }
+
+    #[test]
     fn narrative_recovery_gate_is_generation_and_work_key_scoped() {
         let gate = NarrativeMaintenanceRecoveryGate::default();
         let generation_one = gate.current_generation();
@@ -648,6 +996,63 @@ mod tests {
         assert_eq!(
             gate.mode_for(generation_two, key_b),
             RecoveryMode::StartupRecovery
+        );
+    }
+
+    #[test]
+    fn maintenance_generation_is_safe_and_rolls_over_without_zero() {
+        const MAX_SAFE_GENERATION: u64 = (1u64 << 53) - 1;
+        let gate = NarrativeMaintenanceRecoveryGate::default();
+        let generation = gate.current_generation();
+        assert!(generation > 0);
+        assert!(generation <= MAX_SAFE_GENERATION);
+        let mut allocations = HashSet::new();
+        for _ in 0..8 {
+            assert!(allocations.insert(allocate_narrative_maintenance_generation(None)));
+        }
+        assert_eq!(checked_next_narrative_maintenance_generation(0), 1);
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION - 1),
+            MAX_SAFE_GENERATION
+        );
+        assert_eq!(
+            checked_next_narrative_maintenance_generation(MAX_SAFE_GENERATION),
+            1
+        );
+
+        let near_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION - 1,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let first_rollover = near_max.mark_workspace_swapped();
+        assert!(first_rollover > 0 && first_rollover <= MAX_SAFE_GENERATION);
+        let second_rollover = near_max.mark_workspace_swapped();
+        assert!(second_rollover > 0 && second_rollover <= MAX_SAFE_GENERATION);
+        assert_ne!(first_rollover, second_rollover);
+        assert!(near_max.current_generation() <= MAX_SAFE_GENERATION);
+
+        let at_max = NarrativeMaintenanceRecoveryGate {
+            state: Mutex::new(NarrativeMaintenanceRecoveryState {
+                workspace_generation: MAX_SAFE_GENERATION,
+                authority_id: None,
+                recovered_work_keys: HashSet::new(),
+            }),
+        };
+        let at_max_rollover = at_max.mark_workspace_swapped();
+        assert!(at_max_rollover > 0 && at_max_rollover <= MAX_SAFE_GENERATION);
+    }
+
+    #[test]
+    fn fresh_recovery_gate_does_not_reuse_a_prior_process_generation() {
+        let first_process = NarrativeMaintenanceRecoveryGate::default();
+        let restarted_process = NarrativeMaintenanceRecoveryGate::default();
+        assert_ne!(
+            first_process.current_generation(),
+            restarted_process.current_generation(),
+            "a fresh process must enter StartupRecovery under a new binding"
         );
     }
 

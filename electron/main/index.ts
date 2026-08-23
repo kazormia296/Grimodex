@@ -62,6 +62,10 @@ import {
   shouldUseProductJourneyAi,
   wrapBackendForProductJourneyAi,
 } from "./productJourneyAi.js";
+import {
+  configureNarrativeMaintenanceCiSeam,
+  type NarrativeMaintenanceCiBackend,
+} from "./narrativeMaintenanceCiSeam.js";
 
 const WEB_EDITOR_HANDOFF_EVENT = "web-editor-handoff:requested";
 const WEB_EDITOR_HANDOFF_PAYLOAD = {
@@ -154,8 +158,20 @@ if (!gotSingleInstanceLock) {
       registerAppProtocolHandler(path.join(__dirname, "..", "dist"));
     }
     // .node ロード失敗は fail-soft（backend=null → 明示エラー envelope）
+    const initializedBackend = initBackend();
+    // The product-journey seam is deliberately configured at this one startup
+    // point: after native initialization, before any scheduler can observe a
+    // workspace event. Unauthorized launches return inactive without reading
+    // or forwarding the test-only environment values.
+    const narrativeMaintenanceCiSeam = await configureNarrativeMaintenanceCiSeam(
+      initializedBackend as unknown as NarrativeMaintenanceCiBackend | null,
+      {
+        isPackaged: app.isPackaged,
+        env: process.env,
+      },
+    );
     const backend = wrapBackendForProductJourneyAi(
-      initBackend(),
+      initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
     );
     // Phase 4: final Tauri releaseのOS keyringかsafeStorageへ、1回だけ
@@ -461,6 +477,7 @@ if (!gotSingleInstanceLock) {
       },
       keyStore,
       broadcastBackendEvent,
+      narrativeMaintenanceCiSeam,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には

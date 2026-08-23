@@ -48,6 +48,8 @@ export declare class Backend {
   runNarrativeFreshnessCycle(): Promise<string | null>
   /** Main-only enqueue snapshot for serialized maintenance work. */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
+  /** One-shot main-only CI product-journey seam configuration. */
+  configureNarrativeMaintenanceCiSeam(payload: any): string
   /**
    * Main-process-only workspace-wide discovery. The returned page is bound to
    * one pinned authority generation and is never registered as renderer IPC.
@@ -60,6 +62,10 @@ export declare class Backend {
    * authority connection.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
+  /** Main-only exact pre-response claim for the foreground maintenance Run. */
+  claimNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
+  /** Main-only post-response release of the exact foreground maintenance Run. */
+  releaseNarrativeMaintenanceForegroundBarrier(projectId: string, expectedRunId: string): Promise<string>
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
    * CRUD の 9 割が生きる)。`params` は位置パラメータの JSON 配列、`method`

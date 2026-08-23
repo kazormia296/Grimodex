@@ -154,12 +154,16 @@ pub use maintenance_runtime::{
     terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
     terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
     FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
-    MaintenanceExecutionMode, MaintenanceTrigger, RecoveryAction, RecoveryDecision, RecoveryMode,
-    RunLedgerCounts, StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
-    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    MaintenanceExecutionMode, MaintenanceTrigger, NarrativeMaintenanceCiConfig,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger,
+    NarrativeSystemWorkMarker, RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts,
+    StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
+    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 pub use maintenance_runtime::{
-    run_system_work_cycle, run_system_work_cycle_with_modes, MaintenanceCycleRequest,
+    complete_foreground_system_work_run, find_running_foreground_system_work_run,
+    run_system_work_cycle, run_system_work_cycle_with_modes,
+    run_system_work_cycle_with_modes_and_config, ForegroundSystemWorkRun, MaintenanceCycleRequest,
     MaintenanceCycleResult, MaintenanceCycleStatus, MaintenanceWorkRequest,
     MaintenanceWorkspaceBinding, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };

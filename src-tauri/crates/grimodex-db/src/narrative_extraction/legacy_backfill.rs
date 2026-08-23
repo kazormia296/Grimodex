@@ -507,6 +507,15 @@ fn finalize_legacy_backfill_run(
                 }),
             };
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
+            if transform_result.is_ok()
+                && super::maintenance_runtime::foreground_system_work_barrier_requested()
+            {
+                // The product-journey owner releases this exact Run after a
+                // successful ordinary tree_node_patch. Keep the native
+                // outcome durable now, but do not terminalize the lifecycle
+                // before the foreground write overlaps it.
+                return Ok(());
+            }
             // Bind terminal Finding evidence to the timestamp persisted by
             // the terminal Run transition. This avoids a pre-transition
             // clock sample becoming older than the completed Run itself.

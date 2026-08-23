@@ -7,7 +7,7 @@
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     run_system_work_cycle, AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleResult,
-    RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
+    MaintenanceCycleStatus, RecoveryMode, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -118,7 +118,7 @@ fn startup_cycle_recovers_an_interrupted_run_before_reusing_work_identity() {
 }
 
 #[test]
-fn verify_and_rebuild_return_typed_deferred_without_dispatching_adapters() {
+fn verify_and_rebuild_dispatch_on_the_live_authority_with_durable_phase_evidence() {
     let db = fixture_db();
     let request: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
         "work": [
@@ -139,21 +139,34 @@ fn verify_and_rebuild_return_typed_deferred_without_dispatching_adapters() {
         ],
         "wakeProjectIds": []
     }))
-    .expect("valid deferred request");
+    .expect("valid live request");
 
     let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
-        .expect("deferred maintenance cycle");
-    assert_eq!(result, MaintenanceCycleResult::deferred(true));
-    let run_count: i64 = db
+        .expect("live Verify/Rebuild cycle");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    let (verify_count, rebuild_count, completed_count): (i64, i64, i64) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                "SELECT
+                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1",
                 [PROJECT_ID],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )?)
         })
-        .expect("read deferred ledger");
-    assert_eq!(run_count, 0, "deferred kinds must not reach their adapters");
+        .expect("read live phase ledger");
+    assert!(
+        verify_count >= 1,
+        "Verify must create durable phase evidence"
+    );
+    assert!(
+        rebuild_count >= 1,
+        "Rebuild must create durable phase evidence"
+    );
+    assert!(completed_count >= 2, "live phases must finalize their Runs");
 }
 
 #[test]
