@@ -563,9 +563,22 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   throw new Error("native maintenance cycle returned invalid status");
 }
 
-function renderCycleFailure(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return typeof error === "string" ? error : String(error);
+const NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE =
+  "NEX_MAINTENANCE_TRANSIENT";
+
+function isCanonicalTransientFailure(error: unknown): boolean {
+  const message =
+    error instanceof Error
+      ? error.message
+      : typeof error === "string"
+        ? error
+        : null;
+  return (
+    message === NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE ||
+    message?.startsWith(
+      `${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE}:`,
+    ) === true
+  );
 }
 
 function parseCiProcessInterruptionAck(
@@ -1119,16 +1132,16 @@ export function createNarrativeMaintenanceScheduler(
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else {
-          const retryDetails: string[] = [];
+          let requeuedCount = 0;
+          let firstRetryCount: number | null = null;
           for (const work of backendBatch) {
             const key = scopedWorkKey(work);
             const retryCount = (retryCounts.get(key) ?? 0) + 1;
             if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
               retryCounts.set(key, retryCount);
               requeueWork(work);
-              retryDetails.push(
-                `${key} (${retryCount}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
-              );
+              requeuedCount += 1;
+              firstRetryCount ??= retryCount;
             } else {
               retryCounts.delete(key);
               warn(
@@ -1148,9 +1161,8 @@ export function createNarrativeMaintenanceScheduler(
                   projectId,
                   workspaceBinding: cycleBinding,
                 });
-                retryDetails.push(
-                  `durable backlog ${projectId} (${retryCount}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
-                );
+                requeuedCount += 1;
+                firstRetryCount ??= retryCount;
               } else {
                 durableWakeRetryCounts.delete(wakeKey);
                 durableWakeProjects.delete(wakeKey);
@@ -1161,9 +1173,12 @@ export function createNarrativeMaintenanceScheduler(
               }
             }
           }
-          if (retryDetails.length > 0) {
+          if (
+            requeuedCount > 0 &&
+            isCanonicalTransientFailure(error)
+          ) {
             warn(
-              `[narrative-maintenance] retry scheduled for ${retryDetails.join(", ")}: ${renderCycleFailure(error)}`,
+              `[narrative-maintenance] ${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE} retry scheduled (${requeuedCount} queued, attempt ${firstRetryCount ?? 1}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
             );
           } else {
             warn("[narrative-maintenance] background cycle failed:", error);

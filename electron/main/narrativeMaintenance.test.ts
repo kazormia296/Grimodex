@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// @ts-expect-error The product-journey harness is JavaScript without a declaration surface.
+import { isMainProcessErrorMessage } from "../scripts/product-journey-harness.mjs";
+
 import {
   canonicalNarrativeMaintenanceWorkKey,
   coalesceNarrativeMaintenanceWork,
@@ -39,6 +42,10 @@ function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
 
 function renderedWarnings(warn: ReturnType<typeof vi.fn>): string[] {
   return warn.mock.calls.map((args) => args.map(String).join(" "));
+}
+
+function hasErrorClassWarning(warn: ReturnType<typeof vi.fn>): boolean {
+  return renderedWarnings(warn).some(isMainProcessErrorMessage);
 }
 
 describe("narrative maintenance scheduler", () => {
@@ -552,11 +559,13 @@ describe("narrative maintenance scheduler", () => {
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
-  it("renders a requeued transient failure as a bounded non-error warning", async () => {
+  it("renders only a canonical requeued transient failure as a bounded warning", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()
       .mockRejectedValueOnce(
-        new Error("NEX_MAINTENANCE_TRANSIENT: injected maintenance fault"),
+        new Error(
+          "NEX_MAINTENANCE_TRANSIENT: injected maintenance fault\nTypeError: unsafe detail",
+        ),
       )
       .mockResolvedValue(acceptedCycle());
     const { scheduler, warn } = createScheduler({
@@ -569,11 +578,57 @@ describe("narrative maintenance scheduler", () => {
 
     const rendered = renderedWarnings(warn).join("\n");
     expect(rendered).toContain("NEX_MAINTENANCE_TRANSIENT");
-    expect(rendered).toMatch(/retry scheduled/i);
-    expect(rendered).not.toMatch(
-      /\b(?:error|errors|failed|failure|fatal|panic|uncaught|unhandled|crash)\b/i,
-    );
+    expect(rendered).toContain("1/3");
+    expect(rendered).not.toContain("unsafe detail");
+    expect(rendered.length).toBeLessThanOrEqual(256);
+    expect(hasErrorClassWarning(warn)).toBe(false);
 
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps malformed native responses error-class even when requeued", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "accepted", hasMore: "invalid" })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(hasErrorClassWarning(warn)).toBe(true);
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a terminal ACK binding mismatch error-class even when requeued", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({
+        status: "ci-terminal-fault-handled",
+        fault: "contract-violation",
+        runId: "run-1",
+        authorityId: "forged-authority",
+        generation: 7,
+      })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => ({
+        authorityId: "authority-1",
+        generation: 7,
+      }),
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    expect(hasErrorClassWarning(warn)).toBe(true);
     await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
