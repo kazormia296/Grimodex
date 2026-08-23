@@ -192,6 +192,26 @@ fn seed_v2_text_range_head(db: &Database) {
     .expect("seed sealed V2 range head");
 }
 
+fn seed_unrelated_v2_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: "nir0-d2-unrelated".to_owned(),
+            producer_id: "nir0-d2-unrelated-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![declaration(
+                "project:scene:nir0-d2-unrelated-scene",
+                DependencyRole::DirectEvidence,
+            )],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed unrelated V2 head");
+}
+
 #[test]
 fn active_v2_head_is_reached_through_public_incremental_cycle_and_keeps_v1_canonical() {
     let db = fixture_db();
@@ -314,8 +334,8 @@ fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
                     "kind": "position-map",
                     "segments": [{
                         "oldRange": { "from": 0, "to": 5 },
-                        "newRange": { "from": 0, "to": 0 },
-                        "behavior": "deleted"
+                        "newRange": { "from": 0, "to": 5 },
+                        "behavior": "replaced"
                     }]
                 }
             })
@@ -332,7 +352,7 @@ fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
         panic!("the Feed range must be processed");
     };
     let consumer = &summary.v2_shadow.consumers[0];
-    assert_eq!(consumer.freshness, "anchor-mismatch");
+    assert_eq!(consumer.freshness, "anchor-mismatch", "{:?}", summary.v2_shadow);
     assert_eq!(consumer.required_actions, vec!["reanchor-candidate"]);
 
     let v1_state: (String, String) = db
@@ -347,4 +367,21 @@ fn sealed_text_range_selector_changes_the_v2_effect_without_changing_v1() {
         })
         .expect("read V1 state after selector-aware shadow");
     assert_eq!(v1_state, ("stale".to_owned(), "rebuild-required".to_owned()));
+}
+
+#[test]
+fn unrelated_v2_head_is_not_included_in_this_feed_shadow_or_guard() {
+    let db = fixture_db();
+    seed_v2_head(&db);
+    seed_unrelated_v2_head(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("unrelated V2 head must not block V1")
+    else {
+        panic!("the Feed range must be processed");
+    };
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.consumers.len(), 1);
+    assert_eq!(summary.v2_shadow.consumers[0].consumer_key, CONSUMER_KEY);
+    assert_eq!(summary.affected_edge_count, 1);
 }
