@@ -6,7 +6,7 @@
 //! this boundary.
 
 use rusqlite::{params, Connection, OptionalExtension};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::execution_state::next_run_lifecycle_timestamp_in_tx;
@@ -19,6 +19,11 @@ const REBUILD_RUN_KIND: &str = "semantic-index-rebuild";
 const BACKFILL_TASK_KIND: &str = "maintenance-backfill";
 const VERIFY_TASK_KIND: &str = "maintenance-dependency-verify";
 const REBUILD_TASK_KIND: &str = "maintenance-semantic-index-rebuild";
+const BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
+const REBUILD_WORK_KEY: &str = "dependency-rebuild-derived";
+const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
+const BACKFILL_ALGORITHM_VERSION: &str = "2";
+const VERIFY_CONTRACT_VERSION: &str = "6";
 
 /// The bounded failure policy understood by an automatic maintenance owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +82,32 @@ fn maintenance_task_kind(run_kind: &str) -> anyhow::Result<&'static str> {
         BACKFILL_RUN_KIND => Ok(BACKFILL_TASK_KIND),
         VERIFY_RUN_KIND => Ok(VERIFY_TASK_KIND),
         REBUILD_RUN_KIND => Ok(REBUILD_TASK_KIND),
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_RUN_KIND_INVALID: unsupported maintenance Run kind '{other}'"
+        ),
+    }
+}
+
+fn canonical_work_key(run_kind: &str, semantic_epoch_id: &str) -> anyhow::Result<String> {
+    match run_kind {
+        BACKFILL_RUN_KIND => Ok(BACKFILL_WORK_KEY.to_owned()),
+        VERIFY_RUN_KIND => Ok(format!("{VERIFY_WORK_KEY_PREFIX}{semantic_epoch_id}")),
+        REBUILD_RUN_KIND => Ok(REBUILD_WORK_KEY.to_owned()),
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_RUN_KIND_INVALID: unsupported maintenance Run kind '{other}'"
+        ),
+    }
+}
+
+fn canonical_spec(run_kind: &str) -> anyhow::Result<Value> {
+    match run_kind {
+        BACKFILL_RUN_KIND => Ok(json!({
+            "backfillAlgorithmVersion": BACKFILL_ALGORITHM_VERSION
+        })),
+        VERIFY_RUN_KIND => Ok(json!({
+            "verifyContractVersion": VERIFY_CONTRACT_VERSION
+        })),
+        REBUILD_RUN_KIND => Ok(json!({})),
         other => anyhow::bail!(
             "NEX_MAINTENANCE_RUN_KIND_INVALID: unsupported maintenance Run kind '{other}'"
         ),
@@ -185,6 +216,136 @@ pub(crate) fn create_maintenance_run_in_tx(
         work_key: work_key.to_owned(),
         spec_json: spec_json_text,
         spec_digest: spec_digest.to_owned(),
+        task_id,
+        attempt_id,
+        reused: false,
+    };
+    validate_handle_in_tx(conn, &handle)?;
+    Ok(handle)
+}
+
+/// Recover a legacy/imported automatic maintenance Run that was persisted
+/// while running before the lifecycle pair was introduced. This is the sole
+/// compatibility boundary: callers must be in startup recovery, and ordinary
+/// creation/finalization paths must continue to use the strict loader.
+///
+/// Only a canonical automatic Run with zero owned Tasks and zero owned
+/// Attempts can be synthesized. The persisted Run coordinates and lifecycle
+/// timestamp seed Task and Attempt #1 so the caller can terminalize all three
+/// rows in the same recovery transaction.
+pub(crate) fn synthesize_recovery_lifecycle_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<MaintenanceRunHandle> {
+    let run = conn
+        .query_row(
+            "SELECT project_id, run_kind, semantic_epoch_id, work_key,
+                    spec_json, spec_digest, status,
+                    COALESCE(started_at, created_at)
+               FROM narrative_extraction_runs
+              WHERE id = ?1",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                ))
+            },
+        )
+        .optional()?
+        .ok_or_else(|| ownership_error(format!("Run '{run_id}' was not found")))?;
+    let (
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
+        status,
+        lifecycle_at,
+    ) = run;
+    if status != "running" {
+        return Err(ownership_error(format!(
+            "Run '{run_id}' is not running during recovery"
+        )));
+    }
+    let run_kind = run_kind.ok_or_else(|| ownership_error("Run kind is missing"))?;
+    let semantic_epoch_id =
+        semantic_epoch_id.ok_or_else(|| ownership_error("semantic epoch is missing"))?;
+    let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
+    let task_kind =
+        maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    let expected_work_key = canonical_work_key(&run_kind, &semantic_epoch_id)
+        .map_err(|error| ownership_error(error.to_string()))?;
+    if work_key != expected_work_key {
+        return Err(ownership_error(format!(
+            "Run '{run_id}' work key is not canonical for its Run kind and epoch"
+        )));
+    }
+    if spec_digest.trim().is_empty() || lifecycle_at.trim().is_empty() {
+        return Err(ownership_error(
+            "sealed spec digest and lifecycle timestamp are required",
+        ));
+    }
+    let persisted_spec = serde_json::from_str::<Value>(&spec_json)
+        .map_err(|error| ownership_error(format!("sealed spec JSON is invalid: {error}")))?;
+    let expected_spec =
+        canonical_spec(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    if persisted_spec != expected_spec {
+        return Err(ownership_error(format!(
+            "Run '{run_id}' spec does not match the canonical maintenance phase contract"
+        )));
+    }
+
+    let task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let attempt_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_extraction_attempts a
+           JOIN narrative_extraction_tasks t ON t.id = a.task_id
+          WHERE t.run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    if task_count != 0 || attempt_count != 0 {
+        return Err(ownership_error(format!(
+            "Run '{run_id}' has {task_count} Tasks and {attempt_count} Attempts; recovery synthesis requires zero children"
+        )));
+    }
+
+    let task_id = Uuid::new_v4().to_string();
+    let attempt_id = Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO narrative_extraction_tasks
+            (id, run_id, task_kind, status, input_json, priority, attempt_count,
+             created_at, started_at, version)
+         VALUES (?1, ?2, ?3, 'running', ?4, 0, 1, ?5, ?5, 0)",
+        params![&task_id, run_id, task_kind, &spec_json, &lifecycle_at],
+    )?;
+    conn.execute(
+        "INSERT INTO narrative_extraction_attempts
+            (id, task_id, attempt_number, status, started_at)
+         VALUES (?1, ?2, 1, 'running', ?3)",
+        params![&attempt_id, &task_id, &lifecycle_at],
+    )?;
+
+    let handle = MaintenanceRunHandle {
+        project_id,
+        run_id: run_id.to_owned(),
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+        spec_json,
+        spec_digest,
         task_id,
         attempt_id,
         reused: false,

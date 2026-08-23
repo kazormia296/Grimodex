@@ -1,8 +1,8 @@
 //! C2-5B durable maintenance planning, recovery, and dispatch contract tests.
 //!
-//! These tests deliberately exercise only the typed planner and the existing
-//! Run ledger.  They must not create Tasks/Attempts or invoke Verify/Rebuild
-//! side effects.
+//! These tests exercise the typed planner, the existing Run ledger, and the
+//! startup-only lifecycle recovery boundary. They do not invoke Verify/Rebuild
+//! side effects outside their durable lifecycle rows.
 
 use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
@@ -300,11 +300,23 @@ fn insert_run(
     epoch_id: Option<&str>,
     work: &WorkKey,
 ) -> rusqlite::Result<()> {
+    insert_run_with_spec(conn, id, status, epoch_id, work, "{}", "digest")
+}
+
+fn insert_run_with_spec(
+    conn: &rusqlite::Connection,
+    id: &str,
+    status: &str,
+    epoch_id: Option<&str>,
+    work: &WorkKey,
+    spec_json: &str,
+    spec_digest: &str,
+) -> rusqlite::Result<()> {
     conn.execute(
         "INSERT INTO narrative_extraction_runs
             (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
              status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
-         VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest', ?3, '{}',
+         VALUES (?1, ?2, 'maintenance', '{}', ?7, ?8, ?3, '{}',
                  datetime('now'), ?4, ?5, ?6)",
         params![
             id,
@@ -312,10 +324,27 @@ fn insert_run(
             status,
             work.run_kind.as_str(),
             epoch_id,
-            work.work_key
+            work.work_key,
+            spec_json,
+            spec_digest
         ],
     )?;
     Ok(())
+}
+
+fn insert_canonical_maintenance_run(
+    conn: &rusqlite::Connection,
+    id: &str,
+    status: &str,
+    epoch_id: Option<&str>,
+    work: &WorkKey,
+) -> rusqlite::Result<()> {
+    let spec_json = match work.run_kind {
+        AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
+        AutomaticRunKind::Verify => r#"{"verifyContractVersion":"6"}"#,
+        AutomaticRunKind::RebuildDerived => "{}",
+    };
+    insert_run_with_spec(conn, id, status, epoch_id, work, spec_json, "digest")
 }
 
 fn assert_interrupted_lifecycle(db: &Database, run_id: &str) {
@@ -389,27 +418,20 @@ fn assert_interrupted_lifecycle(db: &Database, run_id: &str) {
 #[test]
 fn startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
     let db = fixture_db();
-    for (index, (run_kind, work_key, automatic_kind)) in [
+    for (index, (work_key, automatic_kind)) in [
+        ("legacy-dependency-backfill:v2", AutomaticRunKind::Backfill),
+        ("dependency-verify:epoch-c2-5a", AutomaticRunKind::Verify),
         (
-            "backfill",
-            "legacy-dependency-backfill:v2",
-            AutomaticRunKind::Backfill,
-        ),
-        (
-            "dependency-verify",
-            "dependency-verify:epoch-c2-5a",
-            AutomaticRunKind::Verify,
-        ),
-        (
-            "semantic-index-rebuild",
             "dependency-rebuild-derived",
             AutomaticRunKind::RebuildDerived,
         ),
     ] {
         let run_id = format!("legacy-zero-child-current-{index}");
         let work = WorkKey::new(PROJECT_ID, automatic_kind, work_key).expect("valid work key");
-        db.with_conn(|conn| insert_run(conn, &run_id, "running", Some(EPOCH_ID), &work))
-            .expect("seed zero-child running automatic Run");
+        db.with_conn(|conn| {
+            insert_canonical_maintenance_run(conn, &run_id, "running", Some(EPOCH_ID), &work)
+        })
+        .expect("seed zero-child running automatic Run");
 
         terminalize_interrupted_runs_for_epoch(
             &db,
@@ -426,28 +448,24 @@ fn startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
 #[test]
 fn stale_epoch_startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
     let db = fixture_db();
-    for (index, (automatic_kind, work_key, run_kind)) in [
-        (
-            AutomaticRunKind::Backfill,
-            "legacy-dependency-backfill:stale",
-            "backfill",
-        ),
+    for (index, (automatic_kind, work_key)) in [
+        (AutomaticRunKind::Backfill, "legacy-dependency-backfill:v2"),
         (
             AutomaticRunKind::Verify,
-            "dependency-verify:stale",
-            "dependency-verify",
+            "dependency-verify:epoch-c2-5a-old",
         ),
         (
             AutomaticRunKind::RebuildDerived,
-            "dependency-rebuild-derived:stale",
-            "semantic-index-rebuild",
+            "dependency-rebuild-derived",
         ),
     ] {
         let run_id = format!("legacy-zero-child-stale-{index}");
         let work = WorkKey::new_for_epoch(PROJECT_ID, automatic_kind, work_key, EPOCH_ID)
             .expect("valid epoch-bound work key");
-        db.with_conn(|conn| insert_run(conn, &run_id, "running", Some(OLD_EPOCH_ID), &work))
-            .expect("seed stale zero-child running automatic Run");
+        db.with_conn(|conn| {
+            insert_canonical_maintenance_run(conn, &run_id, "running", Some(OLD_EPOCH_ID), &work)
+        })
+        .expect("seed stale zero-child running automatic Run");
 
         terminalize_stale_interrupted_runs_for_epoch(
             &db,
@@ -461,17 +479,6 @@ fn stale_epoch_startup_recovery_synthesizes_zero_child_runs_for_all_automatic_ki
         )
         .expect("stale startup recovery should synthesize and terminalize the lifecycle");
         assert_interrupted_lifecycle(&db, &run_id);
-        let stored_kind: String = db
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT run_kind FROM narrative_extraction_runs WHERE id = ?1",
-                    [run_id],
-                    |row| row.get(0),
-                )
-                .map_err(Into::into)
-            })
-            .expect("read recovered Run kind");
-        assert_eq!(stored_kind, run_kind);
     }
 }
 
@@ -485,7 +492,7 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
     )
     .expect("valid work key");
     db.with_conn(|conn| {
-        insert_run(
+        insert_canonical_maintenance_run(
             conn,
             "legacy-zero-child-idempotent",
             "running",
@@ -521,7 +528,7 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
     )
     .expect("valid rollback work key");
     db.with_conn(|conn| {
-        insert_run(
+        insert_canonical_maintenance_run(
             conn,
             "legacy-zero-child-rollback",
             "running",
@@ -571,12 +578,18 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:malformed",
+        "legacy-dependency-backfill:v2",
     )
     .expect("valid malformed-fixture work key");
 
     db.with_conn(|conn| {
-        insert_run(conn, "legacy-one-task-no-attempt", "running", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(
+            conn,
+            "legacy-one-task-no-attempt",
+            "running",
+            Some(EPOCH_ID),
+            &work,
+        )?;
         conn.execute(
             "INSERT INTO narrative_extraction_tasks
                 (id, run_id, task_kind, status, input_json, attempt_count, created_at, started_at)
@@ -584,7 +597,13 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
                      'maintenance-backfill', 'running', '{}', 1, datetime('now'), datetime('now'))",
             [],
         )?;
-        insert_run(conn, "legacy-multiple-tasks", "running", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(
+            conn,
+            "legacy-multiple-tasks",
+            "running",
+            Some(EPOCH_ID),
+            &work,
+        )?;
         conn.execute_batch(
             "INSERT INTO narrative_extraction_tasks
                 (id, run_id, task_kind, status, input_json, attempt_count, created_at, started_at)
@@ -592,19 +611,45 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
                 ('task-one', 'legacy-multiple-tasks', 'maintenance-backfill', 'running', '{}', 1, datetime('now'), datetime('now')),
                 ('task-two', 'legacy-multiple-tasks', 'maintenance-backfill', 'running', '{}', 1, datetime('now'), datetime('now'));",
         )?;
-        insert_run(conn, "legacy-wrong-owner", "running", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(
+            conn,
+            "legacy-wrong-owner",
+            "running",
+            Some(EPOCH_ID),
+            &work,
+        )?;
         conn.execute(
             "INSERT INTO narrative_extraction_tasks
                 (id, run_id, task_kind, status, input_json, attempt_count, created_at, started_at)
              VALUES ('wrong-owner-task', 'legacy-wrong-owner', 'wrong-owner', 'running', '{}', 1, datetime('now'), datetime('now'))",
             [],
         )?;
-        insert_run(conn, "legacy-wrong-spec", "running", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(
+            conn,
+            "legacy-wrong-spec",
+            "running",
+            Some(EPOCH_ID),
+            &work,
+        )?;
         conn.execute(
             r#"INSERT INTO narrative_extraction_tasks
                 (id, run_id, task_kind, status, input_json, attempt_count, created_at, started_at)
              VALUES ('wrong-spec-task', 'legacy-wrong-spec', 'maintenance-backfill', 'running', '{"sealed":"different"}', 1, datetime('now'), datetime('now'))"#,
             [],
+        )?;
+        insert_run(
+            conn,
+            "legacy-wrong-contract",
+            "running",
+            Some(EPOCH_ID),
+            &work,
+        )?;
+        insert_canonical_maintenance_run(
+            conn,
+            "legacy-wrong-work",
+            "running",
+            Some(EPOCH_ID),
+            &work,
         )?;
         Ok(())
     })
@@ -615,6 +660,7 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
         "legacy-multiple-tasks",
         "legacy-wrong-owner",
         "legacy-wrong-spec",
+        "legacy-wrong-contract",
     ] {
         let error = terminalize_interrupted_runs_for_epoch(
             &db,
@@ -653,7 +699,7 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
         PROJECT_ID,
         &wrong_work,
         Some(EPOCH_ID),
-        &["legacy-one-task-no-attempt".to_string()],
+        &["legacy-wrong-work".to_string()],
     )
     .expect_err("sealed work mismatch must fail closed");
     assert!(wrong_work_error

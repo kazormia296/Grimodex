@@ -17,7 +17,8 @@ use super::legacy_backfill::{
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
 use super::maintenance_lifecycle::{
-    fail_maintenance_run_in_tx, load_maintenance_run_in_tx, MaintenanceFailureKind,
+    fail_maintenance_run_in_tx, load_maintenance_run_in_tx, synthesize_recovery_lifecycle_in_tx,
+    MaintenanceFailureKind, MaintenanceRunHandle,
 };
 use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, CompletedRunSkipDecision, CompletedRunSkipExpectation,
@@ -2188,7 +2189,7 @@ fn terminalize_interrupted_runs_impl(
                 match status {
                     NarrativeRunStatus::Running => {
                         result.failed_run_ids.push(run_id.clone());
-                        let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                        let handle = load_or_synthesize_recovery_lifecycle_in_tx(conn, &run_id)?;
                         fail_maintenance_run_in_tx(
                             conn,
                             &handle,
@@ -2215,6 +2216,33 @@ fn terminalize_interrupted_runs_impl(
             Ok(result)
         })
     })
+}
+
+fn load_or_synthesize_recovery_lifecycle_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<MaintenanceRunHandle> {
+    let strict_error = match load_maintenance_run_in_tx(conn, run_id) {
+        Ok(handle) => return Ok(handle),
+        Err(error) => error,
+    };
+    let task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let attempt_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_extraction_attempts a
+           JOIN narrative_extraction_tasks t ON t.id = a.task_id
+          WHERE t.run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    if task_count != 0 || attempt_count != 0 {
+        return Err(strict_error);
+    }
+    synthesize_recovery_lifecycle_in_tx(conn, run_id)
 }
 
 pub const fn retry_backoff_ms(attempt: u32) -> u64 {

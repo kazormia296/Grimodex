@@ -3080,7 +3080,7 @@ mod tests {
         let run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         "semantic-index-rebuild",
@@ -3089,12 +3089,8 @@ mod tests {
                         &json!({}),
                         "digest",
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    created["runId"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("missing rebuild run id"))
+                    Ok(handle.run_id)
                 })
             })
             .expect("create an in-flight rebuild run");
@@ -3140,7 +3136,7 @@ mod tests {
         let run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         "semantic-index-rebuild",
@@ -3149,12 +3145,8 @@ mod tests {
                         &json!({}),
                         "digest",
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    created["runId"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("missing rebuild run id"))
+                    Ok(handle.run_id)
                 })
             })
             .expect("create an in-flight rebuild run");
@@ -3268,7 +3260,7 @@ mod tests {
     #[test]
     fn rebuild_derived_state_reuses_a_still_running_run_but_not_a_completed_one() {
         let db = test_db();
-        seed_epoch_for_rebuild(&db, "project-1");
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
 
         let first = rebuild_narrative_derived_state_for_project(&db, "project-1")
             .expect("first rebuild call");
@@ -3291,21 +3283,30 @@ mod tests {
         };
         assert_ne!(second_run_id, first_run_id);
 
-        // A genuinely still-'running' row (simulating an in-flight
-        // concurrent call) IS reused.
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?1",
-                params![second_run_id],
-            )?;
-            Ok(())
-        })
-        .expect("simulate an in-flight run");
+        // A genuinely still-running row with its owned lifecycle pair
+        // (simulating an in-flight concurrent call) IS reused.
+        let in_flight_run_id = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let handle = create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "semantic-index-rebuild",
+                        &epoch_id,
+                        REBUILD_DERIVED_WORK_KEY,
+                        &json!({}),
+                        "digest",
+                        SystemRunWorkKeyReuse::RunningOnly,
+                    )?;
+                    Ok(handle.run_id)
+                })
+            })
+            .expect("seed an in-flight lifecycle-owned rebuild Run");
         let third = rebuild_narrative_derived_state_for_project(&db, "project-1")
             .expect("third rebuild call");
         match third {
             RebuildDerivedStateOutcome::AlreadyRunning { run_id } => {
-                assert_eq!(run_id, second_run_id)
+                assert_eq!(run_id, in_flight_run_id)
             }
             RebuildDerivedStateOutcome::Ran { .. } => {
                 panic!("a still-running run must be reused")
@@ -4490,7 +4491,7 @@ mod tests {
         let failure_run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         VERIFY_RUN_KIND,
@@ -4499,12 +4500,8 @@ mod tests {
                         &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION }),
                         "digest",
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    let run_id = created["runId"]
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("missing Verify failure Run id"))?
-                        .to_string();
+                    let run_id = handle.run_id;
                     transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
                     conn.execute(
                         "UPDATE narrative_extraction_runs
@@ -4587,7 +4584,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_reused_running_run_fails_closed_without_duplicate_execution() {
+    fn verify_reused_legacy_running_run_fails_closed_without_duplicate_execution() {
         let db = test_db();
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -4611,8 +4608,10 @@ mod tests {
         .expect("seed an active Verify run");
 
         let error = run_dependency_verify_for_project(&db, "project-1")
-            .expect_err("a reused running Verify must not execute a second time");
-        assert!(error.to_string().contains("NEX_VERIFY_ALREADY_RUNNING"));
+            .expect_err("a legacy running Verify without lifecycle ownership must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID"));
         db.with_conn(|conn| {
             let run_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM narrative_extraction_runs
