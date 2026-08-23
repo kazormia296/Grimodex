@@ -8,8 +8,11 @@
 
 use std::path::Path;
 
-use grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project;
-use grimodex_db::narrative_extraction::LegacyBackfillBootstrapOutcome;
+use grimodex_db::narrative_extraction::{
+    bootstrap_legacy_dependency_backfill_for_project, material_basis_digest, observation_digest,
+    stable_finding_identity, LegacyBackfillBootstrapOutcome, MaterialBasisInput,
+    ObservationDigestInput, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
+};
 use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
@@ -20,6 +23,8 @@ const RUN_CONSUMER_KIND: &str = "narrative-extraction-run";
 const APPLICATION_CONSUMER_KIND: &str = "application";
 const BACKFILL_V3_WORK_KEY: &str = "legacy-dependency-backfill:v3";
 const SEEDED_AT: &str = "2026-08-24T00:00:00.000Z";
+const FINDING_REASON_CODE: &str = "source-missing";
+const FINDING_EVIDENCE_FRESHNESS: &str = "source-missing";
 
 #[derive(Clone, Copy)]
 struct ProjectSpec<'a> {
@@ -159,7 +164,8 @@ fn seed_finding_history(
     consumer_key: &str,
 ) -> anyhow::Result<()> {
     let finding_key = format!("{consumer_kind}:{consumer_key}");
-    let finding_identity = format!("finding-identity-{edge_id}");
+    let (finding_identity, observation_digest, material_basis_digest) =
+        canonical_finding_values(edge_id)?;
     let observation_id = format!("observation-{edge_id}");
     let lifecycle_id = format!("lifecycle-{edge_id}");
     conn.execute(
@@ -189,8 +195,7 @@ fn seed_finding_history(
              reason_code, evidence_freshness_snapshot, material_basis_digest,
              observed_at, finding_identity, rule_id, rule_version, observation_digest)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'source-missing', 'source-missing',
-                 'human-material-basis', ?7, ?8, 'c2zb.test-rule', 9,
-                 'human-observation-digest')",
+                 ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             observation_id,
             spec.project_id,
@@ -198,8 +203,12 @@ fn seed_finding_history(
             epoch_id,
             edge_id,
             finding_key,
+            material_basis_digest,
             SEEDED_AT,
-            finding_identity
+            finding_identity,
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            observation_digest
         ],
     )?;
     conn.execute(
@@ -207,13 +216,17 @@ fn seed_finding_history(
             (id, project_id, finding_identity, finding_key, rule_id, rule_version,
              lifecycle_state, observation_digest, material_basis_digest, run_id,
              semantic_epoch_id, observed_at)
-         VALUES (?1, ?2, ?3, ?4, 'c2zb.test-rule', 9, 'recurring',
-                 'human-observation-digest', 'human-material-basis', ?5, ?6, ?7)",
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'recurring',
+                 ?7, ?8, ?9, ?10, ?11)",
         params![
             lifecycle_id,
             spec.project_id,
             finding_identity,
             finding_key,
+            BUNDLED_FINDING_RULE_ID,
+            BUNDLED_FINDING_RULE_VERSION,
+            observation_digest,
+            material_basis_digest,
             spec.run_id,
             epoch_id,
             SEEDED_AT
@@ -224,12 +237,49 @@ fn seed_finding_history(
             (project_id, finding_key, finding_identity, identity_resolution_status,
              disposition, material_basis_digest, snoozed_until, set_at, actor_id,
              request_id, payload_digest, reason, version)
-         VALUES (?1, ?2, ?3, 'resolved', 'dismissed', 'human-attention-basis',
-                 NULL, ?4, 'human-author', 'human-request', 'human-payload',
+         VALUES (?1, ?2, ?3, 'resolved', 'dismissed', ?4,
+                 NULL, ?5, 'human-author', 'human-request', 'human-payload',
                  'human-reason', 7)",
-        params![spec.project_id, finding_key, finding_identity, SEEDED_AT],
+        params![
+            spec.project_id,
+            finding_key,
+            finding_identity,
+            material_basis_digest,
+            SEEDED_AT
+        ],
     )?;
     Ok(())
+}
+
+fn canonical_finding_values(edge_id: &str) -> anyhow::Result<(String, String, String)> {
+    let finding_identity = stable_finding_identity(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        edge_id,
+    )?;
+    let observation_digest = observation_digest(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        &ObservationDigestInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            failure_code: None,
+            reason_code: FINDING_REASON_CODE,
+            evidence_freshness: FINDING_EVIDENCE_FRESHNESS,
+        },
+    )?;
+    let material_basis_digest = material_basis_digest(
+        BUNDLED_FINDING_RULE_ID,
+        BUNDLED_FINDING_RULE_VERSION,
+        &MaterialBasisInput {
+            stable_subject: edge_id,
+            edge_id: Some(edge_id),
+            failure_code: None,
+            reason_code: FINDING_REASON_CODE,
+            evidence_freshness: FINDING_EVIDENCE_FRESHNESS,
+        },
+    )?;
+    Ok((finding_identity, observation_digest, material_basis_digest))
 }
 
 fn application_edge_rows(
@@ -287,6 +337,8 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
         .expect("seed exact C2-ZB fixture");
 
     db.migrate().expect("SCHEMA 31 -> 32 application re-key");
+    let (expected_finding_identity, expected_observation_digest, expected_material_basis_digest) =
+        canonical_finding_values(EXACT.edge_id).expect("compute canonical Finding values");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         assert_eq!(version, TARGET_SCHEMA);
@@ -361,22 +413,32 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
         assert_eq!(finding_key, format!("application:{}", EXACT.application_id));
-        assert_eq!(
-            finding_identity,
-            format!("finding-identity-{}", EXACT.edge_id)
-        );
-        assert_eq!(material_basis, "human-material-basis");
-        assert_eq!(observation_digest, "human-observation-digest");
+        assert_eq!(finding_identity, expected_finding_identity);
+        assert_eq!(material_basis, expected_material_basis_digest);
+        assert_eq!(observation_digest, expected_observation_digest);
 
-        let lifecycle_key: String = conn.query_row(
-            "SELECT finding_key FROM narrative_maintenance_finding_lifecycle WHERE id = ?1",
+        let lifecycle: (String, String, String, i64, String, String) = conn.query_row(
+            "SELECT finding_key, finding_identity, rule_id, rule_version,
+                    observation_digest, material_basis_digest
+               FROM narrative_maintenance_finding_lifecycle WHERE id = ?1",
             [format!("lifecycle-{}", EXACT.edge_id)],
-            |row| row.get(0),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )?;
-        assert_eq!(
-            lifecycle_key,
-            format!("application:{}", EXACT.application_id)
-        );
+        assert_eq!(lifecycle.0, format!("application:{}", EXACT.application_id));
+        assert_eq!(lifecycle.1, expected_finding_identity);
+        assert_eq!(lifecycle.2, BUNDLED_FINDING_RULE_ID);
+        assert_eq!(lifecycle.3, i64::from(BUNDLED_FINDING_RULE_VERSION));
+        assert_eq!(lifecycle.4, expected_observation_digest);
+        assert_eq!(lifecycle.5, expected_material_basis_digest);
 
         let attention: (String, String, String, String, i64) = conn.query_row(
             "SELECT finding_key, finding_identity, material_basis_digest, actor_id, version
@@ -393,8 +455,8 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
             },
         )?;
         assert_eq!(attention.0, format!("application:{}", EXACT.application_id));
-        assert_eq!(attention.1, format!("finding-identity-{}", EXACT.edge_id));
-        assert_eq!(attention.2, "human-attention-basis");
+        assert_eq!(attention.1, expected_finding_identity);
+        assert_eq!(attention.2, expected_material_basis_digest);
         assert_eq!(attention.3, "human-author");
         assert_eq!(attention.4, 7);
 
@@ -562,6 +624,9 @@ fn c2zb_rejects_invalid_unattributed_foreign_owner_and_historical_collision_atom
         })
         .unwrap_or_else(|error| panic!("seed {case} fixture: {error:#}"));
 
+        let application_edges_before = db
+            .with_conn(|conn| application_edge_rows(conn, EXACT.project_id))
+            .unwrap_or_else(|error| panic!("snapshot {case} Application edges: {error:#}"));
         db.migrate()
             .expect_err("invalid C2-ZB provenance must refuse atomically");
         db.with_conn(|conn| {
@@ -573,7 +638,11 @@ fn c2zb_rejects_invalid_unattributed_foreign_owner_and_historical_collision_atom
                 |row| row.get(0),
             )?;
             assert_eq!(old_edge_count, 1, "refusal must retain the legacy edge");
-            assert!(application_edge_rows(conn, EXACT.project_id)?.is_empty());
+            assert_eq!(
+                application_edge_rows(conn, EXACT.project_id)?,
+                application_edges_before,
+                "refusal must preserve pre-existing Application edges byte-for-byte"
+            );
             Ok::<_, anyhow::Error>(())
         })
         .unwrap_or_else(|error| panic!("verify atomic refusal for {case}: {error:#}"));
@@ -668,7 +737,7 @@ fn legacy_backfill_v3_emits_application_edges_bound_to_the_owning_run() {
         )?;
         assert_eq!(edge.0, APPLICATION_CONSUMER_KIND);
         assert_eq!(edge.1, EXACT.application_id);
-        assert_eq!(edge.2.as_deref(), Some(EXACT.run_id));
+        assert_eq!(edge.2.as_deref(), Some(backfill_run_id.as_str()));
         Ok::<_, anyhow::Error>(())
     })
     .expect("verify future Backfill writer contract");
