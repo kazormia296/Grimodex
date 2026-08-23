@@ -114,10 +114,12 @@ fn backfill_request_for(
 
 fn terminal_inbox_snapshot(db: &Database) -> Vec<InboxEntry> {
     db.with_conn(|conn| {
-        Ok(build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
-            .into_iter()
-            .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
-            .collect())
+        Ok(
+            build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
+                .into_iter()
+                .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
+                .collect(),
+        )
     })
     .expect("read terminal Inbox snapshot")
 }
@@ -423,12 +425,8 @@ fn restart_terminal_contract_failure_is_accepted_as_no_work_without_mutating_evi
     let before_lifecycle = lifecycle_snapshot(&db, &run_id);
     let before_inbox = terminal_inbox_snapshot(&db);
 
-    let result = run_system_work_cycle(
-        &db,
-        &backfill_request(),
-        RecoveryMode::StartupRecovery,
-    )
-    .expect("a durable manual intervention is a handled terminal halt");
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+        .expect("a durable manual intervention is a handled terminal halt");
 
     assert_eq!(result, MaintenanceCycleResult::accepted(false));
     assert_eq!(backfill_run_statuses(&db), vec!["failed"]);
@@ -478,7 +476,10 @@ fn terminal_halt_does_not_suppress_unrelated_project_work() {
             .map_err(Into::into)
         })
         .expect("read unrelated lifecycle");
-    assert!(other_run_count > 0, "unrelated project must still be dispatched");
+    assert!(
+        other_run_count > 0,
+        "unrelated project must still be dispatched"
+    );
     assert_eq!(backfill_run_statuses(&db), vec!["failed"]);
 }
 
@@ -523,7 +524,10 @@ fn mixed_terminal_halt_and_live_coalesce_is_accepted_not_coalesced() {
         .expect("terminal halt and live coalescing are handled outcomes");
 
     assert_eq!(result, MaintenanceCycleResult::accepted(true));
-    assert_eq!(lifecycle_snapshot(&db, &running_run_id).run_status, "running");
+    assert_eq!(
+        lifecycle_snapshot(&db, &running_run_id).run_status,
+        "running"
+    );
 }
 
 #[test]
@@ -537,8 +541,7 @@ fn terminal_halt_is_scoped_to_the_sealed_semantic_epoch_identity() {
     .expect("inject terminal fault");
     let failed_epoch = match outcome {
         LegacyBackfillFaultOutcome::Failed {
-            semantic_epoch_id,
-            ..
+            semantic_epoch_id, ..
         } => semantic_epoch_id,
         other => panic!("expected durable terminal failure, got {other:?}"),
     };

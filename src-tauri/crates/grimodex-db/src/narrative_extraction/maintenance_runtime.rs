@@ -1985,11 +1985,6 @@ pub fn run_system_work_cycle_with_modes_and_config(
             )?;
             let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
             if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
-                // Reusing a completed Verify is a handled item even when
-                // rediscovery hands the cycle to another phase.  Mark it
-                // before branching so a live follow-up Rebuild cannot make
-                // the mixed cycle look wholly coalesced.
-                handled_non_coalesced = true;
                 let next = discover_durable_maintenance_work_with_coordinates(
                     db,
                     &item.project_id,
@@ -2000,10 +1995,10 @@ pub fn run_system_work_cycle_with_modes_and_config(
                     Some(&effective_coordinates),
                 )?;
                 match next {
-                    Some(next)
-                        if next.run_kind != AutomaticRunKind::Verify
-                            || next.semantic_epoch_id != item.semantic_epoch_id =>
-                    {
+                    Some(next) if next.canonical_key() != item.canonical_key() => {
+                        // The completed Verify was handled, and discovery
+                        // handed the cycle to a different canonical phase.
+                        handled_non_coalesced = true;
                         queue.push_back(next);
                         continue;
                     }
@@ -2013,7 +2008,12 @@ pub fn run_system_work_cycle_with_modes_and_config(
                         // on the dispatch path instead of reusing the clean
                         // pre-Rebuild evidence a second time.
                     }
-                    None => continue,
+                    None => {
+                        // No follow-up remains: the completed Verify itself
+                        // was the handled item in this cycle.
+                        handled_non_coalesced = true;
+                        continue;
+                    }
                 }
             }
         }
@@ -2156,11 +2156,13 @@ pub fn run_system_work_cycle_with_modes_and_config(
             }
         }
     }
-    Ok(if !dispatched_any && coalesced_active && !handled_non_coalesced {
-        MaintenanceCycleResult::coalesced(has_more)
-    } else {
-        MaintenanceCycleResult::accepted(has_more)
-    })
+    Ok(
+        if !dispatched_any && coalesced_active && !handled_non_coalesced {
+            MaintenanceCycleResult::coalesced(has_more)
+        } else {
+            MaintenanceCycleResult::accepted(has_more)
+        },
+    )
 }
 
 fn recover_cycle_work(
@@ -2213,10 +2215,7 @@ fn recover_cycle_work(
 /// item. Epochless legacy Backfill requests are scoped to the current Epoch
 /// once one exists, matching [`recover_cycle_work`] and preventing a handled
 /// terminal Backfill from being rediscovered under a different canonical key.
-fn recovery_work_key_for_item(
-    db: &Database,
-    item: &DesiredWork,
-) -> anyhow::Result<WorkKey> {
+fn recovery_work_key_for_item(db: &Database, item: &DesiredWork) -> anyhow::Result<WorkKey> {
     let current_epoch = db
         .with_conn(|conn| super::semantic_epoch::get_current_epoch(conn, &item.project_id))?
         .map(|epoch| epoch.id);

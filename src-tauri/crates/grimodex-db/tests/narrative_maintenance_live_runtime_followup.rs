@@ -264,8 +264,77 @@ fn completed_verify_skip_followed_by_live_rebuild_is_accepted_not_coalesced() {
         })
         .expect("read mixed Verify/Rebuild ledger");
     assert_eq!(verify_count, 1, "the completed Verify must be reused");
-    assert_eq!(rebuild_count, 1, "the existing Rebuild must not be duplicated");
-    assert_eq!(running_rebuilds, 1, "the live Rebuild remains owned by its caller");
+    assert_eq!(
+        rebuild_count, 1,
+        "the existing Rebuild must not be duplicated"
+    );
+    assert_eq!(
+        running_rebuilds, 1,
+        "the live Rebuild remains owned by its caller"
+    );
+}
+
+#[test]
+fn completed_verify_skip_followed_by_live_same_verify_is_coalesced() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    run_dependency_verify_for_project(&db, PROJECT_ID)
+        .expect("clean Verify must seal reusable skip evidence");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('followup-verify-running', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'running', '{}', '2026-08-22T00:00:00.000Z',
+                     '2026-08-22T00:00:01.000Z', 'dependency-verify', ?2, ?3)",
+            params![
+                PROJECT_ID,
+                EPOCH_ID,
+                format!("dependency-verify:{EPOCH_ID}")
+            ],
+        )?;
+        Ok(())
+    })
+    .expect("seed live same-key Verify confirmation");
+
+    let request: MaintenanceCycleRequest = serde_json::from_value(serde_json::json!({
+        "work": [{
+            "projectId": PROJECT_ID,
+            "runKind": "dependency-verify",
+            "workKey": format!("dependency-verify:{EPOCH_ID}"),
+            "semanticEpochId": EPOCH_ID,
+            "reasons": ["verify-requested"]
+        }],
+        "wakeProjectIds": []
+    }))
+    .expect("valid Verify request");
+
+    let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+        .expect("same-key Verify coalescing must finish");
+    assert_eq!(
+        result,
+        MaintenanceCycleResult::coalesced(true),
+        "same-key Verify confirmation is wholly live-owned and must remain coalesced"
+    );
+    let (verify_count, running_verify_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*),
+                        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'dependency-verify'",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read same-key Verify ledger");
+    assert_eq!(verify_count, 2, "the live confirmation must be durable");
+    assert_eq!(
+        running_verify_count, 1,
+        "the existing Verify remains owned live"
+    );
 }
 
 #[test]
