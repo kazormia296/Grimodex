@@ -12,7 +12,7 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
     AutomaticRunKind, FailureClass, MaintenanceExecutionDecision, MaintenanceExecutionMode,
     MaintenanceTrigger, RecoveryAction, RecoveryMode, StaleActiveRun, WorkKey,
-    MAX_AUTOMATIC_RETRIES,
+    LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -766,19 +766,23 @@ fn live_coalescing_and_startup_recovery_are_distinct_typed_actions() {
 }
 
 #[test]
-fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch() {
+fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch_and_recover_lifecycle() {
     let db = fixture_db();
-    let work = WorkKey::new(PROJECT_ID, AutomaticRunKind::Backfill, "backfill:current")
-        .expect("valid work key");
+    let work = WorkKey::new(
+        PROJECT_ID,
+        AutomaticRunKind::Backfill,
+        LEGACY_BACKFILL_WORK_KEY,
+    )
+    .expect("valid work key");
     db.with_conn(|conn| {
-        insert_run(
+        insert_canonical_maintenance_run(
             conn,
             "run-old-running",
             "running",
             Some(OLD_EPOCH_ID),
             &work,
         )?;
-        insert_run(
+        insert_canonical_maintenance_run(
             conn,
             "run-old-completed",
             "completed",
@@ -816,7 +820,7 @@ fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch() {
         &WorkKey::new_for_epoch(
             PROJECT_ID,
             AutomaticRunKind::Backfill,
-            "backfill:current",
+            LEGACY_BACKFILL_WORK_KEY,
             EPOCH_ID,
         )
         .expect("epoch-bound current work key"),
@@ -827,9 +831,10 @@ fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch() {
         terminalized.failed_run_ids,
         vec!["run-old-running".to_string()]
     );
+    assert_interrupted_lifecycle(&db, "run-old-running");
 
     db.with_conn(|conn| {
-        insert_run(
+        insert_canonical_maintenance_run(
             conn,
             "run-old-running-forged",
             "running",
@@ -845,7 +850,7 @@ fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch() {
         &WorkKey::new_for_epoch(
             PROJECT_ID,
             AutomaticRunKind::Backfill,
-            "backfill:current",
+            LEGACY_BACKFILL_WORK_KEY,
             EPOCH_ID,
         )
         .expect("epoch-bound current work key"),
@@ -858,6 +863,23 @@ fn old_epoch_running_and_completed_rows_are_not_reused_for_current_epoch() {
     assert!(forged
         .to_string()
         .contains("does not match recovery provenance"));
+    db.with_conn(|conn| {
+        let lifecycle: (String, i64, i64) = conn.query_row(
+            "SELECT r.status,
+                    (SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = r.id),
+                    (SELECT COUNT(*)
+                       FROM narrative_extraction_attempts a
+                       JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                      WHERE t.run_id = r.id)
+               FROM narrative_extraction_runs r
+              WHERE r.id = 'run-old-running-forged'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(lifecycle, ("running".to_string(), 0, 0));
+        Ok(())
+    })
+    .expect("forged provenance leaves the legacy Run untouched");
 }
 
 #[test]
@@ -1456,17 +1478,17 @@ fn epoch_contract_mismatch_fails_closed_for_recovery_and_terminalization() {
 }
 
 #[test]
-fn terminalize_interrupted_run_ids_is_transactional_and_does_not_create_children() {
+fn terminalize_interrupted_run_ids_is_transactional_and_recovers_running_legacy_lifecycle() {
     let db = fixture_db();
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "backfill:terminalize",
+        LEGACY_BACKFILL_WORK_KEY,
     )
     .expect("valid work key");
     db.with_conn(|conn| {
-        insert_run(conn, "run-running", "running", Some(EPOCH_ID), &work)?;
-        insert_run(conn, "run-pending", "pending", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(conn, "run-running", "running", Some(EPOCH_ID), &work)?;
+        insert_canonical_maintenance_run(conn, "run-pending", "pending", Some(EPOCH_ID), &work)?;
         Ok(())
     })
     .expect("seed active runs");
@@ -1509,25 +1531,44 @@ fn terminalize_interrupted_run_ids_is_transactional_and_does_not_create_children
                 ),
             ]
         );
-        let children: (i64, i64) = (
+        let running_children: (i64, i64) = (
             conn.query_row(
-                "SELECT COUNT(*) FROM narrative_extraction_tasks",
+                "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = 'run-running'",
                 [],
                 |row| row.get(0),
             )?,
             conn.query_row(
-                "SELECT COUNT(*) FROM narrative_extraction_attempts",
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts a
+                   JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                  WHERE t.run_id = 'run-running'",
                 [],
                 |row| row.get(0),
             )?,
         );
-        assert_eq!(children, (0, 0));
+        assert_eq!(running_children, (1, 1));
+        let pending_children: (i64, i64) = (
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = 'run-pending'",
+                [],
+                |row| row.get(0),
+            )?,
+            conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_extraction_attempts a
+                   JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                  WHERE t.run_id = 'run-pending'",
+                [],
+                |row| row.get(0),
+            )?,
+        );
+        assert_eq!(pending_children, (0, 0));
         Ok(())
     })
     .expect("inspect terminalized runs");
 
     db.with_conn(|conn| {
-        Ok(insert_run(
+        Ok(insert_canonical_maintenance_run(
             conn,
             "run-rollback",
             "running",

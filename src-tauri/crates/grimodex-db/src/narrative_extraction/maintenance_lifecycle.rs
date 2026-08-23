@@ -25,6 +25,7 @@ const REBUILD_WORK_KEY: &str = "dependency-rebuild-derived";
 const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
 const BACKFILL_ALGORITHM_VERSION: &str = "2";
 const VERIFY_CONTRACT_VERSION: &str = "6";
+const MAX_SYSTEM_WORK_GENERATION: u64 = 9_007_199_254_740_991;
 
 /// The bounded failure policy understood by an automatic maintenance owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,7 +158,11 @@ fn strip_validated_system_work_marker(
     };
     let marker: PersistedSystemWorkMarker = serde_json::from_value(marker_value.clone())
         .map_err(|error| ownership_error(format!("systemWork marker is invalid: {error}")))?;
-    let _marker_generation = marker.generation;
+    if marker.generation == 0 || marker.generation > MAX_SYSTEM_WORK_GENERATION {
+        return Err(ownership_error(
+            "systemWork.generation must be a positive safe integer",
+        ));
+    }
     validate_marker_identifier(&marker.authority_id, "systemWork.authorityId")
         .map_err(|error| ownership_error(error.to_string()))?;
     validate_marker_identifier(
@@ -893,6 +898,50 @@ mod tests {
             "sha256:maintenance-test",
             SystemRunWorkKeyReuse::RunningOnly,
         )
+    }
+
+    #[test]
+    fn system_work_marker_generation_is_a_positive_safe_integer() {
+        let marker_spec = |generation| {
+            json!({
+                "backfillAlgorithmVersion": BACKFILL_ALGORITHM_VERSION,
+                "systemWork": {
+                    "trigger": "workspace-opened",
+                    "canonicalWorkKey": "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1",
+                    "authorityId": "authority-1",
+                    "generation": generation,
+                    "productJourneyBarrierId": "barrier-1",
+                    "correlation": "correlation-1"
+                }
+            })
+        };
+        for generation in [0, MAX_SYSTEM_WORK_GENERATION + 1] {
+            let error = strip_validated_system_work_marker(
+                &marker_spec(generation),
+                "project-1",
+                "backfill",
+                "epoch-1",
+                "legacy-dependency-backfill:v2",
+            )
+            .expect_err("unsafe marker generation must fail closed");
+            assert!(error.to_string().contains("positive safe integer"));
+        }
+        strip_validated_system_work_marker(
+            &marker_spec(1),
+            "project-1",
+            "backfill",
+            "epoch-1",
+            "legacy-dependency-backfill:v2",
+        )
+        .expect("positive safe marker generation is accepted");
+        strip_validated_system_work_marker(
+            &marker_spec(MAX_SYSTEM_WORK_GENERATION),
+            "project-1",
+            "backfill",
+            "epoch-1",
+            "legacy-dependency-backfill:v2",
+        )
+        .expect("maximum safe marker generation is accepted");
     }
 
     #[test]

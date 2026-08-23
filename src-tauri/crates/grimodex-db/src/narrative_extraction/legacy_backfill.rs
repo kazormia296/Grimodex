@@ -89,7 +89,9 @@ use super::maintenance_lifecycle::{
     canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
     fail_maintenance_run_in_tx, load_maintenance_run_in_tx, MaintenanceFailureKind,
 };
-use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
+#[cfg(test)]
+use super::repository::create_system_run_in_tx;
+use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{

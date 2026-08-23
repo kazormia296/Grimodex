@@ -23,7 +23,9 @@ use super::digest_plan;
 use super::evaluator::{
     evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
-use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+#[cfg(test)]
+use super::execution_state::transition_run_status_in_tx;
+use super::execution_state::NarrativeRunStatus;
 use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
     MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
@@ -37,7 +39,9 @@ use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
-use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
+#[cfg(test)]
+use super::repository::create_system_run_in_tx;
+use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
