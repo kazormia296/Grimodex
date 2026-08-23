@@ -2507,6 +2507,96 @@ async function runSchemaBackfillVerify(
   );
 }
 
+async function restoreBackupThroughSettingsUi(context, backupName) {
+  const { page, harness } = context;
+  const backups = await harness.invokeOk(page, "list_backups");
+  const matchingBackups = Array.isArray(backups)
+    ? backups.filter((backup) => backup?.fileName === backupName)
+    : [];
+  if (matchingBackups.length !== 1) {
+    throw new Error(
+      `restore UI requires exactly one fixture backup ${backupName}: ${JSON.stringify(backups)}`,
+    );
+  }
+
+  const settingsButton = page
+    .getByRole("button", {
+      name: /^(?:Settings|設定)(?: \(update available\)|（更新があります）)?$/,
+    })
+    .first();
+  await settingsButton.click();
+  const settingsDialog = page.getByTestId("settings-dialog");
+  await settingsDialog.waitFor({ state: "visible" });
+  await settingsDialog
+    .getByRole("button", { name: "Data", exact: true })
+    .click();
+
+  // The component consumes the same Rust list_backups ordering. Re-read it
+  // after Data mounted and pin the exact sequence before selecting a row;
+  // filenames are intentionally not rendered by the settings UI.
+  const uiBackups = await harness.invokeOk(page, "list_backups");
+  if (
+    !Array.isArray(uiBackups) ||
+    uiBackups.length !== backups.length ||
+    uiBackups.some(
+      (backup, index) => backup?.fileName !== backups[index]?.fileName,
+    )
+  ) {
+    throw new Error(
+      `restore UI backup ordering changed while mounting Data: ${JSON.stringify({
+        before: backups,
+        after: uiBackups,
+      })}`,
+    );
+  }
+  const backupIndex = uiBackups.findIndex(
+    (backup) => backup?.fileName === backupName,
+  );
+  if (backupIndex < 0) {
+    throw new Error(`restore UI fixture backup disappeared: ${backupName}`);
+  }
+
+  const restoreButtons = settingsDialog.getByRole("button", {
+    name: /^(?:Restore|復元)$/,
+  });
+  await restoreButtons.nth(backupIndex).waitFor({ state: "visible" });
+  await restoreButtons.nth(backupIndex).click();
+  const confirmButton = settingsDialog.getByRole("button", {
+    name: /^(?:Replace & restore|全体を置換して復元)$/,
+  });
+  await confirmButton.waitFor({ state: "visible" });
+
+  // BackupRestoreSection owns the destructive lifecycle: flush pending saves,
+  // invoke restore_backup, then reload the renderer. Observe the main-frame
+  // navigation and the new document timing rather than bypassing production
+  // with a raw restore_backup IPC call.
+  const previousTimeOrigin = await page.evaluate(() => performance.timeOrigin);
+  const mainFrameReload = page.waitForEvent("framenavigated", {
+    predicate: (frame) => frame === page.mainFrame(),
+    timeout: 60_000,
+  });
+  const reload = page.waitForFunction(
+    (origin) => performance.timeOrigin !== origin,
+    previousTimeOrigin,
+    { timeout: 60_000 },
+  );
+  await confirmButton.click();
+  await Promise.all([mainFrameReload, reload]);
+  await page.waitForFunction(
+    () => globalThis.grimodex?.shell === "electron",
+    undefined,
+    { timeout: 60_000 },
+  );
+
+  // The new document may expose the preload bridge before bootstrap has
+  // reopened the workspace. Wait for hydrated workspace chrome; the caller
+  // then rebuilds DB context closures against this reloaded page.
+  await page
+    .getByTestId("workspace-menu-trigger")
+    .waitFor({ state: "visible", timeout: 60_000 });
+  return { backupIndex };
+}
+
 async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
   const id = "c2-5b-restore-verify-rebuild-verify";
   const workspace = harness.workspacePath(id);
@@ -2538,17 +2628,55 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
     });
     const beforeRestoreRuns = await context.runs();
     const beforeEpochs = await context.epochs();
-    await context.harness.invokeOk(context.page, "restore_backup", {
-      fileName: fixtureEvidence.backupName,
-    });
+    await restoreBackupThroughSettingsUi(context, fixtureEvidence.backupName);
+    let restoredContext;
+    let authorityMismatch;
+    await harness.waitUntil(
+      async () => {
+        try {
+          const candidate = await contextForLaunch(
+            harness,
+            launched,
+            workspace,
+            id,
+            beforeRestoreRuns,
+          );
+          if (candidate.projectId !== context.projectId) {
+            authorityMismatch = new Error(
+              `restore reload changed project authority: ${context.projectId} -> ${candidate.projectId}`,
+            );
+            return true;
+          }
+          restoredContext = candidate;
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      "restore/reload project hydration",
+      60_000,
+      100,
+    );
+    if (authorityMismatch) throw authorityMismatch;
+    if (!restoredContext) {
+      throw new Error("restore reload did not rebind a hydrated project context");
+    }
+    await waitForReadiness(
+      restoredContext,
+      "restore/reload settled",
+      {
+        baselineRuns: beforeRestoreRuns,
+        requireMaintenanceSettled: true,
+      },
+    );
     context.record("restore-epoch-trigger-observed", {
       backupName: fixtureEvidence.backupName,
     });
     const sequence = await waitForRestorePhaseRows(
-      context,
+      restoredContext,
       beforeRestoreRuns,
     );
-    const epochs = await context.epochs();
+    const epochs = await restoredContext.epochs();
     const restoreEpoch = assertRestoreVerifyRebuildVerifyCausality(
       sequence,
       beforeEpochs,
