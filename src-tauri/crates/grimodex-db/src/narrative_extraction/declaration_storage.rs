@@ -106,6 +106,40 @@ pub struct ActiveDependencyDeclarationSet {
     pub entries: Vec<StoredDependencyDeclaration>,
 }
 
+/// Result of checking the one active D1 head for a Consumer.  `Missing` is
+/// the normal pre-D2 state (no V2 head); `Corrupt` means a head exists but
+/// does not point at a coherent sealed set.  Neither state is a V1 error:
+/// D2 reports it in its in-memory shadow diagnostics and keeps V1 canonical.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ActiveDependencyDeclarationSetRead {
+    Missing,
+    Corrupt,
+    Active(ActiveDependencyDeclarationSet),
+}
+
+/// Return the D1 Consumer identities that have a head for a project.  This
+/// is a narrow reverse lookup for shadow runtimes; it exposes no raw storage
+/// rows and leaves verification of each head/set to
+/// [`read_active_dependency_declaration_set_in_tx`].
+pub(crate) fn list_dependency_declaration_head_keys_in_tx(
+    conn: &Connection,
+    project_id: &str,
+) -> anyhow::Result<Vec<(String, String)>> {
+    if !table_exists(conn, HEAD_TABLE)? {
+        return Ok(Vec::new());
+    }
+    let mut statement = conn.prepare(&format!(
+        "SELECT consumer_kind, consumer_key
+           FROM {HEAD_TABLE}
+          WHERE project_id = ?1
+          ORDER BY consumer_kind, consumer_key"
+    ))?;
+    let rows = statement
+        .query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 #[derive(Clone, Debug)]
 struct PreparedDeclaration {
     source_object_identity: String,
@@ -367,28 +401,83 @@ pub fn read_active_dependency_declaration_set(
     consumer_key: &str,
 ) -> anyhow::Result<Option<ActiveDependencyDeclarationSet>> {
     db.with_conn(|conn| {
-        if !table_exists(conn, SET_TABLE)?
-            || !table_exists(conn, ENTRY_TABLE)?
-            || !table_exists(conn, HEAD_TABLE)?
-        {
-            return Ok(None);
-        }
-        let Some(head) = load_head(conn, project_id, consumer_kind, consumer_key)? else {
-            return Ok(None);
-        };
-        let Some(active_set) = load_verified_set_by_id(
-            conn,
-            &head.active_declaration_set_id,
-            Some((project_id, consumer_kind, consumer_key)),
-        )?
-        else {
-            return Ok(None);
-        };
-        if !head_matches_set(&head, &active_set) {
-            return Ok(None);
-        }
-        Ok(Some(active_set))
+        Ok(
+            match read_active_dependency_declaration_set_in_tx(
+                conn,
+                project_id,
+                consumer_kind,
+                consumer_key,
+            )? {
+                ActiveDependencyDeclarationSetRead::Active(active_set) => Some(active_set),
+                ActiveDependencyDeclarationSetRead::Missing
+                | ActiveDependencyDeclarationSetRead::Corrupt => None,
+            },
+        )
     })
+}
+
+/// Same-connection D1 read used by runtime planning.  Keeping the table
+/// existence, head/set coherence, entry canonicalisation, and set-digest
+/// checks here prevents a shadow caller from constructing a second, weaker
+/// interpretation of the accepted D1 boundary.
+pub(crate) fn read_active_dependency_declaration_set_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+) -> anyhow::Result<ActiveDependencyDeclarationSetRead> {
+    if !table_exists(conn, SET_TABLE)?
+        || !table_exists(conn, ENTRY_TABLE)?
+        || !table_exists(conn, HEAD_TABLE)?
+    {
+        return Ok(ActiveDependencyDeclarationSetRead::Missing);
+    }
+    let Some(head) = load_head(conn, project_id, consumer_kind, consumer_key)? else {
+        return Ok(ActiveDependencyDeclarationSetRead::Missing);
+    };
+    let Some(active_set) = load_verified_set_by_id(
+        conn,
+        &head.active_declaration_set_id,
+        Some((project_id, consumer_kind, consumer_key)),
+    )?
+    else {
+        return Ok(ActiveDependencyDeclarationSetRead::Corrupt);
+    };
+    if !head_matches_set(&head, &active_set) {
+        return Ok(ActiveDependencyDeclarationSetRead::Corrupt);
+    }
+    Ok(ActiveDependencyDeclarationSetRead::Active(active_set))
+}
+
+/// Publish-time guard for a V2 shadow plan.  D1 sets are immutable, so an
+/// exact comparison proves both that the head still points at the same set
+/// and that no entry/digest corruption appeared between evaluation and
+/// publication.  The caller invokes this before any V1 write; a mismatch is
+/// therefore requeued atomically by the incremental runtime.
+pub(crate) fn verify_active_dependency_declaration_set_unchanged_in_conn(
+    conn: &Connection,
+    expected: &ActiveDependencyDeclarationSet,
+) -> anyhow::Result<()> {
+    let state = read_active_dependency_declaration_set_in_tx(
+        conn,
+        &expected.project_id,
+        &expected.consumer_kind,
+        &expected.consumer_key,
+    )?;
+    match state {
+        ActiveDependencyDeclarationSetRead::Active(actual) if actual == *expected => Ok(()),
+        ActiveDependencyDeclarationSetRead::Active(_) => anyhow::bail!(
+            "NEX_DECLARATION_HEAD_CHANGED_AFTER_EVALUATION: active V2 declaration set changed for {}:{}",
+            expected.consumer_kind,
+            expected.consumer_key
+        ),
+        ActiveDependencyDeclarationSetRead::Missing
+        | ActiveDependencyDeclarationSetRead::Corrupt => anyhow::bail!(
+            "NEX_DECLARATION_HEAD_INCOHERENT_AFTER_EVALUATION: active V2 declaration set is no longer coherent for {}:{}",
+            expected.consumer_kind,
+            expected.consumer_key
+        ),
+    }
 }
 
 /// Verify all D1 rows without making V2 the runtime authority.  A malformed
