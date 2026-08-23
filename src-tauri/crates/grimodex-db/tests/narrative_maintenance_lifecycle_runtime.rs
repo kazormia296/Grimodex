@@ -317,6 +317,60 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
 }
 
 #[test]
+fn foreground_backfill_stays_running_when_same_cycle_rediscovery_binds_epoch() {
+    let db = fixture_db_without_epoch();
+    let binding = MaintenanceWorkspaceBinding {
+        authority_id: "authority-c2-5b-lifecycle-backfill".to_string(),
+        generation: 19,
+    };
+    let config = foreground_config();
+    let mut foreground_request = request(AutomaticRunKind::Backfill);
+    foreground_request.workspace_binding = Some(binding.clone());
+
+    // The first Backfill creates the initial Semantic Epoch. Its durable
+    // rediscovery therefore has an epoch-bound WorkKey even though the exact
+    // marked Run's immutable foreground marker is intentionally epochless.
+    // StartupRecovery must not mistake that same marked Run for a pre-existing
+    // interrupted Run before the N-API cycle has returned its ACK.
+    let result = run_system_work_cycle_with_modes_and_config(
+        &db,
+        &foreground_request,
+        |_| RecoveryMode::StartupRecovery,
+        Some(&config),
+    )
+    .expect("foreground Backfill cycle succeeds");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+
+    let barrier = find_running_foreground_system_work_run(&db, &config, &binding)
+        .expect("find exact foreground Backfill")
+        .expect("the marked Backfill must remain held after same-cycle rediscovery");
+    assert_eq!(
+        barrier.marker.canonical_work_key,
+        "narrative-maintenance:v1/backfill/project-c2-5b-lifecycle/legacy-dependency-backfill:v2"
+    );
+    let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) =
+        lifecycle_rows_for_run(&db, &barrier.run_id).expect("read held Backfill lifecycle");
+    assert_eq!(
+        (
+            run_status.as_str(),
+            task_status.as_str(),
+            attempt_status.as_str()
+        ),
+        ("running", "running", "running")
+    );
+    assert_eq!((run_at, task_at, attempt_at), (None, None, None));
+
+    complete_foreground_system_work_run(&db, &barrier)
+        .expect("release exact foreground Backfill after authoring");
+    assert_eq!(
+        lifecycle_rows_for_run(&db, &barrier.run_id)
+            .expect("read released Backfill lifecycle")
+            .0,
+        "completed"
+    );
+}
+
+#[test]
 fn foreground_explicit_verify_holds_rebuild_before_confirmation_without_overlap() {
     let db = fixture_db();
     seed_completed_backfill(&db);

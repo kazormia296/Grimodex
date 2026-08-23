@@ -1822,6 +1822,36 @@ fn durable_run_work(
     )?))
 }
 
+/// Match a rediscovered work item to the exact foreground Run owned by this
+/// cycle.  Backfill creates the initial Semantic Epoch as part of dispatch,
+/// so its active durable row is rediscovered with an epoch-bound identity even
+/// though the immutable foreground marker was intentionally created from the
+/// epochless pre-dispatch WorkKey.  The run id/marker equality check remains
+/// the authority boundary; this helper only admits that one canonical
+/// Backfill identity transition and never broadens suppression to a different
+/// phase.
+fn foreground_owned_run_matches_work(
+    owned: &ForegroundSystemWorkRun,
+    item: &DesiredWork,
+) -> anyhow::Result<bool> {
+    if owned.project_id != item.project_id {
+        return Ok(false);
+    }
+    if owned.marker.canonical_work_key == item.canonical_key() {
+        return Ok(true);
+    }
+    if item.run_kind != AutomaticRunKind::Backfill {
+        return Ok(false);
+    }
+    Ok(owned.marker.canonical_work_key
+        == canonical_work_key_for_epoch(
+            &item.project_id,
+            AutomaticRunKind::Backfill,
+            &item.work_key,
+            None,
+        )?)
+}
+
 fn is_backfill_wake(reason: &str) -> bool {
     matches!(
         reason,
@@ -1953,9 +1983,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
         }
 
         let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
-            if owned.project_id != item.project_id
-                || owned.marker.canonical_work_key != item.canonical_key()
-            {
+            if !foreground_owned_run_matches_work(owned, &item)? {
                 false
             } else if let (Some(config), Some(binding)) =
                 (ci_config.as_ref(), request.workspace_binding.as_ref())
