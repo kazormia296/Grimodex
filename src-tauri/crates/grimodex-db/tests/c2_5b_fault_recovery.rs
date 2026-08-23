@@ -7,10 +7,12 @@
 
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, ensure_test_schema, inject_legacy_backfill_fault_for_project,
-    terminalize_interrupted_runs_for_epoch, AutomaticRunKind, InboxEntryKind,
+    run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind,
     LegacyBackfillFaultOutcome, NarrativeMaintenanceCiFault, WorkKey, LEGACY_BACKFILL_WORK_KEY,
+    InboxEntryKind, MaintenanceCycleRequest, MaintenanceCycleStatus, RecoveryMode,
 };
 use grimodex_db::Database;
+use serde_json::json;
 
 const PROJECT_ID: &str = "project-c2-5b-fault";
 
@@ -84,6 +86,36 @@ fn terminal_failure_inbox_count(db: &Database) -> usize {
     .expect("read maintenance Inbox")
 }
 
+fn backfill_request() -> MaintenanceCycleRequest {
+    serde_json::from_value(json!({
+        "work": [{
+            "projectId": PROJECT_ID,
+            "runKind": "backfill",
+            "workKey": LEGACY_BACKFILL_WORK_KEY,
+            "semanticEpochId": null,
+            "reasons": ["fault-retry"]
+        }],
+        "wakeProjectIds": []
+    }))
+    .expect("canonical backfill request")
+}
+
+fn backfill_run_statuses(db: &Database) -> Vec<String> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT status
+               FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = 'backfill'
+              ORDER BY created_at, id",
+        )?;
+        let statuses = statement
+            .query_map([PROJECT_ID], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        Ok(statuses)
+    })
+    .expect("read backfill statuses")
+}
+
 #[test]
 fn transient_fault_leaves_one_failed_attempt_without_inbox_projection() {
     let db = fixture_db();
@@ -117,6 +149,50 @@ fn transient_fault_leaves_one_failed_attempt_without_inbox_projection() {
             attempt_count: 1,
         }
     );
+    assert_eq!(terminal_failure_inbox_count(&db), 0);
+}
+
+#[test]
+fn transient_fault_is_followed_by_a_distinct_completed_retry_run() {
+    let db = fixture_db();
+    let first = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::TransientIo,
+    )
+    .expect("inject transient fault");
+    let first_run_id = match first {
+        LegacyBackfillFaultOutcome::Failed { run_id, .. } => run_id,
+        other => panic!("expected durable transient failure, got {other:?}"),
+    };
+
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
+        .expect("retry dispatch completes the sealed Backfill work");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    let statuses = backfill_run_statuses(&db);
+    assert_eq!(statuses, vec!["failed", "completed"]);
+    let retry_run_id: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT id
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1 AND run_kind = 'backfill' AND id <> ?2
+                  ORDER BY created_at DESC, id DESC
+                  LIMIT 1",
+                [PROJECT_ID, first_run_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read distinct retry Run");
+    assert_ne!(retry_run_id, first_run_id);
+    let retry = lifecycle_snapshot(&db, &retry_run_id);
+    assert_eq!(retry.run_status, "completed");
+    assert_eq!(retry.task_status, "completed");
+    assert_eq!(retry.attempt_status, "completed");
+    assert_eq!(retry.task_kind, "maintenance-backfill");
+    assert_eq!(retry.attempt_number, 1);
+    assert_eq!((retry.task_count, retry.attempt_count), (1, 1));
     assert_eq!(terminal_failure_inbox_count(&db), 0);
 }
 
