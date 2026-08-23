@@ -833,7 +833,7 @@ test("default main allowances cover only exact expiring Ubuntu Xvfb diagnostics"
   });
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
-  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 4);
+  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 5);
   const launched = await harness.launch("configure");
   mainStderr.emit(
     "data",

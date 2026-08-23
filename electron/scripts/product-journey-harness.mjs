@@ -114,6 +114,17 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
     pattern:
       /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox\.\r?\n?$/,
   }),
+  Object.freeze({
+    id: "ubuntu-xvfb-restore-reload-shared-image-skia",
+    phases: Object.freeze([
+      "c2-5b-restore-verify-rebuild-verify/open",
+    ]),
+    reason:
+      "Observed on Ubuntu Xvfb during the trusted production renderer reload after Settings backup restore; only this exact C2-5B phase is allowed.",
+    expiresOn: "2026-09-30",
+    pattern:
+      /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox\.\r?\n?$/,
+  }),
 ]);
 
 const MAIN_PROCESS_ERROR_PATTERNS = Object.freeze([
