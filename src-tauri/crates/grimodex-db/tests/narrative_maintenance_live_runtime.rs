@@ -12,6 +12,7 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
 };
 use grimodex_db::Database;
 use rusqlite::params;
+use std::collections::HashSet;
 
 const PROJECT_ID: &str = "project-c2-5b-live";
 const EPOCH_ID: &str = "epoch-c2-5b-live";
@@ -201,7 +202,42 @@ fn cycle_request_rejects_repair_and_path_separators() {
 
 #[test]
 fn automatic_kind_set_matches_dispatch_surface() {
-    assert_eq!(AutomaticRunKind::all().len(), 3);
+    let automatic_kinds = AutomaticRunKind::all();
+    let descriptors = route_descriptors();
+    let descriptor_kinds: HashSet<_> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.run_kind)
+        .collect();
+    let automatic_kind_set: HashSet<_> = automatic_kinds.iter().copied().collect();
+    let route_ids: HashSet<_> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.route_id)
+        .collect();
+
+    assert_eq!(
+        descriptors.len(),
+        automatic_kinds.len(),
+        "route registry and AutomaticRunKind::all() must have the same cardinality"
+    );
+    assert_eq!(
+        descriptor_kinds.len(),
+        descriptors.len(),
+        "route registry kinds must be unique"
+    );
+    assert_eq!(
+        automatic_kind_set.len(),
+        automatic_kinds.len(),
+        "AutomaticRunKind::all() must be unique"
+    );
+    assert_eq!(
+        route_ids.len(),
+        descriptors.len(),
+        "route registry IDs must be unique"
+    );
+    assert_eq!(
+        descriptor_kinds, automatic_kind_set,
+        "route registry kinds must exactly match AutomaticRunKind::all()"
+    );
 }
 
 #[test]
