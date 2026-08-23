@@ -8298,6 +8298,11 @@ mod narrative_maintenance_foreground_release_tests {
     async fn napi_first_foreground_cycle_keeps_its_marked_run_until_exact_release() {
         let (backend, root) = backend_with_workspace("runtime-seam");
         let authority = active_database(&backend.state.ws).expect("active authority");
+        grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+            &authority,
+            "project-1",
+        )
+        .expect("seed completed Backfill boundary");
         seed_verify_rebuild_work(&authority);
         configure_foreground_seam(&backend);
         let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
@@ -8320,6 +8325,7 @@ mod narrative_maintenance_foreground_release_tests {
         )
         .expect("cycle response JSON");
         assert_eq!(cycle["status"], "accepted");
+        assert_eq!(cycle["hasMore"], true);
 
         let rows: Vec<(String, String, String)> = authority
             .db()

@@ -1542,6 +1542,14 @@ pub fn run_system_work_cycle_with_modes_and_config(
     let mut coalesced_active = false;
     let mut has_more = false;
     let mut foreground_marker_available = true;
+    // A successful adapter dispatch owns this canonical WorkKey until the
+    // cycle returns. Durable discovery can legitimately return that same key
+    // while a foreground product-journey Run is held in `running`; treating
+    // it as StartupRecovery before the N-API cycle ACK would terminalize the
+    // Run we just marked and create an unmarked replacement. This state is
+    // deliberately cycle-local so rows that predate this cycle still use the
+    // caller-selected StartupRecovery/SameProcessLive mode on a later wake.
+    let mut dispatched_work_keys = BTreeSet::new();
     let mut project_ids = BTreeSet::new();
     while let Some(item) = queue.pop_front() {
         project_ids.insert(item.project_id.clone());
@@ -1554,6 +1562,13 @@ pub fn run_system_work_cycle_with_modes_and_config(
             break;
         }
         dequeue_count += 1;
+
+        if dispatched_work_keys.contains(&item.canonical_key()) {
+            // The adapter already accepted this WorkKey in this cycle. Do
+            // not rediscover/recover its held active Run until a later cycle
+            // after the foreground owner has released it.
+            continue;
+        }
 
         // Verify-only completed-run skip is checked before recovery. Rebuild
         // completed rows are intentionally never reused.
@@ -1656,6 +1671,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
                     None
                 };
                 with_system_work_marker(marker.clone(), || dispatch_enabled_work(db, &item))?;
+                dispatched_work_keys.insert(item.canonical_key());
                 if marker.is_some() {
                     foreground_marker_available = false;
                 }
