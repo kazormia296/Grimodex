@@ -62,7 +62,13 @@
         "reason": { "type": "string", "minLength": 1 },
         "operations": {
           "type": "array",
-          "minItems": 1,
+          "const": [
+            "verifyNarrativeDependencyGraph",
+            "rebuildNarrativeDerivedState",
+            "repairNarrativeDependencyDeclarations",
+            "getNarrativeBackfillStatus",
+            "retryNarrativeLegacyBackfill"
+          ],
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         }
@@ -157,10 +163,35 @@
         },
         "triggerDetail": { "type": "string", "minLength": 1 },
         "triggerEvents": {
+          "description": "Semantic database/runtime discovery conditions. These are not literal Electron emitter names; the main process wakes and asks the durable planner to rediscover work.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "not": { "const": "before-c2z-cutover" }
+          }
+        },
+        "futureTriggerObligations": {
+          "description": "Conditions reserved for a later gate. They are not current shipping trigger conditions and cannot establish current wired status.",
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "required": [
+              "condition",
+              "gate",
+              "satisfiesCurrentWiredStatus"
+            ],
+            "properties": {
+              "condition": { "type": "string", "minLength": 1 },
+              "gate": { "type": "string", "minLength": 1 },
+              "satisfiesCurrentWiredStatus": { "const": false }
+            },
+            "additionalProperties": false
+          }
         },
         "manualTriggerAllowed": { "type": "boolean" },
         "sameWorkKeyReuse": {
@@ -357,16 +388,35 @@
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1 }
         },
+        "runtimeRoute": {
+          "description": "Stable route registry metadata for automatic maintenance. Presence describes the contract; it does not prove source reachability.",
+          "type": "object",
+          "required": [
+            "registryVersion",
+            "routeId",
+            "productionEntryPoint"
+          ],
+          "properties": {
+            "registryVersion": {
+              "const": "narrative-maintenance-route/v1"
+            },
+            "routeId": { "type": "string", "minLength": 1 },
+            "productionEntryPoint": {
+              "const": "run_narrative_maintenance_cycle"
+            }
+          },
+          "additionalProperties": false
+        },
         "implementationStatus": {
           "type": "object",
-          "description": "Whether this Run Kind's declared trigger is actually wired in the shipping runtime. Declared per Run Kind so the contract cannot silently describe a future state as if it were live; validate-run-kind-policy.mjs cross-checks it against the real Rust call graph in both directions.",
+          "description": "Whether this Run Kind's declared route is wired in the shipping runtime. The policy validator checks only this JSON contract and does not infer wiring from source reachability.",
           "required": ["state", "productionEntryPoints"],
           "properties": {
             "state": { "enum": ["wired", "unwired-blocked"] },
             "triggerSymbol": {
               "type": "string",
               "minLength": 1,
-              "description": "Rust function an automatic trigger must call for this Run Kind to count as wired. Required when trigger is automatic-*."
+              "description": "Stable internal symbol retained only for the incremental freshness contract; the JSON validator does not resolve it against source."
             },
             "productionEntryPoints": {
               "type": "array",
@@ -387,6 +437,214 @@
         }
       },
       "allOf": [
+        {
+          "if": {
+            "properties": {
+              "runKind": {
+                "enum": ["dependency-verify", "dependency-rebuild-derived"]
+              }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": ["futureTriggerObligations"],
+            "properties": {
+              "futureTriggerObligations": {
+                "const": [
+                  {
+                    "condition": "before-c2z-cutover",
+                    "gate": "C2-ZC",
+                    "satisfiesCurrentWiredStatus": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": { "runKind": { "const": "dependency-repair" } },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": [
+              "sameRequestIdReuse",
+              "sameWorkKeyReuse",
+              "manualRetry",
+              "manualRetryNote",
+              "requiredPreconditions",
+              "allowedRepairs",
+              "forbiddenRepairs",
+              "unrecoverableDisposition"
+            ],
+            "properties": {
+              "trigger": { "const": "manual-only" },
+              "sameRequestIdReuse": { "const": "idempotent-replay" },
+              "sameWorkKeyReuse": { "const": "no-automatic-reuse-decision" },
+              "epochBound": { "const": true },
+              "cursorBound": { "const": false },
+              "periodic": { "const": false },
+              "manualRetry": {
+                "const": "crash-recovery-of-an-already-approved-sealed-plan-only"
+              },
+              "manualRetryNote": {
+                "const": "resuming an approved sealed repair plan after a crash is recovery of an already-approved operation, not a new repair decision."
+              },
+              "writes": { "const": "durable-graph" },
+              "requiredPreconditions": {
+                "const": [
+                  "successful-verify-run-id",
+                  "sealed-repair-plan-from-verify-result",
+                  "repair-plan-digest",
+                  "current-semantic-epoch-match",
+                  "exclusive-workspace-lease",
+                  "automatic-backup-or-snapshot",
+                  "explicit-confirmation",
+                  "stable-request-id",
+                  "change-count-preview"
+                ]
+              },
+              "allowedRepairs": {
+                "const": [
+                  "edge-fully-reconstructible-from-durable-ledger",
+                  "artifact-with-explicit-dependency-manifest",
+                  "proposal-revision-edge-uniquely-derivable-from-source-basis-or-read-set",
+                  "application-contribution-uniquely-derivable-from-commit-receipt",
+                  "deactivate-duplicate-edge",
+                  "supersede-a-clear-prior-generation"
+                ]
+              },
+              "forbiddenRepairs": {
+                "const": [
+                  "infer-dependency-from-payload-semantic-analysis",
+                  "ai-completion-of-a-missing-dependency",
+                  "select-an-ambiguous-target-path",
+                  "modify-a-domain-field",
+                  "rewrite-author-ownership",
+                  "guess-an-evidence-range",
+                  "re-adjudicate-semantic-truth"
+                ]
+              },
+              "unrecoverableDisposition": {
+                "const": ["detached", "unknown", "manual-review-required"]
+              },
+              "adminCommands": {
+                "const": ["repairNarrativeDependencyDeclarations"]
+              },
+              "implementationStatus": {
+                "properties": {
+                  "state": { "const": "wired" },
+                  "productionEntryPoints": {
+                    "const": ["repairNarrativeDependencyDeclarations"]
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                { "required": ["triggerEvents"] },
+                { "required": ["runtimeRoute"] }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": {
+                "enum": [
+                  "dependency-backfill",
+                  "dependency-verify",
+                  "dependency-rebuild-derived"
+                ]
+              }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "required": ["runtimeRoute"],
+            "properties": {
+              "runtimeRoute": {
+                "required": [
+                  "registryVersion",
+                  "routeId",
+                  "productionEntryPoint"
+                ],
+                "properties": {
+                  "registryVersion": {
+                    "const": "narrative-maintenance-route/v1"
+                  },
+                  "productionEntryPoint": {
+                    "const": "run_narrative_maintenance_cycle"
+                  }
+                }
+              },
+              "implementationStatus": {
+                "properties": {
+                  "state": { "const": "wired" },
+                  "productionEntryPoints": {
+                    "const": ["run_narrative_maintenance_cycle"]
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-backfill" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "const": "automatic-once-after-schema-upgrade"
+              },
+              "adminCommands": {
+                "const": [
+                  "retryNarrativeLegacyBackfill",
+                  "getNarrativeBackfillStatus"
+                ]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-verify" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "properties": {
+              "trigger": { "const": "automatic-on-trigger-event" },
+              "adminCommands": {
+                "const": ["verifyNarrativeDependencyGraph"]
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "runKind": { "const": "dependency-rebuild-derived" }
+            },
+            "required": ["runKind"]
+          },
+          "then": {
+            "properties": {
+              "trigger": {
+                "const": "automatic-when-derived-state-absent-or-invalid"
+              },
+              "adminCommands": {
+                "const": ["rebuildNarrativeDerivedState"]
+              }
+            }
+          }
+        },
         {
           "if": {
             "properties": { "runKind": { "const": "incremental-freshness" } },
