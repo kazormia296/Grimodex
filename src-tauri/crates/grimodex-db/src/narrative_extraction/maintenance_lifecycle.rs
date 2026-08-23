@@ -6,6 +6,7 @@
 //! this boundary.
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -114,6 +115,91 @@ fn canonical_spec(run_kind: &str) -> anyhow::Result<Value> {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PersistedSystemWorkMarker {
+    trigger: String,
+    canonical_work_key: String,
+    authority_id: String,
+    generation: u64,
+    product_journey_barrier_id: String,
+    correlation: String,
+}
+
+fn validate_marker_identifier(value: &str, name: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(!value.is_empty(), "{name} must not be empty");
+    anyhow::ensure!(value == value.trim(), "{name} must be trimmed");
+    anyhow::ensure!(!value.contains('\0'), "{name} must not contain NUL");
+    Ok(())
+}
+
+fn canonical_system_work_key(
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+) -> String {
+    format!("narrative-maintenance:v1/{run_kind}/{project_id}/{work_key}/epoch/{semantic_epoch_id}")
+}
+
+fn strip_validated_system_work_marker(
+    spec: &Value,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+) -> anyhow::Result<Value> {
+    let Some(spec_object) = spec.as_object() else {
+        return Ok(spec.clone());
+    };
+    let Some(marker_value) = spec_object.get("systemWork") else {
+        return Ok(spec.clone());
+    };
+    let marker: PersistedSystemWorkMarker = serde_json::from_value(marker_value.clone())
+        .map_err(|error| ownership_error(format!("systemWork marker is invalid: {error}")))?;
+    let _marker_generation = marker.generation;
+    validate_marker_identifier(&marker.authority_id, "systemWork.authorityId")
+        .map_err(|error| ownership_error(error.to_string()))?;
+    validate_marker_identifier(
+        &marker.product_journey_barrier_id,
+        "systemWork.productJourneyBarrierId",
+    )
+    .map_err(|error| ownership_error(error.to_string()))?;
+    validate_marker_identifier(&marker.correlation, "systemWork.correlation")
+        .map_err(|error| ownership_error(error.to_string()))?;
+    if marker.trigger != "workspace-opened" {
+        return Err(ownership_error(
+            "systemWork marker trigger is not the native workspace-opened trigger",
+        ));
+    }
+    let expected_epochful_key =
+        canonical_system_work_key(project_id, run_kind, semantic_epoch_id, work_key);
+    let expected_epochless_key =
+        format!("narrative-maintenance:v1/{run_kind}/{project_id}/{work_key}");
+    let expected_key = marker.canonical_work_key == expected_epochful_key
+        || (run_kind == BACKFILL_RUN_KIND && marker.canonical_work_key == expected_epochless_key);
+    if !expected_key {
+        return Err(ownership_error(
+            "systemWork marker canonical work key does not match the persisted Run",
+        ));
+    }
+    let mut base = spec_object.clone();
+    base.remove("systemWork");
+    Ok(Value::Object(base))
+}
+
+fn persisted_spec_base(
+    spec_json: &str,
+    project_id: &str,
+    run_kind: &str,
+    semantic_epoch_id: &str,
+    work_key: &str,
+) -> anyhow::Result<Value> {
+    let spec = serde_json::from_str::<Value>(spec_json)
+        .map_err(|error| ownership_error(format!("sealed spec JSON is invalid: {error}")))?;
+    strip_validated_system_work_marker(&spec, project_id, run_kind, semantic_epoch_id, work_key)
+}
+
 fn ownership_error(message: impl Into<String>) -> anyhow::Error {
     anyhow::anyhow!(
         "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: {}",
@@ -143,7 +229,13 @@ pub(crate) fn create_maintenance_run_in_tx(
         "NEX_MAINTENANCE_LIFECYCLE_INPUT_INVALID: ownership fields must not be empty"
     );
     let task_kind = maintenance_task_kind(run_kind)?;
-    let spec_json_text = serde_json::to_string(spec_json)?;
+    let requested_spec_base = strip_validated_system_work_marker(
+        spec_json,
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+    )?;
     let run = create_system_run_in_tx(
         conn,
         project_id,
@@ -164,11 +256,18 @@ pub(crate) fn create_maintenance_run_in_tx(
 
     if reused {
         let mut handle = load_maintenance_run_in_tx(conn, &run_id)?;
+        let persisted_base = persisted_spec_base(
+            &handle.spec_json,
+            project_id,
+            run_kind,
+            semantic_epoch_id,
+            work_key,
+        )?;
         if !(handle.project_id == project_id
             && handle.run_kind == run_kind
             && handle.semantic_epoch_id == semantic_epoch_id
             && handle.work_key == work_key
-            && handle.spec_json == spec_json_text
+            && persisted_base == requested_spec_base
             && handle.spec_digest == spec_digest)
         {
             return Err(ownership_error(format!(
@@ -179,13 +278,24 @@ pub(crate) fn create_maintenance_run_in_tx(
         return Ok(handle);
     }
 
-    let run_started_at: String = conn.query_row(
-        "SELECT COALESCE(started_at, created_at)
+    let (run_started_at, persisted_spec_json): (String, String) = conn.query_row(
+        "SELECT COALESCE(started_at, created_at), spec_json
            FROM narrative_extraction_runs
           WHERE id = ?1",
         params![&run_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    let persisted_base = persisted_spec_base(
+        &persisted_spec_json,
+        project_id,
+        run_kind,
+        semantic_epoch_id,
+        work_key,
+    )?;
+    anyhow::ensure!(
+        persisted_base == requested_spec_base,
+        "NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID: persisted Run spec does not match the requested sealed phase spec"
+    );
     let task_id = Uuid::new_v4().to_string();
     let attempt_id = Uuid::new_v4().to_string();
     conn.execute(
@@ -197,7 +307,7 @@ pub(crate) fn create_maintenance_run_in_tx(
             &task_id,
             &run_id,
             task_kind,
-            &spec_json_text,
+            &persisted_spec_json,
             &run_started_at
         ],
     )?;
@@ -214,7 +324,7 @@ pub(crate) fn create_maintenance_run_in_tx(
         run_kind: run_kind.to_owned(),
         semantic_epoch_id: semantic_epoch_id.to_owned(),
         work_key: work_key.to_owned(),
-        spec_json: spec_json_text,
+        spec_json: persisted_spec_json,
         spec_digest: spec_digest.to_owned(),
         task_id,
         attempt_id,
@@ -295,9 +405,16 @@ pub(crate) fn synthesize_recovery_lifecycle_in_tx(
     }
     let persisted_spec = serde_json::from_str::<Value>(&spec_json)
         .map_err(|error| ownership_error(format!("sealed spec JSON is invalid: {error}")))?;
+    let persisted_spec_base = strip_validated_system_work_marker(
+        &persisted_spec,
+        &project_id,
+        &run_kind,
+        &semantic_epoch_id,
+        &work_key,
+    )?;
     let expected_spec =
         canonical_spec(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
-    if persisted_spec != expected_spec {
+    if persisted_spec_base != expected_spec {
         return Err(ownership_error(format!(
             "Run '{run_id}' spec does not match the canonical maintenance phase contract"
         )));
@@ -387,6 +504,13 @@ pub(crate) fn load_maintenance_run_in_tx(
     let work_key = work_key.ok_or_else(|| ownership_error("sealed work key is missing"))?;
     let task_kind =
         maintenance_task_kind(&run_kind).map_err(|error| ownership_error(error.to_string()))?;
+    persisted_spec_base(
+        &spec_json,
+        &project_id,
+        &run_kind,
+        &semantic_epoch_id,
+        &work_key,
+    )?;
 
     let task_count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
@@ -473,6 +597,13 @@ pub(crate) fn load_maintenance_run_in_tx(
 fn validate_handle_in_tx(conn: &Connection, handle: &MaintenanceRunHandle) -> anyhow::Result<()> {
     let expected_task_kind = maintenance_task_kind(&handle.run_kind)
         .map_err(|error| ownership_error(error.to_string()))?;
+    persisted_spec_base(
+        &handle.spec_json,
+        &handle.project_id,
+        &handle.run_kind,
+        &handle.semantic_epoch_id,
+        &handle.work_key,
+    )?;
     let run_matches: bool = conn.query_row(
         "SELECT EXISTS(
              SELECT 1
@@ -729,6 +860,12 @@ mod tests {
                 "INSERT INTO projects (id, title) VALUES ('project-1', 'Maintenance')",
                 [],
             )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-1', 'project-1', 0, 'initial', '2026-08-23T00:00:00.000Z')",
+                [],
+            )?;
             Ok(())
         })
         .expect("seed project");
@@ -761,21 +898,8 @@ mod tests {
     #[test]
     fn fresh_maintenance_run_has_exactly_one_running_task_and_attempt_one() {
         let db = open_db();
-        for (index, run_kind) in ["backfill", "dependency-verify", "semantic-index-rebuild"]
-            .into_iter()
-            .enumerate()
-        {
+        for run_kind in ["backfill", "dependency-verify", "semantic-index-rebuild"] {
             db.with_conn(|conn| {
-                conn.execute(
-                    "INSERT INTO narrative_semantic_epochs
-                        (id, project_id, epoch_number, reason, created_at)
-                     VALUES (?1, 'project-1', ?2, 'initial', ?3)",
-                    params![
-                        format!("epoch-{}", index + 1),
-                        index as i64,
-                        format!("2026-08-23T00:00:0{index}.000Z")
-                    ],
-                )?;
                 let handle = create(conn, run_kind)?;
                 let (task_count, attempt_count, task_status, attempt_status, attempt_number): (
                     i64,
@@ -843,7 +967,7 @@ mod tests {
     fn creation_rolls_back_run_task_and_attempt_together() {
         let db = open_db();
         db.with_conn(|conn| {
-            let error = with_immediate_transaction(conn, |conn| {
+            let error = with_immediate_transaction(conn, |conn| -> anyhow::Result<()> {
                 let _ = create(conn, "backfill")?;
                 anyhow::bail!("force lifecycle transaction rollback")
             })
