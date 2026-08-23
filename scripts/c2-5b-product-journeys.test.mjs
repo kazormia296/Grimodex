@@ -1564,15 +1564,69 @@ test("every actual C2-5B Electron launch phase is registered for diagnostics", a
     /data-workspace-open-revision.*previousRevision|previousRevision.*data-workspace-open-revision/s,
     "foreground workspace-wake must prove the renderer workspace revision advanced",
   );
+  const foregroundAuthoringBody = foregroundJourneyBody.match(
+    /const context = await contextForLaunch\([\s\S]*?workspaceA,[\s\S]*?const body = `C2-5B-FOREGROUND-/,
+  )?.[0];
+  assert.ok(
+    foregroundAuthoringBody,
+    "foreground workspace-wake A authoring path must remain inspectable",
+  );
   assert.match(
-    foregroundJourneyBody,
-    /data-editor-loaded-document-id=/,
-    "foreground workspace-wake must prove the post-switch scene loaded in the editor",
+    foregroundAuthoringBody,
+    /createForegroundSceneThroughUi\(\s*context,\s*"foreground-authoring",?\s*\)/s,
+    "foreground workspace-wake must create its A scene through the renderer UI",
+  );
+  assert.doesNotMatch(
+    foregroundAuthoringBody,
+    /createSceneIfNeeded|tree_node_create/,
+    "foreground workspace-wake must not fall back to raw scene creation",
   );
   assert.doesNotMatch(
     foregroundJourneyBody,
     /harness\.invokeOk\(first\.page,\s*"open_workspace"/,
     "foreground workspace-wake must not mutate native authority behind the renderer store",
+  );
+  const foregroundSceneHelperBody = source.match(
+    /async function createForegroundSceneThroughUi\([\s\S]*?\n}\n\nasync function patchScene/,
+  )?.[0];
+  assert.ok(
+    foregroundSceneHelperBody,
+    "foreground UI scene helper must remain inspectable",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /data-panel-header.*シーン/s,
+    "foreground UI scene helper must target the Scenes panel header",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /button\[title="新規作成"\]/,
+    "foreground UI scene helper must use the canonical create button",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /getByRole\("menuitem",\s*\{ name: "New scene", exact: true \}\)/,
+    "foreground UI scene helper must select the canonical New scene menu item",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /SELECT id, project_id AS projectId[\s\S]*WHERE project_id = \? AND node_type = 'scene'/,
+    "foreground UI scene helper must identify the new scene in project scope",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /created\.projectId.*context\.projectId/s,
+    "foreground UI scene helper must assert exact project authority",
+  );
+  assert.match(
+    foregroundSceneHelperBody,
+    /data-editor-loaded-document-id=/,
+    "foreground UI scene helper must wait for the selected editor document",
+  );
+  assert.doesNotMatch(
+    foregroundSceneHelperBody,
+    /tree_node_create|harness\.invokeOk\([^)]*tree_node_create/s,
+    "foreground UI scene helper must not contain a raw tree_node_create fallback",
   );
 });
 

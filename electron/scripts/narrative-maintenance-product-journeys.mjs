@@ -1735,6 +1735,77 @@ async function createSceneIfNeeded(context, marker) {
   );
 }
 
+async function createForegroundSceneThroughUi(context, marker) {
+  const header = context.page.locator(
+    `[data-panel-header]:has(span[role="heading"]:text-is("シーン"))`,
+  );
+  await header.waitFor({ state: "visible", timeout: 60_000 });
+  const before = await context.query(
+    "SELECT id FROM tree_nodes WHERE project_id = ? AND node_type = 'scene'",
+    [context.projectId],
+  );
+  const existingSceneIds = new Set(
+    before.map((row) => String(row.id)),
+  );
+  await header.locator('button[title="新規作成"]').click();
+  await context.page
+    .getByRole("menuitem", { name: "New scene", exact: true })
+    .click();
+
+  const renameInput = context.page.locator(
+    '[data-droptarget-id="scenes-panel"] input:focus',
+  );
+  if (
+    await renameInput
+      .waitFor({ state: "visible", timeout: 1_000 })
+      .then(() => true)
+      .catch(() => false)
+  ) {
+    await context.page.keyboard.press("Enter");
+  }
+
+  const created = await context.harness.waitUntil(async () => {
+    const rows = await context.query(
+      `SELECT id, project_id AS projectId, version,
+              updated_at AS updatedAt, content, title
+         FROM tree_nodes
+        WHERE project_id = ? AND node_type = 'scene'
+        ORDER BY created_at DESC, id DESC`,
+      [context.projectId],
+    );
+    return (
+      rows.find((row) => !existingSceneIds.has(String(row.id))) ?? null
+    );
+  }, `${marker} UI scene persistence`, 30_000, 100);
+
+  if (String(created.projectId) !== String(context.projectId)) {
+    throw new Error(
+      `foreground UI scene crossed project authority: ${JSON.stringify({
+        sceneProjectId: created.projectId,
+        contextProjectId: context.projectId,
+      })}`,
+    );
+  }
+  if (
+    created.title !== "シーン 1" &&
+    !/^シーン \d+$/.test(String(created.title))
+  ) {
+    throw new Error(`unexpected foreground UI scene title: ${String(created.title)}`);
+  }
+
+  const editorSurface = context.page
+    .locator(
+      `[data-editor-loaded-document-id="${created.id}"][data-editor-document-loading="false"]:visible`,
+    )
+    .last();
+  await editorSurface.waitFor({ state: "visible", timeout: 30_000 });
+  await editorSurface
+    .locator('.ProseMirror[contenteditable="true"]')
+    .first()
+    .waitFor({ state: "visible", timeout: 30_000 });
+  return created;
+}
+
 async function patchScene(context, scene, text) {
   const eventUid = `c2-5b-journey-scene-patch-${randomUUID()}`;
   await context.harness.invokeOk(context.page, "tree_node_patch", {
@@ -3131,19 +3202,10 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       id,
       targetBaseline,
     );
-    const scene = await createSceneIfNeeded(context, "foreground-authoring");
-    const loadedScene = first.page.locator(
-      `[data-editor-loaded-document-id="${scene.id}"][data-editor-document-loading="false"]:visible`,
+    const scene = await createForegroundSceneThroughUi(
+      context,
+      "foreground-authoring",
     );
-    await loadedScene.waitFor({ state: "visible", timeout: 30_000 });
-    if (scene.projectId !== context.projectId) {
-      throw new Error(
-        `foreground scene crossed project authority: ${JSON.stringify({
-          sceneProjectId: scene.projectId,
-          contextProjectId: context.projectId,
-        })}`,
-      );
-    }
     const body = `C2-5B-FOREGROUND-${Date.now()}`;
     const wakeBaseline = targetBaseline;
     context.record("workspace-opened-target", {
