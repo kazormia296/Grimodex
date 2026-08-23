@@ -134,6 +134,18 @@ test("fault preflight runs before claim/injection and terminal faults ACK withou
   );
 });
 
+test("fault injection is gated by the current native planner identity", async () => {
+  const nativeSource = await nativeSourcePromise;
+  const plannerAt = nativeSource.indexOf(
+    "discover_durable_maintenance_work_with_config",
+  );
+  const claimAt = nativeSource.indexOf("claim_fault_for_binding");
+  assert.ok(
+    plannerAt >= 0 && claimAt > plannerAt,
+    "stale/epoch-bound Backfill requests must be planner-rejected before any claim or DB write",
+  );
+});
+
 test("fault journey production assertions cover durable triplets and no-recovery boundary", async () => {
   const journeySource = await journeySourcePromise;
   assert.match(
