@@ -8,10 +8,6 @@
 
 use grimodex_db::narrative_extraction::digest_plan;
 use grimodex_db::narrative_extraction::ensure_test_schema;
-use grimodex_db::narrative_extraction::{
-    current_maintenance_coordinates, evaluate_completed_run_skip, CompletedRunSkipDecision,
-    CompletedRunSkipExpectation, VERIFY_RUN_KIND_CONTRACT_VERSION,
-};
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     run_system_work_cycle, run_system_work_cycle_with_modes_and_config,
@@ -19,6 +15,10 @@ use grimodex_db::narrative_extraction::maintenance_runtime::{
     MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
     NarrativeMaintenanceCiTrigger, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
     REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+};
+use grimodex_db::narrative_extraction::{
+    current_maintenance_coordinates, evaluate_completed_run_skip, CompletedRunSkipDecision,
+    CompletedRunSkipExpectation, VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -343,8 +343,7 @@ fn completed_foreground_duplicate_validates_phase_outcome_before_idempotency() {
             let lifecycle_after_duplicate =
                 lifecycle_rows_for_run(&db, &barrier.run_id).expect("read lifecycle after reject");
             assert_eq!(
-                lifecycle_after_duplicate,
-                lifecycle_before_tamper,
+                lifecycle_after_duplicate, lifecycle_before_tamper,
                 "rejected duplicate must not mutate any lifecycle timestamp/status"
             );
             assert_eq!(
