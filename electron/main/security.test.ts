@@ -133,6 +133,11 @@ describe("isAllowedNavigation", () => {
       isAllowedNavigation("app://bundle/index.html?window=panel&panel=chat"),
     ).toBe(true);
     expect(isAllowedNavigation("app://other/index.html")).toBe(false);
+    expect(isAllowedNavigation("app://bundle.evil/index.html")).toBe(false);
+    expect(isAllowedNavigation("app://user:pass@bundle/index.html")).toBe(
+      false,
+    );
+    expect(isAllowedNavigation("app://bundle/settings.html")).toBe(false);
     expect(isAllowedNavigation("https://example.com/")).toBe(false);
   });
 
