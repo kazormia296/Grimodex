@@ -430,23 +430,6 @@ impl NarrativeMaintenanceForegroundBarrierState {
         Ok(())
     }
 
-    pub fn pending_for_project_and_binding(
-        &self,
-        project_id: &str,
-        authority_id: &str,
-        generation: u64,
-        product_journey_barrier_id: &str,
-        correlation: &str,
-    ) -> Option<ForegroundSystemWorkRun> {
-        self.pending_for_binding(
-            project_id,
-            authority_id,
-            generation,
-            product_journey_barrier_id,
-            correlation,
-        )
-    }
-
     pub fn pending_for_run_and_binding(
         &self,
         run_id: &str,
@@ -467,28 +450,6 @@ impl NarrativeMaintenanceForegroundBarrierState {
             && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
             && barrier.marker.correlation == correlation)
             .then(|| barrier.clone())
-    }
-
-    fn pending_for_binding(
-        &self,
-        project_id: &str,
-        authority_id: &str,
-        generation: u64,
-        product_journey_barrier_id: &str,
-        correlation: &str,
-    ) -> Option<ForegroundSystemWorkRun> {
-        self.pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .values()
-            .find(|barrier| {
-                barrier.project_id == project_id
-                    && barrier.marker.authority_id == authority_id
-                    && barrier.marker.generation == generation
-                    && barrier.marker.product_journey_barrier_id == product_journey_barrier_id
-                    && barrier.marker.correlation == correlation
-            })
-            .cloned()
     }
 
     pub fn clear_if_run(&self, run_id: &str) {
@@ -1031,18 +992,6 @@ mod tests {
             .expect("remember exact barrier");
         assert_eq!(
             state
-                .pending_for_project_and_binding(
-                    "project-1",
-                    "authority:workspace-1",
-                    1,
-                    "barrier-1",
-                    "correlation-1",
-                )
-                .expect("pending exact barrier"),
-            barrier
-        );
-        assert_eq!(
-            state
                 .pending_for_run_and_binding(
                     "run-1",
                     "project-1",
@@ -1051,7 +1000,7 @@ mod tests {
                     "barrier-1",
                     "correlation-1",
                 )
-                .expect("run-key lookup finds the exact barrier"),
+                .expect("pending exact barrier"),
             barrier
         );
         assert!(state
@@ -1066,7 +1015,8 @@ mod tests {
             .is_none());
         state.clear_if_run("unrelated-run");
         assert!(state
-            .pending_for_project_and_binding(
+            .pending_for_run_and_binding(
+                "run-1",
                 "project-1",
                 "authority:workspace-1",
                 1,
@@ -1103,18 +1053,10 @@ mod tests {
                 "correlation-1",
             )
             .is_some());
-        assert!(state
-            .pending_for_project_and_binding(
-                "project-1",
-                "authority:workspace-1",
-                1,
-                "barrier-1",
-                "correlation-1",
-            )
-            .is_some());
         state.clear_if_run("run-2");
         assert!(state
-            .pending_for_project_and_binding(
+            .pending_for_run_and_binding(
+                "run-2",
                 "project-1",
                 "authority:workspace-1",
                 1,

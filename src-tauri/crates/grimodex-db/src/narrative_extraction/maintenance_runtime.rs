@@ -1925,11 +1925,7 @@ pub fn run_system_work_cycle_with_modes_and_config(
     ci_config: Option<&NarrativeMaintenanceCiConfig>,
 ) -> anyhow::Result<MaintenanceCycleResult> {
     run_system_work_cycle_with_modes_and_config_and_foreground_owner(
-        db,
-        request,
-        mode_for,
-        ci_config,
-        None,
+        db, request, mode_for, ci_config, None,
     )
 }
 
@@ -1974,27 +1970,26 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
     let mut coalesced_active = false;
     let mut handled_non_coalesced = false;
     let mut has_more = false;
-    let mut foreground_owned_run = match (
-        foreground_owner,
-        ci_config,
-        request.workspace_binding.as_ref(),
-    ) {
-        (
-            Some(owner),
-            Some(config),
-            Some(binding),
-        ) if config.trigger == Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
-            && config.product_journey_barrier_id.is_some()
-            && config.correlation.is_some() => {
-            let current = find_running_foreground_system_work_run(db, config, binding)?;
-            (current.as_ref() == Some(owner)).then(|| owner.clone())
+    let foreground_durable_run = match (ci_config, request.workspace_binding.as_ref()) {
+        (Some(config), Some(binding))
+            if config.trigger == Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
+                && config.product_journey_barrier_id.is_some()
+                && config.correlation.is_some() =>
+        {
+            find_running_foreground_system_work_run(db, config, binding)?
         }
         _ => None,
     };
-    // An existing process-local owner already consumed this cycle's one
-    // foreground marker slot.  This prevents an unrelated project/phase in a
-    // mixed follow-up batch from receiving the same barrier marker.
-    let mut foreground_marker_available = foreground_owned_run.is_none();
+    let mut foreground_owned_run = match (foreground_owner, foreground_durable_run.as_ref()) {
+        (Some(owner), Some(current)) if owner == current => Some(owner.clone()),
+        _ => None,
+    };
+    // A durable current marker consumes the one foreground marker slot even
+    // after a process restart, when no process-local owner is available. The
+    // restarted Run still goes through StartupRecovery below, but any fresh
+    // replacement is deliberately unmarked so recovery cannot create a
+    // second running marker for the same barrier.
+    let mut foreground_marker_available = foreground_durable_run.is_none();
     // A durable terminal/manual outcome is a handled no-op for this
     // automatic identity. Keep the halt scoped to the canonical WorkKey so a
     // different project, phase, work-key version, or Semantic Epoch remains

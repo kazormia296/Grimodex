@@ -2107,31 +2107,42 @@ impl Backend {
                     }
                 }
             }
-            let foreground_owner = ci_config.as_ref().and_then(|config| {
+            let foreground_owner = if let Some(config) = ci_config.as_ref() {
                 if config.trigger
                     != Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake)
                 {
-                    return None;
+                    None
+                } else if let Some(binding) = request.workspace_binding.as_ref() {
+                    let durable =
+                        narrative_extraction::find_running_foreground_system_work_run(
+                            authority.db(),
+                            config,
+                            binding,
+                        )?;
+                    match (
+                        config.product_journey_barrier_id.as_deref(),
+                        config.correlation.as_deref(),
+                    ) {
+                        (Some(barrier_id), Some(correlation)) => durable.and_then(|barrier| {
+                            state
+                                .narrative_maintenance_foreground_barrier
+                                .pending_for_run_and_binding(
+                                    &barrier.run_id,
+                                    &barrier.project_id,
+                                    &binding.authority_id,
+                                    binding.generation,
+                                    barrier_id,
+                                    correlation,
+                                )
+                        }),
+                        _ => None,
+                    }
+                } else {
+                    None
                 }
-                let barrier_id = config.product_journey_barrier_id.as_deref()?;
-                let correlation = config.correlation.as_deref()?;
-                let binding = request.workspace_binding.as_ref()?;
-                normalized_work
-                    .iter()
-                    .map(|item| item.project_id.as_str())
-                    .chain(request.wake_project_ids.iter().map(String::as_str))
-                    .find_map(|project_id| {
-                        state
-                            .narrative_maintenance_foreground_barrier
-                            .pending_for_project_and_binding(
-                                project_id,
-                                &binding.authority_id,
-                                binding.generation,
-                                barrier_id,
-                                correlation,
-                            )
-                    })
-            });
+            } else {
+                None
+            };
             let result = narrative_extraction::run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 authority.db(),
                 &request,
@@ -8965,9 +8976,7 @@ mod narrative_maintenance_foreground_release_tests {
             .expect("configured seam");
         let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
         let stale = narrative_extraction::find_running_foreground_system_work_run(
-            &authority,
-            &config,
-            &binding,
+            &authority, &config, &binding,
         )
         .expect("find initial marker")
         .expect("initial marker is running");
@@ -8991,9 +9000,7 @@ mod narrative_maintenance_foreground_release_tests {
 
         duplicate_running_foreground_run(&authority, &run_a, "run-current");
         let current = narrative_extraction::find_running_foreground_system_work_run(
-            &authority,
-            &config,
-            &binding,
+            &authority, &config, &binding,
         )
         .expect("find replacement marker")
         .expect("replacement marker is running");
