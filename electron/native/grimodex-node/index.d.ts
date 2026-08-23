@@ -46,25 +46,59 @@ export declare class Backend {
    * 処理する。workspace未open・切替中・Safe Mode・feed空はJS nullを返す。
    */
   runNarrativeFreshnessCycle(): Promise<string | null>
-  /** Main-only enqueue snapshot for serialized maintenance work. */
+  /**
+   * Main-process-only enqueue snapshot for the serialized maintenance
+   * seam. This is synchronous by design: it reads the currently pinned
+   * authority and recovery gate under one short state boundary, so the
+   * scheduler can bind a request before it enters its pending queue.
+   */
   getNarrativeMaintenanceWorkspaceBinding(): string | null
-  /** One-shot main-only CI product-journey seam configuration. */
+  /**
+   * Configure the one-shot, main-only product-journey seam. The payload is
+   * parsed into the shared Rust schema and validated again there; this
+   * method is intentionally not present in the renderer IPC router.
+   */
   configureNarrativeMaintenanceCiSeam(payload: any): string
   /**
-   * Main-process-only workspace-wide discovery. The returned page is bound to
-   * one pinned authority generation and is never registered as renderer IPC.
+   * Main-process-only workspace-wide maintenance discovery.
+   *
+   * The active `WorkspaceAuthority` is pinned once for the complete
+   * enumeration and planner pass. The returned binding is the recovery
+   * generation paired with that exact authority; callers must pass it back
+   * unchanged to `run_narrative_maintenance_cycle`. Renderer/preload never
+   * receives this method or supplies project/path/phase data.
    */
   discoverNarrativeMaintenanceWork(reason: string): Promise<string>
   /**
-   * Electron main-only serialized system-work cycle. The payload is the
-   * coalesced project-scoped work DTO; renderer/preload never receives this
-   * method and the native implementation executes only on the live workspace
-   * authority connection.
+   * Electron main-only serialized system-work cycle.
+   *
+   * The request is validated in shared Rust, then executed against one
+   * pinned `WorkspaceAuthority` connection.  In particular, this method
+   * never reconstructs a `Database` from the workspace path: doing so
+   * would create the detached second writer that caused
+   * `SQLITE_BUSY_SNAPSHOT` in the old post-open worker.  A missing or
+   * switching workspace is a structured unavailable result so the main
+   * scheduler retains the durable trigger rather than treating it as a
+   * successful drain.
    */
   runNarrativeMaintenanceCycle(payload: any): Promise<string>
-  /** Main-only exact pre-response claim for the foreground maintenance Run. */
+  /**
+   * Main-owned pre-response claim for one exact foreground product-journey
+   * Run. This only proves that the current authority owns a matching
+   * running marker and remembers it for the delayed release; it never
+   * changes the durable Run status. A false/malformed/error result at the
+   * Electron boundary must therefore arm no timer.
+   */
   claimNarrativeMaintenanceForegroundBarrier(projectId: string): Promise<string>
-  /** Main-only post-response release of the exact foreground maintenance Run. */
+  /**
+   * Main-owned post-response release for one exact foreground product
+   * journey Run. The ordinary tree_node_patch has already committed before
+   * main schedules this call. The expected Run id is mandatory: a delayed
+   * callback from phase A must never complete a same-marker phase B Run.
+   * A failed transaction leaves the process-local barrier pending; a later
+   * patch retries it, while a restart can rediscover the durable marker from
+   * SQLite.
+   */
   releaseNarrativeMaintenanceForegroundBarrier(projectId: string, expectedRunId: string): Promise<string>
   /**
    * drizzle-proxy (src/db/client.ts) の唯一の通り道 (§4.3 — これだけで
