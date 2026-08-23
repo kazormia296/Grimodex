@@ -8754,6 +8754,40 @@ mod narrative_maintenance_foreground_release_tests {
         );
         assert_eq!(run_terminal_reason(&authority, &rows[0].0), None);
 
+        let follow_up: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [],
+                    "wakeProjectIds": ["project-1"],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("same-process follow-up cycle"),
+        )
+        .expect("follow-up cycle JSON");
+        assert_eq!(follow_up["status"], "accepted");
+
+        let follow_up_rows: Vec<(String, String)> = authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, status
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                        AND run_kind = 'dependency-verify'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read follow-up Verify rows");
+        assert_eq!(
+            follow_up_rows,
+            vec![(rows[0].0.clone(), "running".to_string())]
+        );
+
         let claimed: Value = serde_json::from_str(
             &backend
                 .claim_narrative_maintenance_foreground_barrier("project-1".to_string())
