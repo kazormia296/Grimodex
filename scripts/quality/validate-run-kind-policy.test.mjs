@@ -367,6 +367,10 @@ describe("validate-run-kind-policy", () => {
           productionEntryPoint: "run_narrative_maintenance_cycle",
         };
       },
+      (repair) => {
+        repair.implementationStatus.triggerSymbol =
+          "run_dependency_repair_cycle";
+      },
     ]) {
       const policy = bundledPolicy();
       mutation(runKind(policy, "dependency-repair"));
@@ -375,6 +379,28 @@ describe("validate-run-kind-policy", () => {
         result.errors.some((error) => error.includes("dependency-repair")),
       );
     }
+  });
+
+  it("rejects an incremental freshness implementation status that is well-formed but unwired", () => {
+    const policy = bundledPolicy();
+    runKind(policy, "incremental-freshness").implementationStatus = {
+      state: "unwired-blocked",
+      triggerSymbol: "run_incremental_freshness_cycle",
+      productionEntryPoints: ["run_narrative_freshness_cycle"],
+      blockedReason: "scheduler wiring is not available",
+      blockedOn: ["electron-main-scheduler"],
+    };
+    const result = validateFixture(policy);
+    assert.ok(
+      result.errors.some((error) => error.includes("schema rejects policy")),
+      "the item schema must reject an unwired incremental freshness status",
+    );
+    assert.ok(
+      result.errors.some((error) =>
+        error.includes("incremental-freshness.implementationStatus.state"),
+      ),
+      "the exported validator must reject an unwired incremental freshness status",
+    );
   });
 
   it("preserves nonautomatic repair and verify/rebuild semantics", () => {

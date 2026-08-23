@@ -433,6 +433,33 @@
               "items": { "type": "string", "minLength": 1 }
             }
           },
+          "allOf": [
+            {
+              "if": {
+                "properties": { "state": { "const": "wired" } },
+                "required": ["state"]
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    { "required": ["blockedReason"] },
+                    { "required": ["blockedOn"] }
+                  ]
+                }
+              }
+            },
+            {
+              "if": {
+                "properties": {
+                  "state": { "const": "unwired-blocked" }
+                },
+                "required": ["state"]
+              },
+              "then": {
+                "required": ["blockedReason", "blockedOn"]
+              }
+            }
+          ],
           "additionalProperties": false
         }
       },
@@ -537,7 +564,8 @@
                   "productionEntryPoints": {
                     "const": ["repairNarrativeDependencyDeclarations"]
                   }
-                }
+                },
+                "not": { "required": ["triggerSymbol"] }
               }
             },
             "not": {
@@ -721,6 +749,7 @@
               "implementationStatus": {
                 "required": ["triggerSymbol", "productionEntryPoints"],
                 "properties": {
+                  "state": { "const": "wired" },
                   "triggerSymbol": {
                     "const": "run_incremental_freshness_cycle"
                   },

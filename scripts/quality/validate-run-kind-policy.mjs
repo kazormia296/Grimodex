@@ -384,6 +384,11 @@ function validateIncrementalFreshness(entry, errors) {
       "incremental-freshness.implementationStatus.triggerSymbol must be 'run_incremental_freshness_cycle'",
     );
   }
+  if (entry.implementationStatus?.state !== "wired") {
+    errors.push(
+      "incremental-freshness.implementationStatus.state must be 'wired'",
+    );
+  }
   if (
     !sameStringArray(entry.implementationStatus?.productionEntryPoints, [
       "run_narrative_freshness_cycle",
@@ -495,6 +500,11 @@ function validateRunKindSpecificFields(entry, errors) {
     ) {
       errors.push(
         "dependency-repair.implementationStatus.productionEntryPoints must be exactly ['repairNarrativeDependencyDeclarations']",
+      );
+    }
+    if (entry.implementationStatus?.triggerSymbol !== undefined) {
+      errors.push(
+        "dependency-repair.implementationStatus must not declare triggerSymbol",
       );
     }
   } else {

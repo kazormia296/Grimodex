@@ -55,9 +55,47 @@ fn canonical_policy_matches_the_closed_typed_route_registry() {
     let mut policy_routes = BTreeSet::new();
     let mut policy_route_ids = BTreeSet::new();
     let mut policy_run_kinds = BTreeSet::new();
+    let descriptors = route_descriptors();
+    let mut typed_routes = BTreeSet::new();
+    let mut typed_route_ids = BTreeSet::new();
+    let mut typed_persisted_run_kinds = BTreeSet::new();
+    for descriptor in descriptors {
+        assert!(
+            typed_route_ids.insert(descriptor.route_id),
+            "typed registry contains duplicate route ID {:?}",
+            descriptor.route_id
+        );
+        assert!(
+            typed_persisted_run_kinds.insert(descriptor.run_kind.as_str()),
+            "typed registry contains duplicate persisted Run Kind {:?}",
+            descriptor.run_kind.as_str()
+        );
+        assert!(
+            typed_routes.insert((
+                descriptor.route_id.to_owned(),
+                descriptor.run_kind.as_str().to_owned()
+            )),
+            "typed registry contains duplicate route/kind pair for {:?}",
+            descriptor.route_id
+        );
+    }
 
     for entry in &policy.run_kinds {
+        assert!(
+            policy_run_kinds.insert(entry.run_kind.clone()),
+            "canonical policy contains duplicate runKind {:?}",
+            entry.run_kind
+        );
+
         let Some(runtime_route) = &entry.runtime_route else {
+            if let Some(existing_run_kind) = entry.existing_run_kind_column_value.as_deref() {
+                assert!(
+                    !typed_persisted_run_kinds.contains(existing_run_kind),
+                    "policy Run Kind {:?} reuses typed persisted Run Kind {:?} without a runtime route",
+                    entry.run_kind,
+                    existing_run_kind
+                );
+            }
             assert!(
                 route_descriptor_by_id(&entry.run_kind).is_none(),
                 "policy Run Kind {:?} has no runtimeRoute but is exposed by the typed registry",
@@ -103,11 +141,6 @@ fn canonical_policy_matches_the_closed_typed_route_registry() {
             "canonical policy contains duplicate runtimeRoute.routeId {:?}",
             runtime_route.route_id
         );
-        assert!(
-            policy_run_kinds.insert(entry.run_kind.clone()),
-            "canonical policy contains duplicate automatic runKind {:?}",
-            entry.run_kind
-        );
 
         let descriptor = route_descriptor_by_id(&runtime_route.route_id).unwrap_or_else(|| {
             panic!(
@@ -138,31 +171,6 @@ fn canonical_policy_matches_the_closed_typed_route_registry() {
             )),
             "canonical policy contains duplicate route/kind pair for {:?}",
             runtime_route.route_id
-        );
-    }
-
-    let descriptors = route_descriptors();
-    let mut typed_routes = BTreeSet::new();
-    let mut typed_route_ids = BTreeSet::new();
-    let mut typed_run_kinds = BTreeSet::new();
-    for descriptor in descriptors {
-        assert!(
-            typed_route_ids.insert(descriptor.route_id),
-            "typed registry contains duplicate route ID {:?}",
-            descriptor.route_id
-        );
-        assert!(
-            typed_run_kinds.insert(descriptor.run_kind.as_str()),
-            "typed registry contains duplicate persisted Run Kind {:?}",
-            descriptor.run_kind.as_str()
-        );
-        assert!(
-            typed_routes.insert((
-                descriptor.route_id.to_owned(),
-                descriptor.run_kind.as_str().to_owned()
-            )),
-            "typed registry contains duplicate route/kind pair for {:?}",
-            descriptor.route_id
         );
     }
 
