@@ -225,6 +225,7 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     taskKind: "maintenance-backfill",
     taskAttemptCount: 1,
     lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
     taskStatus: "completed",
     lastAttemptStatus: "completed",
     specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
@@ -355,8 +356,10 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     taskKind: "maintenance-backfill",
     taskAttemptCount: 1,
     lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
     specJson: '{"backfillAlgorithmVersion":"2"}',
     taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    startedAt: "2026-08-23T00:00:00.000000001Z",
     taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
     taskStartedAt: "2026-08-23T00:00:00.000000003Z",
     lastAttemptStartedAt: "2026-08-23T00:00:00.000000003Z",
@@ -365,6 +368,7 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     ...base,
     id: "failed-run",
     status: "failed",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
     taskStatus: "failed",
     lastAttemptStatus: "failed",
     lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
@@ -380,6 +384,10 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     taskStatus: "completed",
     lastAttemptStatus: "completed",
     createdAt: "2026-08-23T00:00:01.000000001Z",
+    startedAt: "2026-08-23T00:00:01.000000001Z",
+    taskCreatedAt: "2026-08-23T00:00:01.000000002Z",
+    taskStartedAt: "2026-08-23T00:00:01.000000003Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:01.000000003Z",
     completedAt: "2026-08-23T00:00:01.000000004Z",
     taskCompletedAt: "2026-08-23T00:00:01.000000004Z",
     lastAttemptCompletedAt: "2026-08-23T00:00:01.000000004Z",
@@ -405,11 +413,35 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     /Task kind/,
   );
   assert.throws(
-    () => sequenceValidator([failed, completed, { ...failed, id: "third-run", lastAttemptNumber: 2 }]),
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        {
+          ...failed,
+          id: "third-run",
+          lastAttemptNumber: 2,
+          createdAt: "2026-08-23T00:00:02.000000001Z",
+        },
+      ]),
     /Attempt #1/,
   );
   assert.throws(
-    () => sequenceValidator([{ ...failed, createdAt: completed.createdAt }, completed]),
+    () =>
+      sequenceValidator([
+        {
+          ...failed,
+          createdAt: completed.createdAt,
+          startedAt: completed.startedAt,
+          taskCreatedAt: completed.taskCreatedAt,
+          taskStartedAt: completed.taskStartedAt,
+          lastAttemptStartedAt: completed.lastAttemptStartedAt,
+          completedAt: completed.completedAt,
+          taskCompletedAt: completed.taskCompletedAt,
+          lastAttemptCompletedAt: completed.lastAttemptCompletedAt,
+        },
+        completed,
+      ]),
     /strictly increasing/,
   );
   assert.throws(
@@ -417,7 +449,23 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     /at most three/,
   );
   assert.throws(
-    () => sequenceValidator([failed, completed, { ...failed, id: "third-failed", createdAt: "2026-08-23T00:00:02.000000001Z" }]),
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        {
+          ...failed,
+          id: "third-failed",
+          createdAt: "2026-08-23T00:00:02.000000001Z",
+          startedAt: "2026-08-23T00:00:02.000000001Z",
+          taskCreatedAt: "2026-08-23T00:00:02.000000002Z",
+          taskStartedAt: "2026-08-23T00:00:02.000000003Z",
+          lastAttemptStartedAt: "2026-08-23T00:00:02.000000003Z",
+          completedAt: "2026-08-23T00:00:02.000000004Z",
+          taskCompletedAt: "2026-08-23T00:00:02.000000004Z",
+          lastAttemptCompletedAt: "2026-08-23T00:00:02.000000004Z",
+        },
+      ]),
     /completed Run must be final/,
   );
 });

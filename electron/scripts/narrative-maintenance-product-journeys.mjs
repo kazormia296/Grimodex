@@ -207,6 +207,9 @@ export function assertForegroundLifecycle(
   expectedStatus,
   label = "foreground lifecycle",
 ) {
+  if (!new Set(["running", "completed", "failed"]).has(expectedStatus)) {
+    throw new Error(`${label} has unsupported expected lifecycle status ${expectedStatus}`);
+  }
   if (Number(run?.taskCount ?? 0) !== 1 || Number(run?.attemptCount ?? 0) !== 1) {
     throw new Error(
       `${label} must own exactly one Task and Attempt: ${JSON.stringify({
@@ -291,7 +294,7 @@ export function assertForegroundLifecycle(
       })}`,
     );
   }
-  if (expectedStatus === "completed") {
+  if (expectedStatus === "completed" || expectedStatus === "failed") {
     if (
       !run.completedAt ||
       run.taskCompletedAt !== run.completedAt ||
@@ -457,7 +460,11 @@ function parseInstant(value, label) {
     );
   }
   const fraction = fractionText ?? "";
-  const milliseconds = Number((fraction.slice(0, 3) + "000").slice(0, 3));
+  // Chrono stores RFC3339 fractions at nanosecond precision and ignores only
+  // digits beyond the ninth. Keep that precision as an integer timeline;
+  // converting to milliseconds makes distinct lifecycle instants compare
+  // equal and can turn a reversed row into a false green.
+  const nanoseconds = BigInt((fraction.slice(0, 9) + "000000000").slice(0, 9));
   let offsetMinutes = 0;
   if (offsetText && !/^[Zz]$/.test(offsetText)) {
     const offsetMatch = /^[+\-−](\d{2}):(\d{2})$/.exec(offsetText);
@@ -478,14 +485,18 @@ function parseInstant(value, label) {
   }
   const date = new Date(0);
   date.setUTCFullYear(year, month - 1, day);
-  date.setUTCHours(hour, minute, second === 60 ? 59 : second, milliseconds);
-  const timestamp =
-    date.getTime() + (second === 60 ? 1_000 : 0) - offsetMinutes * 60_000;
-  if (!Number.isFinite(timestamp)) {
+  date.setUTCHours(hour, minute, second === 60 ? 59 : second, 0);
+  const timestampMilliseconds = date.getTime();
+  if (!Number.isFinite(timestampMilliseconds)) {
     throw new Error(
       `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
     );
   }
+  const timestamp =
+    BigInt(Math.trunc(timestampMilliseconds / 1_000)) * 1_000_000_000n +
+    nanoseconds +
+    (second === 60 ? 1_000_000_000n : 0n) -
+    BigInt(offsetMinutes) * 60n * 1_000_000_000n;
   return timestamp;
 }
 
@@ -639,6 +650,91 @@ export function assertTransientAttemptEvidence(run) {
   return run;
 }
 
+function assertTransientCompletedEvidence(run, label) {
+  const outcome = parseOutcome(run?.outcomeSummaryJson);
+  if (
+    !outcome ||
+    outcome.maintenancePhase !== "backfill-complete" ||
+    outcome.backfillAlgorithmVersion !== "2" ||
+    outcome.semanticEpochId !== run?.semanticEpochId
+  ) {
+    throw new Error(
+      `${label} completed Run is missing the canonical Backfill success outcome`,
+    );
+  }
+  const summary = outcome.summary;
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    typeof summary.epoch_created !== "boolean" ||
+    !Number.isSafeInteger(summary.contributions_created) ||
+    summary.contributions_created < 0 ||
+    !Number.isSafeInteger(summary.edges_created) ||
+    summary.edges_created < 0 ||
+    !Number.isSafeInteger(summary.applications_without_run_id) ||
+    summary.applications_without_run_id < 0
+  ) {
+    throw new Error(
+      `${label} completed Run has an invalid canonical Backfill summary`,
+    );
+  }
+  return run;
+}
+
+export function assertTransientRunSequence(runs, label = "transient retry") {
+  if (!Array.isArray(runs) || runs.length < 2 || runs.length > 3) {
+    throw new Error(`${label} must contain at least two and at most three distinct same-work Runs`);
+  }
+  const first = runs[0];
+  const expectedIdentity = {
+    projectId: first?.projectId,
+    runKind: first?.runKind,
+    workKey: first?.workKey,
+  };
+  if (first?.status !== "failed") {
+    throw new Error(`${label} must begin with a failed Run`);
+  }
+  const ids = new Set();
+  let previousCreatedAt = null;
+  let completedIndex = -1;
+  for (const [index, run] of runs.entries()) {
+    if (!run?.id || ids.has(run.id)) {
+      throw new Error(`${label} must contain distinct same-work Run ids`);
+    }
+    ids.add(run.id);
+    for (const [field, expected] of Object.entries(expectedIdentity)) {
+      if (run?.[field] !== expected) {
+        throw new Error(`${label} Run ${run?.id} changed same-work identity field ${field}`);
+      }
+    }
+    const createdAt = parseInstant(run.createdAt, `${label} Run ${run.id} createdAt`);
+    if (previousCreatedAt !== null && createdAt <= previousCreatedAt) {
+      throw new Error(`${label} same-work Runs must have strictly increasing createdAt instants`);
+    }
+    previousCreatedAt = createdAt;
+    if (!new Set(["failed", "completed"]).has(run.status)) {
+      throw new Error(`${label} Run ${run.id} has unsupported terminal status ${run.status}`);
+    }
+    assertForegroundLifecycle(run, run.status, `${label} Run ${run.id}`);
+    if (run.status === "failed") {
+      if (run.terminalReasonCode !== NARRATIVE_MAINTENANCE_TRANSIENT_CODE) {
+        throw new Error(`${label} failed Run ${run.id} has the wrong transient terminal evidence`);
+      }
+      assertTransientAttemptEvidence(run);
+    } else {
+      if (completedIndex >= 0) {
+        throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+      }
+      completedIndex = index;
+      assertTransientCompletedEvidence(run, `${label} Run ${run.id}`);
+    }
+  }
+  if (completedIndex !== runs.length - 1) {
+    throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+  }
+  return runs;
+}
+
 export function assertTerminalFailureEvidence(run) {
   if (
     run?.status !== "failed" ||
@@ -725,9 +821,9 @@ async function runLedger(harness, page, projectId) {
     harness,
     page,
     `SELECT ${RUN_COLUMNS}
-       FROM narrative_extraction_runs r
+      FROM narrative_extraction_runs r
       WHERE r.project_id = ?
-      ORDER BY created_at`,
+      ORDER BY created_at, id`,
     [projectId],
   );
 }
@@ -1689,6 +1785,7 @@ async function runTransientRetry(harness, configureWorkspace) {
         (row) =>
           row.runKind === failed.runKind && row.workKey === failed.workKey,
       );
+      assertTransientRunSequence(sameWorkRuns);
       const sameWorkRunIds = new Set(sameWorkRuns.map((row) => row.id));
       const sameWorkCreatedAt = sameWorkRuns.map((row) =>
         parseInstant(row.createdAt, "transient same-work Run createdAt"),
@@ -1699,8 +1796,6 @@ async function runTransientRetry(harness, configureWorkspace) {
       );
       const distinctSameWorkRunCount = sameWorkRunIds.size;
       if (
-        sameWorkRuns.length < 2 ||
-        sameWorkRuns.length > 3 ||
         sameWorkRunIds.size !== sameWorkRuns.length ||
         sameWorkRuns[0]?.id !== failed.id ||
         !sameWorkRunsAreOrdered ||
@@ -2251,10 +2346,10 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       throw new Error(
         `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify({
           schedulerRunId: schedulerRun.id,
-          schedulerStartedAt,
+          schedulerStartedAt: schedulerStartedAt.toString(),
           foregroundPatchStartedAt,
           foregroundPatchCompletedAt,
-          schedulerCompletedAt,
+          schedulerCompletedAt: schedulerCompletedAt.toString(),
         })}`,
       );
     }
@@ -2334,7 +2429,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       barrierId,
       correlation,
       foregroundPatchCompletedAt,
-      schedulerCompletedAt,
+      schedulerCompletedAt: schedulerCompletedAt.toString(),
       runCount: runs.length,
     });
   } finally {

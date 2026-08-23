@@ -5,6 +5,7 @@
 //! machine. Electron only wakes this owner and supplies the pinned live
 //! `Database`; Repair remains a human/manual path.
 
+use anyhow::Context;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -1442,13 +1443,28 @@ pub fn discover_durable_maintenance_work(
 ) -> anyhow::Result<Option<DesiredWork>> {
     let project_id = require_component(project_id.to_string(), "projectId")?;
     let reason = require_component(reason.to_string(), "reason")?;
-    let (current_epoch_id, latest, active, completed_backfill) = db.with_conn(|conn| {
+    db.with_conn(|conn| {
+        // Keep candidate selection, Verify outcome validation, and the
+        // clean-skip decision on one SQLite snapshot. A concurrent writer
+        // must not change report/reportDigest/epoch between those decisions.
+        with_immediate_transaction(conn, |conn| {
+            discover_durable_maintenance_work_in_tx(conn, &project_id, &reason)
+        })
+    })
+}
+
+fn discover_durable_maintenance_work_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    reason: &str,
+) -> anyhow::Result<Option<DesiredWork>> {
+    let (current_epoch_id, latest, active, completed_backfill) = {
         let current_epoch_id =
-            super::semantic_epoch::get_current_epoch(conn, &project_id)?.map(|epoch| epoch.id);
-        let runs = load_durable_maintenance_runs(conn, &project_id)?;
+            super::semantic_epoch::get_current_epoch(conn, project_id)?.map(|epoch| epoch.id);
+        let runs = load_durable_maintenance_runs(conn, project_id)?;
         let mut completed_backfill = None;
         for run in &runs {
-            if is_completed_backfill_marker(conn, &project_id, run)? {
+            if is_completed_backfill_marker(conn, project_id, run)? {
                 completed_backfill = Some(run.clone());
                 break;
             }
@@ -1466,23 +1482,23 @@ pub fn discover_durable_maintenance_work(
             select_latest_relevant_run(&runs, current_epoch_id.as_deref(), false, |run| {
                 completed_backfill.is_some() || run.run_kind != "backfill"
             })?;
-        Ok((current_epoch_id, latest, active, completed_backfill))
-    })?;
+        (current_epoch_id, latest, active, completed_backfill)
+    };
 
     if let Some(active) = active {
-        return durable_run_work(&project_id, &active, reason.as_str());
+        return durable_run_work(project_id, &active, reason);
     }
 
     let Some(current_epoch_id) = current_epoch_id else {
         // Backfill is the only phase allowed to create the initial Epoch.
         // Restore/Epoch wakes fail closed until the restore installer has
         // durably minted its restore Epoch.
-        return if is_backfill_wake(reason.as_str()) {
+        return if is_backfill_wake(reason) {
             Ok(Some(DesiredWork::new(
-                project_id,
+                project_id.to_string(),
                 AutomaticRunKind::Backfill,
                 LEGACY_BACKFILL_WORK_KEY,
-                reason,
+                reason.to_string(),
             )?))
         } else {
             Ok(None)
@@ -1498,11 +1514,11 @@ pub fn discover_durable_maintenance_work(
     // Verify-first handling below.
     if completed_backfill.is_none() {
         return Ok(Some(DesiredWork::new_with_epoch(
-            project_id,
+            project_id.to_string(),
             AutomaticRunKind::Backfill,
             LEGACY_BACKFILL_WORK_KEY,
             Some(current_epoch_id),
-            reason,
+            reason.to_string(),
         )?));
     }
 
@@ -1511,7 +1527,7 @@ pub fn discover_durable_maintenance_work(
         // already been crossed. Even a workspace-opened wake must therefore
         // begin with Verify; replaying Backfill here would loop forever after
         // a restore or restart.
-        return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+        return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
     };
 
     let latest_epoch_matches =
@@ -1519,45 +1535,40 @@ pub fn discover_durable_maintenance_work(
     match latest.run_kind.as_str() {
         "backfill" => {
             if !latest_epoch_matches || latest.status == "completed" {
-                Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
+                Ok(Some(verify_work(project_id, &current_epoch_id, reason)?))
             } else {
                 Ok(Some(DesiredWork::new_with_epoch(
-                    project_id,
+                    project_id.to_string(),
                     AutomaticRunKind::Backfill,
                     LEGACY_BACKFILL_WORK_KEY,
                     latest.semantic_epoch_id,
-                    reason,
+                    reason.to_string(),
                 )?))
             }
         }
         VERIFY_RUN_KIND => {
             if !latest_epoch_matches || latest.status != "completed" {
-                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+                return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
             }
             let Some(outcome_json) = latest.outcome_summary_json.as_deref() else {
-                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+                return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
             };
-            let outcome: Value = match serde_json::from_str(outcome_json) {
-                Ok(value) => value,
-                Err(_) => return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?)),
+            let report = match validate_discovered_verify_outcome(
+                project_id,
+                latest.work_key.as_deref().unwrap_or_default(),
+                &current_epoch_id,
+                outcome_json,
+            ) {
+                Ok(report) => report,
+                Err(_) => return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?)),
             };
-            let Some(report_value) = outcome.get("report") else {
-                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
-            };
-            let report: DependencyGraphVerifyReport =
-                match serde_json::from_value(report_value.clone()) {
-                    Ok(report) => report,
-                    Err(_) => {
-                        return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
-                    }
-                };
             if report.requires_rebuild() {
                 return Ok(Some(DesiredWork::new_with_epoch(
-                    project_id,
+                    project_id.to_string(),
                     AutomaticRunKind::RebuildDerived,
                     REBUILD_DERIVED_WORK_KEY,
                     Some(current_epoch_id),
-                    reason,
+                    reason.to_string(),
                 )?));
             }
             // A graph defect is terminal/manual evidence, not an automatic
@@ -1565,30 +1576,59 @@ pub fn discover_durable_maintenance_work(
             // evidence is present and current; old reports are re-run once
             // to seal the current coordinates.
             if report.is_clean() {
-                let expected = verify_skip_expectation(&project_id, &current_epoch_id)?;
-                let decision = db.with_conn(|conn| evaluate_completed_run_skip(conn, &expected))?;
+                let expected = verify_skip_expectation(project_id, &current_epoch_id)?;
+                let decision = evaluate_completed_run_skip(conn, &expected)?;
                 if matches!(decision, CompletedRunSkipDecision::Skip { .. }) {
                     return Ok(None);
                 }
-                return Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?));
+                return Ok(Some(verify_work(project_id, &current_epoch_id, reason)?));
             }
             Ok(None)
         }
         "semantic-index-rebuild" => {
             if !latest_epoch_matches || latest.status == "completed" {
-                Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?))
+                Ok(Some(verify_work(project_id, &current_epoch_id, reason)?))
             } else {
                 Ok(Some(DesiredWork::new_with_epoch(
-                    project_id,
+                    project_id.to_string(),
                     AutomaticRunKind::RebuildDerived,
                     REBUILD_DERIVED_WORK_KEY,
                     Some(current_epoch_id),
-                    reason,
+                    reason.to_string(),
                 )?))
             }
         }
-        _ => Ok(Some(verify_work(&project_id, &current_epoch_id, &reason)?)),
+        _ => Ok(Some(verify_work(project_id, &current_epoch_id, reason)?)),
     }
+}
+
+fn validate_discovered_verify_outcome(
+    project_id: &str,
+    work_key: &str,
+    semantic_epoch_id: &str,
+    outcome_json: &str,
+) -> anyhow::Result<DependencyGraphVerifyReport> {
+    let outcome: Value = serde_json::from_str(outcome_json).with_context(|| {
+        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome is not JSON"
+    })?;
+    validate_phase_success_outcome(
+        VERIFY_RUN_KIND,
+        project_id,
+        work_key,
+        Some(semantic_epoch_id),
+        &outcome,
+    )?;
+    anyhow::ensure!(
+        outcome.get("failure").is_none(),
+        "NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: completed Verify outcome carries failure detail"
+    );
+    serde_json::from_value(
+        outcome
+            .get("report")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Verify outcome has no report"))?,
+    )
+    .context("NEX_MAINTENANCE_VERIFY_OUTCOME_INVALID: Verify report shape is invalid")
 }
 
 fn durable_run_work(
