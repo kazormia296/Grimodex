@@ -204,6 +204,48 @@ fn old_same_epoch_rebuild_runs_verify_rebuild_and_confirmation_verify() {
 }
 
 #[test]
+fn explicit_verify_skip_queues_rebuild_without_a_pre_rebuild_verify() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    seed_completed_rebuild(&db, &rebuild_outcome(Some("0")));
+    run_dependency_verify_for_project(&db, PROJECT_ID)
+        .expect("current Verify must seal skip evidence before explicit dispatch");
+
+    run_system_work_cycle(
+        &db,
+        &coordinate_bound_verify_request(),
+        RecoveryMode::SameProcessLive,
+    )
+    .expect("explicit Verify must queue the stale Rebuild");
+
+    let phase_kinds: Vec<String> = db
+        .with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT run_kind
+                   FROM narrative_extraction_runs
+                  WHERE project_id = ?1
+                    AND run_kind IN ('dependency-verify', 'semantic-index-rebuild')
+                  ORDER BY created_at, id",
+            )?;
+            let rows = statement
+                .query_map([PROJECT_ID], |row| row.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(rows)
+        })
+        .expect("read explicit Verify phase sequence");
+    assert_eq!(
+        phase_kinds,
+        vec![
+            "semantic-index-rebuild",
+            "dependency-verify",
+            "semantic-index-rebuild",
+            "dependency-verify",
+        ],
+        "a current Verify skip must not dispatch a pre-Rebuild Verify or duplicate Rebuild"
+    );
+}
+
+#[test]
 fn restore_and_epoch_rotation_are_verify_first_before_report_rebuild_confirmation() {
     for trigger in [
         MaintenanceTrigger::RestoreCompleted {
