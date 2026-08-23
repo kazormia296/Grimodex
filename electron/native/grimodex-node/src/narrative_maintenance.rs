@@ -188,13 +188,9 @@ mod tests {
         .to_string();
         db.with_conn(|conn| {
             conn.execute(
-                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
-                [],
-            )?;
-            conn.execute(
                 "INSERT INTO narrative_semantic_epochs
                     (id, project_id, epoch_number, reason, created_at)
-                 VALUES ('epoch-1', 'project-1', 0, 'initial',
+                 VALUES ('epoch-1', 'default-project', 0, 'initial',
                          '2026-01-01T00:00:00.000Z')",
                 [],
             )?;
@@ -203,7 +199,7 @@ mod tests {
                     (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                      status, coverage_json, outcome_summary_json, created_at, completed_at,
                      run_kind, semantic_epoch_id, work_key)
-                 VALUES ('backfill-complete', 'project-1', 'maintenance', ?1, ?1,
+                 VALUES ('backfill-complete', 'default-project', 'maintenance', ?1, ?1,
                          'sha256:backfill', 'completed', '{}', ?2,
                          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
                          'backfill', 'epoch-1', 'legacy-dependency-backfill:v2')",
@@ -213,7 +209,7 @@ mod tests {
         })
         .expect("seed completed backfill boundary");
 
-        run_dependency_verify_for_project(&db, "project-1")
+        run_dependency_verify_for_project(&db, "default-project")
             .expect("baseline Verify must persist native skip evidence");
         let binding = MaintenanceWorkspaceBinding {
             authority_id: "authority:test".to_string(),
@@ -246,7 +242,7 @@ mod tests {
             .flat_map(|page| page.work.iter())
             .collect::<Vec<_>>();
         assert_eq!(work.len(), 1, "changed graph coordinate must reach Verify");
-        assert_eq!(work[0].project_id, "project-1");
+        assert_eq!(work[0].project_id, "default-project");
         assert_eq!(work[0].run_kind, AutomaticRunKind::Verify);
     }
 }
