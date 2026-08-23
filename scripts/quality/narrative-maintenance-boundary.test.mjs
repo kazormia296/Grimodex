@@ -13,7 +13,12 @@ async function lintText(code, filePath) {
         files: ["**/*.{ts,tsx}"],
         languageOptions: { parser: tseslint.parser },
         plugins: {
-          local: { rules: { "narrative-maintenance-boundary": narrativeMaintenanceBoundaryRule } },
+          local: {
+            rules: {
+              "narrative-maintenance-boundary":
+                narrativeMaintenanceBoundaryRule,
+            },
+          },
         },
         rules: { "local/narrative-maintenance-boundary": "error" },
       },
@@ -24,7 +29,10 @@ async function lintText(code, filePath) {
 }
 
 test("rejects narrative maintenance imports from renderer and preload", async () => {
-  for (const filePath of ["src/features/example.ts", "electron/preload/index.ts"]) {
+  for (const filePath of [
+    "src/features/example.ts",
+    "electron/preload/index.ts",
+  ]) {
     const messages = await lintText(
       'import { createNarrativeMaintenanceScheduler } from "../../electron/main/narrativeMaintenance.js";',
       filePath,
@@ -35,14 +43,34 @@ test("rejects narrative maintenance imports from renderer and preload", async ()
 });
 
 test("rejects exposing a private maintenance method from preload", async () => {
-  const messages = await lintText(
+  for (const code of [
     `contextBridge.exposeInMainWorld("grimodex", {
       runNarrativeMaintenanceCycle: () => Promise.resolve(),
     });`,
-    "electron/preload/index.ts",
-  );
-  assert.equal(messages.length, 1);
-  assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+    `contextBridge.exposeInMainWorld("grimodex", {
+      ["runNarrativeMaintenanceCycle"]: () => Promise.resolve(),
+    });`,
+    "const method = backend['runNarrativeMaintenanceCycle'];",
+    "const privateMethods = ['runNarrativeMaintenanceCycle'];",
+  ]) {
+    const messages = await lintText(code, "electron/preload/index.ts");
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+  }
+});
+
+test("rejects literal dynamic imports of the main or native backend", async () => {
+  for (const source of [
+    "electron/main/narrativeMaintenance.js",
+    "electron/native/grimodex-node/index.js",
+  ]) {
+    const messages = await lintText(
+      `void import("${source}");`,
+      "src/features/example.ts",
+    );
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+  }
 });
 
 test("allows the main owner and ordinary renderer bridge code", async () => {
@@ -51,7 +79,7 @@ test("allows the main owner and ordinary renderer bridge code", async () => {
     "electron/main/narrativeMaintenanceBootstrap.ts",
   );
   const rendererMessages = await lintText(
-    'export const bridge = { invoke: (cmd: string) => window.grimodex.invoke(cmd) };',
+    "export const bridge = { invoke: (cmd: string) => window.grimodex.invoke(cmd) };",
     "src/lib/bridge.ts",
   );
   assert.deepEqual(mainMessages, []);

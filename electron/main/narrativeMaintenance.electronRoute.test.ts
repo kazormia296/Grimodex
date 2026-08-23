@@ -1,11 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import {
-  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-  type NarrativeMaintenanceCiSeam,
-} from "./narrativeMaintenanceCiSeam.js";
+import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 import type { NarrativeMaintenanceBackendLike } from "./narrativeMaintenance.js";
+import type { NapiBackendLike } from "../shared/ipcContract.js";
 
 vi.mock("electron", () => ({
   BrowserWindow: { getAllWindows: () => [] },
@@ -16,16 +14,11 @@ const { registerEventBus } = await import("./events.js");
 
 const binding = { authorityId: "authority-electron", generation: 7 };
 
-function activeSeam(): Extract<NarrativeMaintenanceCiSeam, { active: true }> {
-  return {
-    active: true,
-    ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
-    fault: null,
-    trigger: null,
-    setup: null,
-    productJourneyBarrierId: null,
-    correlation: null,
-  };
+function productionSeam(): Extract<
+  NarrativeMaintenanceCiSeam,
+  { active: false }
+> {
+  return { active: false };
 }
 
 function workFor(
@@ -55,19 +48,26 @@ function createBackend(work: ReturnType<typeof workFor>) {
     );
   const runNarrativeMaintenanceCycle = vi
     .fn()
-    .mockResolvedValueOnce(JSON.stringify({ status: "accepted", hasMore: true }))
-    .mockResolvedValueOnce(JSON.stringify({ status: "accepted", hasMore: false }));
+    .mockResolvedValueOnce(
+      JSON.stringify({ status: "accepted", hasMore: true }),
+    )
+    .mockResolvedValueOnce(
+      JSON.stringify({ status: "accepted", hasMore: false }),
+    );
   let onEvent: ((channel: unknown, payload: unknown) => void) | null = null;
   const backend = {
-    getNarrativeMaintenanceWorkspaceBinding: vi.fn(() => JSON.stringify(binding)),
+    getNarrativeMaintenanceWorkspaceBinding: vi.fn(() =>
+      JSON.stringify(binding),
+    ),
     discoverNarrativeMaintenanceWork,
     runNarrativeMaintenanceCycle,
     onEvent(callback: (channel: unknown, payload: unknown) => void) {
       onEvent = callback;
     },
-  } as unknown as NarrativeMaintenanceBackendLike & {
-    emit(channel: unknown, payload: unknown): void;
-  };
+  } as unknown as NarrativeMaintenanceBackendLike &
+    NapiBackendLike & {
+      emit(channel: unknown, payload: unknown): void;
+    };
   Object.defineProperty(backend, "emit", {
     value: (channel: unknown, payload: unknown) => onEvent?.(channel, payload),
   });
@@ -91,7 +91,11 @@ describe("Electron main narrative maintenance route", () => {
 
   it.each([
     ["workspace-opened", {}, "workspace-opened"],
-    ["restore-completed", { reason: "restore", path: "/not-forwarded" }, "restore-completed"],
+    [
+      "restore-completed",
+      { reason: "restore", path: "/not-forwarded" },
+      "restore-completed",
+    ],
     [
       "semantic-epoch-rotated",
       { projectId: "project-electron-route", ...binding },
@@ -103,7 +107,7 @@ describe("Electron main narrative maintenance route", () => {
       const fixture = createBackend(workFor(expectedReason));
       const runtime = bootstrapNarrativeMaintenance(
         fixture.backend,
-        activeSeam(),
+        productionSeam(),
       );
 
       registerEventBus(fixture.backend, (channel, eventPayload) => {
@@ -120,36 +124,30 @@ describe("Electron main narrative maintenance route", () => {
       expect(fixture.discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
         expectedReason,
       );
-      expect(fixture.runNarrativeMaintenanceCycle).toHaveBeenNthCalledWith(
-        1,
-        {
-          work: [
-            {
-              projectId: "project-electron-route",
-              runKind:
-                expectedReason === "workspace-opened"
-                  ? "backfill"
-                  : "dependency-verify",
-              workKey: `maintenance:${expectedReason}`,
-              semanticEpochId:
-                expectedReason === "workspace-opened"
-                  ? null
-                  : "epoch-electron-route",
-              reasons: [expectedReason],
-            },
-          ],
-          wakeProjectIds: [],
-          workspaceBinding: binding,
-        },
-      );
-      expect(fixture.runNarrativeMaintenanceCycle).toHaveBeenNthCalledWith(
-        2,
-        {
-          work: [],
-          wakeProjectIds: ["project-electron-route"],
-          workspaceBinding: binding,
-        },
-      );
+      expect(fixture.runNarrativeMaintenanceCycle).toHaveBeenNthCalledWith(1, {
+        work: [
+          {
+            projectId: "project-electron-route",
+            runKind:
+              expectedReason === "workspace-opened"
+                ? "backfill"
+                : "dependency-verify",
+            workKey: `maintenance:${expectedReason}`,
+            semanticEpochId:
+              expectedReason === "workspace-opened"
+                ? null
+                : "epoch-electron-route",
+            reasons: [expectedReason],
+          },
+        ],
+        wakeProjectIds: [],
+        workspaceBinding: binding,
+      });
+      expect(fixture.runNarrativeMaintenanceCycle).toHaveBeenNthCalledWith(2, {
+        work: [],
+        wakeProjectIds: ["project-electron-route"],
+        workspaceBinding: binding,
+      });
       expect(fixture.runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
       expect(fixture.discoverNarrativeMaintenanceWork).toHaveBeenCalledWith(
         expectedReason,
