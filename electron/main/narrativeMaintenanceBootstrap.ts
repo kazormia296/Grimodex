@@ -10,6 +10,7 @@
  */
 import {
   createNarrativeMaintenanceScheduler,
+  scheduleNarrativeMaintenanceProcessInterruption,
   type NarrativeMaintenanceBackendLike,
   type NarrativeMaintenanceScheduler,
 } from "./narrativeMaintenance.js";
@@ -18,6 +19,7 @@ import {
   type NarrativeMaintenanceTriggerCoordinator,
 } from "./narrativeMaintenanceTriggers.js";
 import {
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   shouldDisableNarrativeMaintenanceForLaunch,
   type NarrativeMaintenanceCiSeam,
 } from "./narrativeMaintenanceCiSeam.js";
@@ -66,6 +68,18 @@ export function bootstrapNarrativeMaintenance(
     },
     onCycleAccepted: () => {
       coordinator?.requestRediscovery();
+    },
+    onCiProcessInterruption: (ack, expectedBinding) => {
+      if (!seam.active) return false;
+      return scheduleNarrativeMaintenanceProcessInterruption(
+        backend,
+        ack,
+        expectedBinding,
+        () =>
+          seam.active &&
+          seam.ownerToken === NARRATIVE_MAINTENANCE_OWNER_TOKEN &&
+          seam.fault === "process-interruption",
+      );
     },
   });
   coordinator = createCoordinator(backend, scheduler);

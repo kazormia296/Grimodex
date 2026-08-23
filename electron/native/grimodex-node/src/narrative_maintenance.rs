@@ -9,8 +9,8 @@ use serde::Serialize;
 
 use grimodex_db::narrative_extraction::{
     discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
-    DesiredWork, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
-    NarrativeMaintenanceCiConfig, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    DesiredWork, MaintenanceWorkRequest, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
+    MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 use grimodex_db::Database;
 
@@ -127,11 +127,10 @@ pub(crate) fn discover_all(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::{
         run_dependency_verify_for_project, AutomaticRunKind, NarrativeMaintenanceCiTrigger,
     };
-    use grimodex_db::narrative_extraction::maintenance_runtime::
-        NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use serde_json::json;
 
     #[test]
@@ -217,7 +216,10 @@ mod tests {
         };
         let baseline = discover_all(&db, binding.clone(), WakeReason::WorkspaceOpened, None)
             .expect("baseline native discovery");
-        assert!(baseline.pages.is_empty(), "baseline evidence should be reusable");
+        assert!(
+            baseline.pages.is_empty(),
+            "baseline evidence should be reusable"
+        );
 
         let changed_config = NarrativeMaintenanceCiConfig {
             is_packaged: false,

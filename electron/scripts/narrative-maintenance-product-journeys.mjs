@@ -880,6 +880,12 @@ export function assertTerminalFailureEvidence(run) {
     );
   }
   parseInstant(run.completedAt, "terminal failed Run completedAt");
+  assertForegroundLifecycle(run, "failed", "terminal failure");
+  if (run.lastAttemptFailureCode !== NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE) {
+    throw new Error(
+      "terminal failure lastAttemptFailureCode did not persist the exact failed Attempt failure code",
+    );
+  }
   return run;
 }
 
@@ -2008,6 +2014,7 @@ async function runTerminalFailureInbox(harness, configureWorkspace) {
         row.terminalReasonCode ===
           NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
     );
+    assertForegroundLifecycle(failed, "failed", "terminal failed Run");
     assertTerminalFailureEvidence(failed);
     const settledRows = await waitForStableLedger(
       context,
@@ -2178,6 +2185,11 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       },
       "process interruption running Run",
     );
+    assertForegroundLifecycle(
+      interruptedRun,
+      "running",
+      "process interruption running Run",
+    );
     const exit = await waitForProcessExit(
       interruptedLaunch.app,
       "process interruption recovery",
@@ -2262,7 +2274,17 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
       },
       "process interruption durable recovery",
     );
-    const { rows: recoveredRows, recovery: recoveryRun } = recoveryEvidence;
+    const {
+      rows: recoveredRows,
+      stale: staleRun,
+      recovery: recoveryRun,
+    } = recoveryEvidence;
+    assertForegroundLifecycle(staleRun, "failed", "interrupted stale Run");
+    assertForegroundLifecycle(
+      recoveryRun,
+      "completed",
+      "interruption recovery Run",
+    );
     recoveredContext.record("interrupted-run-recovered", {
       interruptedRunId: interruptedRun.id,
       recoveredRunId: recoveryRun.id,

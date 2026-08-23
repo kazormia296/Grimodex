@@ -62,13 +62,14 @@ use grimodex_db::lint_terms::{
 use grimodex_db::map_writes::{self, MapWritePayload};
 use grimodex_db::narrative_extraction::{
     self, AttentionDisposition, GetNarrativeBackfillStatusPayload, LegacyBackfillBootstrapOutcome,
-    ListResumableRunsPayload, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
+    LegacyBackfillFaultOutcome, ListResumableRunsPayload, MaintenanceCycleRequest,
+    MaintenanceCycleStatus, MaintenanceWorkspaceBinding, NarrativeMaintenanceAttentionClearPayload,
     NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceCiTrigger, NarrativeMaintenanceInboxListPayload,
-    RebuildDerivedStateOutcome, RebuildNarrativeDerivedStatePayload,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    RunRefPayload, TemporalScenePatchPayload, VerifyNarrativeDependencyGraphPayload,
+    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiTrigger,
+    NarrativeMaintenanceInboxListPayload, RebuildDerivedStateOutcome,
+    RebuildNarrativeDerivedStatePayload, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, RunRefPayload, TemporalScenePatchPayload,
+    VerifyNarrativeDependencyGraphPayload,
 };
 use grimodex_db::open::{
     open_workspace_sync_traced, NativeWorkspaceOpenResult, NativeWorkspaceOpenSpanName,
@@ -1821,14 +1822,13 @@ impl Backend {
                 })
                 .to_string());
             }
-            let discovery =
-                narrative_maintenance::discover_all(
-                    snapshot.authority.db(),
-                    binding,
-                    wake_reason,
-                    ci_config.as_ref(),
-                )
-                .map_err(AppError::Anyhow)?;
+            let discovery = narrative_maintenance::discover_all(
+                snapshot.authority.db(),
+                binding,
+                wake_reason,
+                ci_config.as_ref(),
+            )
+            .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
         })
         .await
@@ -1852,7 +1852,8 @@ impl Backend {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
             let request: MaintenanceCycleRequest = from_wire("payload", payload)?;
-            let normalized_work = request.normalized_work()?;
+            let normalized_work = narrative_extraction::preflight_maintenance_cycle_request(&request)
+                .map_err(AppError::Anyhow)?;
             let authority = match active_database(&state.ws) {
                 Ok(authority) => authority,
                 Err(
@@ -1903,6 +1904,165 @@ impl Backend {
                 .to_string());
             }
             let ci_config = state.narrative_maintenance_ci_seam.config();
+            // Faults are claimed against the same immutable authority,
+            // generation, project, epoch, and canonical work identity that
+            // the recovery gate uses.  The shared Backfill owner creates the
+            // real lifecycle triplet; this adapter only supplies the typed
+            // one-shot seam and owns the deliberate process exit case.
+            if let Some(config) = ci_config.as_ref() {
+                if let Some(fault) = config.fault {
+                    // Fault injection is a single-work product-journey seam.
+                    // A mixed phase batch must go through the ordinary state
+                    // machine so an ACK cannot drop the other queued work
+                    // while the main owner deliberately halts for exit.
+                    if normalized_work.len() == 1
+                        && normalized_work[0].run_kind.as_str() == "backfill"
+                    {
+                        let item = &normalized_work[0];
+                        // A canonical Backfill key alone is insufficient: once
+                        // an Epoch exists, the planner redirects stale or
+                        // epoch-bound Backfill requests to Verify. Reuse that
+                        // read-only native planner result so a crafted request
+                        // cannot inject a Run the normal state machine would
+                        // never dispatch.
+                        let planner_identity_matches =
+                            narrative_extraction::discover_durable_maintenance_work_with_config(
+                                authority.db(),
+                                &item.project_id,
+                                "fault-preflight",
+                                Some(config),
+                            )?
+                            .is_some_and(|candidate| {
+                                candidate.project_id == item.project_id
+                                    && candidate.run_kind == item.run_kind
+                                    && candidate.work_key == item.work_key
+                                    && candidate.semantic_epoch_id == item.semantic_epoch_id
+                            });
+                        if planner_identity_matches {
+                            if let Some(claim) = state
+                                .narrative_maintenance_ci_seam
+                                .claim_fault_for_binding(
+                                    fault,
+                                    request_binding,
+                                    &item.project_id,
+                                    item.run_kind.as_str(),
+                                    item.semantic_epoch_id.as_deref(),
+                                    &item.work_key,
+                                )
+                                .map_err(AppError::Anyhow)?
+                            {
+                            let injected =
+                                match narrative_extraction::inject_legacy_backfill_fault_for_project(
+                                    authority.db(),
+                                    &item.project_id,
+                                    claim.fault(),
+                                ) {
+                                    Ok(outcome) => outcome,
+                                    Err(error) => {
+                                        state
+                                            .narrative_maintenance_ci_seam
+                                            .release_fault_claim(&claim);
+                                        return Err(AppError::Anyhow(error));
+                                    }
+                                };
+                            match injected {
+                                LegacyBackfillFaultOutcome::NotInjected => {
+                                    state
+                                        .narrative_maintenance_ci_seam
+                                        .release_fault_claim(&claim);
+                                }
+                                LegacyBackfillFaultOutcome::Failed {
+                                    run_id,
+                                    semantic_epoch_id,
+                                    failure_code,
+                                } => {
+                                    let fault_kind = claim.fault();
+                                    state
+                                        .narrative_maintenance_ci_seam
+                                        .commit_fault_for_run(
+                                            &claim,
+                                            &run_id,
+                                            Some(&semantic_epoch_id),
+                                        )
+                                        .map_err(AppError::Anyhow)?;
+                                    match fault_kind {
+                                        NarrativeMaintenanceCiFault::ContractViolation => {
+                                            // A terminal contract violation is
+                                            // durably failed and projected to
+                                            // Inbox by the shared owner. ACK it
+                                            // as handled so main never enters
+                                            // its generic delivery retry path.
+                                            return Ok(serde_json::json!({
+                                                "status": "ci-terminal-fault-handled",
+                                                "fault": "contract-violation",
+                                                "runId": run_id,
+                                                "authorityId": request_binding.authority_id,
+                                                "generation": request_binding.generation,
+                                            })
+                                            .to_string());
+                                        }
+                                        NarrativeMaintenanceCiFault::TransientIo => {
+                                            // Returning a typed error leaves
+                                            // the exact work key queued. Its
+                                            // next cycle rediscovers this
+                                            // failed Run and applies the
+                                            // bounded transient policy.
+                                            return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                "{failure_code}: injected maintenance fault"
+                                            )));
+                                        }
+                                        NarrativeMaintenanceCiFault::ProcessInterruption => {
+                                            return Err(AppError::Anyhow(anyhow::anyhow!(
+                                                "NEX_MAINTENANCE_CI_SEAM_FAULT_MISMATCH: process interruption returned a failed outcome"
+                                            )));
+                                        }
+                                    }
+                                }
+                                LegacyBackfillFaultOutcome::Running {
+                                    run_id,
+                                    semantic_epoch_id,
+                                } => {
+                                    let is_process_interruption = matches!(
+                                        claim.fault(),
+                                        NarrativeMaintenanceCiFault::ProcessInterruption
+                                    );
+                                    if !is_process_interruption {
+                                        return Err(AppError::Anyhow(anyhow::anyhow!(
+                                            "NEX_MAINTENANCE_CI_SEAM_FAULT_MISMATCH: running fault outcome is not process interruption"
+                                        )));
+                                    }
+                                    state
+                                        .narrative_maintenance_ci_seam
+                                        .commit_fault_for_run(
+                                            &claim,
+                                            &run_id,
+                                            Some(&semantic_epoch_id),
+                                        )
+                                        .map_err(AppError::Anyhow)?;
+                                    // The config was validated at one-shot
+                                    // setup; recheck the process-only gate at
+                                    // the actual exit boundary as defense in
+                                    // depth against a future state refactor.
+                                    if config.is_packaged || config.ci != "true" {
+                                        return Err(AppError::Anyhow(anyhow::anyhow!(
+                                            "NEX_MAINTENANCE_CI_SEAM_INACTIVE: process interruption requires an unpackaged CI launch"
+                                        )));
+                                    }
+                                    return Ok(serde_json::json!({
+                                        "status": "ci-process-interruption-pending",
+                                        "fault": "process-interruption",
+                                        "runId": run_id,
+                                        "authorityId": request_binding.authority_id,
+                                        "generation": request_binding.generation,
+                                    })
+                                    .to_string());
+                                }
+                            }
+                            }
+                    }
+                    }
+                }
+            }
             let result = narrative_extraction::run_system_work_cycle_with_modes_and_config(
                 authority.db(),
                 &request,

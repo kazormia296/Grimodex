@@ -62,7 +62,25 @@ export type NarrativeMaintenanceCycleResult =
   | { status: "workspace-unavailable"; reason?: string }
   | { status: "coalesced" }
   /** Valid work whose adapter is intentionally not enabled in this lane. */
-  | { status: "deferred"; hasMore: boolean };
+  | { status: "deferred"; hasMore: boolean }
+  | NarrativeMaintenanceCiTerminalFaultAck
+  | NarrativeMaintenanceCiProcessInterruptionAck;
+
+export interface NarrativeMaintenanceCiProcessInterruptionAck {
+  status: "ci-process-interruption-pending";
+  fault: "process-interruption";
+  runId: string;
+  authorityId: string;
+  generation: number;
+}
+
+export interface NarrativeMaintenanceCiTerminalFaultAck {
+  status: "ci-terminal-fault-handled";
+  fault: "contract-violation";
+  runId: string;
+  authorityId: string;
+  generation: number;
+}
 
 export interface NarrativeMaintenanceBackendLike {
   /** Synchronous main-only enqueue snapshot; absent in legacy test doubles. */
@@ -108,6 +126,12 @@ export interface NarrativeMaintenanceSchedulerOptions {
   onWorkspaceBindingMismatch?: () => void | Promise<void>;
   /** Let the main-only discovery owner advance Rust-owned durable phases. */
   onCycleAccepted?: () => void | Promise<void>;
+  /** Schedule the authorized main-only CI interruption after the running
+   * lifecycle has been returned to the product journey for observation. */
+  onCiProcessInterruption?: (
+    ack: NarrativeMaintenanceCiProcessInterruptionAck,
+    expectedBinding: NarrativeMaintenanceWorkspaceBinding,
+  ) => boolean | Promise<boolean>;
 }
 
 export const NARRATIVE_MAINTENANCE_INITIAL_DELAY_MS = 250;
@@ -117,6 +141,7 @@ export const NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS = 10;
 export const NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS = 1_000;
 export const NARRATIVE_MAINTENANCE_MAX_RETRIES = 3;
 export const NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE = 32;
+export const NARRATIVE_MAINTENANCE_PROCESS_EXIT_DELAY_MS = 250;
 
 /**
  * Main-only post-response owner for the C2-5B foreground maintenance barrier.
@@ -270,6 +295,73 @@ export function scheduleNarrativeMaintenanceForegroundRelease(
   });
 }
 
+type CiProcessInterruptionExitScheduler = (callback: () => void) => unknown;
+type CiProcessExit = (code: number) => never | void;
+
+/**
+ * Main-only owner for the typed interruption ACK.  Native has already
+ * committed the exact running lifecycle before returning the ACK; this
+ * callback deliberately gives the product journey a bounded observation
+ * window, then revalidates authorization and the live authority binding
+ * before exiting.  Tests inject both the timer and exit function.
+ */
+export function scheduleNarrativeMaintenanceProcessInterruption(
+  backend: NarrativeMaintenanceBackendLike | null,
+  ack: NarrativeMaintenanceCiProcessInterruptionAck,
+  expectedBinding: NarrativeMaintenanceWorkspaceBinding,
+  isAuthorized: () => boolean,
+  schedule: CiProcessInterruptionExitScheduler = (callback) => {
+    setTimeout(callback, NARRATIVE_MAINTENANCE_PROCESS_EXIT_DELAY_MS);
+  },
+  exit: CiProcessExit = (code) => process.exit(code),
+): boolean {
+  if (
+    ack.status !== "ci-process-interruption-pending" ||
+    ack.fault !== "process-interruption" ||
+    !isNonEmptyTrimmedString(ack.runId) ||
+    !isNonEmptyTrimmedString(ack.authorityId) ||
+    ack.runId.includes("\u0000") ||
+    ack.authorityId.includes("\u0000") ||
+    !Number.isSafeInteger(ack.generation) ||
+    ack.generation <= 0 ||
+    !isNonEmptyTrimmedString(expectedBinding.authorityId) ||
+    expectedBinding.authorityId.includes("\u0000") ||
+    !Number.isSafeInteger(expectedBinding.generation) ||
+    expectedBinding.generation <= 0 ||
+    ack.authorityId !== expectedBinding.authorityId ||
+    ack.generation !== expectedBinding.generation
+  ) {
+    return false;
+  }
+
+  const currentBinding = (): NarrativeMaintenanceWorkspaceBinding | null => {
+    try {
+      const raw = backend?.getNarrativeMaintenanceWorkspaceBinding?.();
+      const normalized = normalizeWorkspaceBinding(raw);
+      return normalized;
+    } catch {
+      return null;
+    }
+  };
+  const sameBinding = (
+    left: NarrativeMaintenanceWorkspaceBinding | null,
+    right: NarrativeMaintenanceWorkspaceBinding,
+  ): boolean =>
+    left?.authorityId === right.authorityId &&
+    left?.generation === right.generation;
+
+  if (!isAuthorized() || !sameBinding(currentBinding(), expectedBinding)) {
+    return false;
+  }
+  const scheduled = schedule(() => {
+    if (!isAuthorized() || !sameBinding(currentBinding(), expectedBinding)) {
+      return;
+    }
+    exit(86);
+  });
+  return scheduled !== false;
+}
+
 const AUTOMATIC_RUN_KINDS = new Set<NarrativeMaintenanceRunKind>([
   "backfill",
   "dependency-verify",
@@ -344,7 +436,9 @@ function normalizeWorkspaceBinding(
     typeof binding.authorityId !== "string" ||
     binding.authorityId.trim().length === 0 ||
     !Number.isSafeInteger(binding.generation) ||
-    (binding.generation as number) < 0
+    (binding.generation as number) <= 0 ||
+    binding.authorityId !== binding.authorityId.trim() ||
+    binding.authorityId.includes("\u0000")
   ) {
     throw new Error("native maintenance workspace binding returned invalid status");
   }
@@ -458,9 +552,77 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
     if (value.status === "deferred" && typeof value.hasMore === "boolean") {
       return { status: "deferred", hasMore: value.hasMore };
     }
+    if (value.status === "ci-process-interruption-pending") {
+      return parseCiProcessInterruptionAck(value);
+    }
+    if (value.status === "ci-terminal-fault-handled") {
+      return parseCiTerminalFaultAck(value);
+    }
     throw new Error("native maintenance cycle returned invalid status");
   }
   throw new Error("native maintenance cycle returned invalid status");
+}
+
+function parseCiProcessInterruptionAck(
+  value: Record<string, unknown>,
+): NarrativeMaintenanceCiProcessInterruptionAck {
+  if (
+    Object.keys(value).some(
+      (key) =>
+        !["status", "fault", "runId", "authorityId", "generation"].includes(
+          key,
+        ),
+    ) ||
+    value.fault !== "process-interruption" ||
+    !isNonEmptyTrimmedString(value.runId) ||
+    !isNonEmptyTrimmedString(value.authorityId) ||
+    (value.runId as string).includes("\u0000") ||
+    (value.authorityId as string).includes("\u0000") ||
+    !Number.isSafeInteger(value.generation) ||
+    (value.generation as number) <= 0
+  ) {
+    throw new Error(
+      "native maintenance cycle returned invalid process interruption ACK",
+    );
+  }
+  return {
+    status: "ci-process-interruption-pending",
+    fault: "process-interruption",
+    runId: value.runId,
+    authorityId: value.authorityId,
+    generation: value.generation as number,
+  };
+}
+
+function parseCiTerminalFaultAck(
+  value: Record<string, unknown>,
+): NarrativeMaintenanceCiTerminalFaultAck {
+  if (
+    Object.keys(value).some(
+      (key) =>
+        !["status", "fault", "runId", "authorityId", "generation"].includes(
+          key,
+        ),
+    ) ||
+    value.fault !== "contract-violation" ||
+    !isNonEmptyTrimmedString(value.runId) ||
+    !isNonEmptyTrimmedString(value.authorityId) ||
+    (value.runId as string).includes("\u0000") ||
+    (value.authorityId as string).includes("\u0000") ||
+    !Number.isSafeInteger(value.generation) ||
+    (value.generation as number) <= 0
+  ) {
+    throw new Error(
+      "native maintenance cycle returned invalid terminal fault ACK",
+    );
+  }
+  return {
+    status: "ci-terminal-fault-handled",
+    fault: "contract-violation",
+    runId: value.runId,
+    authorityId: value.authorityId,
+    generation: value.generation as number,
+  };
 }
 
 interface SharedProjectCoordinator {
@@ -740,6 +902,7 @@ export function createNarrativeMaintenanceScheduler(
     let workspaceUnavailable = false;
     let workspaceMismatch = false;
     let deferredCycle = false;
+    let haltForProcessInterruption = false;
     try {
       // N-API class methods must be invoked through backend to preserve self.
       const result = await method.call(backend, {
@@ -756,6 +919,55 @@ export function createNarrativeMaintenanceScheduler(
       // intentionally after the await and before clearing the claimed work:
       // the catch path requeues the exact batch and wake scope.
       const cycleResult = normalizeCycleResult(result);
+      if (cycleResult.status === "ci-process-interruption-pending") {
+        // The running triplet is deliberately not sent through ordinary ACK,
+        // recovery, or follow-up handling.  A binding mismatch is fail-closed
+        // and never schedules an exit; the durable running row remains for
+        // explicit reopen recovery.
+        let exitScheduled = false;
+        if (
+          cycleBinding &&
+          cycleResult.authorityId === cycleBinding.authorityId &&
+          cycleResult.generation === cycleBinding.generation
+        ) {
+          try {
+            exitScheduled =
+              (await options.onCiProcessInterruption?.(
+                cycleResult,
+                cycleBinding,
+              )) === true;
+          } catch (error) {
+            warn(
+              "[narrative-maintenance] process interruption owner rejected ACK:",
+              error,
+            );
+          }
+        } else {
+          warn(
+            "[narrative-maintenance] process interruption ACK binding mismatch; exit not scheduled",
+          );
+        }
+        if (!exitScheduled) {
+          throw new Error(
+            "native process interruption ACK was not scheduled by the authorized main owner",
+          );
+        }
+        haltForProcessInterruption = true;
+      }
+      if (cycleResult.status === "ci-terminal-fault-handled") {
+        // The shared owner already failed the exact Run/Task/Attempt and
+        // projected the stable Inbox identity.  This is a handled terminal
+        // outcome, not a delivery error, so no generic retry is requeued.
+        if (
+          !cycleBinding ||
+          cycleResult.authorityId !== cycleBinding.authorityId ||
+          cycleResult.generation !== cycleBinding.generation
+        ) {
+          throw new Error(
+            "native terminal fault ACK binding mismatch; durable run identity cannot be proven",
+          );
+        }
+      }
       if (cycleResult.status === "workspace-unavailable") {
         if (
           cycleResult.reason === "maintenance-workspace-binding-mismatch" ||
@@ -947,6 +1159,7 @@ export function createNarrativeMaintenanceScheduler(
       inFlight = false;
       if (
         !disposed &&
+        !haltForProcessInterruption &&
         (shouldSchedule || hasRunnablePendingWork() || hasRunnableWake())
       ) {
         const blockedProjects = new Set(blockedProjectIds);

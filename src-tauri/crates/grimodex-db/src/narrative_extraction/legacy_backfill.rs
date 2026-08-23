@@ -90,7 +90,7 @@ use super::maintenance_lifecycle::{
     fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
     MaintenanceFailureKind,
 };
-use super::maintenance_runtime::validate_phase_success_outcome;
+use super::maintenance_runtime::{validate_phase_success_outcome, NarrativeMaintenanceCiFault};
 #[cfg(test)]
 use super::repository::create_system_run_in_tx;
 use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
@@ -267,6 +267,97 @@ pub enum LegacyBackfillBootstrapOutcome {
         run_id: String,
         summary: BackfillSummary,
     },
+}
+
+/// Result of consuming the typed CI fault at the native phase boundary.
+///
+/// The lifecycle owner creates the real Backfill Run before returning any
+/// injected result.  `Failed` therefore represents a durable failed
+/// Run/Task/Attempt triplet, while `Running` is the durable boundary used by
+/// the N-API owner immediately before its deliberate process exit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LegacyBackfillFaultOutcome {
+    /// A valid completed or already-running Backfill owns this work, so the
+    /// one-shot fault must not attach itself to another Run.
+    NotInjected,
+    /// A synthetic phase failure was finalized durably.
+    Failed {
+        run_id: String,
+        semantic_epoch_id: String,
+        failure_code: String,
+    },
+    /// Phase 1 committed a running lifecycle; the native owner may exit.
+    Running {
+        run_id: String,
+        semantic_epoch_id: String,
+    },
+}
+
+/// Consume one typed CI fault at the same Backfill lifecycle boundary used by
+/// the production phase owner.  This helper is intentionally native-only
+/// plumbing: it never exits the process and it never fabricates a Run outside
+/// `create_maintenance_run_in_tx`.
+pub fn inject_legacy_backfill_fault_for_project(
+    db: &Database,
+    project_id: &str,
+    fault: NarrativeMaintenanceCiFault,
+) -> anyhow::Result<LegacyBackfillFaultOutcome> {
+    let (run_id, semantic_epoch_id, reused) = db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            let semantic_epoch_id = match get_current_epoch(conn, project_id)? {
+                Some(epoch) => epoch.id,
+                None => create_epoch_in_tx(conn, project_id, "initial", None)?,
+            };
+            let spec = json!({ "backfillAlgorithmVersion": LEGACY_BACKFILL_ALGORITHM_VERSION });
+            let spec_digest = format!("sha256:{}", digest_plan(&spec));
+            if let Some(run_id) = find_valid_completed_backfill_run_id(conn, project_id)? {
+                return Ok((run_id, semantic_epoch_id, true));
+            }
+            let handle = create_maintenance_run_in_tx(
+                conn,
+                project_id,
+                "backfill",
+                &semantic_epoch_id,
+                LEGACY_DEPENDENCY_PRODUCER_GENERATION,
+                &spec,
+                &spec_digest,
+                SystemRunWorkKeyReuse::RunningOnly,
+            )?;
+            Ok((handle.run_id, semantic_epoch_id, handle.reused))
+        })
+    })?;
+
+    if reused {
+        return Ok(LegacyBackfillFaultOutcome::NotInjected);
+    }
+
+    match fault {
+        NarrativeMaintenanceCiFault::ProcessInterruption => {
+            Ok(LegacyBackfillFaultOutcome::Running {
+                run_id,
+                semantic_epoch_id,
+            })
+        }
+        NarrativeMaintenanceCiFault::TransientIo
+        | NarrativeMaintenanceCiFault::ContractViolation => {
+            let failure_code = match fault {
+                NarrativeMaintenanceCiFault::TransientIo => "NEX_MAINTENANCE_TRANSIENT",
+                NarrativeMaintenanceCiFault::ContractViolation => {
+                    "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
+                }
+                NarrativeMaintenanceCiFault::ProcessInterruption => unreachable!(),
+            };
+            let failure_message = format!("{failure_code}: injected maintenance fault");
+            let transform_result: anyhow::Result<BackfillSummary> =
+                Err(anyhow::anyhow!(failure_message));
+            finalize_legacy_backfill_run(db, project_id, &run_id, &transform_result)?;
+            Ok(LegacyBackfillFaultOutcome::Failed {
+                run_id,
+                semantic_epoch_id,
+                failure_code: failure_code.to_string(),
+            })
+        }
+    }
 }
 
 /// Field path recorded for every backfilled Contribution. Legacy

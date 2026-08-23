@@ -8,8 +8,8 @@
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, ensure_test_schema, inject_legacy_backfill_fault_for_project,
     run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind,
-    LegacyBackfillFaultOutcome, NarrativeMaintenanceCiFault, WorkKey, LEGACY_BACKFILL_WORK_KEY,
-    InboxEntryKind, MaintenanceCycleRequest, MaintenanceCycleStatus, RecoveryMode,
+    InboxEntryKind, LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
+    NarrativeMaintenanceCiFault, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
 use serde_json::json;
@@ -78,10 +78,12 @@ fn lifecycle_snapshot(db: &Database, run_id: &str) -> LifecycleSnapshot {
 
 fn terminal_failure_inbox_count(db: &Database) -> usize {
     db.with_conn(|conn| {
-        Ok(build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
-            .into_iter()
-            .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
-            .count())
+        Ok(
+            build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
+                .into_iter()
+                .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
+                .count(),
+        )
     })
     .expect("read maintenance Inbox")
 }
@@ -211,10 +213,7 @@ fn terminal_fault_leaves_exact_failed_triplet_and_one_inbox_identity() {
             failure_code,
             ..
         } => {
-            assert_eq!(
-                failure_code,
-                "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"
-            );
+            assert_eq!(failure_code, "NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION");
             run_id
         }
         other => panic!("expected durable terminal failure, got {other:?}"),
