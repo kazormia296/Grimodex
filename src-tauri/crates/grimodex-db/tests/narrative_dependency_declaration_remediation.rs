@@ -110,7 +110,11 @@ fn corrupt_head_coherence_disables_v2_read_and_exact_replay() {
             write_dependency_declaration_set(&db, request(PROJECT_ID, "producer-a", 1, 0))
                 .expect("write initial sealed set");
         db.with_conn(|conn| {
+            // SCHEMA33 correctly rejects version < 1.  Temporarily bypass
+            // CHECK enforcement only to model an on-disk corruption fixture.
+            conn.execute_batch("PRAGMA ignore_check_constraints = ON")?;
             conn.execute(head_update, [])?;
+            conn.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
             conn.execute(
                 "INSERT INTO narrative_dependency_edges
                     (id, project_id, consumer_kind, consumer_key, source_object_identity,
