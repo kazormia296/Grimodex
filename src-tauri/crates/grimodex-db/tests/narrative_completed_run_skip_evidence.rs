@@ -318,6 +318,42 @@ fn exact_contract_match_returns_skip_with_the_durable_report_digest() {
 }
 
 #[test]
+fn verify_skip_evidence_requires_a_current_rebuild_contract_coordinate() {
+    for (label, rebuild_contract_version) in [
+        ("missing", None),
+        ("old", Some("0")),
+    ] {
+        let db = fixture_db();
+        let mut stored_evidence = serde_json::to_value(evidence()).expect("evidence json");
+        let evidence_object = stored_evidence
+            .as_object_mut()
+            .expect("evidence must serialize as an object");
+        match rebuild_contract_version {
+            Some(version) => {
+                evidence_object.insert(
+                    "rebuildContractVersion".to_string(),
+                    json!(version),
+                );
+            }
+            None => {
+                evidence_object.remove("rebuildContractVersion");
+            }
+        }
+        let mut outcome = successful_outcome();
+        outcome["skipEvidence"] = stored_evidence;
+        insert_completed_verify_run(&db, "completed", Some(outcome));
+
+        let decision = db
+            .with_conn(|conn| evaluate_completed_run_skip(conn, &expectation()))
+            .expect("evaluate stale rebuild coordinate");
+        assert!(
+            matches!(decision, CompletedRunSkipDecision::Rerun { .. }),
+            "{label} Rebuild contract coordinate must invalidate Verify skip evidence"
+        );
+    }
+}
+
+#[test]
 fn equal_maximal_verify_created_at_is_ambiguous_regardless_of_run_id_order() {
     for (successful_id, failed_id) in [
         ("verify-success-a", "verify-failed-z"),

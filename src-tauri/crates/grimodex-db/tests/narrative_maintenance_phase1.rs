@@ -3,11 +3,14 @@
 //! These tests pin the Rust-owned coordinate, durable discovery, completion
 //! evidence, and same-Database phase dispatch boundary.
 
-use grimodex_db::narrative_extraction::ensure_test_schema;
+use grimodex_db::narrative_extraction::{digest_plan, ensure_test_schema};
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     discover_durable_maintenance_work, plan_maintenance_trigger, run_system_work_cycle,
     AutomaticRunKind, MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceTrigger,
     RecoveryMode, REBUILD_DERIVED_WORK_KEY,
+};
+use grimodex_db::narrative_extraction::{
+    run_dependency_verify_for_project, REBUILD_RUN_KIND_CONTRACT_VERSION,
 };
 use grimodex_db::Database;
 use rusqlite::params;
@@ -78,6 +81,123 @@ fn seed_completed_backfill(db: &Database) {
         Ok(())
     })
     .expect("seed completed Backfill boundary");
+}
+
+fn rebuild_summary() -> serde_json::Value {
+    json!({
+        "consumersEvaluated": 0,
+        "edgesEvaluated": 0,
+        "consumersSkippedUnresolvableScope": 0,
+        "edgesSkippedUnresolvableScope": 0
+    })
+}
+
+fn rebuild_outcome(contract_version: Option<&str>) -> String {
+    let summary = rebuild_summary();
+    let mut outcome = json!({
+        "semanticEpochId": EPOCH_ID,
+        "summaryDigest": format!("sha256:{}", digest_plan(&summary)),
+        "summary": summary,
+    });
+    if let Some(contract_version) = contract_version {
+        outcome["rebuildContractVersion"] = json!(contract_version);
+    }
+    outcome.to_string()
+}
+
+fn seed_completed_rebuild(db: &Database, outcome_json: &str) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('phase1-rebuild-completed', ?1, 'maintenance', '{}', '{}', 'digest',
+                     'completed', '{}', '2026-08-22T00:00:00.000Z',
+                     '2026-08-22T00:00:01.000Z', ?2, 'semantic-index-rebuild', ?3,
+                     'dependency-rebuild-derived')",
+            params![PROJECT_ID, outcome_json, EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed completed Rebuild outcome");
+}
+
+#[test]
+fn rebuild_contract_mismatch_is_repaired_after_verify_and_current_rebuild_does_not_loop() {
+    for (label, outcome_json, expected_kind) in [
+        (
+            "old",
+            rebuild_outcome(Some("0")),
+            Some(AutomaticRunKind::RebuildDerived),
+        ),
+        (
+            "missing",
+            rebuild_outcome(None),
+            Some(AutomaticRunKind::RebuildDerived),
+        ),
+        (
+            "malformed",
+            "{not-json".to_string(),
+            Some(AutomaticRunKind::RebuildDerived),
+        ),
+        (
+            "current",
+            rebuild_outcome(Some(REBUILD_RUN_KIND_CONTRACT_VERSION)),
+            None,
+        ),
+    ] {
+        let db = fixture_db();
+        seed_completed_backfill(&db);
+        seed_completed_rebuild(&db, &outcome_json);
+        run_dependency_verify_for_project(&db, PROJECT_ID)
+            .expect("current Verify must seal evidence before Rebuild validation");
+
+        let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "durable-wake")
+            .expect("Rebuild contract discovery")
+            .map(|work| work.run_kind);
+        assert_eq!(
+            discovered, expected_kind,
+            "{label} Rebuild contract coordinate discovery"
+        );
+    }
+}
+
+#[test]
+fn old_same_epoch_rebuild_runs_verify_rebuild_and_confirmation_verify() {
+    let db = fixture_db();
+    seed_completed_backfill(&db);
+    seed_completed_rebuild(&db, &rebuild_outcome(Some("0")));
+
+    let request: MaintenanceCycleRequest = serde_json::from_value(json!({
+        "work": [],
+        "wakeProjectIds": [PROJECT_ID]
+    }))
+    .expect("durable wake request");
+    let result = run_system_work_cycle(&db, &request, RecoveryMode::SameProcessLive)
+        .expect("old Rebuild contract must execute the repair sequence");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+
+    let (verify_count, rebuild_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    SUM(CASE WHEN run_kind = 'dependency-verify' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN run_kind = 'semantic-index-rebuild' THEN 1 ELSE 0 END)
+                   FROM narrative_extraction_runs WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read Rebuild contract repair sequence");
+    assert_eq!(verify_count, 2, "Verify must bracket the repaired Rebuild");
+    assert_eq!(rebuild_count, 2, "one new Rebuild must follow the old contract");
+    assert!(
+        discover_durable_maintenance_work(&db, PROJECT_ID, "durable-wake")
+            .expect("rediscover repaired maintenance")
+            .is_none(),
+        "current Rebuild plus confirmation Verify must not loop"
+    );
 }
 
 #[test]
