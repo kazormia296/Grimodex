@@ -869,6 +869,69 @@ test("restore fixture requires a typed completed legacy Backfill boundary", asyn
   );
 });
 
+test("restore journey must exercise the Settings backup UI and rebind after reload", async () => {
+  const source = await readFile(
+    new URL(
+      "../electron/scripts/narrative-maintenance-product-journeys.mjs",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const helperBody = source.match(
+    /async function restoreBackupThroughSettingsUi\([\s\S]*?\n}\n\nasync function runRestoreVerifyRebuildVerify/,
+  )?.[0];
+  const journeyBody = source.match(
+    /async function runRestoreVerifyRebuildVerify\([\s\S]*?\n}\n\nasync function runDigestChangeJourney/,
+  )?.[0];
+  assert.ok(helperBody, "restore UI helper must remain inspectable");
+  assert.ok(journeyBody, "restore journey helper must remain inspectable");
+  assert.match(
+    journeyBody,
+    /restoreBackupThroughSettingsUi\(context, fixtureEvidence\.backupName\)/,
+    "restore must call the production Settings UI helper",
+  );
+  assert.doesNotMatch(
+    journeyBody,
+    /invokeOk\(context\.page,\s*"restore_backup"/,
+    "restore journey must not bypass the production UI with raw restore_backup IPC",
+  );
+  assert.match(
+    helperBody,
+    /getByTestId\("settings-dialog"\)/,
+    "restore helper must open the real Settings dialog",
+  );
+  assert.match(
+    helperBody,
+    /getByRole\("button", \{ name: "Data", exact: true \}\)/,
+    "restore helper must select the Data category",
+  );
+  assert.match(
+    helperBody,
+    /name: \/\^\(\?:Restore\|復元\)\$\//,
+    "restore helper must perform the first restore click",
+  );
+  assert.match(
+    helperBody,
+    /name: \/\^\(\?:Replace & restore\|全体を置換して復元\)\$\//,
+    "restore helper must perform the explicit destructive confirmation",
+  );
+  assert.match(
+    helperBody,
+    /framenavigated[\s\S]*frame === page\.mainFrame\(\)/,
+    "restore helper must observe the main-frame reload",
+  );
+  assert.match(
+    journeyBody,
+    /contextForLaunch\([\s\S]*beforeRestoreRuns[\s\S]*restore\/reload project hydration/,
+    "restore journey must rebind context and wait for post-reload hydration",
+  );
+  assert.match(
+    journeyBody,
+    /candidate\.projectId !== context\.projectId/,
+    "restore journey must prove project authority is unchanged after reload",
+  );
+});
+
 test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoch", () => {
   const beforeEpochs = [
     { id: "epoch-initial", epochNumber: 0, reason: "initial" },
