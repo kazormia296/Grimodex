@@ -8906,6 +8906,71 @@ mod narrative_maintenance_foreground_release_tests {
             grimodex_db::narrative_extraction::AutomaticRunKind::RebuildDerived
         );
         assert_eq!(next.semantic_epoch_id.as_deref(), Some("epoch-1"));
+
+        // The completed marked Verify consumed the one-shot foreground slot
+        // for this barrier/correlation.  A later public cycle must still
+        // discover and execute the Rebuild phase, but its Run must remain
+        // ordinary and unmarked.
+        let next_cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [],
+                    "wakeProjectIds": ["project-1"],
+                    "workspaceBinding": binding,
+                }))
+                .await
+                .expect("public follow-up cycle"),
+        )
+        .expect("public follow-up cycle JSON");
+        assert_eq!(next_cycle["status"], "accepted");
+
+        let all_rows: Vec<(String, String, String, String)> = authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, run_kind, status, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1'
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read completed phase chain");
+        let rebuild_rows: Vec<_> = all_rows
+            .iter()
+            .filter(|(_, run_kind, _, _)| run_kind == "semantic-index-rebuild")
+            .collect();
+        assert_eq!(rebuild_rows.len(), 1);
+        assert_eq!(rebuild_rows[0].2, "completed");
+        let rebuild_spec: Value =
+            serde_json::from_str(&rebuild_rows[0].3).expect("Rebuild spec JSON");
+        assert!(
+            rebuild_spec.get("systemWork").is_none(),
+            "follow-up Rebuild must not receive a second foreground marker"
+        );
+
+        let mut marked_run_ids = Vec::new();
+        for (run_id, _, _, spec_json) in &all_rows {
+            let spec: Value = serde_json::from_str(spec_json).expect("phase spec JSON");
+            if spec.get("systemWork").is_some() {
+                marked_run_ids.push(run_id.clone());
+            }
+        }
+        assert_eq!(
+            marked_run_ids,
+            vec![rows[0].0.clone()],
+            "the completed first marker must be the sole marker for this correlation"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
