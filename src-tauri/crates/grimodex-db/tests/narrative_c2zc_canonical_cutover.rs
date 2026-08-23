@@ -43,6 +43,11 @@ fn fixture_db() -> Database {
     db.migrate().expect("migrate database");
     db.with_conn(|conn| {
         ensure_test_schema(conn)?;
+        // `Database::migrate()` materialises a default project for the
+        // application shell.  This workspace-scoped contract fixture owns a
+        // single project; leaving that seed row would correctly make C2-ZA
+        // report the unseeded project's current epoch as missing.
+        conn.execute("DELETE FROM projects WHERE id = 'default-project'", [])?;
         conn.execute(
             "INSERT INTO projects (id, title) VALUES (?1, 'C2-ZC fixture')",
             [PROJECT_ID],
