@@ -26,6 +26,17 @@ const journeySourcePromise = readFile(
   ),
   "utf8",
 );
+const runtimeSourcePromise = readFile(
+  new URL(
+    "../src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const schedulerSourcePromise = readFile(
+  new URL("../electron/main/narrativeMaintenance.ts", import.meta.url),
+  "utf8",
+);
 
 test("production fault seam consumes an exact AppState-bound identity", async () => {
   const [stateSource, nativeSource] = await Promise.all([
@@ -60,22 +71,66 @@ test("production fault seam consumes an exact AppState-bound identity", async ()
   );
 });
 
-test("process interruption is guarded as a native-only typed CI exit", async () => {
+test("process interruption returns a strict ACK for the main-only delayed exit owner", async () => {
   const nativeSource = await nativeSourcePromise;
   assert.match(
     nativeSource,
     /NarrativeMaintenanceCiFault::ProcessInterruption/,
     "only the closed typed fault may select process interruption",
   );
-  assert.match(
+  assert.doesNotMatch(
     nativeSource,
     /std::process::exit\(/,
-    "the interruption journey must terminate the main process after durable Run creation",
+    "the N-API worker must not race the product poll by terminating the process",
+  );
+  assert.match(
+    nativeSource,
+    /ci-process-interruption-pending/,
+    "the N-API worker must return a strict internal interruption ACK",
   );
   assert.match(
     nativeSource,
     /is_packaged|isPackaged/,
     "the native path must retain the unpackaged CI gate",
+  );
+  const schedulerSource = await schedulerSourcePromise;
+  assert.match(
+    schedulerSource,
+    /onCiProcessInterruption/,
+    "main scheduler must own the typed interruption callback",
+  );
+  assert.match(
+    schedulerSource,
+    /scheduleNarrativeMaintenanceProcessInterruption[\s\S]*process\.exit\(/,
+    "only the validated main callback may schedule the delayed process exit",
+  );
+});
+
+test("fault preflight runs before claim/injection and terminal faults ACK without retry", async () => {
+  const [nativeSource, runtimeSource, schedulerSource] = await Promise.all([
+    nativeSourcePromise,
+    runtimeSourcePromise,
+    schedulerSourcePromise,
+  ]);
+  const preflightAt = nativeSource.indexOf(
+    "preflight_maintenance_cycle_request(&request)",
+  );
+  const claimAt = nativeSource.indexOf("claim_fault_for_binding");
+  assert.ok(preflightAt >= 0 && claimAt > preflightAt);
+  assert.match(
+    runtimeSource,
+    /pub fn preflight_maintenance_cycle_request[\s\S]*validate_dispatch_contract\(item\)/,
+    "shared preflight must enforce the complete dispatch contract, not an N-API allowlist",
+  );
+  assert.match(
+    nativeSource,
+    /ci-terminal-fault-handled/,
+    "terminal contract failure must be a durable handled ACK",
+  );
+  assert.match(
+    schedulerSource,
+    /ci-terminal-fault-handled/,
+    "main must clear a terminal fault without entering the generic retry path",
   );
 });
 
