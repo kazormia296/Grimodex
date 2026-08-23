@@ -23,6 +23,7 @@ const BUNDLED_PRODUCER_REGISTRY: &str = include_str!(concat!(
 const GRAPH_CONTRACT_DOMAIN: &str = "grimodex:narrative:graph-contract:v1";
 const FINDING_RULE_DOMAIN: &str = "grimodex:narrative:finding-rule-registry:v1";
 const PRODUCER_GENERATION_DOMAIN: &str = "grimodex:narrative:producer-generation-set:v1";
+const CI_COORDINATE_MISMATCH_DOMAIN: &str = "grimodex:narrative:ci-coordinate-mismatch:v1";
 
 const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str)] = &[
     (
@@ -394,6 +395,33 @@ fn producer_generation_set_digest(registry: &DependencyProducerRegistry) -> Resu
 fn domain_digest(domain: &str, value: &serde_json::Value) -> Result<String> {
     let canonical = serde_json::to_vec(&(domain, value))?;
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(canonical))))
+}
+
+/// Derive the deterministic, test-only mismatch value for one Rust-owned
+/// coordinate. The baseline coordinate is read from the current executable
+/// contract; JavaScript never supplies either the baseline or the resulting
+/// digest. Keeping the target name in the domain-separated input makes each
+/// trigger stable while ensuring it cannot accidentally reuse another target's
+/// value.
+pub fn derive_ci_coordinate_mismatch_digest(
+    coordinate_name: &str,
+    baseline: &str,
+) -> Result<String> {
+    ensure!(
+        !coordinate_name.trim().is_empty(),
+        "coordinate name is required"
+    );
+    ensure!(
+        baseline.starts_with("sha256:") && baseline.len() == "sha256:".len() + 64,
+        "baseline coordinate must be a canonical sha256 digest"
+    );
+    domain_digest(
+        CI_COORDINATE_MISMATCH_DOMAIN,
+        &json!({
+            "coordinate": coordinate_name,
+            "baseline": baseline,
+        }),
+    )
 }
 
 #[cfg(test)]

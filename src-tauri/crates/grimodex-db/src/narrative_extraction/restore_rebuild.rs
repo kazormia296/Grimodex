@@ -28,7 +28,9 @@ use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
     MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
-use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_contracts::{
+    current_maintenance_coordinates, MaintenanceContractCoordinates,
+};
 use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
@@ -1215,7 +1217,23 @@ pub fn run_dependency_verify_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<VerifyRunOutcome> {
+    run_dependency_verify_for_project_with_coordinates(db, project_id, None)
+}
+
+/// Run Verify while sealing skip evidence against one Native-selected
+/// coordinate set. The ordinary API keeps the compiled current coordinates;
+/// the main-only CI seam passes the effective set computed for the same live
+/// authority and never a JavaScript-provided digest.
+pub fn run_dependency_verify_for_project_with_coordinates(
+    db: &Database,
+    project_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<VerifyRunOutcome> {
     require_non_empty(project_id, "projectId")?;
+    let effective_coordinates = match coordinates {
+        Some(coordinates) => coordinates.clone(),
+        None => current_maintenance_coordinates()?,
+    };
     let epoch_id = db
         .with_conn(|conn| get_current_epoch(conn, project_id))?
         .map(|epoch| epoch.id)
@@ -1275,7 +1293,6 @@ pub fn run_dependency_verify_for_project(
                     let finalized_at =
                         transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
                     if report.is_clean() {
-                        let coordinates = current_maintenance_coordinates()?;
                         persist_completed_run_skip_evidence_in_tx(
                             conn,
                             &run_id,
@@ -1284,9 +1301,9 @@ pub fn run_dependency_verify_for_project(
                                 run_kind: VERIFY_RUN_KIND.to_string(),
                                 work_key: format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                                 semantic_epoch_id: epoch_id.clone(),
-                                graph_contract_digest: coordinates.graph_contract_digest,
-                                rule_registry_digest: coordinates.rule_registry_digest,
-                                producer_generation_set_digest: coordinates
+                                graph_contract_digest: effective_coordinates.graph_contract_digest,
+                                rule_registry_digest: effective_coordinates.rule_registry_digest,
+                                producer_generation_set_digest: effective_coordinates
                                     .producer_generation_set_digest,
                                 run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                                 report_digest: report_digest.clone(),

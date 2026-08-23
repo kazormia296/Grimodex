@@ -64,6 +64,7 @@ import {
 } from "./productJourneyAi.js";
 import {
   configureNarrativeMaintenanceCiSeam,
+  shouldDisableNarrativeMaintenanceForLaunch,
   type NarrativeMaintenanceCiBackend,
 } from "./narrativeMaintenanceCiSeam.js";
 
@@ -170,6 +171,8 @@ if (!gotSingleInstanceLock) {
         env: process.env,
       },
     );
+    const suppressNarrativeMaintenance =
+      shouldDisableNarrativeMaintenanceForLaunch(narrativeMaintenanceCiSeam);
     const backend = wrapBackendForProductJourneyAi(
       initializedBackend,
       shouldUseProductJourneyAi({ isPackaged: app.isPackaged }),
@@ -416,22 +419,27 @@ if (!gotSingleInstanceLock) {
     let narrativeMaintenanceTriggers: ReturnType<
       typeof createNarrativeMaintenanceTriggerCoordinator
     > | null = null;
-    const narrativeMaintenance = createNarrativeMaintenanceScheduler(backend, {
-      onWorkspaceBindingMismatch: () => {
-        narrativeMaintenanceTriggers?.requestRediscovery();
-      },
-      onCycleAccepted: () => {
-        narrativeMaintenanceTriggers?.requestRediscovery();
-      },
-    });
-    narrativeMaintenanceTriggers =
-      createNarrativeMaintenanceTriggerCoordinator(
-        backend,
-        narrativeMaintenance,
-      );
+    let narrativeMaintenance: ReturnType<
+      typeof createNarrativeMaintenanceScheduler
+    > | null = null;
+    if (!suppressNarrativeMaintenance) {
+      narrativeMaintenance = createNarrativeMaintenanceScheduler(backend, {
+        onWorkspaceBindingMismatch: () => {
+          narrativeMaintenanceTriggers?.requestRediscovery();
+        },
+        onCycleAccepted: () => {
+          narrativeMaintenanceTriggers?.requestRediscovery();
+        },
+      });
+      narrativeMaintenanceTriggers =
+        createNarrativeMaintenanceTriggerCoordinator(
+          backend,
+          narrativeMaintenance,
+        );
+    }
     licenseValidation.start();
     narrativeFreshness.start();
-    narrativeMaintenance.start();
+    narrativeMaintenance?.start();
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
@@ -440,7 +448,7 @@ if (!gotSingleInstanceLock) {
       licenseValidation.dispose();
       narrativeFreshness.dispose();
       narrativeMaintenanceTriggers?.dispose();
-      narrativeMaintenance.dispose();
+      narrativeMaintenance?.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();
