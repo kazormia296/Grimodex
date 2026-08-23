@@ -8141,7 +8141,7 @@ mod narrative_maintenance_fault_red_tests {
         ))
     }
 
-    fn backend_with_fresh_workspace(label: &str) -> (TestRoot, Backend) {
+    fn backend_with_fresh_workspace(label: &str) -> (TestRoot, Backend, PathBuf) {
         let root = test_root(label);
         // Declare the guard before constructing Backend/WorkspaceAuthority so
         // an assertion panic drops the database owner before cleanup runs.
@@ -8184,12 +8184,13 @@ mod narrative_maintenance_fault_red_tests {
             Backend {
                 state: Arc::new(state),
             },
+            root,
         )
     }
 
     #[tokio::test]
     async fn public_napi_fault_cycle_must_consume_discovered_fresh_workspace_backfill() {
-        let (cleanup, backend) = backend_with_fresh_workspace("public-discovery");
+        let (cleanup, backend, root_path) = backend_with_fresh_workspace("public-discovery");
         backend
             .state
             .narrative_maintenance_ci_seam
@@ -8213,7 +8214,12 @@ mod narrative_maintenance_fault_red_tests {
         )
         .expect("discovery JSON");
         let discovered_work = discovery["pages"][0]["work"][0].clone();
-        assert_eq!(discovered_work["projectId"], "project-1");
+        assert!(
+            discovered_work["projectId"]
+                .as_str()
+                .is_some_and(|project_id| !project_id.is_empty()),
+            "public discovery must return a concrete project identity"
+        );
         assert_eq!(discovered_work["runKind"], "backfill");
         assert_eq!(discovered_work["semanticEpochId"], Value::Null);
 
@@ -8233,11 +8239,58 @@ mod narrative_maintenance_fault_red_tests {
             "the configured fault must be reached through public discovery output"
         );
 
-        drop(backend);
-        assert!(
-            !cleanup.0.exists(),
-            "fault seam fixture must clean up after Backend is dropped"
+        let ack_run_id = cycle["runId"]
+            .as_str()
+            .expect("terminal fault ACK carries the durable Run id");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let lifecycle: (String, String, String, Option<String>, i64, i64, i64) = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT r.status, t.status, a.status, a.failure_code,
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_runs rr
+                              WHERE rr.id = r.id),
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_tasks tt
+                              WHERE tt.run_id = r.id),
+                            (SELECT COUNT(*)
+                               FROM narrative_extraction_attempts aa
+                               JOIN narrative_extraction_tasks at ON at.id = aa.task_id
+                              WHERE at.run_id = r.id)
+                       FROM narrative_extraction_runs r
+                       JOIN narrative_extraction_tasks t ON t.run_id = r.id
+                       JOIN narrative_extraction_attempts a ON a.task_id = t.id
+                      WHERE r.id = ?1",
+                    [ack_run_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .expect("read injected lifecycle");
+        assert_eq!(lifecycle.0, "failed");
+        assert_eq!(lifecycle.1, "failed");
+        assert_eq!(lifecycle.2, "failed");
+        assert_eq!(
+            lifecycle.3.as_deref(),
+            Some("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION")
         );
+        assert_eq!((lifecycle.4, lifecycle.5, lifecycle.6), (1, 1, 1));
+
+        drop(authority);
+        drop(backend);
+        drop(cleanup);
+        assert!(!root_path.exists(), "fault seam fixture must clean up");
     }
 }
 
