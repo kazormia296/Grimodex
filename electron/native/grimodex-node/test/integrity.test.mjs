@@ -38,6 +38,30 @@ backend.onEvent((channel, payload) => {
   maintenanceEvents.push(JSON.parse(payload));
 });
 
+function projectPayload(projectId) {
+  const occurredAt = "2026-08-23T00:00:00.000Z";
+  return {
+    projectId,
+    requestId: `${projectId}-request`,
+    sessionId: `${projectId}-session`,
+    eventUid: `${projectId}-event`,
+    origin: "human",
+    originalTransactionId: null,
+    undoJournalId: null,
+    title: projectId,
+    genre: null,
+    pov: null,
+    tense: null,
+    language: "en",
+    styleGuide: null,
+    aiInstructions: null,
+    outline: null,
+    targetReaders: null,
+    createdAt: occurredAt,
+    updatedAt: occurredAt,
+  };
+}
+
 function maintenanceEventBaseline() {
   return maintenanceEvents.length;
 }
@@ -307,11 +331,8 @@ test("failed snapshot restore emits no epoch wake", async () => {
 });
 
 test("non-noop repair emits one observer-only epoch wake and replay emits none", async () => {
-  await backend.dbExecute(
-    "INSERT INTO projects (id, title) VALUES (?, ?), (?, ?)",
-    ["repair-event-p1", "Repair one", "repair-event-p2", "Repair two"],
-    "run",
-  );
+  await backend.projectCreate(projectPayload("repair-event-p1"));
+  await backend.projectCreate(projectPayload("repair-event-p2"));
   await backend.dbExecute(
     "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order) VALUES (?, ?, ?, ?, ?)",
     ["repair-event-scene", "repair-event-p2", "scene", "Foreign scene", "a0"],
@@ -397,11 +418,7 @@ test("non-noop repair emits one observer-only epoch wake and replay emits none",
 test("non-noop snapshot restore emits once, replay emits none, and first no-op emits none", async () => {
   const projectId = "snapshot-event-p1";
   const snapshotId = "snapshot-event-s1";
-  await backend.dbExecute(
-    "INSERT INTO projects (id, title) VALUES (?, ?)",
-    [projectId, "Snapshot event"],
-    "run",
-  );
+  await backend.projectCreate(projectPayload(projectId));
   await backend.dbExecute(
     "INSERT INTO labels (id, project_id, name, color) VALUES (?, ?, ?, ?)",
     ["snapshot-event-label", projectId, "Before", "#111111"],
