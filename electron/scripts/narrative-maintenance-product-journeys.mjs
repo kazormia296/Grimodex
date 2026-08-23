@@ -516,13 +516,15 @@ export function assertWallClockIntervalContains(
 
 export function parseInstant(value, label = "timestamp") {
   const text = typeof value === "string" ? value : "";
-  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(
-    text,
-  );
-  const legacyNaive = /^(\d{4})-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(text);
+  // Chrono's `%Y` parser accepts one to four unsigned digits, or a leading
+  // sign followed by one or more digits, across its signed proleptic range.
+  // RFC3339 intentionally remains the stricter four-unsigned-digit grammar.
+  const legacyNaive = /^([+\-]?\d+)-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
     text,
   );
   const match = rfc3339 ?? legacyNaive;
+  const isLegacyNaive = !rfc3339 && Boolean(legacyNaive);
   if (!match) {
     throw new Error(
       `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
@@ -541,6 +543,18 @@ export function parseInstant(value, label = "timestamp") {
     offsetText,
   ] = match;
   const year = Number(yearText);
+  const yearHasSign = /^[+\-]/.test(yearText);
+  const yearDigits = yearHasSign ? yearText.slice(1) : yearText;
+  if (
+    (isLegacyNaive && !yearHasSign && yearDigits.length > 4) ||
+    !Number.isSafeInteger(year) ||
+    year < -262_144 ||
+    year > 262_143
+  ) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
   const month = Number(monthText);
   const day = Number(dayText);
   const hour = Number(hourText);
