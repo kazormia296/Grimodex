@@ -19,12 +19,12 @@ use sha2::{Digest, Sha256};
 use super::change_feed::{
     get_changes_since, NarrativeChangeEventRecord, CANONICAL_TEXT_NORMALIZER_VERSION,
 };
-use super::consumer_identity::is_declared_consumer_kind;
+use super::consumer_identity::{is_declared_consumer_kind, APPLICATION_CONSUMER_KIND};
 use super::cursor_reservation::{
     acknowledge_cursor_reservation_in_tx, release_cursor_reservation_in_tx,
     reserve_cursor_range_in_tx,
 };
-use super::dependency_edges::{find_edges_by_source, DependencyEdge};
+use super::dependency_edges::{find_edges_by_consumer, find_edges_by_source, DependencyEdge};
 use super::evaluator::{
     evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
@@ -1100,6 +1100,17 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         anyhow::bail!("{error}");
     }
     let identities = affected_source_identities(&batch.project_id, &batch.events)?;
+    // An Apply can create a new Application whose Feed event has no Source
+    // locator (for example a chronicle event).  The typed transaction still
+    // carries the exact Application identities it declared; include those
+    // Consumers directly so the same evaluation/publish guards produce their
+    // current-epoch Generic Freshness row.  This is deliberately a forward
+    // lookup by the declared identity, never a scanner or inferred locator.
+    let declared_application_ids = batch
+        .events
+        .iter()
+        .flat_map(|event| event.application_ids.iter().cloned())
+        .collect::<BTreeSet<_>>();
     let signals = event_signals_by_source(&batch.project_id, &batch.events)?;
     let component_changed = batch.events.iter().any(is_component_schema_change);
     let requires_full_graph = batch.events.iter().any(requires_full_graph_evaluation);
@@ -1107,6 +1118,16 @@ fn evaluate_batch(db: &Database, batch: &ClaimedBatch) -> anyhow::Result<Evaluat
         let mut edges = BTreeMap::<String, DependencyEdge>::new();
         for identity in identities {
             for edge in find_edges_by_source(conn, &batch.project_id, &identity)? {
+                edges.insert(edge.id.clone(), edge);
+            }
+        }
+        for application_id in declared_application_ids {
+            for edge in find_edges_by_consumer(
+                conn,
+                &batch.project_id,
+                APPLICATION_CONSUMER_KIND,
+                &application_id,
+            )? {
                 edges.insert(edge.id.clone(), edge);
             }
         }
