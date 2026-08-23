@@ -8451,6 +8451,10 @@ mod narrative_maintenance_foreground_release_tests {
     }
 
     fn configure_foreground_seam(backend: &Backend) {
+        configure_foreground_seam_with_correlation(backend, "correlation-test");
+    }
+
+    fn configure_foreground_seam_with_correlation(backend: &Backend, correlation: &str) {
         backend
             .state
             .narrative_maintenance_ci_seam
@@ -8462,7 +8466,7 @@ mod narrative_maintenance_foreground_release_tests {
                 trigger: Some(NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake),
                 setup: None,
                 product_journey_barrier_id: Some("barrier-test".to_string()),
-                correlation: Some("correlation-test".to_string()),
+                correlation: Some(correlation.to_string()),
             })
             .expect("configure foreground seam");
     }
@@ -8571,6 +8575,31 @@ mod narrative_maintenance_foreground_release_tests {
                 Ok::<_, anyhow::Error>(())
             })
             .expect("rewrite foreground marker authority");
+    }
+
+    fn rewrite_foreground_marker_correlation(
+        authority: &PinnedWorkspaceDb,
+        run_id: &str,
+        correlation: &str,
+    ) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                let spec_json: String = conn.query_row(
+                    "SELECT spec_json FROM narrative_extraction_runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                )?;
+                let mut spec: Value = serde_json::from_str(&spec_json)?;
+                spec["systemWork"]["correlation"] = Value::String(correlation.to_string());
+                let updated_spec = serde_json::to_string(&spec)?;
+                conn.execute(
+                    "UPDATE narrative_extraction_runs SET spec_json = ?1 WHERE id = ?2",
+                    [updated_spec.as_str(), run_id],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("rewrite foreground marker correlation");
     }
 
     fn run_terminal_reason(authority: &PinnedWorkspaceDb, run_id: &str) -> Option<String> {
@@ -9149,7 +9178,14 @@ mod narrative_maintenance_foreground_release_tests {
             .remember(stale)
             .expect("retain stale process-local handle");
 
+        configure_foreground_seam_with_correlation(&backend, "correlation-current");
         duplicate_running_foreground_run(&authority, &run_a, "run-current");
+        rewrite_foreground_marker_correlation(&authority, "run-current", "correlation-current");
+        let config = backend
+            .state
+            .narrative_maintenance_ci_seam
+            .config()
+            .expect("reconfigured seam");
         let current = narrative_extraction::find_running_foreground_system_work_run(
             &authority, &config, &binding,
         )
@@ -9186,6 +9222,42 @@ mod narrative_maintenance_foreground_release_tests {
             .run_id,
             "run-current"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_duplicate_terminal_and_running_markers_fail_closed() {
+        let (backend, root) = backend_with_workspace("duplicate-terminal-running");
+        let (run_a, authority) = start_foreground_run(&backend).await;
+        let released: Value = serde_json::from_str(
+            &backend
+                .release_narrative_maintenance_foreground_barrier(
+                    "project-1".to_string(),
+                    run_a.clone(),
+                )
+                .await
+                .expect("release first marker"),
+        )
+        .expect("release JSON");
+        assert_eq!(released["status"], "completed");
+        duplicate_running_foreground_run(&authority, &run_a, "run-duplicate");
+
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+        let error = backend
+            .run_narrative_maintenance_cycle(serde_json::json!({
+                "work": [],
+                "wakeProjectIds": ["project-1"],
+                "workspaceBinding": binding,
+            }))
+            .await
+            .expect_err("duplicate exact markers must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_NOT_UNIQUE")
+        );
+        assert_eq!(run_status(&authority, &run_a), "completed");
+        assert_eq!(run_status(&authority, "run-duplicate"), "running");
         let _ = std::fs::remove_dir_all(root);
     }
 
