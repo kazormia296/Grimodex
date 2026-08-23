@@ -25,6 +25,7 @@ mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
 pub mod maintenance_contracts;
+mod maintenance_lifecycle;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub use maintenance_contracts::{

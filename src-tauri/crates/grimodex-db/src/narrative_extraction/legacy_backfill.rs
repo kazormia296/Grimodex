@@ -85,8 +85,14 @@ use super::dependency_edges::{
     canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
 };
 use super::digest_plan;
-use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
-use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
+use super::maintenance_lifecycle::{
+    canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
+    MaintenanceFailureKind,
+};
+#[cfg(test)]
+use super::repository::create_system_run_in_tx;
+use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::task_leases::with_immediate_transaction;
 use super::terminal_failure::{
@@ -370,7 +376,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
             if let Some(run_id) = find_valid_completed_backfill_run_id(conn, project_id)? {
                 return Ok((run_id, true));
             }
-            let created = create_system_run_in_tx(
+            let handle = create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 "backfill",
@@ -383,16 +389,8 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
                 // by generic work-key deduplication, or recovery would keep
                 // rediscovering it without ever dispatching a fresh Backfill.
                 SystemRunWorkKeyReuse::RunningOnly,
-                // No request identity: this Run is started by the system
-                // itself, not by an addressable caller request.
-                None,
             )?;
-            let run_id = created["runId"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-                .to_string();
-            let reused = created["reused"].as_bool().unwrap_or(false);
-            Ok((run_id, reused))
+            Ok((handle.run_id, handle.reused))
         })
     })?;
 
@@ -475,11 +473,6 @@ fn finalize_legacy_backfill_run(
     run_id: &str,
     transform_result: &anyhow::Result<BackfillSummary>,
 ) -> anyhow::Result<()> {
-    let finalize_status = if transform_result.is_ok() {
-        NarrativeRunStatus::Completed
-    } else {
-        NarrativeRunStatus::Failed
-    };
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             let semantic_epoch_id: Option<String> = conn.query_row(
@@ -511,17 +504,16 @@ fn finalize_legacy_backfill_run(
                 && super::maintenance_runtime::foreground_system_work_barrier_requested()
             {
                 // The product-journey owner releases this exact Run after a
-                // successful ordinary tree_node_patch. Keep the native
-                // outcome durable now, but do not terminalize the lifecycle
-                // before the foreground write overlaps it.
+                // successful ordinary tree_node_patch. Validate that the
+                // native lifecycle pair remains held with the Run.
+                let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                hold_maintenance_run_in_tx(conn, &handle)?;
                 return Ok(());
             }
-            // Bind terminal Finding evidence to the timestamp persisted by
-            // the terminal Run transition. This avoids a pre-transition
-            // clock sample becoming older than the completed Run itself.
-            let finalized_at = transition_run_status_in_tx(conn, run_id, finalize_status)?;
             match transform_result {
                 Ok(_) => {
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
                     resolve_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
@@ -530,11 +522,16 @@ fn finalize_legacy_backfill_run(
                     )?;
                 }
                 Err(error) => {
+                    let message = error.to_string();
+                    let failure_kind = maintenance_failure_kind_for_message(&message);
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at =
+                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         run_id,
-                        &error.to_string(),
+                        &canonical_failure_message(failure_kind, &message),
                         &finalized_at,
                         true,
                     )?;
@@ -543,6 +540,17 @@ fn finalize_legacy_backfill_run(
             Ok(())
         })
     })
+}
+
+fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
+    let classification = super::maintenance_runtime::classify_failure(message);
+    if classification.code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classification.retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
+    }
 }
 
 /// Status of the most recent Backfill Run for one project, if any --

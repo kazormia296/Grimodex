@@ -129,6 +129,29 @@ const RUN_COLUMNS = `
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id) AS attemptCount,
+  (SELECT COUNT(*)
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id) AS taskCount,
+  (SELECT t.status
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskStatus,
+  (SELECT t.input_json
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskInputJson,
+  (SELECT t.started_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskStartedAt,
+  (SELECT t.completed_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskCompletedAt,
   (SELECT MAX(a.attempt_number)
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
@@ -144,7 +167,69 @@ const RUN_COLUMNS = `
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
-    LIMIT 1) AS lastAttemptFailureCode`;
+    LIMIT 1) AS lastAttemptFailureCode,
+  (SELECT a.completed_at
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptCompletedAt`;
+
+function assertForegroundLifecycle(run, expectedStatus, label) {
+  if (Number(run?.taskCount ?? 0) !== 1 || Number(run?.attemptCount ?? 0) !== 1) {
+    throw new Error(
+      `${label} must own exactly one Task and Attempt: ${JSON.stringify({
+        runId: run?.id,
+        taskCount: run?.taskCount,
+        attemptCount: run?.attemptCount,
+      })}`,
+    );
+  }
+  if (run.taskStatus !== expectedStatus || run.lastAttemptStatus !== expectedStatus) {
+    throw new Error(
+      `${label} lifecycle status mismatch: ${JSON.stringify({
+        runId: run?.id,
+        expectedStatus,
+        taskStatus: run?.taskStatus,
+        attemptStatus: run?.lastAttemptStatus,
+      })}`,
+    );
+  }
+  if (typeof run.specJson !== "string" || run.taskInputJson !== run.specJson) {
+    throw new Error(
+      `${label} Task input did not preserve the full Run spec: ${JSON.stringify({
+        runId: run?.id,
+        specJson: run?.specJson,
+        taskInputJson: run?.taskInputJson,
+      })}`,
+    );
+  }
+  if (expectedStatus === "completed") {
+    if (
+      !run.completedAt ||
+      run.taskCompletedAt !== run.completedAt ||
+      run.lastAttemptCompletedAt !== run.completedAt
+    ) {
+      throw new Error(
+        `${label} Run, Task, and Attempt did not share one terminal timestamp: ${JSON.stringify({
+          runId: run?.id,
+          runCompletedAt: run?.completedAt,
+          taskCompletedAt: run?.taskCompletedAt,
+          attemptCompletedAt: run?.lastAttemptCompletedAt,
+        })}`,
+      );
+    }
+  } else if (run.completedAt || run.taskCompletedAt || run.lastAttemptCompletedAt) {
+    throw new Error(
+      `${label} running lifecycle unexpectedly has a terminal timestamp: ${JSON.stringify({
+        runId: run?.id,
+        runCompletedAt: run?.completedAt,
+        taskCompletedAt: run?.taskCompletedAt,
+        attemptCompletedAt: run?.lastAttemptCompletedAt,
+      })}`,
+    );
+  }
+}
 
 function rowsOf(result) {
   return Array.isArray(result?.rows) ? result.rows : [];
@@ -1899,6 +1984,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       },
       "foreground workspace wake exact running barrier",
     );
+    assertForegroundLifecycle(
+      runningBarrier,
+      "running",
+      "foreground running lifecycle",
+    );
     const foregroundWriteStartedAt = Date.now();
     context.record("foreground-write-started-while-scheduler-running", {
       schedulerRunId: runningBarrier.id,
@@ -1923,6 +2013,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
         )}`,
       );
     }
+    assertForegroundLifecycle(
+      runAtPatchCompletion,
+      "running",
+      "foreground lifecycle at tree_node_patch completion",
+    );
     assertImmutableForegroundMarker(
       runAtPatchCompletion,
       markerExpectation,
@@ -1943,6 +2038,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
         return exact;
       },
       "foreground workspace wake exact Run completion",
+    );
+    assertForegroundLifecycle(
+      completedSchedulerRun,
+      "completed",
+      "foreground completed lifecycle",
     );
     const schedulerStartedAt = parseInstant(
       completedSchedulerRun.startedAt,

@@ -17,6 +17,14 @@ use super::legacy_backfill::{
     LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_lifecycle::{
+    ensure_recovery_lifecycle_is_empty_in_tx, fail_maintenance_run_in_tx,
+    load_maintenance_run_in_tx, synthesize_recovery_lifecycle_in_tx, MaintenanceFailureKind,
+    MaintenanceRunHandle,
+};
+use super::maintenance_lifecycle::{
+    load_completed_maintenance_run_in_tx, release_foreground_maintenance_run_in_tx,
+};
 use super::maintenance_skip_evidence::{
     evaluate_completed_run_skip, persist_completed_run_skip_evidence_in_tx,
     CompletedRunSkipDecision, CompletedRunSkipEvidence, CompletedRunSkipExpectation,
@@ -339,28 +347,36 @@ pub struct NarrativeSystemWorkMarker {
 impl NarrativeSystemWorkMarker {
     pub fn validate(&self) -> anyhow::Result<()> {
         anyhow::ensure!(
-            !self.trigger.trim().is_empty(),
-            "systemWork.trigger is required"
+            self.trigger == "workspace-opened",
+            "systemWork.trigger must be the native workspace-opened trigger"
         );
         anyhow::ensure!(
-            !self.canonical_work_key.trim().is_empty(),
-            "systemWork.canonicalWorkKey is required"
+            !self.canonical_work_key.is_empty()
+                && self.canonical_work_key == self.canonical_work_key.trim()
+                && !self.canonical_work_key.contains('\0'),
+            "systemWork.canonicalWorkKey must be trimmed and must not contain NUL"
         );
         anyhow::ensure!(
-            !self.authority_id.trim().is_empty(),
-            "systemWork.authorityId is required"
+            !self.authority_id.is_empty()
+                && self.authority_id == self.authority_id.trim()
+                && !self.authority_id.contains('\0'),
+            "systemWork.authorityId must be trimmed and must not contain NUL"
         );
         anyhow::ensure!(
             self.generation > 0 && self.generation <= NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
             "systemWork.generation must be a safe non-zero integer"
         );
         anyhow::ensure!(
-            !self.product_journey_barrier_id.trim().is_empty(),
-            "systemWork.productJourneyBarrierId is required"
+            !self.product_journey_barrier_id.is_empty()
+                && self.product_journey_barrier_id == self.product_journey_barrier_id.trim()
+                && !self.product_journey_barrier_id.contains('\0'),
+            "systemWork.productJourneyBarrierId must be trimmed and must not contain NUL"
         );
         anyhow::ensure!(
-            !self.correlation.trim().is_empty(),
-            "systemWork.correlation is required"
+            !self.correlation.is_empty()
+                && self.correlation == self.correlation.trim()
+                && !self.correlation.contains('\0'),
+            "systemWork.correlation must be trimmed and must not contain NUL"
         );
         Ok(())
     }
@@ -502,21 +518,19 @@ pub fn find_running_foreground_system_work_run(
             {
                 continue;
             }
-            let expected_key = canonical_work_key_for_epoch(
-                &project_id,
-                match run_kind.as_str() {
-                    "backfill" => AutomaticRunKind::Backfill,
-                    "dependency-verify" => AutomaticRunKind::Verify,
-                    "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
-                    _ => continue,
+            validate_foreground_run_identity(
+                conn,
+                &ForegroundSystemWorkRun {
+                    run_id: run_id.clone(),
+                    project_id: project_id.clone(),
+                    marker: marker.clone(),
                 },
+                &run_kind,
                 &work_key,
                 epoch_id.as_deref(),
+                &spec_json,
+                true,
             )?;
-            anyhow::ensure!(
-                marker.canonical_work_key == expected_key,
-                "NEX_MAINTENANCE_SYSTEM_WORK_MARKER_WORK_KEY_MISMATCH: Run '{run_id}' marker does not match its durable work identity"
-            );
             matches.push(ForegroundSystemWorkRun {
                 run_id,
                 project_id,
@@ -531,6 +545,70 @@ pub fn find_running_foreground_system_work_run(
     })
 }
 
+fn automatic_kind_for_run_kind(run_kind: &str) -> anyhow::Result<AutomaticRunKind> {
+    match run_kind {
+        "backfill" => Ok(AutomaticRunKind::Backfill),
+        "dependency-verify" => Ok(AutomaticRunKind::Verify),
+        "semantic-index-rebuild" => Ok(AutomaticRunKind::RebuildDerived),
+        other => anyhow::bail!(
+            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_KIND_MISMATCH: unsupported Run kind '{other}'"
+        ),
+    }
+}
+
+fn validate_foreground_run_identity(
+    conn: &Connection,
+    barrier: &ForegroundSystemWorkRun,
+    run_kind: &str,
+    work_key: &str,
+    epoch_id: Option<&str>,
+    spec_json: &str,
+    require_current_epoch: bool,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        barrier.project_id.trim() == barrier.project_id,
+        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_INVALID: project identity is not trimmed"
+    );
+    let spec: Value = serde_json::from_str(spec_json)?;
+    let persisted_marker: NarrativeSystemWorkMarker = serde_json::from_value(
+        spec.get("systemWork")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
+    )?;
+    persisted_marker.validate()?;
+    anyhow::ensure!(
+        persisted_marker == barrier.marker,
+        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
+    );
+    let kind = automatic_kind_for_run_kind(run_kind)?;
+    let expected_epochful_key =
+        canonical_work_key_for_epoch(&barrier.project_id, kind, work_key, epoch_id)?;
+    let expected_epochless_backfill_key =
+        canonical_work_key_for_epoch(&barrier.project_id, kind, work_key, None)?;
+    anyhow::ensure!(
+        persisted_marker.canonical_work_key == expected_epochful_key
+            || (kind == AutomaticRunKind::Backfill
+                && persisted_marker.canonical_work_key == expected_epochless_backfill_key),
+        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
+    );
+    let Some(epoch_id) = epoch_id else {
+        anyhow::ensure!(
+            kind == AutomaticRunKind::Backfill,
+            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_EPOCH_MISSING: foreground Run is not epoch-bound"
+        );
+        return Ok(());
+    };
+    if require_current_epoch {
+        let current_epoch_id = super::semantic_epoch::get_current_epoch(conn, &barrier.project_id)?
+            .map(|epoch| epoch.id);
+        anyhow::ensure!(
+            current_epoch_id.as_deref() == Some(epoch_id),
+            "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_STALE_EPOCH: foreground Run is not bound to the current Semantic Epoch"
+        );
+    }
+    Ok(())
+}
+
 /// Release one exact foreground Run after the ordinary authoring write has
 /// committed.  The Run is real durable work: its adapter recorded the native
 /// outcome before the barrier, and this owner-only transition supplies the
@@ -542,11 +620,11 @@ pub fn complete_foreground_system_work_run(
     barrier.marker.validate()?;
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            let row: Option<(String, String, String, Option<String>, String)> = conn
+            let row: Option<(String, String, String, String, Option<String>, String)> = conn
                 .query_row(
-                    "SELECT project_id, run_kind, work_key, semantic_epoch_id, spec_json
+                    "SELECT project_id, run_kind, work_key, status, semantic_epoch_id, spec_json
                        FROM narrative_extraction_runs
-                      WHERE id = ?1 AND status = 'running'",
+                      WHERE id = ?1",
                     params![barrier.run_id],
                     |row| {
                         Ok((
@@ -555,113 +633,40 @@ pub fn complete_foreground_system_work_run(
                             row.get(2)?,
                             row.get(3)?,
                             row.get(4)?,
+                            row.get(5)?,
                         ))
                     },
                 )
                 .optional()?;
-            let Some((project_id, run_kind, work_key, epoch_id, spec_json)) = row else {
-                // A duplicate tree_node_patch after the first successful
-                // release is idempotent only for the same immutable marker.
-                // Merely finding a completed row by runId must not allow an
-                // unrelated Run to satisfy this barrier.
-                let completed: Option<(String, String, String, Option<String>, String)> = conn
-                    .query_row(
-                        "SELECT project_id, run_kind, work_key, semantic_epoch_id, spec_json
-                           FROM narrative_extraction_runs
-                          WHERE id = ?1 AND status = 'completed'",
-                        params![barrier.run_id],
-                        |row| {
-                            Ok((
-                                row.get(0)?,
-                                row.get(1)?,
-                                row.get(2)?,
-                                row.get(3)?,
-                                row.get(4)?,
-                            ))
-                        },
-                    )
-                    .optional()?;
-                let Some((project_id, run_kind, work_key, epoch_id, spec_json)) = completed else {
-                    anyhow::bail!(
-                        "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running"
-                    );
-                };
-                anyhow::ensure!(
-                    project_id == barrier.project_id,
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_MISMATCH: exact foreground Run belongs to another project"
+            let Some((project_id, run_kind, work_key, status, epoch_id, spec_json)) = row else {
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running"
                 );
-                let spec: Value = serde_json::from_str(&spec_json)?;
-                let persisted_marker: NarrativeSystemWorkMarker = serde_json::from_value(
-                    spec.get("systemWork")
-                        .cloned()
-                        .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
-                )?;
-                persisted_marker.validate()?;
-                anyhow::ensure!(
-                    persisted_marker == barrier.marker,
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
-                );
-                let expected_key = canonical_work_key_for_epoch(
-                    &project_id,
-                    match run_kind.as_str() {
-                        "backfill" => AutomaticRunKind::Backfill,
-                        "dependency-verify" => AutomaticRunKind::Verify,
-                        "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
-                        _ => anyhow::bail!("foreground Run has unsupported maintenance kind"),
-                    },
-                    &work_key,
-                    epoch_id.as_deref(),
-                )?;
-                anyhow::ensure!(
-                    persisted_marker.canonical_work_key == expected_key,
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
-                );
-                return Ok(());
             };
             anyhow::ensure!(
                 project_id == barrier.project_id,
                 "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_MISMATCH: exact foreground Run belongs to another project"
             );
-            let spec: Value = serde_json::from_str(&spec_json)?;
-            let persisted_marker: NarrativeSystemWorkMarker = serde_json::from_value(
-                spec.get("systemWork")
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("foreground Run is missing systemWork marker"))?,
-            )?;
-            persisted_marker.validate()?;
             anyhow::ensure!(
-                persisted_marker == barrier.marker,
-                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_MARKER_MISMATCH: immutable marker changed"
+                status == "running" || status == "completed",
+                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_MISSING: exact foreground Run is not running or completed"
             );
-            let expected_key = canonical_work_key_for_epoch(
-                &project_id,
-                match run_kind.as_str() {
-                    "backfill" => AutomaticRunKind::Backfill,
-                    "dependency-verify" => AutomaticRunKind::Verify,
-                    "semantic-index-rebuild" => AutomaticRunKind::RebuildDerived,
-                    _ => anyhow::bail!("foreground Run has unsupported maintenance kind"),
-                },
+            validate_foreground_run_identity(
+                conn,
+                barrier,
+                &run_kind,
                 &work_key,
                 epoch_id.as_deref(),
+                &spec_json,
+                status == "running",
             )?;
-            anyhow::ensure!(
-                persisted_marker.canonical_work_key == expected_key,
-                "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_WORK_KEY_MISMATCH: immutable work identity changed"
-            );
-            if run_kind != "backfill" {
-                anyhow::ensure!(
-                    epoch_id.is_some(),
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_EPOCH_MISSING: foreground Run is not epoch-bound"
-                );
+            if status == "completed" {
+                // A duplicate release is idempotent only after the complete
+                // immutable lifecycle pair has been validated.
+                load_completed_maintenance_run_in_tx(conn, &barrier.run_id)?;
+                return Ok(());
             }
-            if let Some(epoch_id) = epoch_id.as_deref() {
-                let current_epoch_id = super::semantic_epoch::get_current_epoch(conn, &project_id)?
-                    .map(|epoch| epoch.id);
-                anyhow::ensure!(
-                    current_epoch_id.as_deref() == Some(epoch_id),
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_STALE_EPOCH: foreground Run is not bound to the current Semantic Epoch"
-                );
-            }
+            let handle = load_maintenance_run_in_tx(conn, &barrier.run_id)?;
             let mut outcome = match conn
                 .query_row(
                     "SELECT outcome_summary_json FROM narrative_extraction_runs WHERE id = ?1",
@@ -691,11 +696,7 @@ pub fn complete_foreground_system_work_run(
                 Value::String(barrier.marker.correlation.clone()),
             );
             super::repository::record_run_outcome_in_tx(conn, &barrier.run_id, &outcome)?;
-            let finalized_at = transition_run_status_in_tx(
-                conn,
-                &barrier.run_id,
-                NarrativeRunStatus::Completed,
-            )?;
+            let finalized_at = release_foreground_maintenance_run_in_tx(conn, &handle)?;
             if run_kind == VERIFY_RUN_KIND {
                 let epoch_id = epoch_id.as_ref().ok_or_else(|| {
                     anyhow::anyhow!(
@@ -2118,6 +2119,16 @@ pub struct FailureClassification {
 /// deliberately contract/manual failures (fail closed).
 pub fn classify_failure(message: &str) -> FailureClassification {
     let lower = message.to_ascii_lowercase();
+    let explicit_code = message
+        .split(|character: char| character == ':' || character.is_whitespace())
+        .find(|token| token.starts_with("NEX_"));
+    if explicit_code == Some("NEX_MAINTENANCE_INTERRUPTED") {
+        return FailureClassification {
+            class: FailureClass::Transient,
+            code: "NEX_MAINTENANCE_INTERRUPTED".to_string(),
+            retryable: true,
+        };
+    }
     let transient = [
         "sqlite_busy",
         "sqlite_locked",
@@ -2148,9 +2159,7 @@ pub fn classify_failure(message: &str) -> FailureClassification {
         };
     }
 
-    let code = message
-        .split(|character: char| character == ':' || character.is_whitespace())
-        .find(|token| token.starts_with("NEX_"))
+    let code = explicit_code
         .unwrap_or("NEX_MAINTENANCE_UNCLASSIFIED")
         .to_string();
     if matches!(
@@ -2604,8 +2613,9 @@ pub struct InterruptedRunTerminalization {
 }
 
 /// Safely terminalize explicit active Run IDs discovered by startup recovery.
-/// The operation is one `BEGIN IMMEDIATE` transaction and touches only the
-/// Run rows; it never creates or mutates Task/Attempt rows.
+/// The operation is one IMMEDIATE transaction. Running maintenance rows are
+/// terminalized through their owned Task/Attempt pair; pending compatibility
+/// rows are cancelled at Run level because they have not started an Attempt.
 pub fn terminalize_interrupted_runs(
     db: &Database,
     project_id: &str,
@@ -2794,31 +2804,64 @@ fn terminalize_interrupted_runs_impl(
                 cancelled_pending_run_ids: Vec::new(),
             };
             for (run_id, status) in active {
-                let target = match status {
+                match status {
                     NarrativeRunStatus::Running => {
                         result.failed_run_ids.push(run_id.clone());
-                        NarrativeRunStatus::Failed
+                        let handle = load_or_synthesize_recovery_lifecycle_in_tx(conn, &run_id)?;
+                        fail_maintenance_run_in_tx(
+                            conn,
+                            &handle,
+                            MaintenanceFailureKind::Interrupted,
+                            "NEX_MAINTENANCE_INTERRUPTED: process interruption",
+                        )?;
                     }
                     NarrativeRunStatus::Pending => {
+                        ensure_recovery_lifecycle_is_empty_in_tx(conn, &run_id)?;
                         result.cancelled_pending_run_ids.push(run_id.clone());
-                        NarrativeRunStatus::Cancelled
+                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Cancelled)?;
+                        anyhow::ensure!(
+                            conn.execute(
+                                "UPDATE narrative_extraction_runs
+                                    SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
+                                  WHERE id = ?1 AND status = 'cancelled'",
+                                params![run_id],
+                            )? == 1,
+                            "run terminalization lost its row: '{run_id}'"
+                        );
                     }
                     _ => unreachable!("active status was validated above"),
-                };
-                transition_run_status_in_tx(conn, &run_id, target)?;
-                anyhow::ensure!(
-                    conn.execute(
-                        "UPDATE narrative_extraction_runs
-                            SET terminal_reason_code = 'NEX_MAINTENANCE_INTERRUPTED'
-                          WHERE id = ?1 AND status = ?2",
-                        params![run_id, target.as_str()],
-                    )? == 1,
-                    "run terminalization lost its row: '{run_id}'"
-                );
+                }
             }
             Ok(result)
         })
     })
+}
+
+fn load_or_synthesize_recovery_lifecycle_in_tx(
+    conn: &Connection,
+    run_id: &str,
+) -> anyhow::Result<MaintenanceRunHandle> {
+    let strict_error = match load_maintenance_run_in_tx(conn, run_id) {
+        Ok(handle) => return Ok(handle),
+        Err(error) => error,
+    };
+    let task_count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let attempt_count: i64 = conn.query_row(
+        "SELECT COUNT(*)
+           FROM narrative_extraction_attempts a
+           JOIN narrative_extraction_tasks t ON t.id = a.task_id
+          WHERE t.run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    if task_count != 0 || attempt_count != 0 {
+        return Err(strict_error);
+    }
+    synthesize_recovery_lifecycle_in_tx(conn, run_id)
 }
 
 pub const fn retry_backoff_ms(attempt: u32) -> u64 {
@@ -2842,6 +2885,138 @@ mod tests {
     use rusqlite::params;
     use serde_json::json;
 
+    fn recovery_work(kind: AutomaticRunKind, epoch_id: &str) -> WorkKey {
+        let work_key = match kind {
+            AutomaticRunKind::Backfill => LEGACY_BACKFILL_WORK_KEY.to_owned(),
+            AutomaticRunKind::Verify => format!("{VERIFY_WORK_KEY_PREFIX}{epoch_id}"),
+            AutomaticRunKind::RebuildDerived => REBUILD_DERIVED_WORK_KEY.to_owned(),
+        };
+        WorkKey::new_for_epoch("project-1", kind, work_key, epoch_id).expect("recovery work")
+    }
+
+    fn recovery_spec(kind: AutomaticRunKind) -> &'static str {
+        match kind {
+            AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
+            AutomaticRunKind::Verify => r#"{"verifyContractVersion":"6"}"#,
+            AutomaticRunKind::RebuildDerived => "{}",
+        }
+    }
+
+    fn recovery_task_kind(kind: AutomaticRunKind) -> &'static str {
+        match kind {
+            AutomaticRunKind::Backfill => "maintenance-backfill",
+            AutomaticRunKind::Verify => "maintenance-dependency-verify",
+            AutomaticRunKind::RebuildDerived => "maintenance-semantic-index-rebuild",
+        }
+    }
+
+    fn open_pending_recovery_db() -> Database {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("migrate database");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                    (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-current', 'project-1', 0, 'initial',
+                         '2026-01-01T00:00:00.000Z'),
+                        ('epoch-stale', 'project-1', 1, 'restore',
+                         '2026-01-02T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed pending recovery project");
+        db
+    }
+
+    fn insert_pending_recovery_run(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+        kind: AutomaticRunKind,
+        epoch_id: &str,
+        work_key: &str,
+    ) -> anyhow::Result<()> {
+        conn.execute(
+            "INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, started_at, completed_at, version,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES (?1, 'project-1', 'maintenance', '{}', ?2, ?3,
+                     'pending', '{}', '2026-01-03T00:00:00.000Z', NULL, NULL, 0,
+                     ?4, ?5, ?6)",
+            params![
+                run_id,
+                recovery_spec(kind),
+                format!("digest:{run_id}"),
+                kind.as_str(),
+                epoch_id,
+                work_key,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn insert_recovery_children(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+        kind: AutomaticRunKind,
+        with_attempt: bool,
+    ) -> anyhow::Result<()> {
+        let task_id = format!("task-{run_id}");
+        conn.execute(
+            "INSERT INTO narrative_extraction_tasks
+                (id, run_id, task_kind, status, input_json, priority, attempt_count,
+                 created_at, started_at, version)
+             VALUES (?1, ?2, ?3, 'running', ?4, 0, ?5,
+                     '2026-01-03T00:00:00.000Z', '2026-01-03T00:00:00.000Z', 0)",
+            params![
+                task_id,
+                run_id,
+                recovery_task_kind(kind),
+                recovery_spec(kind),
+                if with_attempt { 1 } else { 0 },
+            ],
+        )?;
+        if with_attempt {
+            conn.execute(
+                "INSERT INTO narrative_extraction_attempts
+                    (id, task_id, attempt_number, status, started_at)
+                 VALUES (?1, ?2, 1, 'running', '2026-01-03T00:00:00.000Z')",
+                params![format!("attempt-{run_id}"), task_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    fn recovery_shape(
+        conn: &rusqlite::Connection,
+        run_id: &str,
+    ) -> anyhow::Result<(String, i64, i64)> {
+        let status = conn.query_row(
+            "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let task_count = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_tasks WHERE run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        let attempt_count = conn.query_row(
+            "SELECT COUNT(*)
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )?;
+        Ok((status, task_count, attempt_count))
+    }
+
     #[test]
     fn automatic_kind_set_is_closed() {
         assert_eq!(AutomaticRunKind::all().len(), 3);
@@ -2855,6 +3030,144 @@ mod tests {
             serde_json::to_string(&AutomaticRunKind::RebuildDerived).expect("serialize kind"),
             "\"semantic-index-rebuild\""
         );
+    }
+
+    #[test]
+    fn pending_interrupted_recovery_accepts_canonical_zero_child_runs_for_all_kinds() {
+        for kind in AutomaticRunKind::all() {
+            for stale in [false, true] {
+                let db = open_pending_recovery_db();
+                let run_id = format!("pending-{}-{}", kind.as_str(), stale);
+                let work = recovery_work(kind, "epoch-current");
+                let row_epoch = if stale {
+                    "epoch-stale"
+                } else {
+                    "epoch-current"
+                };
+                db.with_conn(|conn| {
+                    insert_pending_recovery_run(conn, &run_id, kind, row_epoch, &work.work_key)
+                })
+                .expect("seed canonical pending run");
+
+                let result = if stale {
+                    terminalize_stale_interrupted_runs_for_epoch(
+                        &db,
+                        "project-1",
+                        &work,
+                        "epoch-current",
+                        &[StaleActiveRun {
+                            run_id: run_id.clone(),
+                            semantic_epoch_id: Some("epoch-stale".to_owned()),
+                        }],
+                    )
+                } else {
+                    terminalize_interrupted_runs_for_epoch(
+                        &db,
+                        "project-1",
+                        &work,
+                        Some("epoch-current"),
+                        std::slice::from_ref(&run_id),
+                    )
+                };
+                let result = result.expect("canonical pending recovery succeeds");
+                assert_eq!(result.failed_run_ids, Vec::<String>::new());
+                assert_eq!(result.cancelled_pending_run_ids, vec![run_id.clone()]);
+                db.with_conn(|conn| {
+                    let (status, task_count, attempt_count) = recovery_shape(conn, &run_id)?;
+                    assert_eq!(status, "cancelled");
+                    assert_eq!(task_count, 0);
+                    assert_eq!(attempt_count, 0);
+                    Ok(())
+                })
+                .expect("inspect canonical pending recovery");
+            }
+        }
+    }
+
+    #[test]
+    fn pending_interrupted_recovery_rejects_owned_children_and_rolls_back_batch() {
+        for kind in AutomaticRunKind::all() {
+            for stale in [false, true] {
+                for with_attempt in [false, true] {
+                    let db = open_pending_recovery_db();
+                    let valid_id = format!("valid-{}-{}-{}", kind.as_str(), stale, with_attempt);
+                    let malformed_id =
+                        format!("malformed-{}-{}-{}", kind.as_str(), stale, with_attempt);
+                    let work = recovery_work(kind, "epoch-current");
+                    let row_epoch = if stale {
+                        "epoch-stale"
+                    } else {
+                        "epoch-current"
+                    };
+                    db.with_conn(|conn| {
+                        insert_pending_recovery_run(
+                            conn,
+                            &valid_id,
+                            kind,
+                            row_epoch,
+                            &work.work_key,
+                        )?;
+                        insert_pending_recovery_run(
+                            conn,
+                            &malformed_id,
+                            kind,
+                            row_epoch,
+                            &work.work_key,
+                        )?;
+                        insert_recovery_children(conn, &malformed_id, kind, with_attempt)
+                    })
+                    .expect("seed malformed pending batch");
+
+                    let result = if stale {
+                        terminalize_stale_interrupted_runs_for_epoch(
+                            &db,
+                            "project-1",
+                            &work,
+                            "epoch-current",
+                            &[
+                                StaleActiveRun {
+                                    run_id: valid_id.clone(),
+                                    semantic_epoch_id: Some("epoch-stale".to_owned()),
+                                },
+                                StaleActiveRun {
+                                    run_id: malformed_id.clone(),
+                                    semantic_epoch_id: Some("epoch-stale".to_owned()),
+                                },
+                            ],
+                        )
+                    } else {
+                        terminalize_interrupted_runs_for_epoch(
+                            &db,
+                            "project-1",
+                            &work,
+                            Some("epoch-current"),
+                            &[valid_id.clone(), malformed_id.clone()],
+                        )
+                    };
+                    let error = result.expect_err("owned pending children must be rejected");
+                    assert!(
+                        error
+                            .to_string()
+                            .contains("NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID"),
+                        "unexpected error: {error:#}"
+                    );
+                    db.with_conn(|conn| {
+                        let (valid_status, valid_tasks, valid_attempts) =
+                            recovery_shape(conn, &valid_id)?;
+                        assert_eq!(valid_status, "pending");
+                        assert_eq!(valid_tasks, 0);
+                        assert_eq!(valid_attempts, 0);
+                        let (malformed_status, malformed_tasks, malformed_attempts) =
+                            recovery_shape(conn, &malformed_id)?;
+                        assert_eq!(malformed_status, "pending");
+                        assert_eq!(malformed_tasks, 1);
+                        assert_eq!(malformed_attempts, if with_attempt { 1 } else { 0 });
+                        Ok(())
+                    })
+                    .expect("malformed pending recovery rolls back all mutations");
+                }
+            }
+        }
     }
 
     #[test]
@@ -3110,14 +3423,41 @@ mod tests {
             .expect("evaluate released Verify evidence");
         assert!(matches!(decision, CompletedRunSkipDecision::Skip { .. }));
 
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO narrative_semantic_epochs
+                 (id, project_id, epoch_number, reason, created_at)
+                 VALUES ('epoch-2', 'project-1', 1, 'manual-rebuild',
+                         '2026-01-02T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("rotate the current Semantic Epoch after completion");
         complete_foreground_system_work_run(&db, &barrier)
-            .expect("duplicate exact release is idempotent");
+            .expect("duplicate exact release remains idempotent after epoch rotation");
         let mut wrong_project = barrier.clone();
         wrong_project.project_id = "project-2".to_string();
         assert!(complete_foreground_system_work_run(&db, &wrong_project).is_err());
         let mut wrong_authority = barrier.clone();
         wrong_authority.marker.authority_id = "authority:workspace-2".to_string();
         assert!(complete_foreground_system_work_run(&db, &wrong_authority).is_err());
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_extraction_attempts
+                    SET status = 'failed'
+                  WHERE task_id IN (
+                        SELECT id FROM narrative_extraction_tasks WHERE run_id = ?1
+                  )",
+                params![barrier.run_id],
+            )?;
+            Ok(())
+        })
+        .expect("corrupt the completed Attempt for idempotence coverage");
+        assert!(
+            complete_foreground_system_work_run(&db, &barrier).is_err(),
+            "duplicate release must reject a completed Run whose Attempt pair was corrupted"
+        );
     }
 
     #[test]

@@ -10,8 +10,8 @@ use grimodex_db::narrative_extraction::ensure_test_schema;
 use grimodex_db::narrative_extraction::maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
     run_system_work_cycle, run_system_work_cycle_with_modes_and_config, AutomaticRunKind,
-    MaintenanceCycleRequest, MaintenanceCycleStatus, NarrativeMaintenanceCiConfig,
-    MaintenanceWorkspaceBinding, NarrativeMaintenanceCiTrigger, RecoveryMode, WorkKey,
+    MaintenanceCycleRequest, MaintenanceCycleStatus, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiTrigger, RecoveryMode, WorkKey,
     LEGACY_BACKFILL_WORK_KEY, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 use grimodex_db::Database;
@@ -134,8 +134,7 @@ fn automatic_success_owns_exactly_one_task_and_attempt_and_finalizes_atomically(
             })
             .expect("read automatic lifecycle");
         assert_eq!(rows.len(), 1, "one lifecycle pair belongs to each phase");
-        let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) =
-            &rows[0];
+        let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) = &rows[0];
         assert_eq!(run_status, "completed");
         assert_eq!(task_status, "completed");
         assert_eq!(attempt_status, "completed");
@@ -181,7 +180,11 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
     let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) =
         held.expect("read held lifecycle");
     assert_eq!(
-        (run_status.as_str(), task_status.as_str(), attempt_status.as_str()),
+        (
+            run_status.as_str(),
+            task_status.as_str(),
+            attempt_status.as_str()
+        ),
         ("running", "running", "running")
     );
     assert_eq!((run_at, task_at, attempt_at), (None, None, None));
@@ -190,7 +193,11 @@ fn foreground_success_holds_all_three_rows_then_exact_release_shares_one_timesta
     let released = lifecycle_rows_for_run(&db, &barrier.run_id).expect("read released lifecycle");
     let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) = released;
     assert_eq!(
-        (run_status.as_str(), task_status.as_str(), attempt_status.as_str()),
+        (
+            run_status.as_str(),
+            task_status.as_str(),
+            attempt_status.as_str()
+        ),
         ("completed", "completed", "completed")
     );
     assert!(run_at.is_some());
@@ -218,7 +225,13 @@ fn startup_interruption_fails_the_exact_attempt_and_preserves_failure_metadata()
              VALUES ('interrupted-lifecycle-run', ?1, 'maintenance', '{}', ?2,
                      'sha256:backfill', 'running', '{}', ?3, ?3,
                      'backfill', ?4, ?5)",
-            params![PROJECT_ID, spec, "2026-08-23T00:00:00.000Z", EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
+            params![
+                PROJECT_ID,
+                spec,
+                "2026-08-23T00:00:00.000Z",
+                EPOCH_ID,
+                LEGACY_BACKFILL_WORK_KEY
+            ],
         )?;
         conn.execute(
             "INSERT INTO narrative_extraction_tasks
@@ -292,7 +305,11 @@ fn startup_interruption_fails_the_exact_attempt_and_preserves_failure_metadata()
         .expect("read interrupted lifecycle metadata");
     assert_eq!(
         (&metadata.0, &metadata.1, &metadata.2),
-        (&"failed".to_string(), &"failed".to_string(), &"failed".to_string())
+        (
+            &"failed".to_string(),
+            &"failed".to_string(),
+            &"failed".to_string()
+        )
     );
     assert!(metadata.3.is_some());
     assert_eq!(metadata.3, metadata.4);
