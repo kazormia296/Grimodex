@@ -226,8 +226,11 @@ requirements:
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenanceCiSeam.ts
+      - electron/main/narrativeMaintenanceCiSeam.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/foregroundBarrierRelease.test.ts
       - src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs
       - src-tauri/crates/grimodex-db/src/migrate.rs
       - src-tauri/crates/grimodex-db/src/backup_restore.rs
@@ -485,8 +488,11 @@ requirements:
       - electron/main/narrativeMaintenance.reacceptance.test.ts
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
+      - electron/main/narrativeMaintenanceCiSeam.ts
+      - electron/main/narrativeMaintenanceCiSeam.test.ts
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
+      - electron/main/foregroundBarrierRelease.test.ts
       - scripts/quality/validate-execution-state-authority.mjs
     lightTests:
       - scripts/quality/validate-semantic-core-boundary.test.mjs
