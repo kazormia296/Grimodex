@@ -1,31 +1,21 @@
 import assert from "node:assert/strict";
+import path from "node:path";
 import test from "node:test";
 import { ESLint } from "eslint";
-import tseslint from "typescript-eslint";
 
-import narrativeMaintenanceBoundaryRule from "./narrative-maintenance-boundary-rule.mjs";
+const repoRoot = path.resolve(import.meta.dirname, "../..");
+const BOUNDARY_RULE_ID = "grimodex-boundaries/narrative-maintenance";
 
 async function lintText(code, filePath) {
-  const eslint = new ESLint({
-    overrideConfigFile: true,
-    overrideConfig: [
-      {
-        files: ["**/*.{ts,tsx}"],
-        languageOptions: { parser: tseslint.parser },
-        plugins: {
-          local: {
-            rules: {
-              "narrative-maintenance-boundary":
-                narrativeMaintenanceBoundaryRule,
-            },
-          },
-        },
-        rules: { "local/narrative-maintenance-boundary": "error" },
-      },
-    ],
+  const eslint = new ESLint({ cwd: repoRoot });
+  const [result] = await eslint.lintText(code, {
+    filePath: path.resolve(repoRoot, filePath),
   });
-  const [result] = await eslint.lintText(code, { filePath });
   return result.messages;
+}
+
+function boundaryMessages(messages) {
+  return messages.filter(({ ruleId }) => ruleId === BOUNDARY_RULE_ID);
 }
 
 test("rejects narrative maintenance imports from renderer and preload", async () => {
@@ -37,8 +27,7 @@ test("rejects narrative maintenance imports from renderer and preload", async ()
       'import { createNarrativeMaintenanceScheduler } from "../../electron/main/narrativeMaintenance.js";',
       filePath,
     );
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+    assert.equal(boundaryMessages(messages).length, 1);
   }
 });
 
@@ -51,11 +40,11 @@ test("rejects exposing a private maintenance method from preload", async () => {
       ["runNarrativeMaintenanceCycle"]: () => Promise.resolve(),
     });`,
     "const method = backend['runNarrativeMaintenanceCycle'];",
+    "const method = backend[`runNarrativeMaintenanceCycle`];",
     "const privateMethods = ['runNarrativeMaintenanceCycle'];",
   ]) {
     const messages = await lintText(code, "electron/preload/index.ts");
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+    assert.equal(boundaryMessages(messages).length, 1);
   }
 });
 
@@ -68,9 +57,38 @@ test("rejects literal dynamic imports of the main or native backend", async () =
       `void import("${source}");`,
       "src/features/example.ts",
     );
-    assert.equal(messages.length, 1);
-    assert.equal(messages[0]?.ruleId, "local/narrative-maintenance-boundary");
+    assert.equal(boundaryMessages(messages).length, 1);
   }
+});
+
+test("rejects static template imports of the main and native backend", async () => {
+  for (const source of [
+    "electron/main/narrativeMaintenance.js",
+    "electron/native/grimodex-node/index.js",
+    "electron/native/grimodex-node",
+  ]) {
+    const messages = await lintText(
+      `void import(\`${source}\`);`,
+      "src/features/example.ts",
+    );
+    assert.equal(boundaryMessages(messages).length, 1);
+  }
+});
+
+test("rejects native directory imports without a trailing slash", async () => {
+  const messages = await lintText(
+    'import type { NativeBinding } from "electron/native/grimodex-node";',
+    "src/features/example.ts",
+  );
+  assert.equal(boundaryMessages(messages).length, 1);
+});
+
+test("does not resolve expression-containing templates", async () => {
+  const messages = await lintText(
+    'const method = backend[`${"runNarrativeMaintenanceCycle"}`];',
+    "electron/preload/index.ts",
+  );
+  assert.deepEqual(boundaryMessages(messages), []);
 });
 
 test("allows the main owner and ordinary renderer bridge code", async () => {
@@ -82,6 +100,6 @@ test("allows the main owner and ordinary renderer bridge code", async () => {
     "export const bridge = { invoke: (cmd: string) => window.grimodex.invoke(cmd) };",
     "src/lib/bridge.ts",
   );
-  assert.deepEqual(mainMessages, []);
-  assert.deepEqual(rendererMessages, []);
+  assert.deepEqual(boundaryMessages(mainMessages), []);
+  assert.deepEqual(boundaryMessages(rendererMessages), []);
 });

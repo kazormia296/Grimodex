@@ -2,7 +2,7 @@ import path from "node:path";
 
 const PRIVATE_MODULE_SEGMENTS = [
   "/electron/main/narrativeMaintenance",
-  "/electron/native/grimodex-node/",
+  "/electron/native/grimodex-node",
 ];
 
 const PRIVATE_METHOD_NAMES = new Set([
@@ -13,6 +13,22 @@ const PRIVATE_METHOD_NAMES = new Set([
 
 function normalizePath(value) {
   return value.replaceAll(path.sep, "/");
+}
+
+function staticString(node) {
+  if (node?.type === "Literal" && typeof node.value === "string") {
+    return node.value;
+  }
+  if (
+    node?.type === "TemplateLiteral" &&
+    node.expressions.length === 0 &&
+    node.quasis.length === 1
+  ) {
+    const quasi = node.quasis[0]?.value;
+    if (typeof quasi?.cooked === "string") return quasi.cooked;
+    if (typeof quasi?.raw === "string") return quasi.raw;
+  }
+  return null;
 }
 
 function isProtectedFile(filename) {
@@ -30,26 +46,38 @@ function isPrivateModule(filename, source) {
     ? normalizePath(path.resolve(path.dirname(normalizedFilename), source))
     : source;
   const modulePath = `/${resolvedSource.replace(/^\/+/, "")}`;
-  return PRIVATE_MODULE_SEGMENTS.some((segment) =>
-    modulePath.includes(segment),
-  );
+  return PRIVATE_MODULE_SEGMENTS.some((segment) => {
+    const segmentStart = modulePath.indexOf(segment);
+    if (segmentStart < 0) return false;
+    const segmentEnd = segmentStart + segment.length;
+    return (
+      segmentEnd === modulePath.length ||
+      modulePath[segmentEnd] === "/" ||
+      modulePath[segmentEnd] === "."
+    );
+  });
 }
 
 function propertyName(node) {
   if (!node) return null;
   const property = node.type === "MemberExpression" ? node.property : node.key;
   if (!property) return null;
-  if (
-    node.computed &&
-    !(property.type === "Literal" && typeof property.value === "string")
-  ) {
-    return null;
-  }
+  if (node.computed) return staticString(property);
   if (property.type === "Identifier") return property.name;
-  if (property.type === "Literal" && typeof property.value === "string") {
-    return property.value;
+  return staticString(property);
+}
+
+function isTemplateExpression(node) {
+  let child = node;
+  let parent = node?.parent;
+  while (parent) {
+    if (parent.type === "TemplateLiteral") {
+      return parent.expressions.includes(child);
+    }
+    child = parent;
+    parent = parent.parent;
   }
-  return null;
+  return false;
 }
 
 /**
@@ -77,16 +105,19 @@ const narrativeMaintenanceBoundaryRule = {
     if (!isProtectedFile(context.filename)) return {};
 
     const reportImport = (node) => {
-      if (isPrivateModule(context.filename, node.source.value)) {
+      const source = staticString(node.source);
+      if (source !== null && isPrivateModule(context.filename, source)) {
         context.report({ node: node.source, messageId: "privateImport" });
       }
     };
 
-    const reportPrivateLiteral = (node) => {
+    const reportPrivateStaticString = (node) => {
+      const value = staticString(node);
       if (
-        typeof node.value !== "string" ||
-        (!PRIVATE_METHOD_NAMES.has(node.value) &&
-          !isPrivateModule(context.filename, node.value))
+        value === null ||
+        isTemplateExpression(node) ||
+        (!PRIVATE_METHOD_NAMES.has(value) &&
+          !isPrivateModule(context.filename, value))
       ) {
         return;
       }
@@ -117,11 +148,13 @@ const narrativeMaintenanceBoundaryRule = {
         if (node.source) reportImport(node);
       },
       ImportExpression: (node) => {
-        if (isPrivateModule(context.filename, node.source.value)) {
+        const source = staticString(node.source);
+        if (source !== null && isPrivateModule(context.filename, source)) {
           context.report({ node: node.source, messageId: "privateImport" });
         }
       },
-      Literal: reportPrivateLiteral,
+      Literal: reportPrivateStaticString,
+      TemplateLiteral: reportPrivateStaticString,
       MemberExpression: (node) => {
         if (PRIVATE_METHOD_NAMES.has(propertyName(node))) {
           context.report({ node: node.property, messageId: "privateMethod" });

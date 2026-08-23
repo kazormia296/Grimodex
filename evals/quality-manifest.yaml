@@ -227,6 +227,7 @@ requirements:
       - electron/main/narrativeMaintenance.reacceptance.wire.test.ts
       - electron/main/narrativeMaintenance.wiring.test.ts
       - electron/main/narrativeMaintenance.electronRoute.test.ts
+      - scripts/quality/narrative-maintenance-boundary-rule.mjs
       - electron/main/narrativeMaintenanceBootstrap.ts
       - electron/main/narrativeMaintenanceBootstrap.test.ts
       - electron/main/narrativeMaintenanceCiSeam.ts
@@ -244,6 +245,7 @@ requirements:
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
       - scripts/quality/validate-execution-state-authority.test.mjs
+      - scripts/quality/narrative-maintenance-boundary.test.mjs
       - electron/main/narrativeFreshness.test.ts
       - src/features/ai-policy/policyGuard.test.ts
       - src/features/chat/agent/toolExecutors.test.ts
