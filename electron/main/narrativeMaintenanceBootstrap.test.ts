@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+  NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  parseNarrativeMaintenanceCiSeam,
   type NarrativeMaintenanceCiSeam,
 } from "./narrativeMaintenanceCiSeam.js";
 import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
@@ -49,9 +51,31 @@ describe("C2-5B production maintenance bootstrap", () => {
     }> = [
       { name: "setup", seam: activeSeam({ setup: "disabled" }), expected: false },
       { name: "normal", seam: activeSeam(), expected: true },
-      { name: "inactive", seam: { active: false }, expected: true },
-      { name: "packaged", seam: { active: false }, expected: true },
-      { name: "wrong-owner", seam: { active: false }, expected: true },
+      {
+        name: "inactive",
+        seam: parseNarrativeMaintenanceCiSeam({ CI: "false" }),
+        expected: true,
+      },
+      {
+        name: "packaged",
+        seam: parseNarrativeMaintenanceCiSeam(
+          {
+            CI: "true",
+            [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]:
+              NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+          },
+          { isPackaged: true },
+        ),
+        expected: true,
+      },
+      {
+        name: "wrong-owner",
+        seam: parseNarrativeMaintenanceCiSeam({
+          CI: "true",
+          [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "other-owner",
+        }),
+        expected: true,
+      },
     ];
 
     for (const { name, seam, expected } of cases) {
@@ -76,13 +100,9 @@ describe("C2-5B production maintenance bootstrap", () => {
       );
       expect(
         coordinator.handleBackendEvent,
-        `${name} startup discovery`,
-      ).toHaveBeenCalledTimes(expected ? 1 : 0);
+        `${name} synthetic startup discovery`,
+      ).toHaveBeenCalledTimes(0);
       if (expected) {
-        expect(coordinator.handleBackendEvent).toHaveBeenCalledWith(
-          "workspace:opened",
-          undefined,
-        );
         expect(runtime.scheduler).toBe(scheduler);
         expect(runtime.coordinator).toBe(coordinator);
       } else {
