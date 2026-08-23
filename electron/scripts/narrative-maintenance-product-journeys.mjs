@@ -129,10 +129,60 @@ const RUN_COLUMNS = `
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id) AS attemptCount,
+  (SELECT COUNT(*)
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id) AS taskCount,
+  (SELECT t.status
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskStatus,
+  (SELECT t.task_kind
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskKind,
+  (SELECT t.attempt_count
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskAttemptCount,
+  (SELECT t.input_json
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskInputJson,
+  (SELECT t.created_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskCreatedAt,
+  (SELECT t.started_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskStartedAt,
+  (SELECT t.completed_at
+     FROM narrative_extraction_tasks t
+    WHERE t.run_id = r.id
+    ORDER BY t.created_at ASC, t.id ASC
+    LIMIT 1) AS taskCompletedAt,
   (SELECT MAX(a.attempt_number)
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id) AS maxAttemptNumber,
+  (SELECT a.attempt_number
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptNumber,
+  (SELECT a.started_at
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptStartedAt,
   (SELECT a.status
      FROM narrative_extraction_attempts a
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
@@ -144,7 +194,164 @@ const RUN_COLUMNS = `
      JOIN narrative_extraction_tasks t ON t.id = a.task_id
     WHERE t.run_id = r.id
     ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
-    LIMIT 1) AS lastAttemptFailureCode`;
+    LIMIT 1) AS lastAttemptFailureCode,
+  (SELECT a.completed_at
+     FROM narrative_extraction_attempts a
+     JOIN narrative_extraction_tasks t ON t.id = a.task_id
+    WHERE t.run_id = r.id
+    ORDER BY a.attempt_number DESC, a.started_at DESC, a.id DESC
+    LIMIT 1) AS lastAttemptCompletedAt`;
+
+export function assertForegroundLifecycle(
+  run,
+  expectedStatus,
+  label = "foreground lifecycle",
+) {
+  if (!new Set(["running", "completed", "failed"]).has(expectedStatus)) {
+    throw new Error(`${label} has unsupported expected lifecycle status ${expectedStatus}`);
+  }
+  if (Number(run?.taskCount ?? 0) !== 1 || Number(run?.attemptCount ?? 0) !== 1) {
+    throw new Error(
+      `${label} must own exactly one Task and Attempt: ${JSON.stringify({
+        runId: run?.id,
+        taskCount: run?.taskCount,
+        attemptCount: run?.attemptCount,
+      })}`,
+    );
+  }
+  if (run.taskStatus !== expectedStatus || run.lastAttemptStatus !== expectedStatus) {
+    throw new Error(
+      `${label} lifecycle status mismatch: ${JSON.stringify({
+        runId: run?.id,
+        expectedStatus,
+        taskStatus: run?.taskStatus,
+        attemptStatus: run?.lastAttemptStatus,
+      })}`,
+    );
+  }
+  const expectedTaskKinds = {
+    backfill: "maintenance-backfill",
+    "dependency-verify": "maintenance-dependency-verify",
+    "semantic-index-rebuild": "maintenance-semantic-index-rebuild",
+  };
+  const expectedTaskKind = expectedTaskKinds[run.runKind];
+  if (!expectedTaskKind || run.taskKind !== expectedTaskKind) {
+    throw new Error(
+      `${label} Task kind mismatch: ${JSON.stringify({
+        runId: run?.id,
+        runKind: run?.runKind,
+        expectedTaskKind,
+        taskKind: run?.taskKind,
+      })}`,
+    );
+  }
+  if (Number(run.taskAttemptCount ?? 0) !== 1 || Number(run.lastAttemptNumber ?? 0) !== 1) {
+    throw new Error(
+      `${label} must retain exactly one Task attempt and Attempt #1: ${JSON.stringify({
+        runId: run?.id,
+        taskAttemptCount: run?.taskAttemptCount,
+        lastAttemptNumber: run?.lastAttemptNumber,
+      })}`,
+    );
+  }
+  if (typeof run.specJson !== "string" || run.taskInputJson !== run.specJson) {
+    throw new Error(
+      `${label} Task input did not preserve the full Run spec: ${JSON.stringify({
+        runId: run?.id,
+        specJson: run?.specJson,
+        taskInputJson: run?.taskInputJson,
+      })}`,
+    );
+  }
+  const runCreatedAt = parseInstant(run.createdAt, `${label} Run createdAt`);
+  const runStartedAt = parseInstant(run.startedAt, `${label} Run startedAt`);
+  const taskCreatedAt = parseInstant(run.taskCreatedAt, `${label} Task createdAt`);
+  const taskStartedAt = parseInstant(run.taskStartedAt, `${label} Task startedAt`);
+  const attemptStartedAt = parseInstant(
+    run.lastAttemptStartedAt,
+    `${label} Attempt startedAt`,
+  );
+  if (compareInstantValues(runCreatedAt, runStartedAt) > 0) {
+    throw new Error(`${label} Run createdAt must not be after startedAt`);
+  }
+  if (compareInstantValues(runCreatedAt, taskCreatedAt) > 0) {
+    throw new Error(`${label} Run createdAt must not be after Task createdAt`);
+  }
+  if (compareInstantValues(runStartedAt, taskCreatedAt) > 0) {
+    throw new Error(`${label} Run startedAt must not be after Task createdAt`);
+  }
+  if (compareInstantValues(taskCreatedAt, taskStartedAt) > 0) {
+    throw new Error(`${label} Task createdAt must not be after startedAt`);
+  }
+  if (compareInstantValues(runStartedAt, taskStartedAt) > 0) {
+    throw new Error(`${label} Task startedAt must not be before Run startedAt`);
+  }
+  if (compareInstantValues(taskStartedAt, attemptStartedAt) !== 0) {
+    throw new Error(
+      `${label} taskStartedAt and lastAttemptStartedAt must share one lifecycle instant: ${JSON.stringify({
+        taskStartedAt: run?.taskStartedAt,
+        lastAttemptStartedAt: run?.lastAttemptStartedAt,
+      })}`,
+    );
+  }
+  if (expectedStatus === "completed" || expectedStatus === "failed") {
+    if (
+      !run.completedAt ||
+      !run.taskCompletedAt ||
+      !run.lastAttemptCompletedAt ||
+      compareInstants(
+        run.taskCompletedAt,
+        run.completedAt,
+        `${label} Task completedAt`,
+        `${label} Run completedAt`,
+      ) !== 0 ||
+      compareInstants(
+        run.lastAttemptCompletedAt,
+        run.completedAt,
+        `${label} Attempt completedAt`,
+        `${label} Run completedAt`,
+      ) !== 0
+    ) {
+      throw new Error(
+        `${label} Run, Task, and Attempt did not share one terminal timestamp: ${JSON.stringify({
+          runId: run?.id,
+          runCompletedAt: run?.completedAt,
+          taskCompletedAt: run?.taskCompletedAt,
+          attemptCompletedAt: run?.lastAttemptCompletedAt,
+        })}`,
+      );
+    }
+    const terminalAt = parseInstant(run.completedAt, `${label} terminal completedAt`);
+    for (const [field, value] of [
+      ["Run.createdAt", run.createdAt],
+      ["Run.startedAt", run.startedAt],
+      ["Task.createdAt", run.taskCreatedAt],
+      ["Task.startedAt", run.taskStartedAt],
+      ["Attempt.startedAt", run.lastAttemptStartedAt],
+    ]) {
+      if (
+        value &&
+        compareInstantValues(
+          terminalAt,
+          parseInstant(value, `${label} ${field}`),
+        ) <= 0
+      ) {
+        throw new Error(
+          `${label} terminal completedAt must be after ${field}`,
+        );
+      }
+    }
+  } else if (run.completedAt || run.taskCompletedAt || run.lastAttemptCompletedAt) {
+    throw new Error(
+      `${label} running lifecycle unexpectedly has a terminal timestamp: ${JSON.stringify({
+        runId: run?.id,
+        runCompletedAt: run?.completedAt,
+        taskCompletedAt: run?.taskCompletedAt,
+        attemptCompletedAt: run?.lastAttemptCompletedAt,
+      })}`,
+    );
+  }
+}
 
 function rowsOf(result) {
   return Array.isArray(result?.rows) ? result.rows : [];
@@ -219,12 +426,205 @@ function parseOutcome(value) {
   }
 }
 
-function parseInstant(value, label) {
-  const timestamp = Date.parse(String(value ?? ""));
-  if (!Number.isFinite(timestamp)) {
-    throw new Error(`${label} must be a valid RFC3339 timestamp: ${value}`);
+function isParsedInstant(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    typeof value.epochSeconds === "bigint" &&
+    typeof value.nanoseconds === "bigint"
+  );
+}
+
+function compareInstantValues(left, right) {
+  if (left.epochSeconds < right.epochSeconds) return -1;
+  if (left.epochSeconds > right.epochSeconds) return 1;
+  if (left.nanoseconds < right.nanoseconds) return -1;
+  if (left.nanoseconds > right.nanoseconds) return 1;
+  return 0;
+}
+
+function coerceInstant(value, label) {
+  return isParsedInstant(value) ? value : parseInstant(value, label);
+}
+
+export function compareInstants(left, right, leftLabel = "left", rightLabel = "right") {
+  return compareInstantValues(
+    coerceInstant(left, leftLabel),
+    coerceInstant(right, rightLabel),
+  );
+}
+
+function wallClockInstant(milliseconds, label) {
+  if (
+    typeof milliseconds !== "number" ||
+    !Number.isFinite(milliseconds) ||
+    !Number.isInteger(milliseconds)
+  ) {
+    throw new Error(`${label} must be a finite integer millisecond timestamp`);
   }
-  return timestamp;
+  const totalNanoseconds = BigInt(milliseconds) * 1_000_000n;
+  let epochSeconds = totalNanoseconds / 1_000_000_000n;
+  let nanoseconds = totalNanoseconds % 1_000_000_000n;
+  if (nanoseconds < 0n) {
+    epochSeconds -= 1n;
+    nanoseconds += 1_000_000_000n;
+  }
+  return { epochSeconds, nanoseconds };
+}
+
+export function assertWallClockLowerBound(
+  timestamp,
+  lowerBoundMilliseconds,
+  label = "timestamp",
+) {
+  const observed = parseInstant(timestamp, `${label} timestamp`);
+  const lowerBound = wallClockInstant(
+    lowerBoundMilliseconds,
+    `${label} lower bound`,
+  );
+  if (compareInstantValues(observed, lowerBound) < 0) {
+    throw new Error(`${label} timestamp predates its wall-clock lower bound`);
+  }
+  return observed;
+}
+
+export function assertWallClockIntervalContains(
+  wallClockStartMilliseconds,
+  wallClockEndMilliseconds,
+  intervalStart,
+  intervalEnd,
+  label = "wall-clock interval",
+) {
+  const wallClockStart = wallClockInstant(
+    wallClockStartMilliseconds,
+    `${label} start`,
+  );
+  const wallClockEnd = wallClockInstant(
+    wallClockEndMilliseconds,
+    `${label} end`,
+  );
+  const instantStart = parseInstant(intervalStart, `${label} interval start`);
+  const instantEnd = parseInstant(intervalEnd, `${label} interval end`);
+  if (
+    compareInstantValues(wallClockStart, instantStart) < 0 ||
+    compareInstantValues(wallClockEnd, instantEnd) > 0
+  ) {
+    throw new Error(`${label} wall-clock interval did not overlap the Run interval`);
+  }
+  return { start: wallClockStart, end: wallClockEnd };
+}
+
+export function parseInstant(value, label = "timestamp") {
+  const text = typeof value === "string" ? value : "";
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(text);
+  // Chrono's `%Y` parser accepts one to four unsigned digits, or a leading
+  // sign followed by one or more digits, across its signed proleptic range.
+  // RFC3339 intentionally remains the stricter four-unsigned-digit grammar.
+  const legacyNaive = /^([+\-]?\d+)-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
+    text,
+  );
+  const match = rfc3339 ?? legacyNaive;
+  const isLegacyNaive = !rfc3339 && Boolean(legacyNaive);
+  if (!match) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    ,
+    hourText,
+    minuteText,
+    secondText,
+    fractionText,
+    offsetText,
+  ] = match;
+  const year = Number(yearText);
+  const yearHasSign = /^[+\-]/.test(yearText);
+  const yearDigits = yearHasSign ? yearText.slice(1) : yearText;
+  if (
+    (isLegacyNaive && !yearHasSign && yearDigits.length > 4) ||
+    !Number.isSafeInteger(year) ||
+    year < -262_143 ||
+    year > 262_142
+  ) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const daysInMonth =
+    month === 2
+      ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
+      : [4, 6, 9, 11].includes(month)
+        ? 30
+        : 31;
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 60
+  ) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const fraction = fractionText ?? "";
+  // Rust's durable timestamps are nanosecond values. Reject sub-nanosecond
+  // text rather than silently dropping precision during lifecycle ordering.
+  if (fraction.length > 9) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const nanoseconds = BigInt((fraction + "000000000").slice(0, 9));
+  let offsetMinutes = 0;
+  if (offsetText && !/^[Zz]$/.test(offsetText)) {
+    const offsetMatch = /^[+\-−](\d{2}):(\d{2})$/.exec(offsetText);
+    if (!offsetMatch) {
+      throw new Error(
+        `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+      );
+    }
+    const offsetHours = Number(offsetMatch[1]);
+    const offsetMinutePart = Number(offsetMatch[2]);
+    if (offsetHours > 23 || offsetMinutePart > 59) {
+      throw new Error(
+        `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+      );
+    }
+    const sign = offsetText[0] === "+" ? 1 : -1;
+    offsetMinutes = sign * (offsetHours * 60 + offsetMinutePart);
+  }
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second === 60 ? 59 : second, 0);
+  const timestampMilliseconds = date.getTime();
+  if (!Number.isFinite(timestampMilliseconds)) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  // Chrono stores 23:59:60 as the preceding non-leap epoch second with a
+  // nanosecond component in [1e9, 2e9). Keeping those components separate
+  // makes the leap second sort after 23:59:59 and before the next minute;
+  // adding one second would incorrectly collapse it onto 00:00:00.
+  return {
+    epochSeconds:
+      BigInt(Math.trunc(timestampMilliseconds / 1_000)) -
+      BigInt(offsetMinutes) * 60n,
+    nanoseconds: nanoseconds + (second === 60 ? 1_000_000_000n : 0n),
+  };
 }
 
 function parseRunSpec(run, label) {
@@ -300,7 +700,7 @@ export function assertForegroundRunMarker(
     typeof marker.authorityId !== "string" ||
     marker.authorityId.trim() === "" ||
     !Number.isSafeInteger(marker.generation) ||
-    marker.generation < 0
+    marker.generation <= 0
   ) {
     throw new Error(
       "foreground Run systemWork marker is missing immutable authority id/generation",
@@ -364,14 +764,105 @@ export function assertTransientAttemptEvidence(run) {
     );
   }
   if (
-    Number(run?.maxAttemptNumber ?? 0) < 2 ||
-    Number(run?.attemptCount ?? 0) < 2
+    Number(run?.taskCount ?? 0) !== 1 ||
+    Number(run?.attemptCount ?? 0) !== 1 ||
+    Number(run?.taskAttemptCount ?? 0) !== 1 ||
+    Number(run?.lastAttemptNumber ?? 0) !== 1 ||
+    Number(run?.maxAttemptNumber ?? 0) !== 1
   ) {
     throw new Error(
-      "transient retry did not record attempt >= 2 on the failed Run",
+      "transient retry must retain exactly one Task and Attempt #1 per failed Run",
     );
   }
   return run;
+}
+
+function assertTransientCompletedEvidence(run, label) {
+  const outcome = parseOutcome(run?.outcomeSummaryJson);
+  if (
+    !outcome ||
+    outcome.maintenancePhase !== "backfill-complete" ||
+    outcome.backfillAlgorithmVersion !== "2" ||
+    outcome.semanticEpochId !== run?.semanticEpochId
+  ) {
+    throw new Error(
+      `${label} completed Run is missing the canonical Backfill success outcome`,
+    );
+  }
+  const summary = outcome.summary;
+  if (
+    !summary ||
+    typeof summary !== "object" ||
+    typeof summary.epoch_created !== "boolean" ||
+    !Number.isSafeInteger(summary.contributions_created) ||
+    summary.contributions_created < 0 ||
+    !Number.isSafeInteger(summary.edges_created) ||
+    summary.edges_created < 0 ||
+    !Number.isSafeInteger(summary.applications_without_run_id) ||
+    summary.applications_without_run_id < 0
+  ) {
+    throw new Error(
+      `${label} completed Run has an invalid canonical Backfill summary`,
+    );
+  }
+  return run;
+}
+
+export function assertTransientRunSequence(runs, label = "transient retry") {
+  if (!Array.isArray(runs) || runs.length < 2 || runs.length > 3) {
+    throw new Error(`${label} must contain at least two and at most three distinct same-work Runs`);
+  }
+  const first = runs[0];
+  const expectedIdentity = {
+    projectId: first?.projectId,
+    runKind: first?.runKind,
+    workKey: first?.workKey,
+  };
+  if (first?.status !== "failed") {
+    throw new Error(`${label} must begin with a failed Run`);
+  }
+  const ids = new Set();
+  let previousCreatedAt = null;
+  let completedIndex = -1;
+  for (const [index, run] of runs.entries()) {
+    if (!run?.id || ids.has(run.id)) {
+      throw new Error(`${label} must contain distinct same-work Run ids`);
+    }
+    ids.add(run.id);
+    for (const [field, expected] of Object.entries(expectedIdentity)) {
+      if (run?.[field] !== expected) {
+        throw new Error(`${label} Run ${run?.id} changed same-work identity field ${field}`);
+      }
+    }
+    const createdAt = parseInstant(run.createdAt, `${label} Run ${run.id} createdAt`);
+    if (
+      previousCreatedAt !== null &&
+      compareInstantValues(createdAt, previousCreatedAt) <= 0
+    ) {
+      throw new Error(`${label} same-work Runs must have strictly increasing createdAt instants`);
+    }
+    previousCreatedAt = createdAt;
+    if (!new Set(["failed", "completed"]).has(run.status)) {
+      throw new Error(`${label} Run ${run.id} has unsupported terminal status ${run.status}`);
+    }
+    assertForegroundLifecycle(run, run.status, `${label} Run ${run.id}`);
+    if (run.status === "failed") {
+      if (run.terminalReasonCode !== NARRATIVE_MAINTENANCE_TRANSIENT_CODE) {
+        throw new Error(`${label} failed Run ${run.id} has the wrong transient terminal evidence`);
+      }
+      assertTransientAttemptEvidence(run);
+    } else {
+      if (completedIndex >= 0) {
+        throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+      }
+      completedIndex = index;
+      assertTransientCompletedEvidence(run, `${label} Run ${run.id}`);
+    }
+  }
+  if (completedIndex !== runs.length - 1) {
+    throw new Error(`${label} completed Run must be final in the ordered retry sequence`);
+  }
+  return runs;
 }
 
 export function assertTerminalFailureEvidence(run) {
@@ -460,9 +951,9 @@ async function runLedger(harness, page, projectId) {
     harness,
     page,
     `SELECT ${RUN_COLUMNS}
-       FROM narrative_extraction_runs r
+      FROM narrative_extraction_runs r
       WHERE r.project_id = ?
-      ORDER BY created_at`,
+      ORDER BY created_at, id`,
     [projectId],
   );
 }
@@ -1379,8 +1870,10 @@ async function runTransientRetry(harness, configureWorkspace) {
               row.runKind === failed.runKind &&
               row.workKey === failed.workKey &&
               row.status === "completed" &&
-              parseInstant(row.createdAt, "transient completed Run createdAt") >
+              compareInstantValues(
+                parseInstant(row.createdAt, "transient completed Run createdAt"),
                 failedCreatedAt,
+              ) > 0,
           );
           return completed ? allRows : null;
         },
@@ -1407,10 +1900,13 @@ async function runTransientRetry(harness, configureWorkspace) {
                 row.runKind === failed.runKind &&
                 row.workKey === failed.workKey &&
                 row.status === "completed" &&
-                parseInstant(
-                  row.createdAt,
-                  "transient completed Run createdAt",
-                ) > failedCreatedAt,
+                compareInstantValues(
+                  parseInstant(
+                    row.createdAt,
+                    "transient completed Run createdAt",
+                  ),
+                  failedCreatedAt,
+                ) > 0,
             );
           })()
         : null;
@@ -1420,13 +1916,25 @@ async function runTransientRetry(harness, configureWorkspace) {
         );
       }
       assertTransientAttemptEvidence(failed);
-      const maxAttempt = Math.max(
-        0,
-        ...freshAttempts.map((row) => Number(row.maxAttemptNumber ?? 0)),
+      const sameWorkRuns = freshAttempts.filter(
+        (row) =>
+          row.runKind === failed.runKind && row.workKey === failed.workKey,
       );
+      assertTransientRunSequence(sameWorkRuns);
+      const sameWorkRunIds = new Set(sameWorkRuns.map((row) => row.id));
+      const sameWorkCreatedAt = sameWorkRuns.map((row) =>
+        parseInstant(row.createdAt, "transient same-work Run createdAt"),
+      );
+      const sameWorkRunsAreOrdered = sameWorkCreatedAt.every(
+        (createdAt, index) =>
+          index === 0 ||
+          compareInstantValues(createdAt, sameWorkCreatedAt[index - 1]) > 0,
+      );
+      const distinctSameWorkRunCount = sameWorkRunIds.size;
       if (
-        freshAttempts.length > 3 ||
-        maxAttempt > 3 ||
+        sameWorkRunIds.size !== sameWorkRuns.length ||
+        sameWorkRuns[0]?.id !== failed.id ||
+        !sameWorkRunsAreOrdered ||
         completed.status !== "completed"
       ) {
         throw new Error(
@@ -1443,7 +1951,7 @@ async function runTransientRetry(harness, configureWorkspace) {
         runIds: freshAttempts.map((run) => run.id),
         failedRunId: failed.id,
         completedRunId: completed.id,
-        maxAttempt,
+        distinctSameWorkRunCount,
       });
     },
     { fault: "transient-io" },
@@ -1745,8 +2253,10 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
             row.workKey === stale.workKey &&
             row.semanticEpochId === stale.semanticEpochId &&
             row.status === "completed" &&
-            parseInstant(row.createdAt, "interruption recovery Run createdAt") >
+            compareInstantValues(
+              parseInstant(row.createdAt, "interruption recovery Run createdAt"),
               staleCompletedAt,
+            ) > 0,
         );
         return recovery ? { rows, stale, recovery } : null;
       },
@@ -1871,11 +2381,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
             `foreground barrier marker was attached to an unexpected Run kind: ${candidate.runKind}`,
           );
         }
-        if (parseInstant(candidate.createdAt, "workspace wake marked Run createdAt") < openRequestLowerBound) {
-          throw new Error(
-            "foreground barrier marker predates the workspace-open request lower bound",
-          );
-        }
+        assertWallClockLowerBound(
+          candidate.createdAt,
+          openRequestLowerBound,
+          "foreground barrier marker",
+        );
         return candidate.status === "running" ? candidate : null;
       },
       "foreground workspace wake scheduler running barrier",
@@ -1898,6 +2408,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
         return exact;
       },
       "foreground workspace wake exact running barrier",
+    );
+    assertForegroundLifecycle(
+      runningBarrier,
+      "running",
+      "foreground running lifecycle",
     );
     const foregroundWriteStartedAt = Date.now();
     context.record("foreground-write-started-while-scheduler-running", {
@@ -1923,6 +2438,11 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
         )}`,
       );
     }
+    assertForegroundLifecycle(
+      runAtPatchCompletion,
+      "running",
+      "foreground lifecycle at tree_node_patch completion",
+    );
     assertImmutableForegroundMarker(
       runAtPatchCompletion,
       markerExpectation,
@@ -1944,26 +2464,29 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       },
       "foreground workspace wake exact Run completion",
     );
-    const schedulerStartedAt = parseInstant(
-      completedSchedulerRun.startedAt,
-      "foreground scheduler startedAt",
+    assertForegroundLifecycle(
+      completedSchedulerRun,
+      "completed",
+      "foreground completed lifecycle",
     );
-    const schedulerCompletedAt = parseInstant(
-      completedSchedulerRun.completedAt,
-      "foreground scheduler completedAt",
-    );
-    if (
-      foregroundPatchStartedAt < schedulerStartedAt ||
-      foregroundPatchCompletedAt > schedulerCompletedAt
-    ) {
+    try {
+      assertWallClockIntervalContains(
+        foregroundPatchStartedAt,
+        foregroundPatchCompletedAt,
+        completedSchedulerRun.startedAt,
+        completedSchedulerRun.completedAt,
+        "foreground writer",
+      );
+    } catch (error) {
       throw new Error(
         `foreground writer did not overlap the exact wake Run interval: ${JSON.stringify({
           schedulerRunId: schedulerRun.id,
-          schedulerStartedAt,
+          schedulerStartedAt: completedSchedulerRun.startedAt,
           foregroundPatchStartedAt,
           foregroundPatchCompletedAt,
-          schedulerCompletedAt,
+          schedulerCompletedAt: completedSchedulerRun.completedAt,
         })}`,
+        { cause: error },
       );
     }
     const freshAfterWake = rowsAfter(await context.runs(), wakeBaseline);
@@ -2042,7 +2565,7 @@ async function runForegroundWriteWorkspaceWake(harness, configureWorkspace) {
       barrierId,
       correlation,
       foregroundPatchCompletedAt,
-      schedulerCompletedAt,
+      schedulerCompletedAt: completedSchedulerRun.completedAt,
       runCount: runs.length,
     });
   } finally {

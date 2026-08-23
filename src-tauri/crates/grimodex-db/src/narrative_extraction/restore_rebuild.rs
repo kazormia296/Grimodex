@@ -23,17 +23,29 @@ use super::digest_plan;
 use super::evaluator::{
     evaluate_edge, unknown_edge_observation, EdgeComparisonInput, EdgeObservation,
 };
-use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
+#[cfg(test)]
+use super::execution_state::transition_run_status_in_tx;
+use super::execution_state::NarrativeRunStatus;
 use super::finding_identity::{
     stable_finding_identity, BUNDLED_FINDING_RULE_ID, BUNDLED_FINDING_RULE_VERSION,
     MAINTENANCE_FAILURE_FINDING_RULE_ID, MAINTENANCE_FAILURE_FINDING_RULE_VERSION,
 };
-use super::maintenance_contracts::current_maintenance_coordinates;
+use super::maintenance_contracts::{
+    current_maintenance_coordinates, MaintenanceContractCoordinates,
+};
+use super::maintenance_lifecycle::{
+    canonical_failure_message, complete_maintenance_run_in_tx, create_maintenance_run_in_tx,
+    fail_maintenance_run_in_tx, hold_maintenance_run_in_tx, load_maintenance_run_in_tx,
+    MaintenanceFailureKind,
+};
+use super::maintenance_runtime::validate_phase_success_outcome;
 use super::maintenance_skip_evidence::{
     persist_completed_run_skip_evidence_in_tx, CompletedRunSkipEvidence,
 };
 use super::publish_runtime::publish_freshness_evaluation_edges_only_in_tx;
-use super::repository::{create_system_run_in_tx, record_run_outcome_in_tx, SystemRunWorkKeyReuse};
+#[cfg(test)]
+use super::repository::create_system_run_in_tx;
+use super::repository::{record_run_outcome_in_tx, SystemRunWorkKeyReuse};
 use super::semantic_epoch::{create_epoch_in_tx, get_current_epoch};
 use super::source_revision::resolve_current_source_state;
 use super::task_leases::with_immediate_transaction;
@@ -550,13 +562,18 @@ fn finalize_rebuild_run(
                     Some(&error),
                 );
                 record_run_outcome_in_tx(conn, run_id, &outcome)?;
-                let finalized_at =
-                    transition_run_status_in_tx(conn, run_id, NarrativeRunStatus::Failed)?;
+                let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                let finalized_at = fail_maintenance_run_in_tx(
+                    conn,
+                    &handle,
+                    MaintenanceFailureKind::Transient,
+                    &error,
+                )?;
                 project_terminal_failure_for_run_in_tx(
                     conn,
                     project_id,
                     run_id,
-                    &error,
+                    &canonical_failure_message(MaintenanceFailureKind::Transient, &error),
                     &finalized_at,
                     true,
                 )?;
@@ -580,25 +597,29 @@ fn finalize_rebuild_run(
                     None,
                 ),
             };
+            if work_result.is_ok() {
+                validate_phase_success_outcome(
+                    "semantic-index-rebuild",
+                    project_id,
+                    REBUILD_DERIVED_WORK_KEY,
+                    Some(semantic_epoch_id),
+                    &outcome,
+                )?;
+            }
             record_run_outcome_in_tx(conn, run_id, &outcome)?;
             if work_result.is_ok()
                 && super::maintenance_runtime::foreground_system_work_barrier_requested()
             {
                 // The native foreground barrier owns the terminal transition
-                // until the ordinary authoring write commits.
+                // for the complete Run/Task/Attempt lifecycle.
+                let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                hold_maintenance_run_in_tx(conn, &handle)?;
                 return Ok(None);
             }
-            let finalized_at = transition_run_status_in_tx(
-                conn,
-                run_id,
-                if work_result.is_ok() {
-                    NarrativeRunStatus::Completed
-                } else {
-                    NarrativeRunStatus::Failed
-                },
-            )?;
             match work_result {
                 Ok(_) => {
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
                     resolve_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
@@ -607,11 +628,16 @@ fn finalize_rebuild_run(
                     )?;
                 }
                 Err(error) => {
+                    let message = error.to_string();
+                    let failure_kind = maintenance_failure_kind_for_message(&message);
+                    let handle = load_maintenance_run_in_tx(conn, run_id)?;
+                    let finalized_at =
+                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         run_id,
-                        &error.to_string(),
+                        &canonical_failure_message(failure_kind, &message),
                         &finalized_at,
                         true,
                     )?;
@@ -625,6 +651,17 @@ fn finalize_rebuild_run(
         anyhow::bail!(error);
     }
     Ok(())
+}
+
+fn maintenance_failure_kind_for_message(message: &str) -> MaintenanceFailureKind {
+    let classification = super::maintenance_runtime::classify_failure(message);
+    if classification.code == "NEX_MAINTENANCE_INTERRUPTED" {
+        MaintenanceFailureKind::Interrupted
+    } else if classification.retryable {
+        MaintenanceFailureKind::Transient
+    } else {
+        MaintenanceFailureKind::Manual
+    }
 }
 
 /// Version of the durable outcome written by the manual Rebuild-Derived
@@ -738,7 +775,7 @@ pub fn rebuild_narrative_derived_state_for_project(
                 .id;
             let spec = json!({});
             let spec_digest = format!("sha256:{}", digest_plan(&spec));
-            let created = create_system_run_in_tx(
+            let handle = create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 "semantic-index-rebuild",
@@ -747,16 +784,8 @@ pub fn rebuild_narrative_derived_state_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
-                // No request identity: this Run is started by the system
-                // itself, not by an addressable caller request.
-                None,
             )?;
-            let run_id = created["runId"]
-                .as_str()
-                .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-                .to_string();
-            let already_running = created["reused"].as_bool().unwrap_or(false);
-            Ok((run_id, epoch_id, already_running))
+            Ok((handle.run_id, epoch_id, handle.reused))
         })
     })?;
 
@@ -1215,7 +1244,23 @@ pub fn run_dependency_verify_for_project(
     db: &Database,
     project_id: &str,
 ) -> anyhow::Result<VerifyRunOutcome> {
+    run_dependency_verify_for_project_with_coordinates(db, project_id, None)
+}
+
+/// Run Verify while sealing skip evidence against one Native-selected
+/// coordinate set. The ordinary API keeps the compiled current coordinates;
+/// the main-only CI seam passes the effective set computed for the same live
+/// authority and never a JavaScript-provided digest.
+pub fn run_dependency_verify_for_project_with_coordinates(
+    db: &Database,
+    project_id: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+) -> anyhow::Result<VerifyRunOutcome> {
     require_non_empty(project_id, "projectId")?;
+    let effective_coordinates = match coordinates {
+        Some(coordinates) => coordinates.clone(),
+        None => current_maintenance_coordinates()?,
+    };
     let epoch_id = db
         .with_conn(|conn| get_current_epoch(conn, project_id))?
         .map(|epoch| epoch.id)
@@ -1227,7 +1272,7 @@ pub fn run_dependency_verify_for_project(
     let spec_digest = format!("sha256:{}", digest_plan(&spec));
     let created = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            create_system_run_in_tx(
+            create_maintenance_run_in_tx(
                 conn,
                 project_id,
                 VERIFY_RUN_KIND,
@@ -1236,15 +1281,11 @@ pub fn run_dependency_verify_for_project(
                 &spec,
                 &spec_digest,
                 SystemRunWorkKeyReuse::RunningOnly,
-                None,
             )
         })
     })?;
-    let run_id = created["runId"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("create_system_run_in_tx returned no runId"))?
-        .to_string();
-    if created["reused"].as_bool().unwrap_or(false) {
+    let run_id = created.run_id;
+    if created.reused {
         anyhow::bail!(
             "NEX_VERIFY_ALREADY_RUNNING: dependency-verify Run '{run_id}' is already running"
         );
@@ -1264,18 +1305,26 @@ pub fn run_dependency_verify_for_project(
             });
             db.with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
+                    validate_phase_success_outcome(
+                        VERIFY_RUN_KIND,
+                        project_id,
+                        &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+                        Some(&epoch_id),
+                        &outcome,
+                    )?;
                     record_run_outcome_in_tx(conn, &run_id, &outcome)?;
                     if super::maintenance_runtime::foreground_system_work_barrier_requested() {
                         // The native product-journey barrier owns the terminal
                         // transition until the ordinary authoring write has
                         // committed. Keep the real Verify outcome durable now;
-                        // release seals skip evidence after status completion.
+                        // release seals lifecycle and skip evidence together.
+                        let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                        hold_maintenance_run_in_tx(conn, &handle)?;
                         return Ok(());
                     }
-                    let finalized_at =
-                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Completed)?;
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
+                    let finalized_at = complete_maintenance_run_in_tx(conn, &handle)?;
                     if report.is_clean() {
-                        let coordinates = current_maintenance_coordinates()?;
                         persist_completed_run_skip_evidence_in_tx(
                             conn,
                             &run_id,
@@ -1284,9 +1333,9 @@ pub fn run_dependency_verify_for_project(
                                 run_kind: VERIFY_RUN_KIND.to_string(),
                                 work_key: format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                                 semantic_epoch_id: epoch_id.clone(),
-                                graph_contract_digest: coordinates.graph_contract_digest,
-                                rule_registry_digest: coordinates.rule_registry_digest,
-                                producer_generation_set_digest: coordinates
+                                graph_contract_digest: effective_coordinates.graph_contract_digest,
+                                rule_registry_digest: effective_coordinates.rule_registry_digest,
+                                producer_generation_set_digest: effective_coordinates
                                     .producer_generation_set_digest,
                                 run_kind_contract_version: VERIFY_CONTRACT_VERSION.to_string(),
                                 report_digest: report_digest.clone(),
@@ -1317,13 +1366,16 @@ pub fn run_dependency_verify_for_project(
                         &run_id,
                         &json!({ "failure": error.to_string() }),
                     )?;
+                    let message = error.to_string();
+                    let failure_kind = maintenance_failure_kind_for_message(&message);
+                    let handle = load_maintenance_run_in_tx(conn, &run_id)?;
                     let finalized_at =
-                        transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
+                        fail_maintenance_run_in_tx(conn, &handle, failure_kind, &message)?;
                     project_terminal_failure_for_run_in_tx(
                         conn,
                         project_id,
                         &run_id,
-                        &error.to_string(),
+                        &canonical_failure_message(failure_kind, &message),
                         &finalized_at,
                         true,
                     )?;
@@ -3085,21 +3137,17 @@ mod tests {
         let run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         "semantic-index-rebuild",
                         &epoch_id,
                         REBUILD_DERIVED_WORK_KEY,
                         &json!({}),
-                        "digest",
+                        &format!("sha256:{}", digest_plan(&json!({}))),
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    created["runId"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("missing rebuild run id"))
+                    Ok(handle.run_id)
                 })
             })
             .expect("create an in-flight rebuild run");
@@ -3145,21 +3193,17 @@ mod tests {
         let run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         "semantic-index-rebuild",
                         &epoch_id,
                         REBUILD_DERIVED_WORK_KEY,
                         &json!({}),
-                        "digest",
+                        &format!("sha256:{}", digest_plan(&json!({}))),
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    created["runId"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .ok_or_else(|| anyhow::anyhow!("missing rebuild run id"))
+                    Ok(handle.run_id)
                 })
             })
             .expect("create an in-flight rebuild run");
@@ -3273,7 +3317,7 @@ mod tests {
     #[test]
     fn rebuild_derived_state_reuses_a_still_running_run_but_not_a_completed_one() {
         let db = test_db();
-        seed_epoch_for_rebuild(&db, "project-1");
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
 
         let first = rebuild_narrative_derived_state_for_project(&db, "project-1")
             .expect("first rebuild call");
@@ -3296,21 +3340,30 @@ mod tests {
         };
         assert_ne!(second_run_id, first_run_id);
 
-        // A genuinely still-'running' row (simulating an in-flight
-        // concurrent call) IS reused.
-        db.with_conn(|conn| {
-            conn.execute(
-                "UPDATE narrative_extraction_runs SET status = 'running' WHERE id = ?1",
-                params![second_run_id],
-            )?;
-            Ok(())
-        })
-        .expect("simulate an in-flight run");
+        // A genuinely still-running row with its owned lifecycle pair
+        // (simulating an in-flight concurrent call) IS reused.
+        let in_flight_run_id = db
+            .with_conn(|conn| {
+                with_immediate_transaction(conn, |conn| {
+                    let handle = create_maintenance_run_in_tx(
+                        conn,
+                        "project-1",
+                        "semantic-index-rebuild",
+                        &epoch_id,
+                        REBUILD_DERIVED_WORK_KEY,
+                        &json!({}),
+                        &format!("sha256:{}", digest_plan(&json!({}))),
+                        SystemRunWorkKeyReuse::RunningOnly,
+                    )?;
+                    Ok(handle.run_id)
+                })
+            })
+            .expect("seed an in-flight lifecycle-owned rebuild Run");
         let third = rebuild_narrative_derived_state_for_project(&db, "project-1")
             .expect("third rebuild call");
         match third {
             RebuildDerivedStateOutcome::AlreadyRunning { run_id } => {
-                assert_eq!(run_id, second_run_id)
+                assert_eq!(run_id, in_flight_run_id)
             }
             RebuildDerivedStateOutcome::Ran { .. } => {
                 panic!("a still-running run must be reused")
@@ -4495,21 +4548,22 @@ mod tests {
         let failure_run_id = db
             .with_conn(|conn| {
                 with_immediate_transaction(conn, |conn| {
-                    let created = create_system_run_in_tx(
+                    let handle = create_maintenance_run_in_tx(
                         conn,
                         "project-1",
                         VERIFY_RUN_KIND,
                         &epoch_id,
                         &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
                         &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION }),
-                        "digest",
+                        &format!(
+                            "sha256:{}",
+                            digest_plan(
+                                &json!({ "verifyContractVersion": VERIFY_CONTRACT_VERSION })
+                            )
+                        ),
                         SystemRunWorkKeyReuse::RunningOnly,
-                        None,
                     )?;
-                    let run_id = created["runId"]
-                        .as_str()
-                        .ok_or_else(|| anyhow::anyhow!("missing Verify failure Run id"))?
-                        .to_string();
+                    let run_id = handle.run_id;
                     transition_run_status_in_tx(conn, &run_id, NarrativeRunStatus::Failed)?;
                     conn.execute(
                         "UPDATE narrative_extraction_runs
@@ -4592,7 +4646,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_reused_running_run_fails_closed_without_duplicate_execution() {
+    fn verify_reused_legacy_running_run_fails_closed_without_duplicate_execution() {
         let db = test_db();
         let epoch_id = db
             .with_conn(|conn| create_epoch_in_tx(conn, "project-1", "initial", None))
@@ -4616,8 +4670,10 @@ mod tests {
         .expect("seed an active Verify run");
 
         let error = run_dependency_verify_for_project(&db, "project-1")
-            .expect_err("a reused running Verify must not execute a second time");
-        assert!(error.to_string().contains("NEX_VERIFY_ALREADY_RUNNING"));
+            .expect_err("a legacy running Verify without lifecycle ownership must fail closed");
+        assert!(error
+            .to_string()
+            .contains("NEX_MAINTENANCE_LIFECYCLE_OWNERSHIP_INVALID"));
         db.with_conn(|conn| {
             let run_count: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM narrative_extraction_runs

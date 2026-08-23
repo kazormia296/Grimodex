@@ -24,12 +24,14 @@ import {
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
+  assertForegroundLifecycle,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
   assertTransientAttemptEvidence,
   foregroundMarkedRuns,
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
+import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import {
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
   NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
@@ -81,7 +83,14 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     );
     CREATE TABLE narrative_extraction_tasks (
       id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL
+      run_id TEXT NOT NULL,
+      task_kind TEXT,
+      status TEXT,
+      input_json TEXT,
+      attempt_count INTEGER,
+      created_at TEXT,
+      started_at TEXT,
+      completed_at TEXT
     );
     CREATE TABLE narrative_extraction_attempts (
       id TEXT PRIMARY KEY,
@@ -89,6 +98,7 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       attempt_number INTEGER NOT NULL,
       status TEXT NOT NULL,
       started_at TEXT NOT NULL,
+      completed_at TEXT,
       failure_code TEXT
     );
   `);
@@ -204,6 +214,405 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     "attempts from another task/Run must not contaminate any Run evidence",
   );
   database.close();
+});
+
+test("foreground lifecycle proof rejects wrong child identity and non-monotonic timestamps", () => {
+  const valid = {
+    id: "foreground-run",
+    runKind: "backfill",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    taskStatus: "completed",
+    lastAttemptStatus: "completed",
+    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000Z",
+    taskStartedAt: "2026-08-23T00:00:00.000Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
+    completedAt: "2026-08-23T00:00:01.000Z",
+    taskCompletedAt: "2026-08-23T00:00:01.000Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:01.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(valid, "completed", "valid foreground lifecycle"),
+  );
+  for (const [field, value] of [
+    ["taskKind", "wrong-kind"],
+    ["lastAttemptNumber", 2],
+    ["taskCount", 2],
+    ["taskStartedAt", "2099-01-01T00:00:00.000Z"],
+    ["taskCreatedAt", "2025-01-01T00:00:00.000Z"],
+    ["startedAt", "2026-08-23T00:00:02.000Z"],
+  ]) {
+    const corrupted = { ...valid, [field]: value };
+    assert.throws(
+      () => assertForegroundLifecycle(corrupted, "completed", `corrupt ${field}`),
+      new RegExp(field),
+    );
+  }
+});
+
+test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
+  const valid = {
+    id: "timestamp-run",
+    runKind: "backfill",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    taskStatus: "running",
+    lastAttemptStatus: "running",
+    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    createdAt: "2026-08-23T00:00:00.000Z",
+    startedAt: "2026-08-23T00:00:00.000Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000Z",
+    taskStartedAt: "2026-08-23T00:00:00.000Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000Z",
+  };
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(valid, "running", "canonical timestamp lifecycle"),
+  );
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(
+      {
+        ...valid,
+        createdAt: "2026-08-23 00:00:00.000",
+        startedAt: "2026-08-23 00:00:00.000",
+        taskCreatedAt: "2026-08-23 00:00:00.000",
+        taskStartedAt: "2026-08-23 00:00:00.000",
+        lastAttemptStartedAt: "2026-08-23 00:00:00.000",
+      },
+      "running",
+      "legacy naive timestamp lifecycle",
+    ),
+  );
+  assert.doesNotThrow(() =>
+    assertForegroundLifecycle(
+      {
+        ...valid,
+        taskStatus: "completed",
+        lastAttemptStatus: "completed",
+        createdAt: "2026-08-23T09:00:00.000000001+09:00",
+        startedAt: "2026-08-23T00:00:00.000000002Z",
+        taskCreatedAt: "2026-08-23T00:00:00.000000003Z",
+        taskStartedAt: "2026-08-23T00:00:00.000000004Z",
+        lastAttemptStartedAt: "2026-08-23T00:00:00.000000004Z",
+        completedAt: "2026-08-23T00:00:00.000000005Z",
+        taskCompletedAt: "2026-08-23T00:00:00.000000005Z",
+        lastAttemptCompletedAt: "2026-08-23T00:00:00.000000005Z",
+      },
+      "completed",
+      "sub-millisecond timestamp lifecycle",
+    ),
+  );
+  for (const timestamp of [
+    "2026-08-23T00:00:00+0900",
+    "2026-08-23T00:00:00.000Z ",
+    "2026-02-30T00:00:00.000Z",
+    "2026-08-23T00:00:00",
+    "2026-08-23T00:00:00.1234567890Z",
+  ]) {
+    assert.throws(
+      () =>
+        assertForegroundLifecycle(
+          {
+            ...valid,
+            createdAt: timestamp,
+            startedAt: timestamp,
+            taskCreatedAt: timestamp,
+            taskStartedAt: timestamp,
+            lastAttemptStartedAt: timestamp,
+          },
+          "running",
+          `malformed timestamp ${timestamp}`,
+        ),
+      /timestamp/,
+    );
+  }
+});
+
+test("wall-clock bounds and overlap use the exact instant representation", () => {
+  const {
+    assertWallClockIntervalContains,
+    assertWallClockLowerBound,
+  } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof assertWallClockLowerBound, "function");
+  assert.equal(typeof assertWallClockIntervalContains, "function");
+
+  const openLowerBound = Date.parse("2026-08-23T00:00:00.001Z");
+  assert.doesNotThrow(() =>
+    assertWallClockLowerBound(
+      "2026-08-23T00:00:00.001000000Z",
+      openLowerBound,
+      "current workspace wake Run",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertWallClockLowerBound(
+        "2026-08-23T00:00:00.000999999Z",
+        openLowerBound,
+        "old workspace wake Run",
+      ),
+    /predates/,
+  );
+
+  const schedulerStartedAt = "2026-08-23T00:00:00.001000000Z";
+  const schedulerCompletedAt = "2026-08-23T00:00:00.003000000Z";
+  assert.doesNotThrow(() =>
+    assertWallClockIntervalContains(
+      Date.parse("2026-08-23T00:00:00.001500Z"),
+      Date.parse("2026-08-23T00:00:00.002500Z"),
+      schedulerStartedAt,
+      schedulerCompletedAt,
+      "current foreground write",
+    ),
+  );
+  assert.throws(
+    () =>
+      assertWallClockIntervalContains(
+        Date.parse("2026-08-23T00:00:00.000500Z"),
+        Date.parse("2026-08-23T00:00:00.002500Z"),
+        schedulerStartedAt,
+        schedulerCompletedAt,
+        "old foreground write",
+      ),
+    /overlap/,
+  );
+});
+
+test("instant comparison preserves Chrono leap-second ordering and precision", () => {
+  const { compareInstants } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof compareInstants, "function");
+  assert.equal(
+    compareInstants(
+      "2026-08-23T23:59:59.999999999Z",
+      "2026-08-23T23:59:60.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T23:59:60.999999999Z",
+      "2026-08-24T00:00:00.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-24T00:00:00.000000000Z",
+      "2026-08-24T00:00:01.000000000Z",
+    ),
+    -1,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T09:00:00.000000001+09:00",
+      "2026-08-23T00:00:00.000000001Z",
+    ),
+    0,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23 00:00:00.000000001",
+      "2026-08-23T00:00:00.000000001Z",
+    ),
+    0,
+  );
+  assert.equal(
+    compareInstants(
+      "2026-08-23T00:00:00.000000001Z",
+      "2026-08-23T00:00:00.000000000Z",
+    ),
+    1,
+  );
+  assert.throws(
+    () =>
+      compareInstants(
+        "2026-08-23T00:00:00.1234567890Z",
+        "2026-08-23T00:00:00.123456789Z",
+      ),
+    /timestamp/,
+  );
+});
+
+test("legacy naive timestamps preserve Chrono signed proleptic years", () => {
+  const { compareInstants, parseInstant } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof parseInstant, "function");
+  assert.doesNotThrow(() => parseInstant("-0001-01-01 00:00:00"));
+  assert.doesNotThrow(() => parseInstant("+10000-01-01 00:00:00"));
+  assert.equal(
+    compareInstants(
+      "-0001-01-01 00:00:00",
+      "+10000-01-01 00:00:00",
+    ),
+    -1,
+  );
+  assert.doesNotThrow(() => parseInstant("-262143-01-01 00:00:00"));
+  assert.doesNotThrow(() => parseInstant("+262142-12-31 23:59:59"));
+
+  for (const timestamp of [
+    "-262144-01-01 00:00:00",
+    "+262143-12-31 23:59:59",
+    "-262145-01-01 00:00:00",
+    "+262144-01-01 00:00:00",
+    "262144-01-01 00:00:00",
+    "+-10000-01-01 00:00:00",
+    "-+0001-01-01 00:00:00",
+    "+-01-01 00:00:00",
+    "-0001/01/01 00:00:00",
+  ]) {
+    assert.throws(
+      () => parseInstant(timestamp),
+      /timestamp/,
+      `malformed or out-of-range legacy year must fail: ${timestamp}`,
+    );
+  }
+  assert.throws(
+    () => parseInstant("+10000T00:00:00Z"),
+    /timestamp/,
+    "RFC3339 must retain its four unsigned year digits",
+  );
+});
+
+test("transient retry validates every distinct same-work lifecycle in order", () => {
+  const sequenceValidator =
+    narrativeMaintenanceProductJourneys.assertTransientRunSequence;
+  assert.equal(
+    typeof sequenceValidator,
+    "function",
+    "the product journey must expose the exact transient sequence validator",
+  );
+  const base = {
+    projectId: "project-1",
+    runKind: "backfill",
+    workKey: "legacy-dependency-backfill:v2",
+    semanticEpochId: "epoch-1",
+    taskCount: 1,
+    attemptCount: 1,
+    taskKind: "maintenance-backfill",
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    specJson: '{"backfillAlgorithmVersion":"2"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    startedAt: "2026-08-23T00:00:00.000000001Z",
+    taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
+    taskStartedAt: "2026-08-23T00:00:00.000000003Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:00.000000003Z",
+  };
+  const failed = {
+    ...base,
+    id: "failed-run",
+    status: "failed",
+    terminalReasonCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    taskStatus: "failed",
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+    createdAt: "2026-08-23T00:00:00.000000001Z",
+    completedAt: "2026-08-23T00:00:00.000000004Z",
+    taskCompletedAt: "2026-08-23T00:00:00.000000004Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:00.000000004Z",
+  };
+  const completed = {
+    ...base,
+    id: "completed-run",
+    status: "completed",
+    taskStatus: "completed",
+    lastAttemptStatus: "completed",
+    createdAt: "2026-08-23T00:00:01.000000001Z",
+    startedAt: "2026-08-23T00:00:01.000000001Z",
+    taskCreatedAt: "2026-08-23T00:00:01.000000002Z",
+    taskStartedAt: "2026-08-23T00:00:01.000000003Z",
+    lastAttemptStartedAt: "2026-08-23T00:00:01.000000003Z",
+    completedAt: "2026-08-23T00:00:01.000000004Z",
+    taskCompletedAt: "2026-08-23T00:00:01.000000004Z",
+    lastAttemptCompletedAt: "2026-08-23T00:00:01.000000004Z",
+    outcomeSummaryJson: JSON.stringify({
+      maintenancePhase: "backfill-complete",
+      backfillAlgorithmVersion: "2",
+      semanticEpochId: "epoch-1",
+      summary: {
+        epoch_created: false,
+        contributions_created: 0,
+        edges_created: 0,
+        applications_without_run_id: 0,
+      },
+    }),
+  };
+  assert.doesNotThrow(() => sequenceValidator([failed, completed]));
+  assert.throws(
+    () =>
+      sequenceValidator([
+        failed,
+        { ...completed, taskKind: "wrong-kind" },
+      ]),
+    /Task kind/,
+  );
+  assert.throws(
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        {
+          ...failed,
+          id: "third-run",
+          lastAttemptNumber: 2,
+          createdAt: "2026-08-23T00:00:02.000000001Z",
+        },
+      ]),
+    /Attempt #1/,
+  );
+  assert.throws(
+    () =>
+      sequenceValidator([
+        {
+          ...failed,
+          createdAt: completed.createdAt,
+          startedAt: completed.startedAt,
+          taskCreatedAt: completed.taskCreatedAt,
+          taskStartedAt: completed.taskStartedAt,
+          lastAttemptStartedAt: completed.lastAttemptStartedAt,
+          completedAt: completed.completedAt,
+          taskCompletedAt: completed.taskCompletedAt,
+          lastAttemptCompletedAt: completed.lastAttemptCompletedAt,
+        },
+        completed,
+      ]),
+    /strictly increasing/,
+  );
+  assert.throws(
+    () => sequenceValidator([failed, completed, { ...completed, id: "third-completed" }, { ...completed, id: "fourth-completed" }]),
+    /at most three/,
+  );
+  assert.throws(
+    () =>
+      sequenceValidator([
+        failed,
+        completed,
+        {
+          ...failed,
+          id: "third-failed",
+          createdAt: "2026-08-23T00:00:02.000000001Z",
+          startedAt: "2026-08-23T00:00:02.000000001Z",
+          taskCreatedAt: "2026-08-23T00:00:02.000000002Z",
+          taskStartedAt: "2026-08-23T00:00:02.000000003Z",
+          lastAttemptStartedAt: "2026-08-23T00:00:02.000000003Z",
+          completedAt: "2026-08-23T00:00:02.000000004Z",
+          taskCompletedAt: "2026-08-23T00:00:02.000000004Z",
+          lastAttemptCompletedAt: "2026-08-23T00:00:02.000000004Z",
+        },
+      ]),
+    /completed Run must be final/,
+  );
 });
 
 test("c2-5b runner set is explicit and preserves stable order", () => {
@@ -332,6 +741,22 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
       ),
     /productJourneyBarrierId/,
   );
+  assert.throws(
+    () =>
+      assertForegroundRunMarker(
+        {
+          ...markedRun,
+          specJson: JSON.stringify({
+            systemWork: {
+              ...JSON.parse(markedRun.specJson).systemWork,
+              generation: 0,
+            },
+          }),
+        },
+        expected,
+      ),
+    /generation/,
+  );
 });
 
 test("transient and terminal validators reject fallback and same-millisecond false greens", () => {
@@ -345,6 +770,33 @@ test("transient and terminal validators reject fallback and same-millisecond fal
         maxAttemptNumber: 2,
       }),
     /exact NEX_MAINTENANCE_TRANSIENT/,
+  );
+  const oneAttemptTransient = {
+    status: "failed",
+    taskCount: 1,
+    attemptCount: 1,
+    taskAttemptCount: 1,
+    lastAttemptNumber: 1,
+    maxAttemptNumber: 1,
+    lastAttemptStatus: "failed",
+    lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
+  };
+  assert.doesNotThrow(() => assertTransientAttemptEvidence(oneAttemptTransient));
+  assert.throws(
+    () =>
+      assertTransientAttemptEvidence({
+        ...oneAttemptTransient,
+        attemptCount: 2,
+      }),
+    /exactly one Task and Attempt/,
+  );
+  assert.throws(
+    () =>
+      assertTransientAttemptEvidence({
+        ...oneAttemptTransient,
+        maxAttemptNumber: 2,
+      }),
+    /Attempt #1/,
   );
   assert.throws(
     () =>

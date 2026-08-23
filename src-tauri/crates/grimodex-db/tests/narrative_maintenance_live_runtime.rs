@@ -76,11 +76,12 @@ fn startup_cycle_recovers_an_interrupted_run_before_reusing_work_identity() {
     let db = fixture_db();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO narrative_extraction_runs
+            r#"INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
-             VALUES ('interrupted-run', ?1, 'maintenance', '{}', '{}', 'digest',
-                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)",
+             VALUES ('interrupted-run', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'running', '{}', datetime('now'), 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;
         Ok(())

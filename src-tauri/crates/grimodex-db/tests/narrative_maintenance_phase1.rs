@@ -353,11 +353,12 @@ fn restore_recovery_terminalizes_old_active_backfill_before_current_verify() {
     let db = fixture_db();
     db.with_conn(|conn| {
         conn.execute(
-            "INSERT INTO narrative_extraction_runs
+            r#"INSERT INTO narrative_extraction_runs
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
-             VALUES ('old-active-backfill', ?1, 'maintenance', '{}', '{}', 'digest',
-                     'running', '{}', '2026-08-21T00:00:00.000Z', 'backfill', ?2, ?3)",
+             VALUES ('old-active-backfill', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     'running', '{}', '2026-08-21T00:00:00.000Z', 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, OLD_EPOCH_ID, "legacy-dependency-backfill:v2"],
         )?;
         Ok(())

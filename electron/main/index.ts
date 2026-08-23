@@ -31,8 +31,7 @@ import { registerIpcRouter } from "./ipc.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { createNarrativeFreshnessScheduler } from "./narrativeFreshness.js";
-import { createNarrativeMaintenanceScheduler } from "./narrativeMaintenance.js";
-import { createNarrativeMaintenanceTriggerCoordinator } from "./narrativeMaintenanceTriggers.js";
+import { bootstrapNarrativeMaintenance } from "./narrativeMaintenanceBootstrap.js";
 import { configureLinuxGraphics } from "./linuxGraphics.js";
 import { createMozkeyInstallerManager } from "./mozkeyInstaller.js";
 import {
@@ -413,25 +412,12 @@ if (!gotSingleInstanceLock) {
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend);
     // Main-only system-work seam. Trigger discovery is owned by this process;
     // renderer/preload never supplies project scope, paths, or phase data.
-    let narrativeMaintenanceTriggers: ReturnType<
-      typeof createNarrativeMaintenanceTriggerCoordinator
-    > | null = null;
-    const narrativeMaintenance = createNarrativeMaintenanceScheduler(backend, {
-      onWorkspaceBindingMismatch: () => {
-        narrativeMaintenanceTriggers?.requestRediscovery();
-      },
-      onCycleAccepted: () => {
-        narrativeMaintenanceTriggers?.requestRediscovery();
-      },
-    });
-    narrativeMaintenanceTriggers =
-      createNarrativeMaintenanceTriggerCoordinator(
-        backend,
-        narrativeMaintenance,
-      );
+    const {
+      scheduler: narrativeMaintenance,
+      coordinator: narrativeMaintenanceTriggers,
+    } = bootstrapNarrativeMaintenance(backend, narrativeMaintenanceCiSeam);
     licenseValidation.start();
     narrativeFreshness.start();
-    narrativeMaintenance.start();
     app.on("will-quit", () => {
       // close veto を通過して終了が確定してから同期 KILL する。before-quit で
       // dispose すると、未保存確認で終了を取り消した後も全 handler が死ぬ。
@@ -440,7 +426,7 @@ if (!gotSingleInstanceLock) {
       licenseValidation.dispose();
       narrativeFreshness.dispose();
       narrativeMaintenanceTriggers?.dispose();
-      narrativeMaintenance.dispose();
+      narrativeMaintenance?.dispose();
       cliAi.disposeAll();
       void codexApp.dispose();
       void externalMount.disposeAll();

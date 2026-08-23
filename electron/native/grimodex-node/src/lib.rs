@@ -1791,6 +1791,7 @@ impl Backend {
             let binding = state
                 .narrative_maintenance_recovery_gate
                 .binding_for_authority(&authority_id);
+            let ci_config = state.narrative_maintenance_ci_seam.config();
             // The binding gate and workspace state are separate locks. Re-pin
             // the active snapshot after binding so a swap in that interval
             // cannot return an old authority paired with a new generation.
@@ -1820,9 +1821,13 @@ impl Backend {
                 })
                 .to_string());
             }
-            let discovery =
-                narrative_maintenance::discover_all(snapshot.authority.db(), binding, wake_reason)
-                    .map_err(AppError::Anyhow)?;
+            let discovery = narrative_maintenance::discover_all(
+                snapshot.authority.db(),
+                binding,
+                wake_reason,
+                ci_config.as_ref(),
+            )
+            .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
         })
         .await

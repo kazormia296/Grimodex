@@ -25,6 +25,7 @@ mod inbox_read_model;
 mod incremental_freshness;
 mod legacy_backfill;
 pub mod maintenance_contracts;
+mod maintenance_lifecycle;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
 pub use maintenance_contracts::{
@@ -149,16 +150,18 @@ pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
 pub use maintenance_runtime::{
     canonical_work_key, canonical_work_key_for_epoch, classify_failure, coalesce_desired_work,
     decide_execution, decide_run_recovery, decide_run_recovery_for_epoch,
-    discover_durable_maintenance_work, plan_maintenance_trigger, read_run_ledger,
-    read_run_ledger_for_epoch, retry_backoff_ms, terminalize_interrupted_runs,
-    terminalize_interrupted_runs_for_epoch, terminalize_stale_interrupted_runs,
-    terminalize_stale_interrupted_runs_for_epoch, AutomaticRunKind, DesiredWork, FailureClass,
-    FailureClassification, InterruptedRunTerminalization, MaintenanceExecutionDecision,
-    MaintenanceExecutionMode, MaintenanceTrigger, NarrativeMaintenanceCiConfig,
-    NarrativeMaintenanceCiFault, NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger,
-    NarrativeSystemWorkMarker, RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts,
-    StaleActiveRun, WorkKey, LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES,
-    NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION, REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
+    discover_durable_maintenance_work, discover_durable_maintenance_work_with_config,
+    discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
+    plan_maintenance_trigger, read_run_ledger, read_run_ledger_for_epoch, retry_backoff_ms,
+    terminalize_interrupted_runs, terminalize_interrupted_runs_for_epoch,
+    terminalize_stale_interrupted_runs, terminalize_stale_interrupted_runs_for_epoch,
+    AutomaticRunKind, DesiredWork, FailureClass, FailureClassification,
+    InterruptedRunTerminalization, MaintenanceExecutionDecision, MaintenanceExecutionMode,
+    MaintenanceTrigger, NarrativeMaintenanceCiConfig, NarrativeMaintenanceCiFault,
+    NarrativeMaintenanceCiSetup, NarrativeMaintenanceCiTrigger, NarrativeSystemWorkMarker,
+    RecoveryAction, RecoveryDecision, RecoveryMode, RunLedgerCounts, StaleActiveRun, WorkKey,
+    LEGACY_BACKFILL_WORK_KEY, MAX_AUTOMATIC_RETRIES, NARRATIVE_MAINTENANCE_MAX_SAFE_GENERATION,
+    REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 pub use maintenance_runtime::{
     complete_foreground_system_work_run, find_running_foreground_system_work_run,
@@ -198,9 +201,9 @@ pub use repair::{
 };
 pub use restore_rebuild::{
     ensure_restore_epochs_for_workspace, rebuild_narrative_derived_state_for_project,
-    run_dependency_verify_for_project, verify_narrative_dependency_graph_for_project,
-    DependencyGraphVerifyReport, RebuildDerivedStateOutcome, RebuildDerivedStateSummary,
-    VerifyRunOutcome,
+    run_dependency_verify_for_project, run_dependency_verify_for_project_with_coordinates,
+    verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};
