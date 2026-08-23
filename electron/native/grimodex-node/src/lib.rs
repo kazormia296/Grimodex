@@ -8566,7 +8566,7 @@ mod narrative_maintenance_foreground_release_tests {
                 let updated_spec = serde_json::to_string(&spec)?;
                 conn.execute(
                     "UPDATE narrative_extraction_runs SET spec_json = ?1 WHERE id = ?2",
-                    rusqlite::params![updated_spec, run_id],
+                    [updated_spec.as_str(), run_id],
                 )?;
                 Ok::<_, anyhow::Error>(())
             })
