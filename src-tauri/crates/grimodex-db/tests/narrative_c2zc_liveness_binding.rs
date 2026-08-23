@@ -9,8 +9,8 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 
 use grimodex_db::narrative_extraction::{
-    inspect_workspace_cutover_readiness_with_liveness, record_live_scheduler_heartbeat,
-    ReadinessState,
+    ensure_test_schema, inspect_workspace_cutover_readiness_with_liveness,
+    record_live_scheduler_heartbeat, ReadinessState,
 };
 use grimodex_db::Database;
 
@@ -27,6 +27,7 @@ fn fixture_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
     db.migrate().expect("migrate database");
     db.with_conn(|conn| {
+        ensure_test_schema(conn)?;
         conn.execute(
             "INSERT INTO projects (id, title) VALUES ('same-project', 'Same project')",
             [],
