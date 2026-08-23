@@ -1812,6 +1812,43 @@ fn build_canonical_restore_plan(
     Ok(inserts)
 }
 
+const JS_SAFE_INTEGER_MAX: f64 = 9_007_199_254_740_991.0;
+
+/// Keep JSON values equivalent across SQLite -> N-API -> JavaScript roundtrips.
+///
+/// SQLite REAL `0.0` can arrive at the Native boundary as a JavaScript integer
+/// `0`. Only integral binary64 values in JavaScript's safe-integer range are
+/// canonicalized; fractional values and larger values retain their original
+/// representation so unsafe numeric coercion cannot make distinct rows equal.
+fn normalize_restore_plan_value(value: &mut Value) {
+    match value {
+        Value::Number(number) if number.is_f64() => {
+            if let Some(float) = number.as_f64() {
+                if float.is_finite() && float.fract() == 0.0 && float.abs() <= JS_SAFE_INTEGER_MAX {
+                    *number = serde_json::Number::from(float as i64);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                normalize_restore_plan_value(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                normalize_restore_plan_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn normalize_restore_plan_row(row: &mut RawRow) {
+    for value in row.values_mut() {
+        normalize_restore_plan_value(value);
+    }
+}
+
 fn ensure_restore_plan_is_snapshot_derived(
     conn: &Connection,
     project_id: &str,
@@ -1831,7 +1868,6 @@ fn ensure_restore_plan_is_snapshot_derived(
             insert.table.as_str()
         );
         let primary_keys = table_primary_key_columns(conn, insert.table.as_str())?;
-        let key = row_primary_key(&insert.row, &primary_keys, insert.table.as_str())?;
         let mut row = insert.row.clone();
         match insert.table {
             SnapshotRestoreTable::SceneEvents => {
@@ -1852,6 +1888,8 @@ fn ensure_restore_plan_is_snapshot_derived(
             }
             _ => {}
         }
+        normalize_restore_plan_row(&mut row);
+        let key = row_primary_key(&row, &primary_keys, insert.table.as_str())?;
         Ok((
             (insert.table, key),
             json!({ "mode": insert.mode, "row": row }),
@@ -3035,6 +3073,34 @@ mod tests {
 
     fn raw(value: Value) -> RawRow {
         value.as_object().expect("raw row").clone()
+    }
+
+    #[test]
+    fn restore_plan_comparison_accepts_js_safe_integral_real_spelling() {
+        let mut expected = json!({"sort_order": 0.0});
+        let mut incoming = json!({"sort_order": 0});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_eq!(expected, incoming);
+    }
+
+    #[test]
+    fn restore_plan_comparison_rejects_fractional_real_against_integer() {
+        let mut expected = json!({"sort_order": 0.5});
+        let mut incoming = json!({"sort_order": 0});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_ne!(expected, incoming);
+    }
+
+    #[test]
+    fn restore_plan_comparison_rejects_unsafe_integral_real_against_integer() {
+        let mut expected = json!({"sort_order": 9_007_199_254_740_994.0_f64});
+        let mut incoming = json!({"sort_order": 9_007_199_254_740_994_i64});
+        normalize_restore_plan_value(&mut expected);
+        normalize_restore_plan_value(&mut incoming);
+        assert_ne!(expected, incoming);
+        assert!(expected["sort_order"].is_f64());
     }
 
     fn empty_snapshot(snapshot_id: &str) -> CreateProjectSnapshotPayload {
