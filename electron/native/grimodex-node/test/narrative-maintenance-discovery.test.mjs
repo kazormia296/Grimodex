@@ -5,19 +5,43 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gunzipSync } from "node:zlib";
+import initSqlJs from "sql.js/dist/sql-asm.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
+const SQL = await initSqlJs();
 
 function createFixture(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-maintenance-${label}-`));
-  const backend = new Backend(join(root, "app-data"));
+  const appData = join(root, "app-data");
+  // Keep the first workspace open free of the detached automatic backup
+  // writer. The restore fixture opts in only after its Backfill assertions.
+  mkdirSync(appData, { recursive: true });
+  writeFileSync(
+    join(appData, "global-settings.json"),
+    JSON.stringify({
+      recentWorkspaces: [],
+      lastActiveWorkspace: null,
+      theme: "system",
+      uiLanguage: "ja",
+      uiScale: 100,
+      showLauncherOnStartup: false,
+      userPreferences: { "data.autoBackup": "false" },
+    }),
+  );
+  const backend = new Backend(appData);
   return {
     root,
     backend,
@@ -50,6 +74,28 @@ function projectPayload(projectId) {
   };
 }
 
+async function waitForNewBackup(
+  backend,
+  workspace,
+  before,
+  timeoutMs = 30_000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const created = JSON.parse(await backend.listBackups()).find(
+      ({ fileName }) => !before.has(fileName),
+    );
+    if (created) return created;
+    // The previous open may still own the path-scoped maintenance claim.
+    // Reopen until a retry can schedule the worker that observes the setting.
+    await backend.openWorkspace(workspace);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `trusted maintenance backup was not created within ${timeoutMs}ms`,
+  );
+}
+
 async function writeCanonicalBackup(backend, workspace, backupName) {
   const before = new Set(
     JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
@@ -61,27 +107,31 @@ async function writeCanonicalBackup(backend, workspace, backupName) {
     "data.backupInterval": "0",
   };
   await backend.saveGlobalSettings(settings);
+  await backend.openWorkspace(workspace);
+  const created = await waitForNewBackup(backend, workspace, before);
+  const source = readFileSync(join(workspace, "backups", created.fileName));
+  writeFileSync(
+    join(workspace, "backups", backupName),
+    created.fileName.endsWith(".gz") ? gunzipSync(source) : source,
+  );
+}
 
-  const deadline = Date.now() + 30_000;
-  for (;;) {
-    const created = JSON.parse(await backend.listBackups()).find(
-      ({ fileName }) => !before.has(fileName),
+function assertBackupContainsCompletedBackfill(backupPath, semanticEpochId) {
+  const snapshot = new SQL.Database(readFileSync(backupPath));
+  try {
+    const result = snapshot.exec(
+      `SELECT status, semantic_epoch_id, work_key
+         FROM narrative_extraction_runs
+        WHERE project_id = 'default-project' AND run_kind = 'backfill'
+        ORDER BY created_at DESC
+        LIMIT 1`,
     );
-    if (created) {
-      const source = readFileSync(join(workspace, "backups", created.fileName));
-      writeFileSync(
-        join(workspace, "backups", backupName),
-        created.fileName.endsWith(".gz") ? gunzipSync(source) : source,
-      );
-      return;
-    }
-    if (Date.now() > deadline) {
-      throw new Error("trusted maintenance backup was not created within 30s");
-    }
-    // The previous open may still own the path-scoped maintenance claim.
-    // Reopen until a retry can schedule the worker that observes the setting.
-    await backend.openWorkspace(workspace);
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(result.length, 1, "selected backup must contain a Backfill");
+    assert.deepEqual(result[0].values, [
+      ["completed", semanticEpochId, "legacy-dependency-backfill:v2"],
+    ]);
+  } finally {
+    snapshot.close();
   }
 }
 
@@ -160,6 +210,10 @@ test("restore install creates a fresh epoch whose first durable work is Verify",
   });
   const backupName = "grimodex-maintenance-restore.db";
   await writeCanonicalBackup(fixture.backend, workspace, backupName);
+  assertBackupContainsCompletedBackfill(
+    join(workspace, "backups", backupName),
+    beforeEpoch,
+  );
   await fixture.backend.restoreBackup(backupName);
   const result = JSON.parse(
     await fixture.backend.discoverNarrativeMaintenanceWork("restore-completed"),
