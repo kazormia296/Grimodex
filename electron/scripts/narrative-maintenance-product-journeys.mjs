@@ -261,23 +261,27 @@ export function assertForegroundLifecycle(
     );
   }
   const runCreatedAt = parseInstant(run.createdAt, `${label} Run createdAt`);
+  const runStartedAt = parseInstant(run.startedAt, `${label} Run startedAt`);
   const taskCreatedAt = parseInstant(run.taskCreatedAt, `${label} Task createdAt`);
   const taskStartedAt = parseInstant(run.taskStartedAt, `${label} Task startedAt`);
   const attemptStartedAt = parseInstant(
     run.lastAttemptStartedAt,
     `${label} Attempt startedAt`,
   );
-  if (run.startedAt) {
-    const runStartedAt = parseInstant(run.startedAt, `${label} Run startedAt`);
-    if (runCreatedAt > runStartedAt) {
-      throw new Error(`${label} Run createdAt must not be after startedAt`);
-    }
+  if (runCreatedAt > runStartedAt) {
+    throw new Error(`${label} Run createdAt must not be after startedAt`);
   }
   if (runCreatedAt > taskCreatedAt) {
     throw new Error(`${label} Run createdAt must not be after Task createdAt`);
   }
+  if (runStartedAt > taskCreatedAt) {
+    throw new Error(`${label} Run startedAt must not be after Task createdAt`);
+  }
   if (taskCreatedAt > taskStartedAt) {
     throw new Error(`${label} Task createdAt must not be after startedAt`);
+  }
+  if (runStartedAt > taskStartedAt) {
+    throw new Error(`${label} Task startedAt must not be before Run startedAt`);
   }
   if (taskStartedAt !== attemptStartedAt) {
     throw new Error(
@@ -402,9 +406,85 @@ function parseOutcome(value) {
 }
 
 function parseInstant(value, label) {
-  const timestamp = Date.parse(String(value ?? ""));
+  const text = typeof value === "string" ? value : "";
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})([Tt ])(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|z|[+\-−]\d{2}:\d{2})$/.exec(
+    text,
+  );
+  const legacyNaive = /^(\d{4})-(\d{2})-(\d{2})( )(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/.exec(
+    text,
+  );
+  const match = rfc3339 ?? legacyNaive;
+  if (!match) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const [
+    ,
+    yearText,
+    monthText,
+    dayText,
+    ,
+    hourText,
+    minuteText,
+    secondText,
+    fractionText,
+    offsetText,
+  ] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const daysInMonth =
+    month === 2
+      ? (year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28)
+      : [4, 6, 9, 11].includes(month)
+        ? 30
+        : 31;
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 60
+  ) {
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
+  }
+  const fraction = fractionText ?? "";
+  const milliseconds = Number((fraction.slice(0, 3) + "000").slice(0, 3));
+  let offsetMinutes = 0;
+  if (offsetText && !/^[Zz]$/.test(offsetText)) {
+    const offsetMatch = /^[+\-−](\d{2}):(\d{2})$/.exec(offsetText);
+    if (!offsetMatch) {
+      throw new Error(
+        `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+      );
+    }
+    const offsetHours = Number(offsetMatch[1]);
+    const offsetMinutePart = Number(offsetMatch[2]);
+    if (offsetHours > 23 || offsetMinutePart > 59) {
+      throw new Error(
+        `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+      );
+    }
+    const sign = offsetText[0] === "+" ? 1 : -1;
+    offsetMinutes = sign * (offsetHours * 60 + offsetMinutePart);
+  }
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(hour, minute, second === 60 ? 59 : second, milliseconds);
+  const timestamp =
+    date.getTime() + (second === 60 ? 1_000 : 0) - offsetMinutes * 60_000;
   if (!Number.isFinite(timestamp)) {
-    throw new Error(`${label} must be a valid RFC3339 timestamp: ${value}`);
+    throw new Error(
+      `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
+    );
   }
   return timestamp;
 }
@@ -482,7 +562,7 @@ export function assertForegroundRunMarker(
     typeof marker.authorityId !== "string" ||
     marker.authorityId.trim() === "" ||
     !Number.isSafeInteger(marker.generation) ||
-    marker.generation < 0
+    marker.generation <= 0
   ) {
     throw new Error(
       "foreground Run systemWork marker is missing immutable authority id/generation",
@@ -546,11 +626,14 @@ export function assertTransientAttemptEvidence(run) {
     );
   }
   if (
-    Number(run?.maxAttemptNumber ?? 0) < 2 ||
-    Number(run?.attemptCount ?? 0) < 2
+    Number(run?.taskCount ?? 0) !== 1 ||
+    Number(run?.attemptCount ?? 0) !== 1 ||
+    Number(run?.taskAttemptCount ?? 0) !== 1 ||
+    Number(run?.lastAttemptNumber ?? 0) !== 1 ||
+    Number(run?.maxAttemptNumber ?? 0) !== 1
   ) {
     throw new Error(
-      "transient retry did not record attempt >= 2 on the failed Run",
+      "transient retry must retain exactly one Task and Attempt #1 per failed Run",
     );
   }
   return run;
@@ -1602,13 +1685,25 @@ async function runTransientRetry(harness, configureWorkspace) {
         );
       }
       assertTransientAttemptEvidence(failed);
-      const maxAttempt = Math.max(
-        0,
-        ...freshAttempts.map((row) => Number(row.maxAttemptNumber ?? 0)),
+      const sameWorkRuns = freshAttempts.filter(
+        (row) =>
+          row.runKind === failed.runKind && row.workKey === failed.workKey,
       );
+      const sameWorkRunIds = new Set(sameWorkRuns.map((row) => row.id));
+      const sameWorkCreatedAt = sameWorkRuns.map((row) =>
+        parseInstant(row.createdAt, "transient same-work Run createdAt"),
+      );
+      const sameWorkRunsAreOrdered = sameWorkCreatedAt.every(
+        (createdAt, index) =>
+          index === 0 || createdAt > sameWorkCreatedAt[index - 1],
+      );
+      const distinctSameWorkRunCount = sameWorkRunIds.size;
       if (
-        freshAttempts.length > 3 ||
-        maxAttempt > 3 ||
+        sameWorkRuns.length < 2 ||
+        sameWorkRuns.length > 3 ||
+        sameWorkRunIds.size !== sameWorkRuns.length ||
+        sameWorkRuns[0]?.id !== failed.id ||
+        !sameWorkRunsAreOrdered ||
         completed.status !== "completed"
       ) {
         throw new Error(
@@ -1625,7 +1720,7 @@ async function runTransientRetry(harness, configureWorkspace) {
         runIds: freshAttempts.map((run) => run.id),
         failedRunId: failed.id,
         completedRunId: completed.id,
-        maxAttempt,
+        distinctSameWorkRunCount,
       });
     },
     { fault: "transient-io" },

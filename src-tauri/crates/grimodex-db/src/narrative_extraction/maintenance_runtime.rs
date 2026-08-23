@@ -814,7 +814,32 @@ pub fn complete_foreground_system_work_run(
             )?;
             if status == "completed" {
                 // A duplicate release is idempotent only after the complete
-                // immutable lifecycle pair has been validated.
+                // immutable lifecycle pair *and* the phase-specific success
+                // evidence have been validated.  Completed Verify rows are
+                // later rediscovery inputs, so an empty/tampered outcome must
+                // not become a reusable success merely because its lifecycle
+                // children still look terminal.
+                let completed_outcome = conn
+                    .query_row(
+                        "SELECT outcome_summary_json
+                           FROM narrative_extraction_runs
+                          WHERE id = ?1",
+                        params![barrier.run_id],
+                        |row| row.get::<_, Option<String>>(0),
+                    )?
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: completed foreground Run has no successful phase outcome"
+                        )
+                    })?;
+                let completed_outcome = serde_json::from_str::<Value>(&completed_outcome)?;
+                validate_phase_success_outcome(
+                    &run_kind,
+                    &project_id,
+                    &work_key,
+                    epoch_id.as_deref(),
+                    &completed_outcome,
+                )?;
                 load_completed_maintenance_run_in_tx(conn, &barrier.run_id)?;
                 return Ok(());
             }
