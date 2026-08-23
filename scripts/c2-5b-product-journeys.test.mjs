@@ -24,11 +24,15 @@ import {
   NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
   NARRATIVE_MAINTENANCE_TRANSIENT_CODE,
   NARRATIVE_MAINTENANCE_TRIGGERS,
+  assertRestoreFixtureEvidence,
+  assertRestoreVerifyRebuildVerifyCausality,
   assertForegroundLifecycle,
   assertForegroundRunMarker,
   assertTerminalFailureEvidence,
   assertTransientAttemptEvidence,
   foregroundMarkedRuns,
+  isSettledFreshnessCursor,
+  selectInterruptedRunFromExitSnapshot,
   terminalRetryCandidates,
 } from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
 import * as narrativeMaintenanceProductJourneys from "../electron/scripts/narrative-maintenance-product-journeys.mjs";
@@ -723,6 +727,181 @@ test("C2-5B journey seam constants keep exact durable failure contracts", () => 
     "productJourneyBarrierId",
     "correlation",
   ]);
+});
+
+test("restore fixture evidence is canonical and an empty fixture stays red", () => {
+  const expected = {
+    projectId: "project-1",
+    edgeId: "restore-edge",
+    consumerKey: "restore-owner-run",
+    sourceObjectIdentity: "project:scene:restore-scene",
+    owningRunId: "restore-owner-run",
+    readSetToken: "v1@2026-08-23T00:00:00.000Z",
+  };
+  const edge = {
+    ...expected,
+    id: expected.edgeId,
+    consumerKind: "narrative-extraction-run",
+    readSetJson: JSON.stringify([expected.readSetToken]),
+    generatedByTransactionId: null,
+    owningRunId: expected.owningRunId,
+    createdAt: "2026-08-23T00:00:00.000Z",
+  };
+  assert.doesNotThrow(() => assertRestoreFixtureEvidence([edge], expected));
+  assert.throws(
+    () => assertRestoreFixtureEvidence([], expected),
+    /exactly one canonical dependency Edge/,
+    "the old empty setup-disabled backup must not be accepted as restore evidence",
+  );
+  assert.throws(
+    () =>
+      assertRestoreFixtureEvidence(
+        [{ ...edge, readSetJson: JSON.stringify([]) }],
+        expected,
+      ),
+    /one-token shape/,
+  );
+  assert.throws(
+    () =>
+      assertRestoreFixtureEvidence(
+        [{ ...edge, sourceObjectIdentity: "project:scene:other" }],
+        expected,
+      ),
+    /not canonical/,
+  );
+});
+
+test("restore sequence binds Verify/Rebuild/confirmation to the new restore Epoch", () => {
+  const beforeEpochs = [
+    { id: "epoch-initial", epochNumber: 0, reason: "initial" },
+  ];
+  const restoreEpoch = {
+    id: "epoch-restore",
+    epochNumber: 1,
+    reason: "restore",
+    createdAt: "2026-08-23T00:00:00.000Z",
+  };
+  const phase = (id, runKind, semanticEpochId = restoreEpoch.id) => ({
+    id,
+    runKind,
+    semanticEpochId,
+    status: "completed",
+    createdAt: `2026-08-23T00:00:0${id.endsWith("1") ? "1" : "2"}.000Z`,
+    completedAt: `2026-08-23T00:00:0${id.slice(-1)}.000Z`,
+  });
+  assert.doesNotThrow(() =>
+    assertRestoreVerifyRebuildVerifyCausality(
+      [
+        phase("verify-1", "dependency-verify"),
+        phase("rebuild-1", "semantic-index-rebuild"),
+        phase("verify-2", "dependency-verify"),
+      ],
+      beforeEpochs,
+      [...beforeEpochs, restoreEpoch],
+    ),
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [phase("verify-only", "dependency-verify")],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /exactly Verify -> Rebuild -> confirmation Verify/,
+    "the old fixture's Verify-only restore must fail red",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-old", "dependency-verify", "epoch-initial"),
+          phase("rebuild-new", "semantic-index-rebuild"),
+          phase("verify-new", "dependency-verify"),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /new restore Epoch/,
+    "a pre-restore phase must not satisfy post-restore causality",
+  );
+  assert.throws(
+    () =>
+      assertRestoreVerifyRebuildVerifyCausality(
+        [
+          phase("verify-1", "dependency-verify"),
+          {
+            ...phase("rebuild-1", "semantic-index-rebuild"),
+            createdAt: "2026-08-23T00:00:00.500Z",
+          },
+          phase("verify-2", "dependency-verify"),
+        ],
+        beforeEpochs,
+        [...beforeEpochs, restoreEpoch],
+      ),
+    /not monotonic/,
+    "a sequence with out-of-order durable creation timestamps must stay red",
+  );
+});
+
+test("interrupted snapshot selection is page-independent and rejects a pre-existing running Run", () => {
+  const baseline = [
+    {
+      id: "before",
+      runKind: "backfill",
+      status: "running",
+    },
+  ];
+  const interrupted = {
+    id: "interrupted",
+    projectId: "project-1",
+    runKind: "backfill",
+    status: "running",
+  };
+  assert.equal(
+    selectInterruptedRunFromExitSnapshot(
+      [...baseline, interrupted],
+      baseline,
+    ).id,
+    "interrupted",
+  );
+  assert.throws(
+    () =>
+      selectInterruptedRunFromExitSnapshot(
+        [
+          ...baseline,
+          { ...interrupted, id: "old-running" },
+        ],
+        [],
+      ),
+    /exactly one new running Backfill Run/,
+  );
+});
+
+test("settled freshness cursor requires the canonical released reservation shape", () => {
+  assert.equal(
+    isSettledFreshnessCursor({
+      acknowledgedThrough: 2,
+      reservedThrough: null,
+      activeRunId: null,
+      semanticEpochId: null,
+      lastError: null,
+    }),
+    true,
+  );
+  for (const field of ["reservedThrough", "activeRunId", "semanticEpochId", "lastError"]) {
+    assert.equal(
+      isSettledFreshnessCursor({
+        acknowledgedThrough: 2,
+        reservedThrough: null,
+        activeRunId: null,
+        semanticEpochId: null,
+        lastError: null,
+        [field]: field === "lastError" ? "stale" : "epoch-1",
+      }),
+      false,
+      `${field} must remain released/null for readiness`,
+    );
+  }
 });
 
 test("foreground marker selects one native Run by immutable barrier, not row order", () => {

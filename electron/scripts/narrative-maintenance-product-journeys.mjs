@@ -42,6 +42,8 @@ export const NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE =
 export const NARRATIVE_MAINTENANCE_INTERRUPTED_CODE =
   "NEX_MAINTENANCE_INTERRUPTED";
 export const NARRATIVE_MAINTENANCE_RETRY_OBSERVATION_MS = 1_250;
+const RESTORE_FIXTURE_CONSUMER_KIND = "narrative-extraction-run";
+const RESTORE_FIXTURE_SPEC_DIGEST = "sha256:c2-5b-restore-fixture-v1";
 export const NARRATIVE_MAINTENANCE_FOREGROUND_TRIGGER = "workspace-opened";
 export const NARRATIVE_MAINTENANCE_FOREGROUND_SYSTEM_WORK_MARKER = Object.freeze(
   [
@@ -952,6 +954,138 @@ function requireSequence(
   return selected;
 }
 
+/**
+ * Validate the restore-triggered phase chain against the rows created after
+ * the settled pre-restore snapshot.  Keeping this as a pure contract makes it
+ * possible to prove that an empty backup (the old fixture) is red, while also
+ * preventing a pre-restore Verify/Rebuild chain from being mistaken for the
+ * post-restore chain.
+ */
+export function assertRestoreVerifyRebuildVerifyCausality(
+  sequence,
+  beforeEpochs,
+  epochs,
+  label = "restore/epoch sequence",
+) {
+  const expectedKinds = [
+    "dependency-verify",
+    "semantic-index-rebuild",
+    "dependency-verify",
+  ];
+  if (!Array.isArray(sequence) || sequence.length !== expectedKinds.length) {
+    throw new Error(
+      `${label}: expected exactly Verify -> Rebuild -> confirmation Verify; ` +
+        `observed=${JSON.stringify(summarizeRuns(sequence ?? []))}`,
+    );
+  }
+  for (const [index, expectedKind] of expectedKinds.entries()) {
+    if (sequence[index]?.runKind !== expectedKind) {
+      throw new Error(
+        `${label}: expected ${expectedKinds.join(" -> ")}; ` +
+          `observed=${JSON.stringify(summarizeRuns(sequence))}`,
+      );
+    }
+    if (sequence[index]?.status !== "completed") {
+      throw new Error(
+        `${label}: ${expectedKind} Run ${sequence[index]?.id ?? "<missing>"} did not complete`,
+      );
+    }
+  }
+
+  const beforeIds = new Set(
+    (Array.isArray(beforeEpochs) ? beforeEpochs : []).map((epoch) => epoch.id),
+  );
+  const newEpochs = (Array.isArray(epochs) ? epochs : []).filter(
+    (epoch) => !beforeIds.has(epoch.id),
+  );
+  const restoreEpochs = newEpochs.filter((epoch) => epoch.reason === "restore");
+  if (restoreEpochs.length !== 1) {
+    throw new Error(
+      `${label}: expected exactly one new restore Epoch; ` +
+        `observed=${JSON.stringify({ newEpochs, beforeEpochs, epochs })}`,
+    );
+  }
+  const restoreEpoch = restoreEpochs[0];
+  const restoreEpochCreatedAt = parseInstant(
+    restoreEpoch.createdAt,
+    `${label} restore Epoch createdAt`,
+  );
+  let previousCreatedAt = null;
+  if (
+    sequence.some(
+      (run) =>
+        run.semanticEpochId !== restoreEpoch.id ||
+        !run.id ||
+        !run.createdAt ||
+        !run.completedAt,
+    )
+  ) {
+    throw new Error(
+      `${label}: every phase must be completed under the new restore Epoch; ` +
+        `observed=${JSON.stringify({ sequence: summarizeRuns(sequence), restoreEpoch })}`,
+    );
+  }
+  for (const [index, run] of sequence.entries()) {
+    const createdAt = parseInstant(
+      run.createdAt,
+      `${label} phase ${index + 1} createdAt`,
+    );
+    if (compareInstantValues(createdAt, restoreEpochCreatedAt) < 0) {
+      throw new Error(
+        `${label}: phase ${run.id} predates the restore Epoch; ` +
+          `observed=${JSON.stringify({ run, restoreEpoch })}`,
+      );
+    }
+    if (previousCreatedAt && compareInstantValues(createdAt, previousCreatedAt) < 0) {
+      throw new Error(
+        `${label}: phase creation timestamps are not monotonic; ` +
+          `observed=${JSON.stringify({ sequence: summarizeRuns(sequence) })}`,
+      );
+    }
+    previousCreatedAt = createdAt;
+  }
+  return restoreEpoch;
+}
+
+/**
+ * The process-interruption seam exits immediately after the native running
+ * Run ACK.  Select that durable row from the first post-exit SQLite snapshot;
+ * page observation is intentionally not part of this contract because the
+ * renderer may already be gone.
+ */
+export function selectInterruptedRunFromExitSnapshot(
+  postExitRuns,
+  baselineRuns = [],
+) {
+  const fresh = rowsAfter(postExitRuns, baselineRuns);
+  const candidates = fresh.filter(
+    (row) => row.runKind === "backfill" && row.status === "running",
+  );
+  if (candidates.length !== 1) {
+    throw new Error(
+      `process interruption must leave exactly one new running Backfill Run; ` +
+        `observed=${JSON.stringify(summarizeRuns(fresh))}`,
+    );
+  }
+  return candidates[0];
+}
+
+/**
+ * Acknowledging a reservation clears the reservation's epoch as well as its
+ * Run/range columns. The completed Freshness Run carries the epoch binding;
+ * a released cursor must therefore not be compared to that Run's epoch.
+ */
+export function isSettledFreshnessCursor(cursor) {
+  return (
+    cursor !== null &&
+    typeof cursor === "object" &&
+    cursor.activeRunId === null &&
+    cursor.reservedThrough === null &&
+    cursor.semanticEpochId === null &&
+    cursor.lastError === null
+  );
+}
+
 async function runLedger(harness, page, projectId) {
   return queryRows(
     harness,
@@ -1057,7 +1191,12 @@ async function waitForLedger(
 async function waitForReadiness(
   context,
   label,
-  { baselineRuns = null, minimumFeedHead = 0, requireFreshRun = false } = {},
+  {
+    baselineRuns = null,
+    minimumFeedHead = 0,
+    requireFreshRun = false,
+    requireMaintenanceSettled = false,
+  } = {},
 ) {
   const baselineIds = new Set(
     (baselineRuns ?? []).map((run) => String(run.id)),
@@ -1083,6 +1222,21 @@ async function waitForReadiness(
       const latestFreshness = [...rows]
         .reverse()
         .find((row) => row.runKind === "freshness-evaluation");
+      const maintenanceKinds = new Set([
+        "backfill",
+        "dependency-verify",
+        "semantic-index-rebuild",
+        "freshness-evaluation",
+      ]);
+      const maintenanceSettled =
+        rows.some(
+          (row) => row.runKind === "backfill" && row.status === "completed",
+        ) &&
+        !rows.some(
+          (row) =>
+            maintenanceKinds.has(row.runKind) &&
+            (row.status === "pending" || row.status === "running"),
+        );
       const ready =
         latestEpoch &&
         latestFreshness?.status === "completed" &&
@@ -1090,12 +1244,11 @@ async function waitForReadiness(
         latestFreshness.semanticEpochId === latestEpoch.id &&
         latestFreshness.completedAt &&
         feedAndCursor.cursor &&
-        feedAndCursor.cursor.semanticEpochId === latestEpoch.id &&
         feedAndCursor.feedHead >= minimumFeedHead &&
         Number(feedAndCursor.cursor.acknowledgedThrough) ===
           feedAndCursor.feedHead &&
-        feedAndCursor.cursor.activeRunId == null &&
-        feedAndCursor.cursor.lastError == null;
+        isSettledFreshnessCursor(feedAndCursor.cursor) &&
+        (!requireMaintenanceSettled || maintenanceSettled);
       return ready
         ? {
             epoch: latestEpoch,
@@ -1310,7 +1463,7 @@ async function withWorkspace(
 
 async function createSceneIfNeeded(context, marker) {
   const existing = await context.query(
-    `SELECT id, version, content
+    `SELECT id, version, updated_at AS updatedAt, content
        FROM tree_nodes
       WHERE project_id = ? AND node_type = 'scene'
       ORDER BY created_at, id
@@ -1356,7 +1509,7 @@ async function createSceneIfNeeded(context, marker) {
   return context.harness.waitUntil(
     async () => {
       const rows = await context.query(
-        "SELECT id, version, content FROM tree_nodes WHERE id = ?",
+        "SELECT id, version, updated_at AS updatedAt, content FROM tree_nodes WHERE id = ?",
         [sceneId],
       );
       return rows[0] ?? null;
@@ -1415,6 +1568,313 @@ async function createRestoreBackupFixture(workspace) {
     );
   }
   return backupName;
+}
+
+/**
+ * Validate the one durable Graph Edge used by the restore and dependency-gap
+ * journeys.  This deliberately checks the complete persisted shape instead
+ * of accepting a convenient marker row: Verify must discover a real Edge
+ * whose current-epoch derived state is absent/stale, and Rebuild must be able
+ * to evaluate its canonical scene Source.
+ */
+export function assertRestoreFixtureEvidence(
+  rows,
+  {
+    projectId,
+    edgeId,
+    consumerKey,
+    sourceObjectIdentity,
+    owningRunId,
+    readSetToken,
+  },
+) {
+  if (!Array.isArray(rows) || rows.length !== 1) {
+    throw new Error(
+      `restore fixture must contain exactly one canonical dependency Edge; observed=${JSON.stringify(rows)}`,
+    );
+  }
+  const [edge] = rows;
+  if (
+    edge.id !== edgeId ||
+    edge.projectId !== projectId ||
+    edge.consumerKind !== RESTORE_FIXTURE_CONSUMER_KIND ||
+    edge.consumerKey !== consumerKey ||
+    edge.sourceObjectIdentity !== sourceObjectIdentity ||
+    edge.generatedByTransactionId !== null ||
+    edge.owningRunId !== owningRunId
+  ) {
+    throw new Error(
+      `restore fixture dependency Edge is not canonical: ${JSON.stringify({
+        expected: {
+          id: edgeId,
+          projectId,
+          consumerKind: RESTORE_FIXTURE_CONSUMER_KIND,
+          consumerKey,
+          sourceObjectIdentity,
+          generatedByTransactionId: null,
+          owningRunId,
+        },
+        actual: edge,
+      })}`,
+    );
+  }
+  parseInstant(edge.createdAt, "restore fixture dependency Edge createdAt");
+  if (
+    typeof readSetToken !== "string" ||
+    !/^v[0-9]+@.+$/.test(readSetToken)
+  ) {
+    throw new Error(
+      `restore fixture read_set token is not a canonical scene revision token: ${JSON.stringify(readSetToken)}`,
+    );
+  }
+  let readSet;
+  try {
+    readSet = JSON.parse(edge.readSetJson);
+  } catch (error) {
+    throw new Error(
+      `restore fixture dependency Edge read_set_json is not valid JSON: ${String(error)}`,
+      { cause: error },
+    );
+  }
+  if (
+    !Array.isArray(readSet) ||
+    readSet.length !== 1 ||
+    readSet[0] !== readSetToken
+  ) {
+    throw new Error(
+      `restore fixture dependency Edge read_set_json is not the canonical one-token shape: ${JSON.stringify(readSet)}`,
+    );
+  }
+  return edge;
+}
+
+/**
+ * Seed a real scene Source and a fully shaped Dependency Edge through the
+ * product's typed APIs before the scheduler launch.  Only the final Edge
+ * declaration uses db_execute because no renderer-facing Edge writer exists;
+ * its owner Run and every persisted field are validated immediately.
+ */
+async function seedRestoreFixtureEvidence(harness, workspace, id) {
+  const fixtureLaunch = await withLaunchEnvironment(
+    {
+      setup: "disabled",
+      ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+    },
+    () => harness.launch(`${id}/restore-fixture`),
+  );
+  try {
+    const context = await contextForLaunch(
+      harness,
+      fixtureLaunch,
+      workspace,
+      id,
+      null,
+    );
+    const scene = await createSceneIfNeeded(context, "restore-fixture-source");
+    const readSetToken = `v${scene.version}@${scene.updatedAt}`;
+    if (!/^v[0-9]+@.+$/.test(readSetToken)) {
+      throw new Error(
+        `restore fixture scene did not expose a canonical revision token: ${JSON.stringify({
+          sceneId: scene.id,
+          version: scene.version,
+          updatedAt: scene.updatedAt,
+        })}`,
+      );
+    }
+    const runId = `c2-5b-restore-fixture-run-${randomUUID()}`;
+    const createdRun = await context.harness.invokeOk(
+      context.page,
+      "narrative_extraction_create_run",
+      {
+        payload: {
+          runId,
+          projectId: context.projectId,
+          surfacePathId: "c2-5b-restore-fixture",
+          scopeJson: {},
+          specJson: { fixture: "restore-verify-rebuild-verify" },
+          specDigest: RESTORE_FIXTURE_SPEC_DIGEST,
+          tasks: [],
+        },
+      },
+    );
+    if (createdRun?.runId !== runId || createdRun?.status !== "pending") {
+      throw new Error(
+        `restore fixture owner Run was not created through the canonical API: ${JSON.stringify(createdRun)}`,
+      );
+    }
+    await context.harness.invokeOk(
+      context.page,
+      "narrative_extraction_cancel_run",
+      { payload: { runId, projectId: context.projectId } },
+    );
+    const edgeId = `c2-5b-restore-fixture-edge-${randomUUID()}`;
+    const consumerKey = runId;
+    const sourceObjectIdentity = `project:scene:${scene.id}`;
+    await context.harness.invokeOk(context.page, "db_execute", {
+      sql: `INSERT INTO narrative_dependency_edges
+              (id, project_id, consumer_kind, consumer_key,
+               source_object_identity, read_set_json,
+               generated_by_transaction_id, created_at, owning_run_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params: [
+        edgeId,
+        context.projectId,
+        RESTORE_FIXTURE_CONSUMER_KIND,
+        consumerKey,
+        sourceObjectIdentity,
+        JSON.stringify([readSetToken]),
+        null,
+        new Date().toISOString(),
+        runId,
+      ],
+      method: "run",
+    });
+    const edgeRows = await context.query(
+      `SELECT id,
+              project_id AS projectId,
+              consumer_kind AS consumerKind,
+              consumer_key AS consumerKey,
+              source_object_identity AS sourceObjectIdentity,
+              read_set_json AS readSetJson,
+              generated_by_transaction_id AS generatedByTransactionId,
+              created_at AS createdAt,
+              owning_run_id AS owningRunId
+         FROM narrative_dependency_edges
+        WHERE project_id = ? AND id = ?`,
+      [context.projectId, edgeId],
+    );
+    const ownerRows = await context.query(
+      `SELECT id,
+              project_id AS projectId,
+              surface_path_id AS surfacePathId,
+              scope_json AS scopeJson,
+              spec_json AS specJson,
+              spec_digest AS specDigest,
+              status,
+              created_at AS createdAt,
+              (SELECT COUNT(*)
+                 FROM narrative_extraction_tasks t
+                WHERE t.run_id = narrative_extraction_runs.id) AS taskCount
+         FROM narrative_extraction_runs
+        WHERE id = ?`,
+      [runId],
+    );
+    let ownerScope;
+    let ownerSpec;
+    try {
+      ownerScope = JSON.parse(ownerRows[0]?.scopeJson ?? "");
+      ownerSpec = JSON.parse(ownerRows[0]?.specJson ?? "");
+    } catch (error) {
+      throw new Error(
+        `restore fixture owner Run JSON fields are not canonical: ${JSON.stringify(ownerRows)}`,
+        { cause: error },
+      );
+    }
+    if (
+      ownerRows.length !== 1 ||
+      ownerRows[0].id !== runId ||
+      ownerRows[0].projectId !== context.projectId ||
+      ownerRows[0].surfacePathId !== "c2-5b-restore-fixture" ||
+      JSON.stringify(ownerScope) !== "{}" ||
+      JSON.stringify(ownerSpec) !==
+        JSON.stringify({ fixture: "restore-verify-rebuild-verify" }) ||
+      ownerRows[0].specDigest !== RESTORE_FIXTURE_SPEC_DIGEST ||
+      Number(ownerRows[0].taskCount) !== 0 ||
+      ownerRows[0].status !== "cancelled"
+    ) {
+      throw new Error(
+        `restore fixture owner Run is not a durable same-project cancelled Run: ${JSON.stringify(ownerRows)}`,
+      );
+    }
+    parseInstant(ownerRows[0].createdAt, "restore fixture owner Run createdAt");
+    const edge = assertRestoreFixtureEvidence(edgeRows, {
+      projectId: context.projectId,
+      edgeId,
+      consumerKey,
+      sourceObjectIdentity,
+      owningRunId: runId,
+      readSetToken,
+    });
+    context.record("restore-fixture-evidence-seeded", {
+      edgeId: edge.id,
+      consumerKind: edge.consumerKind,
+      consumerKey: edge.consumerKey,
+      sourceObjectIdentity: edge.sourceObjectIdentity,
+      owningRunId: edge.owningRunId,
+    });
+    return {
+      edgeId,
+      consumerKey,
+      sourceObjectIdentity,
+      owningRunId: runId,
+      readSetToken,
+      sceneId: scene.id,
+    };
+  } finally {
+    await harness.close(
+      fixtureLaunch.app,
+      fixtureLaunch.page,
+      `${id}/restore-fixture`,
+    );
+  }
+}
+
+/**
+ * Turn an already-settled workspace into a restore image with a real derived
+ * state gap.  The completed Backfill/Verify evidence remains in the image,
+ * while the Edge/Freshness projections are removed so the restored Epoch's
+ * first Verify must request Rebuild.  The owner is a fixture-only Consumer,
+ * therefore these deletes cannot affect another journey's graph.
+ */
+async function createRestoreFixtureDerivedStateGap(context, evidence) {
+  await context.harness.invokeOk(context.page, "db_execute", {
+    sql: `DELETE FROM narrative_dependency_edge_states
+           WHERE project_id = ? AND edge_id = ?`,
+    params: [context.projectId, evidence.edgeId],
+    method: "run",
+  });
+  await context.harness.invokeOk(context.page, "db_execute", {
+    sql: `DELETE FROM narrative_consumer_freshness
+           WHERE project_id = ?
+             AND consumer_kind = ?
+             AND consumer_key = ?`,
+    params: [
+      context.projectId,
+      RESTORE_FIXTURE_CONSUMER_KIND,
+      evidence.consumerKey,
+    ],
+    method: "run",
+  });
+  const remaining = await context.query(
+    `SELECT
+       (SELECT COUNT(*)
+          FROM narrative_dependency_edge_states
+         WHERE project_id = ? AND edge_id = ?) AS edgeStateCount,
+       (SELECT COUNT(*)
+          FROM narrative_consumer_freshness
+         WHERE project_id = ?
+           AND consumer_kind = ?
+           AND consumer_key = ?) AS freshnessCount`,
+    [
+      context.projectId,
+      evidence.edgeId,
+      context.projectId,
+      RESTORE_FIXTURE_CONSUMER_KIND,
+      evidence.consumerKey,
+    ],
+  );
+  if (
+    Number(remaining[0]?.edgeStateCount ?? -1) !== 0 ||
+    Number(remaining[0]?.freshnessCount ?? -1) !== 0
+  ) {
+    throw new Error(
+      `restore fixture derived-state gap was not fully created: ${JSON.stringify(remaining)}`,
+    );
+  }
+  context.record("restore-fixture-derived-state-gap-created", {
+    edgeId: evidence.edgeId,
+    consumerKey: evidence.consumerKey,
+  });
 }
 
 async function prepareLegacySchemaMarker(workspace) {
@@ -1666,7 +2126,11 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
   const id = "c2-5b-restore-verify-rebuild-verify";
   const workspace = harness.workspacePath(id);
   await configureJourneyWorkspace(harness, configureWorkspace, workspace);
-  const backupName = await createRestoreBackupFixture(workspace);
+  const fixtureEvidence = await seedRestoreFixtureEvidence(
+    harness,
+    workspace,
+    id,
+  );
   const preLaunchRuns = await readRunSnapshot(workspace);
   const launched = await withLaunchEnvironment(
     { ownerToken: NARRATIVE_MAINTENANCE_OWNER_TOKEN },
@@ -1680,46 +2144,36 @@ async function runRestoreVerifyRebuildVerify(harness, configureWorkspace) {
       id,
       preLaunchRuns,
     );
-    const baselineRuns = context.baselineRuns;
+    // The first real launch starts the Project background Timelapse and the
+    // maintenance scheduler concurrently.  Restore must not detach the live
+    // DB while either still owns a scoped mutation; wait on their durable
+    // completion/cursor contract instead of sleeping for an arbitrary delay.
+    await waitForReadiness(context, "restore/pre-restore settled", {
+      requireMaintenanceSettled: true,
+    });
+    const beforeRestoreRuns = await context.runs();
     const beforeEpochs = await context.epochs();
+    await createRestoreFixtureDerivedStateGap(context, fixtureEvidence);
+    const backupName = await createRestoreBackupFixture(workspace);
     await context.harness.invokeOk(context.page, "restore_backup", {
       fileName: backupName,
     });
     context.record("restore-epoch-trigger-observed", { backupName });
     const sequence = await waitForRunSequence(
-      { ...context, baselineRuns },
+      context,
       ["dependency-verify", "semantic-index-rebuild", "dependency-verify"],
       "restore/epoch verify-first rebuild confirmation",
+      NARRATIVE_MAINTENANCE_WAIT_MS,
+      { baselineRows: beforeRestoreRuns },
     );
     const epochs = await context.epochs();
-    const newEpochs = epochs.filter(
-      (epoch) => !beforeEpochs.some((before) => before.id === epoch.id),
+    const restoreEpoch = assertRestoreVerifyRebuildVerifyCausality(
+      sequence,
+      beforeEpochs,
+      epochs,
     );
-    if (!newEpochs.some((epoch) => epoch.reason === "restore")) {
-      throw new Error(
-        `restore/epoch journey did not observe a durable restore epoch: ${JSON.stringify(
-          {
-            beforeEpochs,
-            epochs,
-          },
-        )}`,
-      );
-    }
-    const restoreEpoch = newEpochs.find((epoch) => epoch.reason === "restore");
-    if (
-      sequence[0]?.semanticEpochId !== restoreEpoch?.id ||
-      sequence[1]?.semanticEpochId !== restoreEpoch?.id ||
-      sequence[2]?.semanticEpochId !== restoreEpoch?.id
-    ) {
-      throw new Error(
-        `restore/epoch sequence crossed semantic epochs: ${JSON.stringify({
-          sequence: summarizeRuns(sequence),
-          restoreEpoch,
-        })}`,
-      );
-    }
     context.record("restore-epoch-verify-rebuild-verify-complete", {
-      epochs: newEpochs.map((epoch) => epoch.id),
+      epochs: [restoreEpoch.id],
       runIds: sequence.map((run) => run.id),
     });
   } finally {
@@ -2159,42 +2613,27 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
     },
     () => harness.launch(`${id}/interrupted`),
   );
-  let interruptedContext;
   let interruptedRun;
   let postExitRuns;
   try {
-    interruptedContext = await contextForLaunch(
-      harness,
-      interruptedLaunch,
-      workspace,
-      id,
-      baselineRuns,
+    // The native interruption seam exits immediately after it durably ACKs
+    // the running Run.  Arm and await process exit before touching the page;
+    // page-based polling can otherwise race Target closed and hide the real
+    // lifecycle failure in teardown.
+    const exit = await waitForProcessExit(
+      interruptedLaunch.app,
+      "process interruption recovery",
     );
-    interruptedContext.record("interruption-fault-requested", {
-      fault: "process-interruption",
-    });
-    interruptedRun = await waitForLedger(
-      interruptedContext,
-      (rows) => {
-        const fresh = rowsAfter(rows, baselineRuns);
-        return (
-          fresh.find(
-            (row) => row.runKind === "backfill" && row.status === "running",
-          ) ?? null
-        );
-      },
-      "process interruption running Run",
+    postExitRuns = await readRunLedgerSnapshot(workspace);
+    interruptedRun = selectInterruptedRunFromExitSnapshot(
+      postExitRuns,
+      baselineRuns,
     );
     assertForegroundLifecycle(
       interruptedRun,
       "running",
       "process interruption running Run",
     );
-    const exit = await waitForProcessExit(
-      interruptedLaunch.app,
-      "process interruption recovery",
-    );
-    postExitRuns = await readRunLedgerSnapshot(workspace);
     const staleAtExit = postExitRuns.find(
       (row) => row.id === interruptedRun.id,
     );
@@ -2217,7 +2656,8 @@ async function runInterruptedRecovery(harness, configureWorkspace) {
         )}`,
       );
     }
-    interruptedContext.record("process-interrupted", {
+    harness.recordTimeline("process-interrupted", {
+      projectId: interruptedRun.projectId,
       runId: interruptedRun.id,
       postExitRunIds: postExitRuns.map((row) => row.id),
       ...exit,
@@ -2321,7 +2761,15 @@ async function runNoAutomaticRepair(harness, configureWorkspace) {
         runKinds: allRows.map((row) => row.runKind),
       });
     },
-    { trigger: "dependency-gap" },
+    {
+      trigger: "dependency-gap",
+      prepareWorkspace: (preparedWorkspace) =>
+        seedRestoreFixtureEvidence(
+          harness,
+          preparedWorkspace,
+          "c2-5b-no-automatic-repair",
+        ),
+    },
   );
 }
 
