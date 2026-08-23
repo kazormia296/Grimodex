@@ -1918,6 +1918,13 @@ pub fn run_system_work_cycle_with_modes_and_config(
     let mut coalesced_active = false;
     let mut has_more = false;
     let mut foreground_marker_available = true;
+    // A durable terminal/manual outcome is a handled no-op for this
+    // automatic identity. Keep the halt scoped to the canonical WorkKey so a
+    // different project, phase, work-key version, or Semantic Epoch remains
+    // eligible in the same bounded cycle. This also prevents the final
+    // durable rediscovery check from turning a terminal Inbox item into a
+    // scheduler retry wake.
+    let mut terminal_halted_work = BTreeSet::new();
     // Only the exact foreground Run created by this cycle may suppress its
     // same-key rediscovery. A canonical-key-only set would also suppress the
     // ordinary Verify confirmation after a Verify -> Rebuild phase chain.
@@ -1937,6 +1944,12 @@ pub fn run_system_work_cycle_with_modes_and_config(
             break;
         }
         dequeue_count += 1;
+
+        let recovery_work = recovery_work_key_for_item(db, &item)?;
+        let recovery_work_key = recovery_work.canonical_key();
+        if terminal_halted_work.contains(&recovery_work_key) {
+            continue;
+        }
 
         let foreground_run_is_held = if let Some(owned) = foreground_owned_run.as_ref() {
             if owned.project_id != item.project_id
@@ -2024,8 +2037,12 @@ pub fn run_system_work_cycle_with_modes_and_config(
                 }
                 continue;
             }
-            RecoveryAction::ManualIntervention { code } => {
-                anyhow::bail!("{code}: maintenance work requires manual intervention")
+            RecoveryAction::ManualIntervention { .. } => {
+                // The durable Run already owns the terminal failure and its
+                // Inbox projection. It is not a delivery failure and must
+                // not be retried or converted into an automatic Repair.
+                terminal_halted_work.insert(recovery_work_key);
+                continue;
             }
             RecoveryAction::RecoverInterrupted { .. }
             | RecoveryAction::RecoverStaleEpoch { .. } => {
@@ -2116,16 +2133,17 @@ pub fn run_system_work_cycle_with_modes_and_config(
     has_more |= !queue.is_empty();
     if !has_more {
         for project_id in project_ids {
-            if discover_durable_maintenance_work_with_coordinates(
+            if let Some(next) = discover_durable_maintenance_work_with_coordinates(
                 db,
                 &project_id,
                 "durable-wake",
                 Some(&effective_coordinates),
-            )?
-            .is_some()
-            {
-                has_more = true;
-                break;
+            )? {
+                let next_key = recovery_work_key_for_item(db, &next)?.canonical_key();
+                if !terminal_halted_work.contains(&next_key) {
+                    has_more = true;
+                    break;
+                }
             }
         }
     }
@@ -2146,19 +2164,8 @@ fn recover_cycle_work(
     // its work key fails canonical filtering and thereby permit a duplicate
     // adapter dispatch.
     db.with_conn(|conn| load_durable_maintenance_runs(conn, &item.project_id).map(|_| ()))?;
-    let current_epoch = db
-        .with_conn(|conn| super::semantic_epoch::get_current_epoch(conn, &item.project_id))?
-        .map(|epoch| epoch.id);
-    let expected_epoch = current_epoch
-        .as_deref()
-        .filter(|current| item.semantic_epoch_id.as_deref() != Some(*current))
-        .or(item.semantic_epoch_id.as_deref());
-    let work_key = WorkKey::new_with_epoch(
-        item.project_id.clone(),
-        item.run_kind,
-        item.work_key.clone(),
-        expected_epoch.map(str::to_string),
-    )?;
+    let work_key = recovery_work_key_for_item(db, item)?;
+    let expected_epoch = work_key.semantic_epoch_id.as_deref();
     let decision = decide_run_recovery_for_epoch(db, &work_key, expected_epoch, mode, None)?;
     match decision.action {
         RecoveryAction::RecoverInterrupted { run_ids } => {
@@ -2191,6 +2198,29 @@ fn recover_cycle_work(
         }
         action => Ok(action),
     }
+}
+
+/// Resolve the exact durable identity used by recovery for one requested
+/// item. Epochless legacy Backfill requests are scoped to the current Epoch
+/// once one exists, matching [`recover_cycle_work`] and preventing a handled
+/// terminal Backfill from being rediscovered under a different canonical key.
+fn recovery_work_key_for_item(
+    db: &Database,
+    item: &DesiredWork,
+) -> anyhow::Result<WorkKey> {
+    let current_epoch = db
+        .with_conn(|conn| super::semantic_epoch::get_current_epoch(conn, &item.project_id))?
+        .map(|epoch| epoch.id);
+    let expected_epoch = current_epoch
+        .as_deref()
+        .filter(|current| item.semantic_epoch_id.as_deref() != Some(*current))
+        .or(item.semantic_epoch_id.as_deref());
+    WorkKey::new_with_epoch(
+        item.project_id.clone(),
+        item.run_kind,
+        item.work_key.clone(),
+        expected_epoch.map(str::to_string),
+    )
 }
 
 fn validate_dispatch_contract(item: &DesiredWork) -> anyhow::Result<()> {

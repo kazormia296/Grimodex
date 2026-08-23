@@ -208,7 +208,7 @@ fn retryable_failed_null_terminal_is_accepted_but_nonretryable_is_rejected() {
 }
 
 #[test]
-fn durable_contract_failure_is_not_redispatched() {
+fn durable_contract_failure_is_a_handled_terminal_halt_not_redispatched() {
     let db = fixture_db();
     db.with_conn(|conn| {
         conn.execute(
@@ -225,11 +225,9 @@ fn durable_contract_failure_is_not_redispatched() {
     })
     .expect("seed durable contract failure");
 
-    let error = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
-        .expect_err("contract failure must require manual intervention");
-    assert!(error
-        .to_string()
-        .contains("NEX_DEPENDENCY_BACKFILL_CONTRACT_VIOLATION"));
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+        .expect("contract failure is a handled terminal halt");
+    assert_eq!(result, MaintenanceCycleResult::accepted(false));
     let run_count: i64 = db
         .with_conn(|conn| {
             Ok(conn.query_row(

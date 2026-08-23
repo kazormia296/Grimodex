@@ -8,9 +8,10 @@
 use grimodex_db::narrative_extraction::{
     build_maintenance_inbox, discover_durable_maintenance_work, ensure_test_schema,
     inject_legacy_backfill_fault_for_project, inject_legacy_backfill_fault_for_work,
-    run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind,
-    InboxEntryKind, LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleStatus,
-    NarrativeMaintenanceCiFault, RecoveryMode, WorkKey, LEGACY_BACKFILL_WORK_KEY,
+    run_system_work_cycle, terminalize_interrupted_runs_for_epoch, AutomaticRunKind, InboxEntry,
+    InboxEntryKind, LegacyBackfillFaultOutcome, MaintenanceCycleRequest, MaintenanceCycleResult,
+    MaintenanceCycleStatus, NarrativeMaintenanceCiFault, RecoveryMode, WorkKey,
+    LEGACY_BACKFILL_WORK_KEY,
 };
 use grimodex_db::Database;
 use serde_json::json;
@@ -90,17 +91,35 @@ fn terminal_failure_inbox_count(db: &Database) -> usize {
 }
 
 fn backfill_request() -> MaintenanceCycleRequest {
+    backfill_request_for(PROJECT_ID, None, "fault-retry")
+}
+
+fn backfill_request_for(
+    project_id: &str,
+    semantic_epoch_id: Option<&str>,
+    reason: &str,
+) -> MaintenanceCycleRequest {
     serde_json::from_value(json!({
         "work": [{
-            "projectId": PROJECT_ID,
+            "projectId": project_id,
             "runKind": "backfill",
             "workKey": LEGACY_BACKFILL_WORK_KEY,
-            "semanticEpochId": null,
-            "reasons": ["fault-retry"]
+            "semanticEpochId": semantic_epoch_id,
+            "reasons": [reason]
         }],
         "wakeProjectIds": []
     }))
     .expect("canonical backfill request")
+}
+
+fn terminal_inbox_snapshot(db: &Database) -> Vec<InboxEntry> {
+    db.with_conn(|conn| {
+        Ok(build_maintenance_inbox(conn, PROJECT_ID, "2026-08-23T01:00:00.000Z")?
+            .into_iter()
+            .filter(|entry| entry.entry_kind == InboxEntryKind::TerminalFailure)
+            .collect())
+    })
+    .expect("read terminal Inbox snapshot")
 }
 
 fn backfill_run_statuses(db: &Database) -> Vec<String> {
@@ -386,6 +405,126 @@ fn terminal_fault_leaves_exact_failed_triplet_and_one_inbox_identity() {
     );
     assert_eq!((snapshot.task_count, snapshot.attempt_count), (1, 1));
     assert_eq!(terminal_failure_inbox_count(&db), 1);
+}
+
+#[test]
+fn restart_terminal_contract_failure_is_accepted_as_no_work_without_mutating_evidence() {
+    let db = fixture_db();
+    let outcome = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("inject terminal fault");
+    let run_id = match outcome {
+        LegacyBackfillFaultOutcome::Failed { run_id, .. } => run_id,
+        other => panic!("expected durable terminal failure, got {other:?}"),
+    };
+    let before_lifecycle = lifecycle_snapshot(&db, &run_id);
+    let before_inbox = terminal_inbox_snapshot(&db);
+
+    let result = run_system_work_cycle(
+        &db,
+        &backfill_request(),
+        RecoveryMode::StartupRecovery,
+    )
+    .expect("a durable manual intervention is a handled terminal halt");
+
+    assert_eq!(result, MaintenanceCycleResult::accepted(false));
+    assert_eq!(backfill_run_statuses(&db), vec!["failed"]);
+    assert_eq!(lifecycle_snapshot(&db, &run_id), before_lifecycle);
+    assert_eq!(terminal_inbox_snapshot(&db), before_inbox);
+    assert_eq!(terminal_failure_inbox_count(&db), 1);
+}
+
+#[test]
+fn terminal_halt_does_not_suppress_unrelated_project_work() {
+    let db = fixture_db();
+    const OTHER_PROJECT_ID: &str = "project-c2-5b-unrelated";
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, title) VALUES (?1, 'Unrelated project')",
+            [OTHER_PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed unrelated project");
+    inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("inject terminal fault");
+
+    let mut request = backfill_request_for(PROJECT_ID, None, "restart");
+    request.work.push(
+        backfill_request_for(OTHER_PROJECT_ID, None, "unrelated")
+            .work
+            .into_iter()
+            .next()
+            .expect("unrelated work item"),
+    );
+    let result = run_system_work_cycle(&db, &request, RecoveryMode::StartupRecovery)
+        .expect("terminal halt must not abort unrelated work");
+
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    let other_run_count: i64 = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_runs WHERE project_id = ?1",
+                [OTHER_PROJECT_ID],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read unrelated lifecycle");
+    assert!(other_run_count > 0, "unrelated project must still be dispatched");
+    assert_eq!(backfill_run_statuses(&db), vec!["failed"]);
+}
+
+#[test]
+fn terminal_halt_is_scoped_to_the_sealed_semantic_epoch_identity() {
+    let db = fixture_db();
+    let outcome = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::ContractViolation,
+    )
+    .expect("inject terminal fault");
+    let failed_epoch = match outcome {
+        LegacyBackfillFaultOutcome::Failed {
+            semantic_epoch_id,
+            ..
+        } => semantic_epoch_id,
+        other => panic!("expected durable terminal failure, got {other:?}"),
+    };
+    assert!(!failed_epoch.is_empty());
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO narrative_semantic_epochs
+                (id, project_id, epoch_number, reason, created_at)
+             VALUES ('epoch-c2-5b-terminal-replacement', ?1, 1, 'restore',
+                     '2026-08-23T02:00:00.000Z')",
+            [PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed replacement Semantic Epoch");
+
+    let result = run_system_work_cycle(
+        &db,
+        &backfill_request_for(
+            PROJECT_ID,
+            Some("epoch-c2-5b-terminal-replacement"),
+            "replacement-epoch",
+        ),
+        RecoveryMode::StartupRecovery,
+    )
+    .expect("a new sealed epoch must remain dispatchable");
+
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    let statuses = backfill_run_statuses(&db);
+    assert_eq!(statuses, vec!["failed", "completed"]);
 }
 
 #[test]
