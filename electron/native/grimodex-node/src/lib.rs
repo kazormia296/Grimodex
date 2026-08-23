@@ -1821,14 +1821,13 @@ impl Backend {
                 })
                 .to_string());
             }
-            let discovery =
-                narrative_maintenance::discover_all(
-                    snapshot.authority.db(),
-                    binding,
-                    wake_reason,
-                    ci_config.as_ref(),
-                )
-                .map_err(AppError::Anyhow)?;
+            let discovery = narrative_maintenance::discover_all(
+                snapshot.authority.db(),
+                binding,
+                wake_reason,
+                ci_config.as_ref(),
+            )
+            .map_err(AppError::Anyhow)?;
             serde_json::to_string(&discovery).map_err(|error| AppError::Anyhow(error.into()))
         })
         .await
