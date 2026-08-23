@@ -563,6 +563,11 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
   throw new Error("native maintenance cycle returned invalid status");
 }
 
+function renderCycleFailure(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return typeof error === "string" ? error : String(error);
+}
+
 function parseCiProcessInterruptionAck(
   value: Record<string, unknown>,
 ): NarrativeMaintenanceCiProcessInterruptionAck {
@@ -1114,12 +1119,16 @@ export function createNarrativeMaintenanceScheduler(
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         } else {
+          const retryDetails: string[] = [];
           for (const work of backendBatch) {
             const key = scopedWorkKey(work);
             const retryCount = (retryCounts.get(key) ?? 0) + 1;
             if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
               retryCounts.set(key, retryCount);
               requeueWork(work);
+              retryDetails.push(
+                `${key} (${retryCount}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
+              );
             } else {
               retryCounts.delete(key);
               warn(
@@ -1139,6 +1148,9 @@ export function createNarrativeMaintenanceScheduler(
                   projectId,
                   workspaceBinding: cycleBinding,
                 });
+                retryDetails.push(
+                  `durable backlog ${projectId} (${retryCount}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
+                );
               } else {
                 durableWakeRetryCounts.delete(wakeKey);
                 durableWakeProjects.delete(wakeKey);
@@ -1149,7 +1161,13 @@ export function createNarrativeMaintenanceScheduler(
               }
             }
           }
-          warn("[narrative-maintenance] background cycle failed:", error);
+          if (retryDetails.length > 0) {
+            warn(
+              `[narrative-maintenance] retry scheduled for ${retryDetails.join(", ")}: ${renderCycleFailure(error)}`,
+            );
+          } else {
+            warn("[narrative-maintenance] background cycle failed:", error);
+          }
           nextDelayMs = NARRATIVE_MAINTENANCE_ERROR_RETRY_DELAY_MS;
           shouldSchedule = hasRunnablePendingWork() || hasRunnableWake();
         }

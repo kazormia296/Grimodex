@@ -37,6 +37,10 @@ function acceptedCycle(hasMore = false): NarrativeMaintenanceCycleResult {
   return { status: "accepted", hasMore };
 }
 
+function renderedWarnings(warn: ReturnType<typeof vi.fn>): string[] {
+  return warn.mock.calls.map((args) => args.map(String).join(" "));
+}
+
 describe("narrative maintenance scheduler", () => {
   const schedulers: Array<{ dispose(): void }> = [];
 
@@ -546,6 +550,54 @@ describe("narrative maintenance scheduler", () => {
 
     await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
     expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("renders a requeued transient failure as a bounded non-error warning", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("NEX_MAINTENANCE_TRANSIENT: injected maintenance fault"),
+      )
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toContain("NEX_MAINTENANCE_TRANSIENT");
+    expect(rendered).toMatch(/retry scheduled/i);
+    expect(rendered).not.toMatch(
+      /\b(?:error|errors|failed|failure|fatal|panic|uncaught|unhandled|crash)\b/i,
+    );
+
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps error-class diagnostics when a transient failure exhausts retries", async () => {
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("NEX_MAINTENANCE_TRANSIENT: injected maintenance fault"),
+      );
+    const { scheduler, warn } = createScheduler({
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(work("project-1", "backfill", "backfill:v2", "open"));
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    for (let retry = 0; retry < NARRATIVE_MAINTENANCE_MAX_RETRIES; retry += 1) {
+      await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    }
+
+    const rendered = renderedWarnings(warn).join("\n");
+    expect(rendered).toMatch(/retry exhausted/i);
+    expect(rendered).toMatch(/\b(?:error|errors|failed|failure)\b/i);
   });
 
   it("malformed native cycle JSON is retried instead of being treated as a successful drain", async () => {
