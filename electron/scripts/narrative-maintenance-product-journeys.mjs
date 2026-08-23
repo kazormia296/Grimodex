@@ -548,8 +548,8 @@ export function parseInstant(value, label = "timestamp") {
   if (
     (isLegacyNaive && !yearHasSign && yearDigits.length > 4) ||
     !Number.isSafeInteger(year) ||
-    year < -262_144 ||
-    year > 262_143
+    year < -262_143 ||
+    year > 262_142
   ) {
     throw new Error(
       `${label} must be a valid Rust-compatible timestamp grammar: ${value}`,
