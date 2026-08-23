@@ -23,6 +23,7 @@ vi.mock("electron", () => ({
 
 import {
   applySessionPermissionPolicy,
+  isAllowedNavigation,
   isAllowedRendererPermission,
   isTrustedRendererUrl,
 } from "./security.js";
@@ -122,6 +123,27 @@ describe("isAllowedRendererPermission", () => {
         topLevelUrl: "https://example.com/",
       }),
     ).toBe(false);
+  });
+});
+
+describe("isAllowedNavigation", () => {
+  it("production は app://bundle の同一 origin reload だけを許可する", () => {
+    expect(isAllowedNavigation("app://bundle/index.html")).toBe(true);
+    expect(
+      isAllowedNavigation("app://bundle/index.html?window=panel&panel=chat"),
+    ).toBe(true);
+    expect(isAllowedNavigation("app://other/index.html")).toBe(false);
+    expect(isAllowedNavigation("https://example.com/")).toBe(false);
+  });
+
+  it("development は ELECTRON_RENDERER_URL と同一 origin だけを許可する", () => {
+    process.env.ELECTRON_RENDERER_URL = "http://localhost:1430";
+    expect(isAllowedNavigation("http://localhost:1430/")).toBe(true);
+    expect(isAllowedNavigation("http://localhost:1430/?reload=1")).toBe(
+      true,
+    );
+    expect(isAllowedNavigation("http://localhost:1431/")).toBe(false);
+    expect(isAllowedNavigation("app://bundle/index.html")).toBe(false);
   });
 });
 
