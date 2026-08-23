@@ -81,7 +81,12 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
     );
     CREATE TABLE narrative_extraction_tasks (
       id TEXT PRIMARY KEY,
-      run_id TEXT NOT NULL
+      run_id TEXT NOT NULL,
+      status TEXT,
+      input_json TEXT,
+      created_at TEXT,
+      started_at TEXT,
+      completed_at TEXT
     );
     CREATE TABLE narrative_extraction_attempts (
       id TEXT PRIMARY KEY,
@@ -89,6 +94,7 @@ test("Run ledger scopes attempt evidence through task and Run ownership", async 
       attempt_number INTEGER NOT NULL,
       status TEXT NOT NULL,
       started_at TEXT NOT NULL,
+      completed_at TEXT,
       failure_code TEXT
     );
   `);
