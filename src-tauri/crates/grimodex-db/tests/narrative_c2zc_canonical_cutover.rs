@@ -24,7 +24,7 @@ use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
     SetNarrativeRuntimePolicyInput,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
@@ -540,6 +540,157 @@ fn prepared_commit_payload(
     }
 }
 
+fn temporal_node_payload(node_id: &str) -> Value {
+    json!({
+        "nodeId": node_id,
+        "timelineKind": "primary",
+        "subject": {
+            "kind": "named-period",
+            "label": "C2-ZC idempotent temporal node",
+        },
+        "shape": "point",
+    })
+}
+
+fn seed_approved_temporal_node(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    node_id: &str,
+) -> (String, String, String, String) {
+    narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.to_string()),
+            project_id: PROJECT_ID.to_string(),
+            surface_path_id: "temporal.extract".to_string(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "temporal" }),
+            spec_digest: format!("spec-{run_id}"),
+            snapshot_digest: Some(format!("v0@{NOW}")),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(task_id.to_string()),
+                task_kind: "temporal.plan-proposals".to_string(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )
+    .expect("create temporal source run");
+    let saved = narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            proposal_set_id: Some(set_id.to_string()),
+            set_kind: "temporal.extract.review@1".to_string(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(proposal_id.to_string()),
+                proposal_key: format!("key-{run_id}"),
+                kind: "temporal.node.ensure".to_string(),
+                payload_json: temporal_node_payload(node_id),
+                reconciliation_envelope: Some(prepared_envelope(run_id, task_id)),
+            }],
+        },
+    )
+    .expect("save temporal proposal");
+    let saved_proposal_id = saved["proposals"][0]["proposalId"]
+        .as_str()
+        .expect("saved temporal proposal id")
+        .to_string();
+    let revision_id = saved["proposals"][0]["revisionId"]
+        .as_str()
+        .expect("saved temporal revision id")
+        .to_string();
+    narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.to_string(),
+            project_id: PROJECT_ID.to_string(),
+            proposal_id: saved_proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_string(),
+            decision_json: None,
+            created_by: Some("c2zc-test".to_string()),
+        },
+    )
+    .expect("approve temporal proposal");
+    (
+        run_id.to_string(),
+        set_id.to_string(),
+        saved_proposal_id,
+        revision_id,
+    )
+}
+
+fn apply_temporal_node(
+    db: &Database,
+    run_id: &str,
+    set_id: &str,
+    proposal_id: &str,
+    revision_id: &str,
+    node_id: &str,
+    request_id: &str,
+) -> Value {
+    let prepared = narrative_extraction_prepare_commit(
+        db,
+        PrepareCommitPayload {
+            project_id: PROJECT_ID.to_string(),
+            run_id: run_id.to_string(),
+            proposal_set_id: set_id.to_string(),
+            request_id: request_id.to_string(),
+            plan_digest: format!("plan-{run_id}"),
+            session_id: format!("session-{run_id}"),
+            surface: Some("narrative-extraction".to_string()),
+            operations: vec![CommitOperation {
+                kind: "temporal.node.ensure".to_string(),
+                payload: temporal_node_payload(node_id),
+                proposal_id: proposal_id.to_string(),
+                revision_id: revision_id.to_string(),
+            }],
+            applications: vec![CommitApplicationRef {
+                proposal_id: proposal_id.to_string(),
+                revision_id: revision_id.to_string(),
+            }],
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+            expected_calendar_version: None,
+        },
+    )
+    .expect("prepare temporal node commit");
+    narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: PROJECT_ID.to_string(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .expect("prepared temporal commit id")
+                .to_string(),
+            request_id: request_id.to_string(),
+            session_id: format!("session-{run_id}"),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )
+    .expect("apply temporal node commit")
+}
+
+fn application_id_for_commit(db: &Database, commit: &Value) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM narrative_proposal_applications WHERE commit_id = ?1",
+            [commit["commitId"].as_str().expect("commit id")],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("read temporal Application id")
+}
+
 #[test]
 fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
     let db = fixture_db();
@@ -659,4 +810,139 @@ fn prepared_apply_feed_without_locator_evaluates_only_declared_application() {
         restart,
         grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Idle
     ));
+}
+
+#[test]
+fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
+    let db = fixture_db();
+    db.with_conn(|conn| seed_cutover_ready_application(conn))
+        .expect("seed all C2-ZA durable prerequisites");
+    let evidence = record_live_scheduler_heartbeat(&db, "c2zc-temporal-authority", 1)
+        .expect("mint live scheduler heartbeat from production seam");
+    db.with_conn(|conn| cut_over_workspace_freshness(conn, &evidence))
+        .expect("activate Generic Consumer Freshness");
+    enable_manual_apply(&db);
+
+    let first_parts = seed_approved_temporal_node(
+        &db,
+        "run-c2zc-temporal-first",
+        "task-c2zc-temporal-first",
+        "set-c2zc-temporal-first",
+        "proposal-c2zc-temporal-first",
+        "temporal-node-c2zc",
+    );
+    let first_commit = apply_temporal_node(
+        &db,
+        &first_parts.0,
+        &first_parts.1,
+        &first_parts.2,
+        &first_parts.3,
+        "temporal-node-c2zc",
+        "request-c2zc-temporal-first",
+    );
+    let first_application_id = application_id_for_commit(&db, &first_commit);
+    let first_cycle = run_incremental_freshness_cycle(&db).expect("evaluate first node Feed");
+    assert!(matches!(
+        first_cycle,
+        grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(_)
+    ));
+
+    let feed_transactions_before_second = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_change_transactions
+                  WHERE project_id = ?1",
+                [PROJECT_ID],
+                |row| row.get::<_, i64>(0),
+            )?)
+        })
+        .expect("count Feed transactions before second ensure");
+    let first_row_before_second: (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT semantic_epoch_id, dependency_set_digest
+                   FROM narrative_consumer_freshness
+                  WHERE project_id = ?1 AND consumer_kind = 'application'
+                    AND consumer_key = ?2",
+                params![PROJECT_ID, first_application_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read first Generic row before second ensure");
+
+    let second_parts = seed_approved_temporal_node(
+        &db,
+        "run-c2zc-temporal-second",
+        "task-c2zc-temporal-second",
+        "set-c2zc-temporal-second",
+        "proposal-c2zc-temporal-second",
+        "temporal-node-c2zc",
+    );
+    let second_commit = apply_temporal_node(
+        &db,
+        &second_parts.0,
+        &second_parts.1,
+        &second_parts.2,
+        &second_parts.3,
+        "temporal-node-c2zc",
+        "request-c2zc-temporal-second",
+    );
+    let second_application_id = application_id_for_commit(&db, &second_commit);
+    assert_ne!(first_application_id, second_application_id);
+    assert!(
+        second_commit.get("maintenanceTransactionId").is_none(),
+        "ensure-existing must not fabricate a Change Feed transaction"
+    );
+
+    db.with_conn(|conn| {
+        let feed_transactions_after_second: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_change_transactions
+              WHERE project_id = ?1",
+            [PROJECT_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            feed_transactions_after_second, feed_transactions_before_second,
+            "second ensure must preserve the no-false-Feed contract"
+        );
+        let edge_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = 'application'
+                AND consumer_key = ?2",
+            params![PROJECT_ID, second_application_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(edge_count, 1, "second ensure declares its Generic Edge");
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify second typed Application declaration");
+
+    let next_cycle = run_incremental_freshness_cycle(&db).expect("next cycle is restart-safe");
+    assert!(matches!(
+        next_cycle,
+        grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Idle
+    ));
+
+    db.with_conn(|conn| {
+        let canonical = canonical_application_freshness(conn, PROJECT_ID, &second_application_id)?
+            .expect("second ensure Application has canonical Generic Freshness");
+        assert_eq!(canonical.authority, CanonicalFreshnessAuthority::GenericConsumerFreshness);
+        assert_eq!(canonical.evidence_freshness, "unknown");
+        assert_eq!(canonical.build_action, "manual");
+        assert_eq!(canonical.semantic_epoch_id, EPOCH_ID);
+        assert_eq!(canonical.dependency_set_digest, Some(dependency_set_digest(&[
+            SOURCE_IDENTITY,
+        ])));
+        let first_row_after_second: (String, String) = conn.query_row(
+            "SELECT semantic_epoch_id, dependency_set_digest
+               FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = 'application'
+                AND consumer_key = ?2",
+            params![PROJECT_ID, first_application_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(first_row_after_second, first_row_before_second);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("read second canonical Generic result without unrelated evaluation");
 }
