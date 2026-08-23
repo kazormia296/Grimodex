@@ -8,6 +8,7 @@
 
 use std::path::Path;
 
+use grimodex_db::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use grimodex_db::narrative_extraction::{
     canonical_application_freshness, cut_over_workspace_freshness, digest_plan, ensure_test_schema,
     inspect_workspace_cutover_readiness_with_liveness, narrative_extraction_append_human_decision,
@@ -20,6 +21,7 @@ use grimodex_db::narrative_extraction::{
     C2_ZC_CUTOVER_MIGRATION_ID, REBUILD_DERIVED_WORK_KEY, REQUIRED_VERIFY_CHECKS,
     VERIFY_WORK_KEY_PREFIX,
 };
+use grimodex_db::scene_body::{save_scene_body_bundle, SaveSceneBodyBundlePayload};
 use grimodex_db::{
     load_narrative_runtime_policy_from_db, set_narrative_runtime_policy, Database,
     SetNarrativeRuntimePolicyInput,
@@ -37,6 +39,20 @@ const BASELINE_RUN_ID: &str = "backfill-c2zc";
 const BASELINE_VERIFY_RUN_ID: &str = "verify-c2zc";
 const BASELINE_REBUILD_RUN_ID: &str = "rebuild-c2zc";
 const BASELINE_FRESHNESS_RUN_ID: &str = "freshness-c2zc";
+
+type ConsumerFreshnessRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+);
+
+type EdgeFreshnessRow = (String, String, Option<String>, String, String, String);
 
 fn fixture_db() -> Database {
     let db = Database::new(Path::new(":memory:")).expect("open in-memory db");
@@ -367,6 +383,94 @@ fn dependency_set_digest(source_identities: &[&str]) -> String {
     hex::encode(Sha256::digest(canonical.as_bytes()))
 }
 
+fn consumer_freshness_row(db: &Database, consumer_id: &str) -> ConsumerFreshnessRow {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT project_id, consumer_kind, consumer_key, evidence_freshness,
+                    build_action, semantic_epoch_id, last_evaluated_run_id,
+                    dependency_set_digest, updated_at
+               FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = 'application'
+                AND consumer_key = ?2",
+            params![PROJECT_ID, consumer_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
+        )?)
+    })
+    .expect("read complete Generic Consumer Freshness row")
+}
+
+fn application_edge_freshness_row(db: &Database, application_id: &str) -> EdgeFreshnessRow {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT s.edge_id, s.evidence_freshness, s.reason_code, s.build_action,
+                    s.evaluated_at_epoch_id, s.evaluated_at
+               FROM narrative_dependency_edge_states s
+               JOIN narrative_dependency_edges e ON e.id = s.edge_id
+              WHERE e.project_id = ?1 AND e.consumer_kind = 'application'
+                AND e.consumer_key = ?2
+              ORDER BY e.source_object_identity, e.id
+              LIMIT 1",
+            params![PROJECT_ID, application_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )?)
+    })
+    .expect("read complete Generic Edge State row")
+}
+
+fn mutate_scene_source(db: &Database) {
+    let result = save_scene_body_bundle(
+        db,
+        SaveSceneBodyBundlePayload {
+            scene_id: "scene-c2zc".to_string(),
+            project_id: PROJECT_ID.to_string(),
+            request_id: "request-c2zc-source-update".to_string(),
+            session_id: "session-c2zc-source-update".to_string(),
+            event_uid: "event-c2zc-source-update".to_string(),
+            origin: NarrativeChangeOrigin::Human,
+            timelapse_steps: None,
+            include_sidecars: false,
+            base_version: Some(0),
+            updated_at: "2026-08-24T00:00:01.000Z".to_string(),
+            content_json: r#"{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"source update"}]}]}"#.to_string(),
+            char_count: 12,
+            placed_beat_preview: None,
+            unplaced_beats_doc: "[]".to_string(),
+            unplaced_beat_preview: None,
+            authorship_spans: vec![],
+            foreshadow_setups: vec![],
+            foreshadow_payoffs: vec![],
+            foreshadow_base_versions: std::collections::HashMap::new(),
+            annotation_anchors: vec![],
+            beat_mentions: vec![],
+            beat_pov_overrides: vec![],
+            doc_content_size: 12,
+        },
+    )
+    .expect("mutate exact Source through the typed scene writer");
+    assert_eq!(result.content_version, 1);
+}
+
 fn enable_manual_apply(db: &Database) {
     let before = load_narrative_runtime_policy_from_db(db).expect("load runtime policy");
     set_narrative_runtime_policy(
@@ -582,6 +686,20 @@ fn seed_approved_temporal_node(
         },
     )
     .expect("create temporal source run");
+    // The public CreateRun DTO deliberately leaves the Epoch binding to the
+    // caller's live workspace seam.  Bind this test-owned proposal Run to the
+    // fixture's current Epoch so the incremental runtime can prove its
+    // producer-epoch guard rather than conservatively publishing Unknown.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_extraction_runs
+                SET semantic_epoch_id = ?1
+              WHERE id = ?2 AND project_id = ?3",
+            params![EPOCH_ID, run_id, PROJECT_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("bind temporal proposal Run to the fixture Epoch");
     let saved = narrative_extraction_save_proposal_set(
         db,
         SaveProposalSetPayload {
@@ -857,18 +975,7 @@ fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
             )?)
         })
         .expect("count Feed transactions before second ensure");
-    let first_row_before_second: (String, String) = db
-        .with_conn(|conn| {
-            Ok(conn.query_row(
-                "SELECT semantic_epoch_id, dependency_set_digest
-                   FROM narrative_consumer_freshness
-                  WHERE project_id = ?1 AND consumer_kind = 'application'
-                    AND consumer_key = ?2",
-                params![PROJECT_ID, first_application_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )?)
-        })
-        .expect("read first Generic row before second ensure");
+    let first_row_before_second = consumer_freshness_row(&db, &first_application_id);
 
     let second_parts = seed_approved_temporal_node(
         &db,
@@ -917,6 +1024,24 @@ fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
     })
     .expect("verify second typed Application declaration");
 
+    let second_edge_before_source = application_edge_freshness_row(&db, &second_application_id);
+    assert_eq!(second_edge_before_source.1, "unknown");
+    assert_eq!(second_edge_before_source.2, None);
+    assert_eq!(second_edge_before_source.3, "manual");
+    assert_eq!(second_edge_before_source.4, EPOCH_ID);
+    let second_consumer_before_source = consumer_freshness_row(&db, &second_application_id);
+    assert_eq!(second_consumer_before_source.0, PROJECT_ID);
+    assert_eq!(second_consumer_before_source.1, "application");
+    assert_eq!(second_consumer_before_source.2, second_application_id);
+    assert_eq!(second_consumer_before_source.3, "unknown");
+    assert_eq!(second_consumer_before_source.4, "manual");
+    assert_eq!(second_consumer_before_source.5, EPOCH_ID);
+    assert_eq!(second_consumer_before_source.6, None);
+    assert_eq!(
+        second_consumer_before_source.7,
+        Some(dependency_set_digest(&[SOURCE_IDENTITY]))
+    );
+
     let next_cycle = run_incremental_freshness_cycle(&db).expect("next cycle is restart-safe");
     assert!(matches!(
         next_cycle,
@@ -926,23 +1051,87 @@ fn second_temporal_node_ensure_initializes_generic_without_false_feed() {
     db.with_conn(|conn| {
         let canonical = canonical_application_freshness(conn, PROJECT_ID, &second_application_id)?
             .expect("second ensure Application has canonical Generic Freshness");
-        assert_eq!(canonical.authority, CanonicalFreshnessAuthority::GenericConsumerFreshness);
+        assert_eq!(
+            canonical.authority,
+            CanonicalFreshnessAuthority::GenericConsumerFreshness
+        );
         assert_eq!(canonical.evidence_freshness, "unknown");
         assert_eq!(canonical.build_action, "manual");
         assert_eq!(canonical.semantic_epoch_id, EPOCH_ID);
-        assert_eq!(canonical.dependency_set_digest, Some(dependency_set_digest(&[
-            SOURCE_IDENTITY,
-        ])));
-        let first_row_after_second: (String, String) = conn.query_row(
-            "SELECT semantic_epoch_id, dependency_set_digest
-               FROM narrative_consumer_freshness
-              WHERE project_id = ?1 AND consumer_kind = 'application'
-                AND consumer_key = ?2",
-            params![PROJECT_ID, first_application_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(first_row_after_second, first_row_before_second);
+        assert_eq!(
+            canonical.dependency_set_digest,
+            Some(dependency_set_digest(&[SOURCE_IDENTITY,]))
+        );
         Ok::<_, anyhow::Error>(())
     })
     .expect("read second canonical Generic result without unrelated evaluation");
+
+    assert_eq!(
+        consumer_freshness_row(&db, &first_application_id),
+        first_row_before_second,
+        "idempotent ensure must leave the complete unrelated Consumer row byte-for-byte unchanged"
+    );
+
+    mutate_scene_source(&db);
+    let source_run_id = match run_incremental_freshness_cycle(&db)
+        .expect("process real Source mutation through the Feed runtime")
+    {
+        grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Processed(summary) => {
+            assert!(summary.affected_edge_count >= 1);
+            assert!(summary.affected_consumer_count >= 1);
+            summary.run_id
+        }
+        other => panic!("real Source mutation must be processed, got {other:?}"),
+    };
+
+    let second_edge_after_source = application_edge_freshness_row(&db, &second_application_id);
+    assert_eq!(second_edge_after_source.0, second_edge_before_source.0);
+    assert_eq!(second_edge_after_source.1, "stale");
+    assert_eq!(
+        second_edge_after_source.2.as_deref(),
+        Some("source-revision-changed")
+    );
+    assert_eq!(second_edge_after_source.3, "rebuild-required");
+    assert_eq!(second_edge_after_source.4, EPOCH_ID);
+
+    let second_consumer_after_source = consumer_freshness_row(&db, &second_application_id);
+    assert_eq!(second_consumer_after_source.0, PROJECT_ID);
+    assert_eq!(second_consumer_after_source.1, "application");
+    assert_eq!(second_consumer_after_source.2, second_application_id);
+    assert_eq!(second_consumer_after_source.3, "stale");
+    assert_eq!(second_consumer_after_source.4, "rebuild-required");
+    assert_eq!(second_consumer_after_source.5, EPOCH_ID);
+    assert_eq!(
+        second_consumer_after_source.6.as_deref(),
+        Some(source_run_id.as_str())
+    );
+    assert_eq!(
+        second_consumer_after_source.7,
+        Some(dependency_set_digest(&[SOURCE_IDENTITY]))
+    );
+    assert_ne!(
+        second_consumer_after_source.3, second_consumer_before_source.3,
+        "normal Feed evaluation must replace the seeded Unknown state"
+    );
+    db.with_conn(|conn| {
+        let run_provenance: (String, String, String, Option<String>) = conn.query_row(
+            "SELECT project_id, status, semantic_epoch_id, completed_at
+               FROM narrative_extraction_runs WHERE id = ?1",
+            [source_run_id.as_str()],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+        assert_eq!(run_provenance.0, PROJECT_ID);
+        assert_eq!(run_provenance.1, "completed");
+        assert_eq!(run_provenance.2, EPOCH_ID);
+        assert!(run_provenance.3.is_some());
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("source Feed run carries completed current-epoch provenance");
+
+    let idle_after_source = run_incremental_freshness_cycle(&db)
+        .expect("next cycle after normal source publication is restart-safe");
+    assert!(matches!(
+        idle_after_source,
+        grimodex_db::narrative_extraction::IncrementalFreshnessCycleOutcome::Idle
+    ));
 }
