@@ -444,6 +444,43 @@ test("instant comparison preserves Chrono leap-second ordering and precision", (
   );
 });
 
+test("legacy naive timestamps preserve Chrono signed proleptic years", () => {
+  const { compareInstants, parseInstant } = narrativeMaintenanceProductJourneys;
+  assert.equal(typeof parseInstant, "function");
+  assert.doesNotThrow(() => parseInstant("-0001-01-01 00:00:00"));
+  assert.doesNotThrow(() => parseInstant("+10000-01-01 00:00:00"));
+  assert.equal(
+    compareInstants(
+      "-0001-01-01 00:00:00",
+      "+10000-01-01 00:00:00",
+    ),
+    -1,
+  );
+  assert.doesNotThrow(() => parseInstant("-262144-01-01 00:00:00"));
+  assert.doesNotThrow(() => parseInstant("+262143-12-31 23:59:59"));
+
+  for (const timestamp of [
+    "-262145-01-01 00:00:00",
+    "+262144-01-01 00:00:00",
+    "262144-01-01 00:00:00",
+    "+-10000-01-01 00:00:00",
+    "-+0001-01-01 00:00:00",
+    "+-01-01 00:00:00",
+    "-0001/01/01 00:00:00",
+  ]) {
+    assert.throws(
+      () => parseInstant(timestamp),
+      /timestamp/,
+      `malformed or out-of-range legacy year must fail: ${timestamp}`,
+    );
+  }
+  assert.throws(
+    () => parseInstant("+10000T00:00:00Z"),
+    /timestamp/,
+    "RFC3339 must retain its four unsigned year digits",
+  );
+});
+
 test("transient retry validates every distinct same-work lifecycle in order", () => {
   const sequenceValidator =
     narrativeMaintenanceProductJourneys.assertTransientRunSequence;
