@@ -93,6 +93,13 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_change_object_heads: ["narrativeChangeObjectHeads"],
   narrative_change_cursors: ["narrativeChangeCursors"],
   narrative_change_sets: ["narrativeChangeSets"],
+  narrative_dependency_declaration_sets: ["narrativeDependencyDeclarationSets"],
+  narrative_dependency_declaration_entries: [
+    "narrativeDependencyDeclarationEntries",
+  ],
+  narrative_dependency_declaration_heads: [
+    "narrativeDependencyDeclarationHeads",
+  ],
 };
 
 // These tables are Native-only authority/provenance state. Keep the list
@@ -108,6 +115,9 @@ const NARRATIVE_AUTHORITY_TABLES = [
   "narrative_change_object_heads",
   "narrative_change_cursors",
   "narrative_change_sets",
+  "narrative_dependency_declaration_sets",
+  "narrative_dependency_declaration_entries",
+  "narrative_dependency_declaration_heads",
 ];
 
 const MUTATION_METHODS = new Set(["insert", "update", "delete"]);

@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 32,
+  "schemaVersion": 33,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -7254,6 +7254,272 @@
       ],
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE narrative_consumer_freshness ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), evidence_freshness TEXT NOT NULL CHECK(evidence_freshness IN ('fresh','stale','source-missing','anchor-mismatch','read-set-drift','unknown')), build_action TEXT NOT NULL CHECK(build_action IN ('none','revalidate-exact','reanchor-candidate','resolve-only','recompile-only','rebuild-required','refresh-available','manual')), semantic_epoch_id TEXT NOT NULL REFERENCES narrative_semantic_epochs(id), last_evaluated_run_id TEXT, updated_at TEXT NOT NULL, dependency_set_digest TEXT, PRIMARY KEY(project_id, consumer_kind, consumer_key) )"
+    },
+    "narrative_dependency_declaration_entries": {
+      "kind": "table",
+      "columns": {
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "declaration_set_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_role": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "role_contract_version": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "selector_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "selector_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "source_object_identity": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_dependency_declaration_sets",
+          "from": "declaration_set_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "declaration_set_id",
+            "source_object_identity",
+            "dependency_key"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_entries ( id TEXT NOT NULL, declaration_set_id TEXT NOT NULL REFERENCES narrative_dependency_declaration_sets(id) ON DELETE CASCADE, source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0), dependency_key TEXT NOT NULL CHECK(length(dependency_key) = 71 AND dependency_key GLOB 'sha256:*' AND substr(dependency_key, 8) NOT GLOB '*[^0-9a-f]*'), dependency_role TEXT NOT NULL CHECK(length(dependency_role) > 0), role_contract_version TEXT NOT NULL CHECK(length(role_contract_version) > 0), selector_json TEXT NOT NULL CHECK(json_valid(selector_json) AND json_type(selector_json) = 'object'), selector_digest TEXT NOT NULL CHECK(length(selector_digest) = 71 AND selector_digest GLOB 'sha256:*' AND substr(selector_digest, 8) NOT GLOB '*[^0-9a-f]*'), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(declaration_set_id, source_object_identity, dependency_key) )"
+    },
+    "narrative_dependency_declaration_heads": {
+      "kind": "table",
+      "columns": {
+        "active_declaration_set_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_key": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 3
+        },
+        "consumer_kind": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 2
+        },
+        "producer_generation": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "producer_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "updated_at": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "version": {
+          "ordinal": 6,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "narrative_dependency_declaration_sets",
+          "from": "active_declaration_set_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "NO ACTION",
+          "match": "NONE"
+        },
+        {
+          "id": 1,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_heads ( project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), active_declaration_set_id TEXT NOT NULL REFERENCES narrative_dependency_declaration_sets(id), producer_id TEXT NOT NULL CHECK(length(producer_id) > 0), producer_generation INTEGER NOT NULL CHECK(producer_generation >= 0), version INTEGER NOT NULL CHECK(version >= 1), updated_at TEXT NOT NULL, PRIMARY KEY(project_id, consumer_kind, consumer_key) )"
+    },
+    "narrative_dependency_declaration_sets": {
+      "kind": "table",
+      "columns": {
+        "consumer_key": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "consumer_kind": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "dependency_set_digest": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "producer_generation": {
+          "ordinal": 5,
+          "declaredType": "INTEGER",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "producer_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "state": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "consumer_kind",
+            "consumer_key",
+            "producer_generation"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_dependency_declaration_sets ( id TEXT NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, consumer_kind TEXT NOT NULL CHECK(length(consumer_kind) > 0), consumer_key TEXT NOT NULL CHECK(length(consumer_key) > 0), producer_id TEXT NOT NULL CHECK(length(producer_id) > 0), producer_generation INTEGER NOT NULL CHECK(producer_generation >= 0), dependency_set_digest TEXT NOT NULL CHECK(length(dependency_set_digest) = 71 AND dependency_set_digest GLOB 'sha256:*' AND substr(dependency_set_digest, 8) NOT GLOB '*[^0-9a-f]*'), state TEXT NOT NULL CHECK(state = 'sealed'), created_at TEXT NOT NULL, PRIMARY KEY(id), UNIQUE(project_id, consumer_kind, consumer_key, producer_generation) )"
     },
     "narrative_dependency_edge_states": {
       "kind": "table",
@@ -14547,6 +14813,62 @@
         }
       ],
       "createSql": "CREATE INDEX idx_narrative_consumer_freshness_epoch ON narrative_consumer_freshness(project_id, semantic_epoch_id)"
+    },
+    "idx_narrative_dependency_declaration_entries_set": {
+      "table": "narrative_dependency_declaration_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "declaration_set_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_entries_set ON narrative_dependency_declaration_entries(declaration_set_id)"
+    },
+    "idx_narrative_dependency_declaration_entries_source": {
+      "table": "narrative_dependency_declaration_entries",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "source_object_identity"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_entries_source ON narrative_dependency_declaration_entries(source_object_identity)"
+    },
+    "idx_narrative_dependency_declaration_heads_set": {
+      "table": "narrative_dependency_declaration_heads",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "active_declaration_set_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_heads_set ON narrative_dependency_declaration_heads(active_declaration_set_id)"
+    },
+    "idx_narrative_dependency_declaration_sets_consumer": {
+      "table": "narrative_dependency_declaration_sets",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "consumer_kind"
+        },
+        {
+          "ordinal": 2,
+          "column": "consumer_key"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_dependency_declaration_sets_consumer ON narrative_dependency_declaration_sets(project_id, consumer_kind, consumer_key)"
     },
     "idx_narrative_dependency_edge_states_project": {
       "table": "narrative_dependency_edge_states",

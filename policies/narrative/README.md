@@ -1302,7 +1302,7 @@ substrings against real `sqlite_master.sql` output. `src/db/schema.ts`
 type-checks cleanly (`npx tsc --noEmit`, 0 errors). The current branch has
 since rerun the focused Rust migration/schema suites and the
 `workspace_schema.rs` checkpoint checks. The canonical generator has also
-regenerated `src/db/generated/schema-contract.json` at `schemaVersion: 32`;
+regenerated `src/db/generated/schema-contract.json` at `schemaVersion: 33`;
 the artifact is not intentionally stale.
 
 C2-00 added, on top of the existing C1.5 contracts:

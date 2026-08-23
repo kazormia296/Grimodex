@@ -3025,6 +3025,98 @@ export const narrativeDependencyEdges = sqliteTable(
   ],
 );
 
+// NIR-0 D1: the V2 declaration storage boundary.  Sets and entries are
+// immutable once sealed; only the Consumer head advances through a native
+// optimistic-CAS writer.  This remains shadow storage while V1
+// narrativeDependencyEdges stays the canonical Freshness input.
+export const narrativeDependencyDeclarationSets = sqliteTable(
+  "narrative_dependency_declaration_sets",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    producerId: text("producer_id").notNull(),
+    producerGeneration: integer("producer_generation").notNull(),
+    dependencySetDigest: text("dependency_set_digest").notNull(),
+    state: text("state").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("narrative_dependency_declaration_sets_unique_generation").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+      table.producerGeneration,
+    ),
+    index("idx_narrative_dependency_declaration_sets_consumer").on(
+      table.projectId,
+      table.consumerKind,
+      table.consumerKey,
+    ),
+  ],
+);
+
+export const narrativeDependencyDeclarationEntries = sqliteTable(
+  "narrative_dependency_declaration_entries",
+  {
+    id: text("id").primaryKey(),
+    declarationSetId: text("declaration_set_id")
+      .notNull()
+      .references(() => narrativeDependencyDeclarationSets.id, {
+        onDelete: "cascade",
+      }),
+    sourceObjectIdentity: text("source_object_identity").notNull(),
+    dependencyKey: text("dependency_key").notNull(),
+    dependencyRole: text("dependency_role").notNull(),
+    roleContractVersion: text("role_contract_version").notNull(),
+    selectorJson: text("selector_json").notNull(),
+    selectorDigest: text("selector_digest").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("narrative_dependency_declaration_entries_unique_key").on(
+      table.declarationSetId,
+      table.sourceObjectIdentity,
+      table.dependencyKey,
+    ),
+    index("idx_narrative_dependency_declaration_entries_set").on(
+      table.declarationSetId,
+    ),
+    index("idx_narrative_dependency_declaration_entries_source").on(
+      table.sourceObjectIdentity,
+    ),
+  ],
+);
+
+export const narrativeDependencyDeclarationHeads = sqliteTable(
+  "narrative_dependency_declaration_heads",
+  {
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    consumerKind: text("consumer_kind").notNull(),
+    consumerKey: text("consumer_key").notNull(),
+    activeDeclarationSetId: text("active_declaration_set_id")
+      .notNull()
+      .references(() => narrativeDependencyDeclarationSets.id),
+    producerId: text("producer_id").notNull(),
+    producerGeneration: integer("producer_generation").notNull(),
+    version: integer("version").notNull(),
+    updatedAt: text("updated_at").notNull(),
+  },
+  (table) => [
+    primaryKey({
+      columns: [table.projectId, table.consumerKind, table.consumerKey],
+    }),
+    index("idx_narrative_dependency_declaration_heads_set").on(
+      table.activeDeclarationSetId,
+    ),
+  ],
+);
+
 export const narrativeDependencyEdgeStates = sqliteTable(
   "narrative_dependency_edge_states",
   {
@@ -3948,6 +4040,18 @@ export type NarrativeExtractionArtifact =
   typeof narrativeExtractionArtifacts.$inferSelect;
 export type NewNarrativeExtractionArtifact =
   typeof narrativeExtractionArtifacts.$inferInsert;
+export type NarrativeDependencyDeclarationSet =
+  typeof narrativeDependencyDeclarationSets.$inferSelect;
+export type NewNarrativeDependencyDeclarationSet =
+  typeof narrativeDependencyDeclarationSets.$inferInsert;
+export type NarrativeDependencyDeclarationEntry =
+  typeof narrativeDependencyDeclarationEntries.$inferSelect;
+export type NewNarrativeDependencyDeclarationEntry =
+  typeof narrativeDependencyDeclarationEntries.$inferInsert;
+export type NarrativeDependencyDeclarationHead =
+  typeof narrativeDependencyDeclarationHeads.$inferSelect;
+export type NewNarrativeDependencyDeclarationHead =
+  typeof narrativeDependencyDeclarationHeads.$inferInsert;
 export type NarrativeProposalSet = typeof narrativeProposalSets.$inferSelect;
 export type NewNarrativeProposalSet = typeof narrativeProposalSets.$inferInsert;
 export type NarrativeProposal = typeof narrativeProposals.$inferSelect;

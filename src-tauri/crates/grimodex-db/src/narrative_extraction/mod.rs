@@ -13,6 +13,7 @@ mod commit;
 mod consumer_identity;
 mod contribution_target_state;
 mod cursor_reservation;
+pub mod declaration_storage;
 mod dependency_edges;
 mod detail_operations;
 mod evaluator;
@@ -30,6 +31,12 @@ mod maintenance_lifecycle;
 pub mod maintenance_route_registry;
 pub mod maintenance_runtime;
 pub mod maintenance_skip_evidence;
+pub use declaration_storage::{
+    read_active_dependency_declaration_set, verify_dependency_declaration_storage,
+    write_dependency_declaration_set, write_dependency_declaration_set_in_tx,
+    ActiveDependencyDeclarationSet, DependencyDeclaration, DependencyDeclarationSetReceipt,
+    DependencyDeclarationSetRequest, DependencyDeclarationSetState, StoredDependencyDeclaration,
+};
 pub use maintenance_contracts::{
     bundled_dependency_producer_registry, current_maintenance_coordinates, DependencyProducerEntry,
     DependencyProducerRegistry, DependencyProducerWriter, MaintenanceContractCoordinates,

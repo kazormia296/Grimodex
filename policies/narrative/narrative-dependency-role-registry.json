@@ -18,14 +18,14 @@
       "src-tauri/crates/grimodex-db/src/narrative_extraction"
     ],
     "productionMarkers": [
-      "NARRATIVE_DEPENDENCY_ROLE_CONTRACT_VERSION",
-      "declarationSetId",
-      "declaration_set_id"
+      "NARRATIVE_DEPENDENCY_V2_RUNTIME_AUTHORITY",
+      "evaluate_v2_dependency_declarations",
+      "publish_v2_dependency_declarations"
     ],
     "blockedOn": [
       "reconciliation-envelope-v2",
       "dependency-selector-v2",
-      "sealed-declaration-set-storage",
+      "dependency-shadow-runtime-integration",
       "independent-build-action-summary"
     ]
   },

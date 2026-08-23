@@ -31,7 +31,10 @@ const REPO_ROOT = path.resolve(
 // into the ratified Object Addressing vocabulary. It is a data-only migration:
 // no table, column, or authority changes, so the concern matrix below is
 // unchanged.
-export const EXPECTED_SCHEMA_VERSION = 32;
+// SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It is a
+// shadow persistence boundary only; V1 remains the canonical Freshness
+// authority, so the authority matrix is still unchanged.
+export const EXPECTED_SCHEMA_VERSION = 33;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

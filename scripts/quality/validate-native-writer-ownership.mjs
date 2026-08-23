@@ -103,6 +103,12 @@ const WRITER_TO_MODULES = {
   "narrative.maintenance-attention": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/attention.rs",
   ],
+  // D1 sealed dependency declarations are persisted only by their typed
+  // storage boundary. Keep this mapping exact so future runtime modules do
+  // not inherit write authority over the declaration shadow tables.
+  "narrative.dependency-declaration": [
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/declaration_storage.rs",
+  ],
   // schema_data_migrations records which data migrations have completed, and
   // the schema checkpoint reads it to decide whether a migration re-runs.
   // That makes it migration authority rather than diagnostics: a forged

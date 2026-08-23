@@ -383,6 +383,28 @@
     "enforcement": "active"
   },
   {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_sets",
+    "protection": "table",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_entries",
+    "protection": "table",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
+    "aggregate": "narrative-dependency-declaration",
+    "table": "narrative_dependency_declaration_heads",
+    "protection": "table",
+    "versionColumn": "version",
+    "writer": "narrative.dependency-declaration",
+    "enforcement": "active"
+  },
+  {
     "aggregate": "schema-data-migration",
     "table": "schema_data_migrations",
     "protection": "table",

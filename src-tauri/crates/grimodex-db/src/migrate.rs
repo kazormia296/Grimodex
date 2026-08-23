@@ -3435,6 +3435,71 @@ impl Database {
                 ON narrative_maintenance_finding_observations(project_id, finding_key, semantic_epoch_id);",
         )?;
 
+        // SCHEMA_VERSION 33 / NIR-0 D1: sealed Dependency Declaration Set
+        // storage.  V1 `narrative_dependency_edges` remains unchanged and
+        // remains the canonical Freshness input until a later shadow/cutover
+        // lane.  A declaration set is complete only inside the writer's one
+        // transaction; `sealed` is the sole durable state.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_sets (
+                id                    TEXT NOT NULL,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind         TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key          TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                producer_id           TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation   INTEGER NOT NULL CHECK(producer_generation >= 0),
+                dependency_set_digest TEXT NOT NULL
+                    CHECK(length(dependency_set_digest) = 71
+                      AND dependency_set_digest GLOB 'sha256:*'
+                      AND substr(dependency_set_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                state                 TEXT NOT NULL CHECK(state = 'sealed'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(project_id, consumer_kind, consumer_key,
+                       producer_generation)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_entries (
+                id                    TEXT NOT NULL,
+                declaration_set_id    TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id) ON DELETE CASCADE,
+                source_object_identity TEXT NOT NULL CHECK(length(source_object_identity) > 0),
+                dependency_key        TEXT NOT NULL
+                    CHECK(length(dependency_key) = 71 AND dependency_key GLOB 'sha256:*'
+                      AND substr(dependency_key, 8) NOT GLOB '*[^0-9a-f]*'),
+                dependency_role       TEXT NOT NULL CHECK(length(dependency_role) > 0),
+                role_contract_version TEXT NOT NULL
+                    CHECK(length(role_contract_version) > 0),
+                selector_json         TEXT NOT NULL
+                    CHECK(json_valid(selector_json) AND json_type(selector_json) = 'object'),
+                selector_digest        TEXT NOT NULL
+                    CHECK(length(selector_digest) = 71 AND selector_digest GLOB 'sha256:*'
+                      AND substr(selector_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at            TEXT NOT NULL,
+                PRIMARY KEY(id),
+                UNIQUE(declaration_set_id, source_object_identity, dependency_key)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_dependency_declaration_heads (
+                project_id              TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                consumer_kind           TEXT NOT NULL CHECK(length(consumer_kind) > 0),
+                consumer_key             TEXT NOT NULL CHECK(length(consumer_key) > 0),
+                active_declaration_set_id TEXT NOT NULL
+                    REFERENCES narrative_dependency_declaration_sets(id),
+                producer_id              TEXT NOT NULL CHECK(length(producer_id) > 0),
+                producer_generation     INTEGER NOT NULL CHECK(producer_generation >= 0),
+                version                 INTEGER NOT NULL CHECK(version >= 1),
+                updated_at              TEXT NOT NULL,
+                PRIMARY KEY(project_id, consumer_kind, consumer_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_sets_consumer
+                ON narrative_dependency_declaration_sets(project_id, consumer_kind, consumer_key);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_set
+                ON narrative_dependency_declaration_entries(declaration_set_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_entries_source
+                ON narrative_dependency_declaration_entries(source_object_identity);
+            CREATE INDEX IF NOT EXISTS idx_narrative_dependency_declaration_heads_set
+                ON narrative_dependency_declaration_heads(active_declaration_set_id);",
+        )?;
+
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
         // Semantic Index rebuild, manual rebuild, backfill); the Cursor

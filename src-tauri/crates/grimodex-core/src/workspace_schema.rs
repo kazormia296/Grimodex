@@ -580,9 +580,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// key happening to be a Run id. Version 31 adds the bundled Finding Rule
 /// identity/digest columns and append-only lifecycle records. Version 32
 /// re-keys legacy Backfill Run Edges onto Application Consumers and records
-/// the completion marker only after every project passes preflight.
+/// the completion marker only after every project passes preflight. Version
+/// 33 adds sealed Dependency declaration sets, immutable entries, and
+/// optimistic Consumer heads for the NIR-0 D1 storage boundary.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 32
+    Ok(SCHEMA_VERSION == 33
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -616,7 +618,152 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_c2_consumer_grain_data_migration_marker(conn)?
         // Gate C2-ZB's Application re-key is a data migration too. Its
         // marker is written last inside the schema-owned savepoint.
-        && has_c2_application_rekey_data_migration_marker(conn)?)
+        && has_c2_application_rekey_data_migration_marker(conn)?
+        // D1 stores only complete, sealed Dependency declaration sets. The
+        // physical shape is checked here before the schema marker advances;
+        // V2 remains a non-authoritative shadow until a later cutover lane.
+        && has_v33_dependency_declaration_storage(conn)?)
+}
+
+/// SCHEMA 33 / NIR-0 D1: durable Dependency declaration storage is append
+/// only at the set/entry level and mutable only at the Consumer head. A set
+/// can cross the durable boundary only in the `sealed` state; the writer
+/// computes all digests and performs the head CAS inside one transaction.
+fn has_v33_dependency_declaration_storage(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_dependency_declaration_sets",
+        "narrative_dependency_declaration_entries",
+        "narrative_dependency_declaration_heads",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let has_column = |columns: &[ColumnShape], name: &str, declared_type: &str, not_null: bool| {
+        columns.iter().any(|column| {
+            column.name == name
+                && column.declared_type == declared_type
+                && column.not_null == not_null
+        })
+    };
+    let sets = table_columns(conn, "narrative_dependency_declaration_sets")?;
+    let entries = table_columns(conn, "narrative_dependency_declaration_entries")?;
+    let heads = table_columns(conn, "narrative_dependency_declaration_heads")?;
+
+    let sets_ok = has_column(&sets, "id", "TEXT", true)
+        && has_column(&sets, "project_id", "TEXT", true)
+        && has_column(&sets, "consumer_kind", "TEXT", true)
+        && has_column(&sets, "consumer_key", "TEXT", true)
+        && has_column(&sets, "producer_id", "TEXT", true)
+        && has_column(&sets, "producer_generation", "INTEGER", true)
+        && has_column(&sets, "dependency_set_digest", "TEXT", true)
+        && has_column(&sets, "state", "TEXT", true)
+        && has_column(&sets, "created_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_sets_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["id"])
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_sets_2",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq([
+            "project_id",
+            "consumer_kind",
+            "consumer_key",
+            "producer_generation",
+        ])
+        && index_columns(conn, "idx_narrative_dependency_declaration_sets_consumer")?
+            .iter()
+            .map(String::as_str)
+            .eq(["project_id", "consumer_kind", "consumer_key"]);
+
+    let entries_ok = has_column(&entries, "id", "TEXT", true)
+        && has_column(&entries, "declaration_set_id", "TEXT", true)
+        && has_column(&entries, "source_object_identity", "TEXT", true)
+        && has_column(&entries, "dependency_key", "TEXT", true)
+        && has_column(&entries, "dependency_role", "TEXT", true)
+        && has_column(&entries, "role_contract_version", "TEXT", true)
+        && has_column(&entries, "selector_json", "TEXT", true)
+        && has_column(&entries, "selector_digest", "TEXT", true)
+        && has_column(&entries, "created_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_entries_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["id"])
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_entries_2",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq([
+            "declaration_set_id",
+            "source_object_identity",
+            "dependency_key",
+        ])
+        && index_columns(conn, "idx_narrative_dependency_declaration_entries_set")?
+            .iter()
+            .map(String::as_str)
+            .eq(["declaration_set_id"])
+        && index_columns(conn, "idx_narrative_dependency_declaration_entries_source")?
+            .iter()
+            .map(String::as_str)
+            .eq(["source_object_identity"]);
+
+    let heads_ok = has_column(&heads, "project_id", "TEXT", true)
+        && has_column(&heads, "consumer_kind", "TEXT", true)
+        && has_column(&heads, "consumer_key", "TEXT", true)
+        && has_column(&heads, "active_declaration_set_id", "TEXT", true)
+        && has_column(&heads, "producer_id", "TEXT", true)
+        && has_column(&heads, "producer_generation", "INTEGER", true)
+        && has_column(&heads, "version", "INTEGER", true)
+        && has_column(&heads, "updated_at", "TEXT", true)
+        && index_columns(
+            conn,
+            "sqlite_autoindex_narrative_dependency_declaration_heads_1",
+        )?
+        .iter()
+        .map(String::as_str)
+        .eq(["project_id", "consumer_kind", "consumer_key"])
+        && index_columns(conn, "idx_narrative_dependency_declaration_heads_set")?
+            .iter()
+            .map(String::as_str)
+            .eq(["active_declaration_set_id"]);
+
+    let sets_sql = compact_sql(&table_sql(conn, "narrative_dependency_declaration_sets")?);
+    let entries_sql = compact_sql(&table_sql(
+        conn,
+        "narrative_dependency_declaration_entries",
+    )?);
+    let heads_sql = compact_sql(&table_sql(conn, "narrative_dependency_declaration_heads")?);
+
+    Ok(sets_ok
+        && entries_ok
+        && heads_ok
+        && sets_sql.contains("check(state='sealed')")
+        && sets_sql.contains("check(producer_generation>=0)")
+        && sets_sql.contains("andsubstr(dependency_set_digest,8)notglob'*[^0-9a-f]*'")
+        && entries_sql
+            .contains("check(json_valid(selector_json)andjson_type(selector_json)='object')")
+        && entries_sql.contains("andsubstr(dependency_key,8)notglob'*[^0-9a-f]*'")
+        && entries_sql.contains("andsubstr(selector_digest,8)notglob'*[^0-9a-f]*'")
+        && heads_sql.contains("check(producer_generation>=0)")
+        && heads_sql.contains("check(version>=1)")
+        && sets_sql.contains("referencesprojects(id)ondeletecascade")
+        && entries_sql
+            .contains("referencesnarrative_dependency_declaration_sets(id)ondeletecascade")
+        && heads_sql.contains("referencesprojects(id)ondeletecascade")
+        && heads_sql.contains("referencesnarrative_dependency_declaration_sets(id)"))
 }
 
 fn has_v31_finding_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
