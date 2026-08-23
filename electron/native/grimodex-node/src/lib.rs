@@ -8548,6 +8548,31 @@ mod narrative_maintenance_foreground_release_tests {
             .expect("duplicate exact foreground marker Run");
     }
 
+    fn rewrite_foreground_marker_authority(
+        authority: &PinnedWorkspaceDb,
+        run_id: &str,
+        authority_id: &str,
+    ) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                let spec_json: String = conn.query_row(
+                    "SELECT spec_json FROM narrative_extraction_runs WHERE id = ?1",
+                    [run_id],
+                    |row| row.get(0),
+                )?;
+                let mut spec: Value = serde_json::from_str(&spec_json)?;
+                spec["systemWork"]["authorityId"] = Value::String(authority_id.to_string());
+                let updated_spec = serde_json::to_string(&spec)?;
+                conn.execute(
+                    "UPDATE narrative_extraction_runs SET spec_json = ?1 WHERE id = ?2",
+                    rusqlite::params![updated_spec, run_id],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("rewrite foreground marker authority");
+    }
+
     fn run_terminal_reason(authority: &PinnedWorkspaceDb, run_id: &str) -> Option<String> {
         authority
             .db()
@@ -8889,6 +8914,11 @@ mod narrative_maintenance_foreground_release_tests {
         let (backend, root) = backend_with_workspace("held-a-b-only");
         let (run_a, authority) = start_foreground_run(&backend).await;
         seed_project_epoch(&authority, "project-2", "epoch-2");
+        grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+            &authority,
+            "project-2",
+        )
+        .expect("seed B completed Backfill boundary");
         let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
 
         let b_cycle: Value = serde_json::from_str(
@@ -8962,6 +8992,62 @@ mod narrative_maintenance_foreground_release_tests {
         .expect("A release JSON");
         assert_eq!(released["status"], "completed");
         assert_eq!(run_status(&authority, &run_a), "completed");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn napi_other_authority_marker_does_not_reserve_current_slot() {
+        let (backend, root) = backend_with_workspace("other-authority-slot");
+        let (run_other, authority) = start_foreground_run(&backend).await;
+        rewrite_foreground_marker_authority(&authority, &run_other, "authority:other");
+        seed_project_epoch(&authority, "project-2", "epoch-2");
+        grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+            &authority,
+            "project-2",
+        )
+        .expect("seed B completed Backfill boundary");
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, &authority);
+
+        let b_cycle: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(serde_json::json!({
+                    "work": [{
+                        "projectId": "project-2",
+                        "runKind": "dependency-verify",
+                        "workKey": "dependency-verify:epoch-2",
+                        "semanticEpochId": "epoch-2",
+                        "reasons": ["workspace-opened"]
+                    }],
+                    "wakeProjectIds": [],
+                    "workspaceBinding": binding.clone(),
+                }))
+                .await
+                .expect("other-authority cycle"),
+        )
+        .expect("other-authority cycle JSON");
+        assert_eq!(b_cycle["status"], "accepted");
+
+        let b_row: (String, String, String) = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id, status, spec_json
+                       FROM narrative_extraction_runs
+                      WHERE project_id = 'project-2'
+                        AND run_kind = 'dependency-verify'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read B marker row");
+        assert_eq!(b_row.1, "running");
+        let b_spec: Value = serde_json::from_str(&b_row.2).expect("B spec JSON");
+        assert_eq!(
+            b_spec["systemWork"]["authorityId"], binding.authority_id,
+            "current authority may claim the slot when the durable marker belongs elsewhere"
+        );
+        assert_eq!(run_status(&authority, &run_other), "running");
         let _ = std::fs::remove_dir_all(root);
     }
 
