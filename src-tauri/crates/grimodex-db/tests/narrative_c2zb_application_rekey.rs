@@ -400,22 +400,61 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
             "old and new Consumer Freshness must be invalidated"
         );
 
-        let (finding_key, finding_identity, material_basis, observation_digest): (
+        let (
+            finding_key,
+            finding_identity,
+            material_basis,
+            observation_digest,
+            observation_run_id,
+            observation_epoch_id,
+            observation_observed_at,
+            observation_rule_id,
+            observation_rule_version,
+        ): (
             String,
             String,
             String,
             String,
+            String,
+            String,
+            String,
+            String,
+            i64,
         ) = conn.query_row(
-            "SELECT finding_key, finding_identity, material_basis_digest, observation_digest
+            "SELECT finding_key, finding_identity, material_basis_digest, observation_digest,
+                    run_id, semantic_epoch_id, observed_at, rule_id, rule_version
                FROM narrative_maintenance_finding_observations
               WHERE id = ?1",
             [format!("observation-{}", EXACT.edge_id)],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            },
         )?;
         assert_eq!(finding_key, format!("application:{}", EXACT.application_id));
         assert_eq!(finding_identity, expected_finding_identity);
         assert_eq!(material_basis, expected_material_basis_digest);
         assert_eq!(observation_digest, expected_observation_digest);
+        assert_eq!(observation_run_id, EXACT.run_id);
+        assert_eq!(
+            observation_epoch_id,
+            format!("{}-epoch-0", EXACT.project_id)
+        );
+        assert_eq!(observation_observed_at, SEEDED_AT);
+        assert_eq!(observation_rule_id, BUNDLED_FINDING_RULE_ID);
+        assert_eq!(
+            observation_rule_version,
+            i64::from(BUNDLED_FINDING_RULE_VERSION)
+        );
 
         let lifecycle: (String, String, String, i64, String, String) = conn.query_row(
             "SELECT finding_key, finding_identity, rule_id, rule_version,
@@ -440,8 +479,23 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
         assert_eq!(lifecycle.4, expected_observation_digest);
         assert_eq!(lifecycle.5, expected_material_basis_digest);
 
-        let attention: (String, String, String, String, i64) = conn.query_row(
-            "SELECT finding_key, finding_identity, material_basis_digest, actor_id, version
+        let attention: (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+        ) = conn.query_row(
+            "SELECT finding_key, finding_identity, material_basis_digest,
+                    identity_resolution_status, disposition, snoozed_until, set_at,
+                    actor_id, request_id, payload_digest, reason, version
                FROM narrative_maintenance_attention WHERE project_id = ?1",
             [EXACT.project_id],
             |row| {
@@ -451,14 +505,28 @@ fn c2zb_rekeys_edges_rehomes_findings_invalidates_derived_state_and_is_idempoten
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                    row.get(10)?,
+                    row.get(11)?,
                 ))
             },
         )?;
         assert_eq!(attention.0, format!("application:{}", EXACT.application_id));
         assert_eq!(attention.1, expected_finding_identity);
         assert_eq!(attention.2, expected_material_basis_digest);
-        assert_eq!(attention.3, "human-author");
-        assert_eq!(attention.4, 7);
+        assert_eq!(attention.3, "resolved");
+        assert_eq!(attention.4, "dismissed");
+        assert_eq!(attention.5, None);
+        assert_eq!(attention.6, SEEDED_AT);
+        assert_eq!(attention.7, "human-author");
+        assert_eq!(attention.8, "human-request");
+        assert_eq!(attention.9, "human-payload");
+        assert_eq!(attention.10, "human-reason");
+        assert_eq!(attention.11, 7);
 
         let migration_epochs: i64 = conn.query_row(
             "SELECT COUNT(*) FROM narrative_semantic_epochs
@@ -524,10 +592,19 @@ fn c2zb_fanout_without_finding_history_creates_all_application_edges() {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].1, EXACT.application_id);
         assert_eq!(rows[1].1, "c2zb-application-fanout");
+        assert_eq!(rows[0].3, format!("[\"{}\"]", EXACT.revision_token));
+        assert_eq!(rows[1].3, "[\"c2zb-token-fanout\"]");
         assert!(rows.iter().all(|row| row.2 == EXACT.source_identity));
         assert!(rows
             .iter()
             .all(|row| row.4.as_deref() == Some(EXACT.run_id)));
+        let old_run_edges: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id = ?1 AND consumer_kind = ?2 AND consumer_key = ?3",
+            params![EXACT.project_id, RUN_CONSUMER_KIND, EXACT.run_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(old_run_edges, 0, "fan-out must remove the legacy Run edge");
         Ok::<_, anyhow::Error>(())
     })
     .expect("verify C2-ZB fan-out");
