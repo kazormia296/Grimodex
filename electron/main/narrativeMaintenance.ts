@@ -133,6 +133,7 @@ interface NarrativeMaintenanceForegroundReleaseBackend {
   ): Promise<unknown> | unknown;
   releaseNarrativeMaintenanceForegroundBarrier?(
     projectId: string,
+    expectedRunId: string,
   ): Promise<unknown> | unknown;
 }
 
@@ -213,20 +214,20 @@ function parseForegroundBarrierClaim(raw: unknown): ForegroundBarrierClaimStatus
 export async function claimNarrativeMaintenanceForegroundRelease(
   backend: unknown,
   projectId: string,
-): Promise<boolean> {
-  if (!isNonEmptyTrimmedString(projectId)) return false;
+): Promise<string | null> {
+  if (!isNonEmptyTrimmedString(projectId)) return null;
   const claim = (
     backend as NarrativeMaintenanceForegroundReleaseBackend | null
   )?.claimNarrativeMaintenanceForegroundBarrier;
-  if (typeof claim !== "function") return false;
+  if (typeof claim !== "function") return null;
   try {
     const result = parseForegroundBarrierClaim(
       await claim.call(backend, projectId),
     );
-    return result.status === "claimed";
+    return result.status === "claimed" ? result.runId : null;
   } catch (error) {
     console.warn("[grim:invoke] foreground barrier claim failed", error);
-    return false;
+    return null;
   }
 }
 
@@ -239,6 +240,7 @@ export async function claimNarrativeMaintenanceForegroundRelease(
 export function scheduleNarrativeMaintenanceForegroundRelease(
   backend: unknown,
   projectId: string,
+  expectedRunId: string,
   schedule: ForegroundBarrierReleaseScheduler = (callback) => {
     setTimeout(
       callback,
@@ -246,14 +248,19 @@ export function scheduleNarrativeMaintenanceForegroundRelease(
     );
   },
 ): void {
-  if (!isNonEmptyTrimmedString(projectId)) return;
+  if (
+    !isNonEmptyTrimmedString(projectId) ||
+    !isNonEmptyTrimmedString(expectedRunId)
+  ) {
+    return;
+  }
   const release = (
     backend as NarrativeMaintenanceForegroundReleaseBackend | null
   )?.releaseNarrativeMaintenanceForegroundBarrier;
   if (typeof release !== "function") return;
   schedule(() => {
     void Promise.resolve()
-      .then(() => release.call(backend, projectId))
+      .then(() => release.call(backend, projectId, expectedRunId))
       .catch((error: unknown) => {
         console.warn(
           "[grim:invoke] foreground barrier release failed",

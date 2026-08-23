@@ -1974,14 +1974,15 @@ export function registerIpcRouter(
             ? boundArgs.payload
             : boundArgs;
           if (isNonEmptyTrimmedString(payload.projectId)) {
-            const claimed = await claimNarrativeMaintenanceForegroundRelease(
+            const claimedRunId = await claimNarrativeMaintenanceForegroundRelease(
               backend,
               payload.projectId,
             );
-            if (claimed) {
+            if (claimedRunId !== null) {
               scheduleNarrativeMaintenanceForegroundRelease(
                 backend,
                 payload.projectId,
+                claimedRunId,
               );
             }
           }

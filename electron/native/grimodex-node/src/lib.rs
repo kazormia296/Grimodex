@@ -2026,7 +2026,8 @@ impl Backend {
             };
             let pending = state
                 .narrative_maintenance_foreground_barrier
-                .pending_for_project_and_binding(
+                .pending_for_run_and_binding(
+                    &durable.run_id,
                     &project_id,
                     &binding.authority_id,
                     binding.generation,
@@ -2111,19 +2112,27 @@ impl Backend {
 
     /// Main-owned post-response release for one exact foreground product
     /// journey Run. The ordinary tree_node_patch has already committed before
-    /// main schedules this call. A failed transaction leaves the process-local
-    /// barrier pending; a later patch retries it, while a restart can
-    /// rediscover the durable marker from SQLite.
+    /// main schedules this call. The expected Run id is mandatory: a delayed
+    /// callback from phase A must never complete a same-marker phase B Run.
+    /// A failed transaction leaves the process-local barrier pending; a later
+    /// patch retries it, while a restart can rediscover the durable marker from
+    /// SQLite.
     #[napi]
     pub async fn release_narrative_maintenance_foreground_barrier(
         &self,
         project_id: String,
+        expected_run_id: String,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         run_blocking(move || {
-            if project_id.trim().is_empty() {
+            if project_id.trim().is_empty() || project_id != project_id.trim() {
                 return Err(AppError::Anyhow(anyhow::anyhow!(
-                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_REQUIRED: projectId is required"
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_PROJECT_REQUIRED: projectId must be non-empty and trimmed"
+                )));
+            }
+            if expected_run_id.trim().is_empty() || expected_run_id != expected_run_id.trim() {
+                return Err(AppError::Anyhow(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_SYSTEM_WORK_BARRIER_RUN_REQUIRED: expectedRunId must be non-empty and trimmed"
                 )));
             }
             let Some(config) = state.narrative_maintenance_ci_seam.config() else {
@@ -2184,13 +2193,16 @@ impl Backend {
                 &config,
                 &binding,
             )?
-            .filter(|barrier| barrier.project_id == project_id);
+            .filter(|barrier| {
+                barrier.project_id == project_id && barrier.run_id == expected_run_id
+            });
             let Some(durable) = durable else {
                 return Ok(serde_json::json!({ "status": "not-held" }).to_string());
             };
             let pending = state
                 .narrative_maintenance_foreground_barrier
-                .pending_for_project_and_binding(
+                .pending_for_run_and_binding(
+                    &expected_run_id,
                     &project_id,
                     &binding.authority_id,
                     binding.generation,
@@ -7941,7 +7953,6 @@ mod narrative_maintenance_foreground_release_tests {
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::NarrativeMaintenanceCiTrigger;
     use grimodex_db::state::{ActiveWorkspace, PinnedWorkspaceDb, WorkspaceAuthority};
-    use rusqlite::params;
     use serde_json::Value;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -8102,7 +8113,7 @@ mod narrative_maintenance_foreground_release_tests {
                             NULL, request_id, idempotency_domain, request_payload_digest, actor_id
                        FROM narrative_extraction_runs
                       WHERE id = ?2",
-                    params![duplicate_run_id, source_run_id],
+                    [duplicate_run_id, source_run_id],
                 )?;
                 Ok::<_, anyhow::Error>(())
             })
@@ -8177,7 +8188,10 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(run_status(&authority, &run_id), "running");
 
         let completed = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_id.clone(),
+            )
             .await
             .expect("exact project release");
         let completed: Value = serde_json::from_str(&completed).expect("completion JSON");
@@ -8186,7 +8200,10 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(run_status(&authority, &run_id), "completed");
 
         let duplicate = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_id.clone(),
+            )
             .await
             .expect("duplicate exact release is idempotent");
         let duplicate: Value = serde_json::from_str(&duplicate).expect("duplicate JSON");
@@ -8249,10 +8266,7 @@ mod narrative_maintenance_foreground_release_tests {
         assert_eq!(run_status(&authority, "run-b"), "running");
 
         let stale_timer = backend
-            .release_narrative_maintenance_foreground_barrier(
-                "project-1".to_string(),
-                run_a,
-            )
+            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_a)
             .await
             .expect("second timer must fail closed on the old Run id");
         let stale_timer: Value = serde_json::from_str(&stale_timer).expect("stale JSON");
@@ -8279,7 +8293,10 @@ mod narrative_maintenance_foreground_release_tests {
             Some(ActiveWorkspace::new(new_authority));
 
         let ignored = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id)
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_id.clone(),
+            )
             .await
             .expect("old binding is ignored");
         let ignored: Value = serde_json::from_str(&ignored).expect("ignored JSON");
@@ -8303,7 +8320,10 @@ mod narrative_maintenance_foreground_release_tests {
         // must not treat the old durable marker as an overlapping foreground
         // write; StartupRecovery owns it first.
         let before_recovery = backend
-            .release_narrative_maintenance_foreground_barrier("project-1".to_string(), run_id.clone())
+            .release_narrative_maintenance_foreground_barrier(
+                "project-1".to_string(),
+                run_id.clone(),
+            )
             .await
             .expect("old marker is not releasable after restart");
         let before_recovery: Value =
