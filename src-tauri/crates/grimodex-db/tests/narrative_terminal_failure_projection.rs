@@ -18,7 +18,7 @@ const OTHER_PROJECT_ID: &str = "project-c2-5b-c-other";
 const EPOCH_ID: &str = "epoch-c2-5b-c";
 const SECOND_EPOCH_ID: &str = "epoch-c2-5b-c-second";
 const OTHER_EPOCH_ID: &str = "epoch-c2-5b-c-other";
-const WORK_KEY: &str = "legacy-dependency-backfill:v2";
+const WORK_KEY: &str = "legacy-dependency-backfill:v3";
 
 fn fixture_db() -> Database {
     let db = Database::new(std::path::Path::new(":memory:")).expect("open database");

@@ -8,7 +8,7 @@
       "existingRunKindColumnValue": "backfill",
       "purpose": "Deterministic versioned transform from the existing limited Application Dependency data to the Generic Dependency Graph, once per project after a schema upgrade.",
       "trigger": "automatic-once-after-schema-upgrade",
-      "triggerDetail": "A post-open bootstrap step, not the SCHEMA migration transaction itself: the migration only creates tables/columns/indexes and leaves a backfill-required marker; Workspace open succeeds first, then bootstrap detects the marker and creates the Run.",
+      "triggerDetail": "The SCHEMA 32 owner performs the C2-ZB Application re-key atomically for durable legacy evidence. A post-open bootstrap Backfill still runs the v3 transform for evidence created outside that migration boundary; it creates the fresh owning Run after workspace open and never switches the canonical Freshness readers (that remains C2-ZC).",
       "sameWorkKeyReuse": "reuse-running-and-completed",
       "epochBound": true,
       "cursorBound": false,

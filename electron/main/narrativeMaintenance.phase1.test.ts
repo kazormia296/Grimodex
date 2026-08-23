@@ -47,7 +47,7 @@ function backfill(reason = "workspace-open"): NarrativeMaintenanceRequest {
   return {
     projectId: "phase1-project",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     reason,
   };
 }
@@ -154,7 +154,7 @@ describe("C2-5B Phase 1 main-only integration behavior", () => {
         {
           projectId: "phase1-project",
           runKind: "backfill",
-          workKey: "legacy-dependency-backfill:v2",
+          workKey: "legacy-dependency-backfill:v3",
           semanticEpochId: null,
           reasons: ["workspace-open"],
         },

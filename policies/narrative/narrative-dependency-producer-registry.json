@@ -19,8 +19,8 @@
         "module": "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
         "symbol": "record_legacy_dependency_edges_in_tx"
       },
-      "generation": "legacy-dependency-backfill:v2",
-      "consumerKind": "narrative-extraction-run",
+      "generation": "legacy-dependency-backfill:v3",
+      "consumerKind": "application",
       "declaration": "legacy projection dependency rows"
     }
   ]

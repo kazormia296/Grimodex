@@ -249,8 +249,8 @@ test("foreground lifecycle proof rejects wrong child identity and non-monotonic 
     maxAttemptNumber: 1,
     taskStatus: "completed",
     lastAttemptStatus: "completed",
-    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -294,8 +294,8 @@ test("terminal fault evidence requires the exact failed Run, Task, and Attempt t
     lastAttemptStatus: "failed",
     lastAttemptFailureCode: NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
     terminalReasonCode: NARRATIVE_MAINTENANCE_TERMINAL_CONTRACT_CODE,
-    specJson: '{"backfillAlgorithmVersion":"2"}',
-    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000000001Z",
     startedAt: "2026-08-23T00:00:00.000000002Z",
     taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
@@ -334,8 +334,8 @@ test("foreground lifecycle timestamps use the Rust-compatible grammar", () => {
     lastAttemptNumber: 1,
     taskStatus: "running",
     lastAttemptStatus: "running",
-    specJson: "{\"backfillAlgorithmVersion\":\"2\"}",
-    taskInputJson: "{\"backfillAlgorithmVersion\":\"2\"}",
+    specJson: "{\"backfillAlgorithmVersion\":\"3\"}",
+    taskInputJson: "{\"backfillAlgorithmVersion\":\"3\"}",
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -559,7 +559,7 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
   const base = {
     projectId: "project-1",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: "epoch-1",
     taskCount: 1,
     attemptCount: 1,
@@ -567,8 +567,8 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     taskAttemptCount: 1,
     lastAttemptNumber: 1,
     maxAttemptNumber: 1,
-    specJson: '{"backfillAlgorithmVersion":"2"}',
-    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     startedAt: "2026-08-23T00:00:00.000000001Z",
     taskCreatedAt: "2026-08-23T00:00:00.000000002Z",
     taskStartedAt: "2026-08-23T00:00:00.000000003Z",
@@ -603,7 +603,7 @@ test("transient retry validates every distinct same-work lifecycle in order", ()
     lastAttemptCompletedAt: "2026-08-23T00:00:01.000000004Z",
     outcomeSummaryJson: JSON.stringify({
       maintenancePhase: "backfill-complete",
-      backfillAlgorithmVersion: "2",
+      backfillAlgorithmVersion: "3",
       semanticEpochId: "epoch-1",
       summary: {
         epoch_created: false,
@@ -1106,7 +1106,7 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
     id: "interrupted",
     projectId: "project-1",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: "epoch-1",
     status: "running",
     taskCount: 1,
@@ -1117,8 +1117,8 @@ test("interrupted snapshot selection is page-independent and rejects a pre-exist
     maxAttemptNumber: 1,
     taskStatus: "running",
     lastAttemptStatus: "running",
-    specJson: '{"backfillAlgorithmVersion":"2"}',
-    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt: "2026-08-23T00:00:00.000Z",
     startedAt: "2026-08-23T00:00:00.000Z",
     taskCreatedAt: "2026-08-23T00:00:00.000Z",
@@ -1161,7 +1161,7 @@ test("settled interruption recovery rejects duplicate, non-terminal, and stale r
     id,
     projectId: "project-1",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: "epoch-1",
     status,
     terminalReasonCode,
@@ -1173,8 +1173,8 @@ test("settled interruption recovery rejects duplicate, non-terminal, and stale r
     maxAttemptNumber: 1,
     taskStatus: status,
     lastAttemptStatus: status,
-    specJson: '{"backfillAlgorithmVersion":"2"}',
-    taskInputJson: '{"backfillAlgorithmVersion":"2"}',
+    specJson: '{"backfillAlgorithmVersion":"3"}',
+    taskInputJson: '{"backfillAlgorithmVersion":"3"}',
     createdAt,
     startedAt: createdAt,
     taskCreatedAt: createdAt,
@@ -1286,14 +1286,14 @@ test("foreground target setup rejects an old marked authority and requires one f
     id: "old-authority-run",
     projectId: "project-a",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: "epoch-a",
     status: "running",
     specJson: JSON.stringify({
       systemWork: {
         trigger: expected.trigger,
         canonicalWorkKey:
-          "narrative-maintenance:v1/backfill/project-a/legacy-dependency-backfill:v2",
+          "narrative-maintenance:v1/backfill/project-a/legacy-dependency-backfill:v3",
         authorityId: "authority-old",
         generation: 1,
         productJourneyBarrierId: expected.barrierId,
@@ -1382,14 +1382,14 @@ test("foreground marker selects one native Run by immutable barrier, not row ord
     id: "marked-run",
     projectId: "project-1",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: "epoch-1",
     status: "running",
     specJson: JSON.stringify({
       systemWork: {
         trigger: "workspace-opened",
         canonicalWorkKey:
-          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2",
+          "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3",
         authorityId: "authority-1",
         generation: 7,
         productJourneyBarrierId: expected.barrierId,
@@ -1466,10 +1466,10 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
     }),
   });
   const backfillKey =
-    "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2";
+    "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3";
   const backfill = makeRun(
     "backfill",
-    "legacy-dependency-backfill:v2",
+    "legacy-dependency-backfill:v3",
     backfillKey,
   );
   assert.equal(
@@ -1479,7 +1479,7 @@ test("foreground marker canonical keys follow native Backfill and epoch-bound ph
   assert.throws(
     () =>
       assertForegroundRunMarker(
-        makeRun("backfill", "legacy-dependency-backfill:v2", `${backfillKey}/epoch/epoch-1`),
+        makeRun("backfill", "legacy-dependency-backfill:v3", `${backfillKey}/epoch/epoch-1`),
         expected,
       ),
     /canonicalWorkKey/,
@@ -1570,7 +1570,7 @@ test("transient and terminal validators reject fallback and same-millisecond fal
   const failed = {
     id: "failed-run",
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
   };
   assert.deepEqual(
     terminalRetryCandidates(

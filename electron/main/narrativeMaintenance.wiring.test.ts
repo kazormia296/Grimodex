@@ -23,7 +23,7 @@ function backfill(projectId = "project-1"): NarrativeMaintenanceRequest {
   return {
     projectId,
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     reason: "workspace-opened",
   };
 }
@@ -63,7 +63,7 @@ describe("narrative maintenance main-only wiring", () => {
         {
           projectId: "project-1",
           runKind: "backfill",
-          workKey: "legacy-dependency-backfill:v2",
+          workKey: "legacy-dependency-backfill:v3",
           semanticEpochId: null,
           reasons: ["workspace-opened"],
         },

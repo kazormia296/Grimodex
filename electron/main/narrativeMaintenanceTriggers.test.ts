@@ -45,7 +45,7 @@ function backfill(projectId: string, reason = "workspace-opened") {
   return {
     projectId,
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     semanticEpochId: null,
     reasons: [reason],
   };
@@ -85,7 +85,7 @@ describe("narrative maintenance trigger coordinator", () => {
         {
           projectId: "project-1",
           runKind: "backfill",
-          workKey: "legacy-dependency-backfill:v2",
+          workKey: "legacy-dependency-backfill:v3",
           semanticEpochId: null,
           reason: "workspace-opened",
         },

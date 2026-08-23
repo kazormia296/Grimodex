@@ -16,8 +16,8 @@ use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_cons
 use super::dependency_edges::{
     consumer_dependency_set_digest, find_edges_by_consumer,
     parse_snapshot_run_id_from_source_identity, project_id_for_run,
-    run_id_belongs_to_another_project, DependencyEdge, PROPOSAL_REVISION_CONSUMER_KIND,
-    RUN_CONSUMER_KIND,
+    run_id_belongs_to_another_project, DependencyEdge, APPLICATION_CONSUMER_KIND,
+    PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND,
 };
 use super::digest_plan;
 use super::evaluator::{
@@ -1632,15 +1632,18 @@ enum EdgeConsumerScope<'a> {
 
 /// Resolves the Run scope a Source resolver may safely receive for one Edge.
 ///
-/// SCHEMA 30's stored `owning_run_id` is primary. A Proposal Revision's key
-/// cannot recover its declaring Run, so every one of its Edges requires a
-/// nonblank stored owner naming a persisted Run in the same project, even when
-/// the Source resolver itself does not consume Run scope. Empty/whitespace-only
-/// historical values are treated as absent only for the Run-Consumer
-/// compatibility fallback to its exact `consumer_key`; a non-empty malformed
-/// or mismatched stored value is never hidden by that fallback. Snapshot Edges
-/// additionally require the `snapshot:<runId>` suffix, effective owner, and
-/// (for Run Consumers) `consumer_key` to agree byte-for-byte.
+/// SCHEMA 30's stored `owning_run_id` is primary. Proposal Revision and
+/// Application keys cannot recover their declaring Run, so every one of those
+/// Edges requires a nonblank stored owner naming a persisted Run in the same
+/// project, even when the Source resolver itself does not consume Run scope.
+/// Empty/whitespace-only historical values are treated as absent only for the
+/// Run-Consumer compatibility fallback to its exact `consumer_key`; a
+/// non-empty malformed or mismatched stored value is never hidden by that
+/// fallback. Snapshot Edges additionally require the `snapshot:<runId>`
+/// suffix and an appropriate resolver scope: Run/Proposal Revision owners
+/// must agree byte-for-byte, while an Application Edge keeps its fresh owner
+/// and resolves the historical snapshot through the embedded same-project
+/// Run.
 fn resolve_edge_consumer_scope<'a>(
     conn: &Connection,
     project_id: &str,
@@ -1654,7 +1657,10 @@ fn resolve_edge_consumer_scope<'a>(
             Err(_) => return Ok(EdgeConsumerScope::Unresolvable),
         };
 
-    if consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND {
+    if matches!(
+        consumer_kind,
+        PROPOSAL_REVISION_CONSUMER_KIND | APPLICATION_CONSUMER_KIND
+    ) {
         let Some(owning_run_id) = edge.owning_run_id.as_deref() else {
             return Ok(EdgeConsumerScope::Unresolvable);
         };
@@ -1665,6 +1671,13 @@ fn resolve_edge_consumer_scope<'a>(
             return Ok(EdgeConsumerScope::Unresolvable);
         }
         return Ok(match snapshot_run_id {
+            Some(snapshot_run_id) if consumer_kind == APPLICATION_CONSUMER_KIND => {
+                if project_id_for_run(conn, snapshot_run_id)?.as_deref() != Some(project_id) {
+                    EdgeConsumerScope::Unresolvable
+                } else {
+                    EdgeConsumerScope::Resolved(snapshot_run_id)
+                }
+            }
             Some(snapshot_run_id) if owning_run_id == snapshot_run_id => {
                 EdgeConsumerScope::Resolved(owning_run_id)
             }
@@ -2173,7 +2186,7 @@ mod tests {
         BuildAction, EvidenceFreshness, FindingReasonCode,
     };
     use crate::narrative_extraction::{
-        get_current_epoch, list_epochs, record_dependency_edge_in_tx,
+        get_current_epoch, list_epochs, record_dependency_edge_in_tx, APPLICATION_CONSUMER_KIND,
         PROPOSAL_REVISION_CONSUMER_KIND,
     };
     use crate::Database;
@@ -4284,6 +4297,89 @@ mod tests {
         assert!(states
             .iter()
             .all(|(_, freshness, action)| freshness == "unknown" && action == "manual"));
+    }
+
+    #[test]
+    fn application_owner_scope_requires_a_same_project_persisted_run() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "application-owner-local");
+        seed_sealed_snapshot_run(&db, "project-2", "application-owner-foreign");
+        seed_raw_edge(
+            &db,
+            "edge-application-owner-local",
+            APPLICATION_CONSUMER_KIND,
+            "application-local",
+            "project:scene:scene-live",
+            Some("application-owner-local"),
+        );
+        seed_raw_edge(
+            &db,
+            "edge-application-owner-null",
+            APPLICATION_CONSUMER_KIND,
+            "application-null",
+            "project:scene:scene-live",
+            None,
+        );
+        seed_raw_edge(
+            &db,
+            "edge-application-owner-foreign",
+            APPLICATION_CONSUMER_KIND,
+            "application-foreign",
+            "project:scene:scene-live",
+            Some("application-owner-foreign"),
+        );
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify project");
+        let mut unresolvable = report.edge_ids_with_unresolvable_consumer_scope.clone();
+        unresolvable.sort();
+        assert_eq!(
+            unresolvable,
+            vec![
+                "edge-application-owner-foreign".to_string(),
+                "edge-application-owner-null".to_string(),
+            ],
+            "Application Edges require a persisted owner Run in the same project"
+        );
+        assert!(
+            !report
+                .edge_ids_with_unresolvable_consumer_scope
+                .contains(&"edge-application-owner-local".to_string()),
+            "a same-project Application owner must remain evaluable"
+        );
+        assert!(
+            report.edge_ids_with_missing_source.is_empty(),
+            "invalid Application owner provenance must not fabricate a missing Source"
+        );
+    }
+
+    #[test]
+    fn application_snapshot_dependency_uses_embedded_apply_run_with_fresh_owner() {
+        let db = test_db();
+        seed_sealed_snapshot_run(&db, "project-1", "backfill-owner");
+        seed_sealed_snapshot_run(&db, "project-1", "apply-run");
+        db.with_conn(|conn| {
+            record_dependency_edge_in_tx(
+                conn,
+                "project-1",
+                APPLICATION_CONSUMER_KIND,
+                "application-snapshot",
+                "snapshot:apply-run",
+                r#"["sha256:snap"]"#,
+                None,
+                Some("backfill-owner"),
+                "2026-08-15T00:00:00.000Z",
+            )?;
+            Ok(())
+        })
+        .expect("Application snapshot dependency keeps the fresh Backfill owner");
+
+        let report = db
+            .with_conn(|conn| verify_narrative_dependency_graph_for_project(conn, "project-1"))
+            .expect("verify Application snapshot dependency");
+        assert!(report.edge_ids_with_unresolvable_consumer_scope.is_empty());
+        assert!(report.edge_ids_with_missing_source.is_empty());
     }
 
     #[test]

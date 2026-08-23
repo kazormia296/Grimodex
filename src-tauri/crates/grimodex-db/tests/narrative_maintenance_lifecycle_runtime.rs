@@ -158,11 +158,11 @@ fn seed_completed_backfill(db: &Database) {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('lifecycle-backfill-completed', ?1, 'maintenance', '{}',
-                     '{\"backfillAlgorithmVersion\":\"2\"}', 'digest',
+                     '{\"backfillAlgorithmVersion\":\"3\"}', 'digest',
                      'completed', '{}', '2026-08-21T00:00:00.000Z',
                      '2026-08-21T00:00:01.000Z',
-                     '{\"maintenancePhase\":\"backfill-complete\",\"backfillAlgorithmVersion\":\"2\",\"semanticEpochId\":\"epoch-c2-5b-lifecycle\",\"summary\":{\"epoch_created\":false,\"contributions_created\":0,\"edges_created\":0,\"applications_without_run_id\":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')",
+                     '{\"maintenancePhase\":\"backfill-complete\",\"backfillAlgorithmVersion\":\"3\",\"semanticEpochId\":\"epoch-c2-5b-lifecycle\",\"summary\":{\"epoch_created\":false,\"contributions_created\":0,\"edges_created\":0,\"applications_without_run_id\":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')",
             params![PROJECT_ID, EPOCH_ID],
         )?;
         Ok(())
@@ -347,7 +347,7 @@ fn foreground_backfill_stays_running_when_same_cycle_rediscovery_binds_epoch() {
         .expect("the marked Backfill must remain held after same-cycle rediscovery");
     assert_eq!(
         barrier.marker.canonical_work_key,
-        "narrative-maintenance:v1/backfill/project-c2-5b-lifecycle/legacy-dependency-backfill:v2"
+        "narrative-maintenance:v1/backfill/project-c2-5b-lifecycle/legacy-dependency-backfill:v3"
     );
     let (run_status, task_status, attempt_status, run_at, task_at, attempt_at) =
         lifecycle_rows_for_run(&db, &barrier.run_id).expect("read held Backfill lifecycle");
@@ -785,10 +785,10 @@ fn startup_interruption_fails_the_exact_attempt_and_preserves_failure_metadata()
         EPOCH_ID,
     )
     .expect("valid recovery work key");
-    let spec = r#"{"backfillAlgorithmVersion":"2"}"#;
+    let spec = r#"{"backfillAlgorithmVersion":"3"}"#;
     let spec_digest = format!(
         "sha256:{}",
-        digest_plan(&json!({ "backfillAlgorithmVersion": "2" }))
+        digest_plan(&json!({ "backfillAlgorithmVersion": "3" }))
     );
     db.with_conn(|conn| {
         conn.execute(
@@ -908,10 +908,10 @@ fn startup_interruption_with_future_imported_children_advances_terminal_timestam
         EPOCH_ID,
     )
     .expect("valid recovery work key");
-    let spec = r#"{"backfillAlgorithmVersion":"2"}"#;
+    let spec = r#"{"backfillAlgorithmVersion":"3"}"#;
     let spec_digest = format!(
         "sha256:{}",
-        digest_plan(&json!({ "backfillAlgorithmVersion": "2" }))
+        digest_plan(&json!({ "backfillAlgorithmVersion": "3" }))
     );
     db.with_conn(|conn| {
         conn.execute(

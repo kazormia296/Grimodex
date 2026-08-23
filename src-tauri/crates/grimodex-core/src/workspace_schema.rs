@@ -578,9 +578,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// Version 30 records on each Dependency Edge the Run that declared it, so
 /// resolving a `snapshot:<runId>` Source no longer depends on the Consumer
 /// key happening to be a Run id. Version 31 adds the bundled Finding Rule
-/// identity/digest columns and append-only lifecycle records.
+/// identity/digest columns and append-only lifecycle records. Version 32
+/// re-keys legacy Backfill Run Edges onto Application Consumers and records
+/// the completion marker only after every project passes preflight.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 31
+    Ok(SCHEMA_VERSION == 32
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -602,6 +604,7 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_v27_repair_lease_run_binding(conn)?
         && has_v30_dependency_edge_owning_run_column(conn)?
         && has_v31_finding_identity_columns(conn)?
+        && has_c2_finding_identity_data_migration_marker(conn)?
         // SCHEMA 28 carries a data migration, so without this both of
         // `migrate_impl`'s fast paths skip it: see
         // `has_c2_identity_data_migration_marker`. This supersedes the
@@ -610,7 +613,10 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         && has_c2_identity_data_migration_marker(conn)?
         // Gate C2-2's Consumer grain re-key is a data migration too, and the
         // same fast paths would skip it.
-        && has_c2_consumer_grain_data_migration_marker(conn)?)
+        && has_c2_consumer_grain_data_migration_marker(conn)?
+        // Gate C2-ZB's Application re-key is a data migration too. Its
+        // marker is written last inside the schema-owned savepoint.
+        && has_c2_application_rekey_data_migration_marker(conn)?)
 }
 
 fn has_v31_finding_identity_columns(conn: &Connection) -> anyhow::Result<bool> {
@@ -1478,6 +1484,24 @@ fn has_c2_finding_identity_data_migration_marker(conn: &Connection) -> anyhow::R
         )
         .optional()?;
     Ok(applied.is_some_and(|version| version >= C2_FINDING_IDENTITY_CONTRACT_VERSION))
+}
+
+/// Mirrors `migrate.rs`'s SCHEMA 32 data migration marker.
+pub const C2_APPLICATION_REKEY_MIGRATION_ID: &str = "narrative-c2-application-rekey-v32";
+pub const C2_APPLICATION_REKEY_CONTRACT_VERSION: i64 = 1;
+
+fn has_c2_application_rekey_data_migration_marker(conn: &Connection) -> anyhow::Result<bool> {
+    if !table_exists(conn, "schema_data_migrations")? {
+        return Ok(false);
+    }
+    let applied: Option<i64> = conn
+        .query_row(
+            "SELECT contract_version FROM schema_data_migrations WHERE migration_id = ?1",
+            [C2_APPLICATION_REKEY_MIGRATION_ID],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(applied.is_some_and(|version| version >= C2_APPLICATION_REKEY_CONTRACT_VERSION))
 }
 
 /// Mirrors `migrate.rs`'s constants of the same name; a test pins them.

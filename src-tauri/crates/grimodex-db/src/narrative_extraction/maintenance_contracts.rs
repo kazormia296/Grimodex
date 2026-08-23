@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use super::consumer_identity::{PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND};
+use super::consumer_identity::{
+    APPLICATION_CONSUMER_KIND, PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND,
+};
 use super::dependency_edges::SOURCE_IDENTITY_PREFIXES;
 use super::finding_identity::bundled_finding_rule_registry;
 use super::legacy_backfill::LEGACY_DEPENDENCY_PRODUCER_GENERATION;
@@ -38,7 +40,7 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str)] = &[
         "src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs",
         "record_legacy_dependency_edges_in_tx",
         LEGACY_DEPENDENCY_PRODUCER_GENERATION,
-        RUN_CONSUMER_KIND,
+        APPLICATION_CONSUMER_KIND,
     ),
 ];
 
@@ -362,7 +364,11 @@ pub fn current_maintenance_coordinates() -> Result<MaintenanceContractCoordinate
     let graph_contract = json!({
         "contractVersion": "narrative-dependency-graph/v1",
         "sourceIdentityPrefixes": SOURCE_IDENTITY_PREFIXES,
-        "consumerKinds": [RUN_CONSUMER_KIND, PROPOSAL_REVISION_CONSUMER_KIND],
+        "consumerKinds": [
+            RUN_CONSUMER_KIND,
+            PROPOSAL_REVISION_CONSUMER_KIND,
+            APPLICATION_CONSUMER_KIND
+        ],
         "edgeColumns": [
             "projectId", "consumerKind", "consumerKey", "sourceObjectIdentity",
             "readSetJson", "generatedByTransactionId", "owningRunId"

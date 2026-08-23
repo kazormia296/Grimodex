@@ -1,13 +1,13 @@
 //! Lightweight shared primitives for Grimodex AI writes (no ort/lindera).
 
-pub const SCHEMA_VERSION: i32 = 31;
+pub const SCHEMA_VERSION: i32 = 32;
 /// Last *published* workspace schema (v2.0.10). Gate A2 release fixtures must
 /// stamp this marker — not [`PREVIOUS_COMPATIBLE_SCHEMA_VERSION`], which tracks
 /// the in-tree previous marker for open fast-path / Schema bump bookkeeping and
 /// can diverge from the physical seed after intermediate bumps (e.g. 3→4).
 pub const LAST_PUBLIC_RELEASE_SCHEMA_VERSION: i32 = 2;
-pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = 30;
-pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = 31;
+pub const PREVIOUS_COMPATIBLE_SCHEMA_VERSION: i32 = 31;
+pub const PREVIOUS_COMPATIBLE_TARGET_SCHEMA_VERSION: i32 = 32;
 
 /// Commit a manually-opened transaction, rolling back if the COMMIT itself
 /// fails. On the shared single connection a failed COMMIT (deferred FK check,

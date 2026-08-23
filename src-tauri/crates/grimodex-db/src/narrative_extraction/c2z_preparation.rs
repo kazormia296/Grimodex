@@ -13,22 +13,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::commit::digest_plan;
+pub(crate) use super::consumer_identity::APPLICATION_CONSUMER_KIND;
 use super::dependency_edges::{
-    canonical_source_object_identity, RUN_CONSUMER_KIND, SOURCE_IDENTITY_PREFIXES,
+    canonical_source_object_identity, validate_stored_source_object_identity, RUN_CONSUMER_KIND,
 };
 use super::maintenance_runtime::{REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX};
 use super::restore_rebuild::{
     DependencyGraphVerifyReport, REBUILD_CONTRACT_VERSION, VERIFY_CONTRACT_VERSION,
 };
 use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
-
-/// The reserved Consumer kind targeted by the C2-Z Application re-key.
-///
-/// This literal is intentionally local to the preparation report. The
-/// `application` kind remains reserved in `consumer_identity.rs` until the
-/// canonical Producer/evaluator path lands; adding it to that vocabulary here
-/// would make a dry-run look like an implemented Consumer.
-pub const APPLICATION_CONSUMER_KIND: &str = "application";
 
 /// All Verify checks required by the C2-Z policy. A stored Verify outcome must
 /// explicitly report machine-readable coverage for this complete set before it
@@ -343,6 +336,7 @@ struct RunEdgeForRekey {
     id: String,
     run_id: String,
     source_object_identity: String,
+    read_set_json: String,
     owning_run_id: Option<String>,
     owning_run_exists_in_project: bool,
 }
@@ -471,7 +465,7 @@ pub fn inspect_legacy_generic_freshness_parity(
     })
 }
 
-/// Pure read-only planner for moving legacy Backfill Run Edges to the reserved
+/// Pure read-only planner for moving legacy Backfill Run Edges to the
 /// Application Consumer kind. It never inserts, updates, deletes, or records
 /// a migration marker.
 pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<ApplicationRekeyPlan> {
@@ -532,11 +526,7 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
             });
             continue;
         }
-        if edge.source_object_identity.trim().is_empty()
-            || !SOURCE_IDENTITY_PREFIXES
-                .iter()
-                .any(|prefix| edge.source_object_identity.starts_with(prefix))
-        {
+        if validate_stored_source_object_identity(&edge.source_object_identity).is_err() {
             invalid.push(RekeyInvalidItem {
                 edge_id: Some(edge.id.clone()),
                 application_id: None,
@@ -552,6 +542,18 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
             });
             continue;
         }
+
+        let old_read_token = match single_rekey_read_set_token(&edge.read_set_json) {
+            Ok(token) => token,
+            Err(_) => {
+                invalid.push(RekeyInvalidItem {
+                    edge_id: Some(edge.id.clone()),
+                    application_id: None,
+                    reason: "run-edge-read-set-invalid".to_string(),
+                });
+                continue;
+            }
+        };
 
         let key = (edge.run_id.clone(), edge.source_object_identity.clone());
         let candidates = expected_by_run_source
@@ -620,6 +622,25 @@ pub fn plan_application_rekey(conn: &Connection, project_id: &str) -> Result<App
                 planned_read_set_json,
                 mapping_kind: mapping_kind.clone(),
             });
+        }
+        let matching_read_set = planned_candidates.iter().any(|candidate| {
+            single_rekey_read_set_token(&candidate.planned_read_set_json)
+                .map(|token| token == old_read_token)
+                .unwrap_or(false)
+        });
+        if !matching_read_set {
+            invalid.push(RekeyInvalidItem {
+                edge_id: Some(edge.id.clone()),
+                application_id: planned_candidates
+                    .first()
+                    .map(|candidate| candidate.application_id.clone()),
+                reason: if mapping_kind == RekeyMappingKind::Exact {
+                    "run-edge-read-set-mismatch".to_string()
+                } else {
+                    "run-edge-read-set-mismatch-fan-out".to_string()
+                },
+            });
+            continue;
         }
         if mapping_kind == RekeyMappingKind::Exact {
             exact.extend(planned_candidates);
@@ -939,7 +960,7 @@ fn load_legacy_dependencies_for_rekey(
 fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForRekey>> {
     let mut statement = conn.prepare(
         "SELECT edge.id, edge.consumer_key, edge.source_object_identity,
-                edge.owning_run_id,
+                edge.read_set_json, edge.owning_run_id,
                 CASE WHEN run.id IS NULL THEN 0 ELSE 1 END
            FROM narrative_dependency_edges edge
            LEFT JOIN narrative_extraction_runs run
@@ -952,11 +973,28 @@ fn load_run_edges(conn: &Connection, project_id: &str) -> Result<Vec<RunEdgeForR
             id: row.get(0)?,
             run_id: row.get(1)?,
             source_object_identity: row.get(2)?,
-            owning_run_id: row.get(3)?,
-            owning_run_exists_in_project: row.get::<_, i64>(4)? != 0,
+            read_set_json: row.get(3)?,
+            owning_run_id: row.get(4)?,
+            owning_run_exists_in_project: row.get::<_, i64>(5)? != 0,
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn single_rekey_read_set_token(read_set_json: &str) -> Result<String> {
+    let values: Vec<Value> = serde_json::from_str(read_set_json)?;
+    anyhow::ensure!(
+        values.len() == 1,
+        "C2-Z re-key read set must contain exactly one observed token"
+    );
+    let token = values[0]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("C2-Z re-key read set token must be a string"))?;
+    anyhow::ensure!(
+        !token.trim().is_empty() && token.trim() == token,
+        "C2-Z re-key read set token must be non-empty and unpadded"
+    );
+    Ok(token.to_string())
 }
 
 fn find_existing_application_edge(
@@ -995,7 +1033,7 @@ fn inspect_backfill_gate(
             "SELECT id, status, semantic_epoch_id
                FROM narrative_extraction_runs
               WHERE project_id = ?1 AND run_kind = 'backfill'
-                AND work_key = 'legacy-dependency-backfill:v2'
+                AND work_key = 'legacy-dependency-backfill:v3'
               ORDER BY created_at DESC, id DESC LIMIT 1",
             params![project_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -1630,7 +1668,7 @@ mod tests {
              VALUES (?1, ?2, 'maintenance', '{}', '{}', 'digest-c2z', 'completed',
                      '{}', '2026-08-20T00:00:00.000Z',
                      '2026-08-20T00:00:01.000Z', 0, 'backfill', ?3,
-                     'legacy-dependency-backfill:v2')",
+                     'legacy-dependency-backfill:v3')",
             params![RUN_ID, project_id, EPOCH_ID],
         )?;
         conn.execute(
@@ -2217,7 +2255,7 @@ mod tests {
                      status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
                  VALUES ('run-foreign', 'project-c2z-foreign', 'maintenance', '{}', '{}',
                          'digest', 'completed', '{}', '2026-08-20T00:00:00.000Z',
-                         'backfill', ?1, 'legacy-dependency-backfill:v2')",
+                         'backfill', ?1, 'legacy-dependency-backfill:v3')",
                 params![EPOCH_ID],
             )?;
             seed_run_edge_with_legacy_dependency(conn, "foreign", "run-foreign")?;

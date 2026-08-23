@@ -128,7 +128,7 @@ function assertBackupContainsCompletedBackfill(backupPath, semanticEpochId) {
     );
     assert.equal(result.length, 1, "selected backup must contain a Backfill");
     assert.deepEqual(result[0].values, [
-      ["completed", semanticEpochId, "legacy-dependency-backfill:v2"],
+      ["completed", semanticEpochId, "legacy-dependency-backfill:v3"],
     ]);
   } finally {
     snapshot.close();
@@ -206,7 +206,7 @@ test("restore install creates a fresh epoch whose first durable work is Verify",
   assert.deepEqual(backfill, {
     status: "completed",
     semantic_epoch_id: beforeEpoch,
-    work_key: "legacy-dependency-backfill:v2",
+    work_key: "legacy-dependency-backfill:v3",
   });
   const backupName = "grimodex-maintenance-restore.db";
   await writeCanonicalBackup(fixture.backend, workspace, backupName);

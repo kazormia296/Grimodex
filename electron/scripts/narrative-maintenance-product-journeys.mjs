@@ -848,7 +848,7 @@ function assertTransientCompletedEvidence(run, label) {
   if (
     !outcome ||
     outcome.maintenancePhase !== "backfill-complete" ||
-    outcome.backfillAlgorithmVersion !== "2" ||
+    outcome.backfillAlgorithmVersion !== "3" ||
     outcome.semanticEpochId !== run?.semanticEpochId
   ) {
     throw new Error(
@@ -2022,7 +2022,7 @@ async function seedRestoreFixtureEvidence(harness, workspace, id) {
       backfillRun.id !== backfillOutcome.runId ||
       backfillRun.projectId !== context.projectId ||
       backfillRun.runKind !== "backfill" ||
-      backfillRun.workKey !== "legacy-dependency-backfill:v2" ||
+      backfillRun.workKey !== "legacy-dependency-backfill:v3" ||
       backfillRun.status !== "completed" ||
       typeof backfillRun.semanticEpochId !== "string" ||
       backfillRun.semanticEpochId.trim() === "" ||

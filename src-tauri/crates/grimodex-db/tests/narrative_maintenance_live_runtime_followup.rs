@@ -64,12 +64,12 @@ fn seed_completed_backfill(db: &Database) {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('followup-backfill-completed', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'completed', '{}', '2026-08-22T00:00:00.000Z',
                      '2026-08-22T00:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
                      'backfill', ?2,
-                     'legacy-dependency-backfill:v2')"#,
+                     'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, EPOCH_ID],
         )?;
         Ok(())
@@ -85,11 +85,11 @@ fn seed_future_malformed_backfill(db: &Database) {
                  status, coverage_json, created_at, started_at, completed_at,
                  outcome_summary_json, run_kind, semantic_epoch_id, work_key)
              VALUES ('future-malformed-completed-at', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z',
                      'not-an-instant',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, EPOCH_ID],
         )?;
         Ok(())
@@ -355,7 +355,7 @@ fn malformed_completed_backfill_is_reexecuted_without_a_rediscovery_loop() {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('malformed-backfill-completed', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'completed', '{}', '2026-08-22T00:00:00.000Z',
                      '2026-08-22T00:00:01.000Z', '{}', 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
@@ -417,10 +417,10 @@ fn malformed_completed_backfill_timestamp_is_not_reused_and_cycle_is_bounded() {
                      status, coverage_json, created_at, completed_at, outcome_summary_json,
                      run_kind, semantic_epoch_id, work_key)
                  VALUES ('malformed-backfill-timestamp', ?1, 'maintenance', '{}',
-                         '{"backfillAlgorithmVersion":"2"}', 'digest',
+                         '{"backfillAlgorithmVersion":"3"}', 'digest',
                          'completed', '{}', '2026-08-22T00:00:00.000Z', ?3,
-                         '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                         'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                         '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-followup","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                         'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
                 params![PROJECT_ID, EPOCH_ID, completed_at],
             )?;
             Ok(())
@@ -517,7 +517,7 @@ fn recovery_mode_must_be_startup_again_after_a_workspace_generation_change() {
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
              VALUES ('generation-one-interrupted', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'running', '{}', datetime('now'), 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;
@@ -533,7 +533,7 @@ fn recovery_mode_must_be_startup_again_after_a_workspace_generation_change() {
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
              VALUES ('generation-two-interrupted', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'running', '{}', datetime('now'), 'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;

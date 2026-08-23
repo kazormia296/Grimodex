@@ -3636,15 +3636,45 @@ impl Database {
         // transient Run or Semantic Epoch.
         Self::migrate_narrative_finding_identity_v31(&conn)?;
 
-        // Stamp only after every fresh/rescue migration above has succeeded.
-        // Headless MCP uses this as its schema-skew gate; advancing earlier
-        // could make a partially migrated database look compatible after a
-        // crash or later migration failure.
-        anyhow::ensure!(
-            grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
-            "workspace schema did not satisfy current schema invariants after migration"
-        );
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        // SCHEMA 32 / C2-ZB: move legacy Backfill Run Edges onto their
+        // durable Application identities. The savepoint is schema-owned and
+        // spans every project's read-only preflight, all graph/derived-state
+        // writes, touched-project migration Epochs, and the completion marker.
+        // `user_version` remains unchanged until the checkpoint below.
+        conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
+        let c2zb_result = (|| -> anyhow::Result<()> {
+            crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
+                &conn,
+            )?;
+
+            // The marker is part of the checkpoint, not a substitute for it.
+            // Keep both the invariant check and the user_version stamp inside
+            // the same savepoint as every C2-ZB write. A trigger, interrupted
+            // connection, or any other post-rekey failure must roll back the
+            // edge/history/derived-state changes, marker, and schema version
+            // together so the next open can retry the complete migration.
+            anyhow::ensure!(
+                grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(&conn)?,
+                "workspace schema did not satisfy current schema invariants after migration"
+            );
+            conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            Ok(())
+        })();
+        match c2zb_result {
+            Ok(()) => conn.execute_batch("RELEASE narrative_c2_schema_32")?,
+            Err(error) => {
+                if let Err(unwind) = conn.execute_batch(
+                    "ROLLBACK TO narrative_c2_schema_32; RELEASE narrative_c2_schema_32",
+                ) {
+                    tracing::error!(
+                        target: "narrative.migrate",
+                        %unwind,
+                        "failed to unwind the C2-ZB schema savepoint"
+                    );
+                }
+                return Err(error);
+            }
+        }
 
         Ok(())
     }

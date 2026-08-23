@@ -3,6 +3,7 @@
 pub(crate) mod application_contributions;
 mod attention;
 mod c2z_preparation;
+pub(crate) mod c2zb_application_rekey;
 pub mod change_feed;
 mod chronicle_operations;
 mod codex_operations;
@@ -99,7 +100,7 @@ pub(crate) use cursor_reservation::{
 #[allow(unused_imports)]
 pub(crate) use dependency_edges::{
     canonical_source_object_identity, delete_edges_for_consumer_in_tx, find_edges_by_consumer,
-    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge,
+    find_edges_by_source, record_dependency_edge_in_tx, DependencyEdge, APPLICATION_CONSUMER_KIND,
     PROPOSAL_REVISION_CONSUMER_KIND, RUN_CONSUMER_KIND, SOURCE_IDENTITY_PREFIXES,
 };
 #[allow(unused_imports)]
@@ -139,15 +140,13 @@ pub use c2z_preparation::{
     FreshnessParityReport, FreshnessStatusMismatch, InvalidLegacyDependency,
     ProjectCutoverReadiness, ReadinessGate, ReadinessState, RekeyCollision, RekeyInvalidItem,
     RekeyMappingKind, UnattributedRekeyItem, UnsupportedGenericFreshness, VerifyReadiness,
-    WorkspaceCutoverReadiness, APPLICATION_CONSUMER_KIND, REQUIRED_VERIFY_CHECKS,
+    WorkspaceCutoverReadiness, REQUIRED_VERIFY_CHECKS,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
     IncrementalFreshnessCycleOutcome,
 };
-#[allow(unused_imports)]
-pub(crate) use legacy_backfill::backfill_project_semantic_build_graph_in_tx;
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
     route_id_for_run_kind, MaintenanceRouteDescriptor,

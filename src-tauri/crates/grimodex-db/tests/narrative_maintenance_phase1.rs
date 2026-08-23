@@ -70,12 +70,12 @@ fn seed_completed_backfill(db: &Database) {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('phase1-backfill-completed', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'completed', '{}', '2026-08-22T00:00:00.000Z',
                      '2026-08-22T00:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-phase1","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-phase1","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
                      'backfill', ?2,
-                     'legacy-dependency-backfill:v2')"#,
+                     'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, EPOCH_ID],
         )?;
         Ok(())
@@ -329,12 +329,12 @@ fn restore_epoch_with_only_old_backfill_history_starts_current_verify() {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('phase1-old-backfill-completed', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'completed', '{}', '2026-08-20T00:00:00.000Z',
                      '2026-08-20T00:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-phase1-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-phase1-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
                      'backfill', ?2,
-                     'legacy-dependency-backfill:v2')"#,
+                     'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, OLD_EPOCH_ID],
         )?;
         Ok(())
@@ -522,9 +522,9 @@ fn restore_recovery_terminalizes_old_active_backfill_before_current_verify() {
                 (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
                  status, coverage_json, created_at, run_kind, semantic_epoch_id, work_key)
              VALUES ('old-active-backfill', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest',
                      'running', '{}', '2026-08-21T00:00:00.000Z', 'backfill', ?2, ?3)"#,
-            params![PROJECT_ID, OLD_EPOCH_ID, "legacy-dependency-backfill:v2"],
+            params![PROJECT_ID, OLD_EPOCH_ID, "legacy-dependency-backfill:v3"],
         )?;
         Ok(())
     })
@@ -534,7 +534,7 @@ fn restore_recovery_terminalizes_old_active_backfill_before_current_verify() {
         "work": [{
             "projectId": PROJECT_ID,
             "runKind": "backfill",
-            "workKey": "legacy-dependency-backfill:v2",
+            "workKey": "legacy-dependency-backfill:v3",
             "semanticEpochId": OLD_EPOCH_ID,
             "reasons": ["restore-completed"]
         }],

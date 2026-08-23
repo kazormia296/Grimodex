@@ -16,7 +16,8 @@ use super::commit::digest_plan;
 use super::execution_state::{transition_run_status_in_tx, NarrativeRunStatus};
 use super::legacy_backfill::{
     is_valid_completed_backfill_marker, parse_maintenance_instant, BackfillSummary,
-    CompletedBackfillMarker, LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
+    CompletedBackfillMarker, LEGACY_BACKFILL_ALGORITHM_VERSION,
+    LEGACY_BACKFILL_WORK_KEY as WRITER_BACKFILL_WORK_KEY,
 };
 use super::maintenance_contracts::{
     current_maintenance_coordinates, derive_ci_coordinate_mismatch_digest,
@@ -731,7 +732,7 @@ pub(crate) fn validate_phase_success_outcome(
                 object
                     .get("backfillAlgorithmVersion")
                     .and_then(Value::as_str)
-                    == Some("2"),
+                    == Some(LEGACY_BACKFILL_ALGORITHM_VERSION),
                 "NEX_MAINTENANCE_SYSTEM_WORK_OUTCOME_INVALID: Backfill algorithm version is missing or incorrect"
             );
             anyhow::ensure!(
@@ -3428,7 +3429,9 @@ mod tests {
 
     fn recovery_spec(kind: AutomaticRunKind) -> String {
         match kind {
-            AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#.to_string(),
+            AutomaticRunKind::Backfill => {
+                format!(r#"{{"backfillAlgorithmVersion":"{LEGACY_BACKFILL_ALGORITHM_VERSION}"}}"#)
+            }
             AutomaticRunKind::Verify => {
                 // Keep the recovery fixture tied to the same Rust-owned
                 // contract as maintenance lifecycle creation.
@@ -3767,7 +3770,7 @@ mod tests {
         assert_eq!(marker.trigger, "workspace-opened");
         assert_eq!(
             marker.canonical_work_key,
-            "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2"
+            "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3"
         );
     }
 

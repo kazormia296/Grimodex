@@ -172,10 +172,10 @@ mod tests {
     fn native_discovery_uses_the_same_effective_coordinates_as_the_live_ci_cycle() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("migrate database");
-        let backfill_spec = json!({ "backfillAlgorithmVersion": "2" }).to_string();
+        let backfill_spec = json!({ "backfillAlgorithmVersion": "3" }).to_string();
         let backfill_outcome = json!({
             "maintenancePhase": "backfill-complete",
-            "backfillAlgorithmVersion": "2",
+            "backfillAlgorithmVersion": "3",
             "semanticEpochId": "epoch-1",
             "summary": {
                 "epoch_created": true,
@@ -201,7 +201,7 @@ mod tests {
                  VALUES ('backfill-complete', 'default-project', 'maintenance', ?1, ?1,
                          'sha256:backfill', 'completed', '{}', ?2,
                          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z',
-                         'backfill', 'epoch-1', 'legacy-dependency-backfill:v2')",
+                         'backfill', 'epoch-1', 'legacy-dependency-backfill:v3')",
                 [backfill_spec.as_str(), backfill_outcome.as_str()],
             )?;
             Ok::<_, anyhow::Error>(())

@@ -79,13 +79,13 @@ describe("narrative maintenance deferred contract", () => {
     scheduler.request({
       projectId: "project-b",
       runKind: "backfill",
-      workKey: "legacy-dependency-backfill:v2",
+      workKey: "legacy-dependency-backfill:v3",
       reason: "workspace-opened",
     });
     scheduler.request({
       projectId: "project-a",
       runKind: "backfill",
-      workKey: "legacy-dependency-backfill:v2",
+      workKey: "legacy-dependency-backfill:v3",
       reason: "workspace-opened",
     });
     scheduler.start();

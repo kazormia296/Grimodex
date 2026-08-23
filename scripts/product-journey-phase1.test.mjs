@@ -65,14 +65,17 @@ function createObservationHarness({ ledgerRows = [] } = {}) {
       calls.push({ command, page, args });
       if (command !== "db_execute") return null;
       if (args.sql.includes("PRAGMA user_version")) {
-        return { rows: [{ user_version: 31 }] };
+        return { rows: [{ user_version: 32 }] };
       }
       if (args.sql.includes("FROM projects")) {
         return { rows: [{ id: "phase1-project" }] };
       }
       if (args.sql.includes("schema_data_migrations")) {
         return {
-          rows: [{ migration_id: "narrative-c2-finding-identity-v31" }],
+          rows: [
+            { migration_id: "narrative-c2-finding-identity-v31" },
+            { migration_id: "narrative-c2-application-rekey-v32" },
+          ],
         };
       }
       if (args.sql.includes("FROM narrative_extraction_runs")) {

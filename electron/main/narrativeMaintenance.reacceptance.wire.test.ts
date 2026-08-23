@@ -12,7 +12,7 @@ function backfill(projectId: string): NarrativeMaintenanceRequest {
   return {
     projectId,
     runKind: "backfill",
-    workKey: "legacy-dependency-backfill:v2",
+    workKey: "legacy-dependency-backfill:v3",
     reason: "wire-contract",
   };
 }

@@ -25,10 +25,10 @@ const REBUILD_RUN_KIND: &str = "semantic-index-rebuild";
 const BACKFILL_TASK_KIND: &str = "maintenance-backfill";
 const VERIFY_TASK_KIND: &str = "maintenance-dependency-verify";
 const REBUILD_TASK_KIND: &str = "maintenance-semantic-index-rebuild";
-const BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v2";
+const BACKFILL_WORK_KEY: &str = "legacy-dependency-backfill:v3";
 const REBUILD_WORK_KEY: &str = "dependency-rebuild-derived";
 const VERIFY_WORK_KEY_PREFIX: &str = "dependency-verify:";
-const BACKFILL_ALGORITHM_VERSION: &str = "2";
+const BACKFILL_ALGORITHM_VERSION: &str = "3";
 
 /// The bounded failure policy understood by an automatic maintenance owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1231,7 +1231,7 @@ mod tests {
 
     fn work(run_kind: &str) -> (&'static str, &'static str) {
         match run_kind {
-            "backfill" => ("epoch-1", "legacy-dependency-backfill:v2"),
+            "backfill" => ("epoch-1", "legacy-dependency-backfill:v3"),
             "dependency-verify" => ("epoch-1", "dependency-verify:epoch-1"),
             "semantic-index-rebuild" => ("epoch-1", "dependency-rebuild-derived"),
             other => panic!("unsupported maintenance kind: {other}"),
@@ -1299,7 +1299,7 @@ mod tests {
                 "backfillAlgorithmVersion": BACKFILL_ALGORITHM_VERSION,
                 "systemWork": {
                     "trigger": "workspace-opened",
-                    "canonicalWorkKey": "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1",
+                    "canonicalWorkKey": "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3/epoch/epoch-1",
                     "authorityId": "authority-1",
                     "generation": generation,
                     "productJourneyBarrierId": "barrier-1",
@@ -1316,7 +1316,7 @@ mod tests {
                 "project-1",
                 "backfill",
                 "epoch-1",
-                "legacy-dependency-backfill:v2",
+                "legacy-dependency-backfill:v3",
             )
             .expect_err("unsafe marker generation must fail closed");
             assert!(error.to_string().contains("safe non-zero integer"));
@@ -1326,7 +1326,7 @@ mod tests {
             "project-1",
             "backfill",
             "epoch-1",
-            "legacy-dependency-backfill:v2",
+            "legacy-dependency-backfill:v3",
         )
         .expect("positive safe marker generation is accepted");
         strip_validated_system_work_marker(
@@ -1336,7 +1336,7 @@ mod tests {
             "project-1",
             "backfill",
             "epoch-1",
-            "legacy-dependency-backfill:v2",
+            "legacy-dependency-backfill:v3",
         )
         .expect("maximum safe marker generation is accepted");
     }
@@ -1415,7 +1415,7 @@ mod tests {
         let marker = |barrier: &str| {
             NarrativeSystemWorkMarker {
             trigger: "workspace-opened".to_string(),
-            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3/epoch/epoch-1".to_string(),
             authority_id: "authority-1".to_string(),
             generation: 1,
             product_journey_barrier_id: barrier.to_string(),
@@ -1495,7 +1495,7 @@ mod tests {
         let db = open_db();
         let marker = NarrativeSystemWorkMarker {
             trigger: "workspace-opened".to_string(),
-            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v2/epoch/epoch-1".to_string(),
+            canonical_work_key: "narrative-maintenance:v1/backfill/project-1/legacy-dependency-backfill:v3/epoch/epoch-1".to_string(),
             authority_id: "authority-1".to_string(),
             generation: 1,
             product_journey_barrier_id: "barrier-1".to_string(),

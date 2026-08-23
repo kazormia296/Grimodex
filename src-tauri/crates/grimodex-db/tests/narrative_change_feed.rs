@@ -389,7 +389,7 @@ fn fresh_schema_22_contains_the_canonical_writer_origin_contract() {
         // SCHEMA 22 introduced this contract; SCHEMA 23-31 (Gate C2) migrate
         // further on top but do not touch it -- this guard exists so the
         // next schema bump revisits this test too.
-        assert_eq!(SCHEMA_VERSION, 31);
+        assert_eq!(SCHEMA_VERSION, 32);
         assert_eq!(version, SCHEMA_VERSION);
 
         for table in [

@@ -54,7 +54,7 @@ fn canonical_key_namespaces_project_kind_and_work_key() {
     let key = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:v2",
+        "legacy-dependency-backfill:v3",
     )
     .expect("valid work key");
 
@@ -62,7 +62,7 @@ fn canonical_key_namespaces_project_kind_and_work_key() {
         canonical_work_key(
             PROJECT_ID,
             AutomaticRunKind::Backfill,
-            "legacy-dependency-backfill:v2"
+            "legacy-dependency-backfill:v3"
         )
         .expect("canonical key"),
         key.canonical_key()
@@ -72,7 +72,7 @@ fn canonical_key_namespaces_project_kind_and_work_key() {
         WorkKey::new(
             PROJECT_ID,
             AutomaticRunKind::Verify,
-            "legacy-dependency-backfill:v2",
+            "legacy-dependency-backfill:v3",
         )
         .expect("valid verify key")
         .canonical_key()
@@ -87,7 +87,7 @@ fn planner_maps_safe_open_to_backfill_and_verify_owned_followup() {
     .expect("backfill plan");
     assert_eq!(backfill.len(), 1);
     assert_eq!(backfill[0].run_kind, AutomaticRunKind::Backfill);
-    assert_eq!(backfill[0].work_key, "legacy-dependency-backfill:v2");
+    assert_eq!(backfill[0].work_key, "legacy-dependency-backfill:v3");
 
     let cutover = plan_maintenance_trigger(&MaintenanceTrigger::BeforeCutover {
         project_id: PROJECT_ID.to_string(),
@@ -168,7 +168,7 @@ fn recovery_counts_existing_runs_without_creating_task_or_attempt_rows() {
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:v2",
+        "legacy-dependency-backfill:v3",
     )
     .expect("valid work key");
 
@@ -264,7 +264,7 @@ fn recovery_does_not_skip_a_completed_backfill_without_supported_completed_at() 
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:v2",
+        "legacy-dependency-backfill:v3",
     )
     .expect("valid Backfill work key");
     db.with_conn(|conn| {
@@ -274,9 +274,9 @@ fn recovery_does_not_skip_a_completed_backfill_without_supported_completed_at() 
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('backfill-no-completed-at', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', NULL,
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
                      'backfill', ?2, ?3)"#,
             params![PROJECT_ID, OLD_EPOCH_ID, work.work_key],
         )?;
@@ -293,6 +293,46 @@ fn recovery_does_not_skip_a_completed_backfill_without_supported_completed_at() 
     )
     .expect("read timestamp-invalid Backfill recovery");
     assert!(matches!(decision.action, RecoveryAction::StartFresh));
+}
+
+#[test]
+fn discovery_does_not_reuse_a_valid_retained_v2_backfill_marker() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            r#"INSERT INTO narrative_extraction_runs
+                (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                 status, coverage_json, created_at, completed_at, outcome_summary_json,
+                 run_kind, semantic_epoch_id, work_key)
+             VALUES ('backfill-v2-retained', ?1, 'maintenance', '{}',
+                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+            params![PROJECT_ID, OLD_EPOCH_ID],
+        )?;
+        Ok(())
+    })
+    .expect("seed retained v2 Backfill marker");
+
+    let discovered = discover_durable_maintenance_work(&db, PROJECT_ID, "workspace-opened")
+        .expect("discover current Backfill after retained v2 marker")
+        .expect("v2 evidence must schedule a fresh Backfill");
+    assert_eq!(discovered.run_kind, AutomaticRunKind::Backfill);
+    assert_eq!(discovered.work_key, LEGACY_BACKFILL_WORK_KEY);
+    assert_eq!(discovered.semantic_epoch_id.as_deref(), Some(OLD_EPOCH_ID));
+
+    let retained_status: String = db
+        .with_conn(|conn| {
+            conn.query_row(
+                "SELECT status FROM narrative_extraction_runs WHERE id = 'backfill-v2-retained'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .expect("read retained v2 Backfill");
+    assert_eq!(retained_status, "completed");
 }
 
 fn insert_run(
@@ -342,7 +382,7 @@ fn insert_canonical_maintenance_run(
     work: &WorkKey,
 ) -> rusqlite::Result<()> {
     let spec_json = match work.run_kind {
-        AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"2"}"#,
+        AutomaticRunKind::Backfill => r#"{"backfillAlgorithmVersion":"3"}"#,
         AutomaticRunKind::Verify => r#"{"verifyContractVersion":"7"}"#,
         AutomaticRunKind::RebuildDerived => "{}",
     };
@@ -421,7 +461,7 @@ fn assert_interrupted_lifecycle(db: &Database, run_id: &str) {
 fn startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
     let db = fixture_db();
     for (index, (work_key, automatic_kind)) in [
-        ("legacy-dependency-backfill:v2", AutomaticRunKind::Backfill),
+        ("legacy-dependency-backfill:v3", AutomaticRunKind::Backfill),
         ("dependency-verify:epoch-c2-5a", AutomaticRunKind::Verify),
         (
             "dependency-rebuild-derived",
@@ -455,7 +495,7 @@ fn startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
 fn stale_epoch_startup_recovery_synthesizes_zero_child_runs_for_all_automatic_kinds() {
     let db = fixture_db();
     for (index, (automatic_kind, work_key)) in [
-        (AutomaticRunKind::Backfill, "legacy-dependency-backfill:v2"),
+        (AutomaticRunKind::Backfill, "legacy-dependency-backfill:v3"),
         (
             AutomaticRunKind::Verify,
             "dependency-verify:epoch-c2-5a-old",
@@ -535,7 +575,7 @@ fn recovery_compatibility_synthesis_is_idempotent_and_rolls_back_as_one_unit() {
     let rollback_work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:v2",
+        "legacy-dependency-backfill:v3",
     )
     .expect("valid rollback work key");
     db.with_conn(|conn| {
@@ -590,7 +630,7 @@ fn recovery_compatibility_synthesis_fails_closed_for_malformed_children_and_seal
     let work = WorkKey::new(
         PROJECT_ID,
         AutomaticRunKind::Backfill,
-        "legacy-dependency-backfill:v2",
+        "legacy-dependency-backfill:v3",
     )
     .expect("valid malformed-fixture work key");
 
@@ -1053,11 +1093,11 @@ fn discovery_validates_verify_outcome_before_clean_or_rebuild_routing() {
                  status, coverage_json, created_at, started_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('discovery-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:00.000Z',
                      '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, OLD_EPOCH_ID],
         )?;
         conn.execute(
@@ -1162,10 +1202,10 @@ fn discovery_ignores_old_epoch_ties_when_the_current_work_candidate_is_unique() 
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('current-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, OLD_EPOCH_ID],
         )?;
         for id in ["old-tie-a", "old-tie-z"] {
@@ -1283,10 +1323,10 @@ fn discovery_starts_current_verify_when_only_old_marker_and_old_verify_ties_exis
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('old-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a","summary":{"epoch_created":true,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a","summary":{"epoch_created":true,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, EPOCH_ID],
         )?;
         for id in ["old-verify-tie-a", "old-verify-tie-z"] {
@@ -1322,10 +1362,10 @@ fn discovery_ignores_noncanonical_malformed_terminal_coordinates_before_time_par
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('current-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, OLD_EPOCH_ID],
         )?;
         conn.execute(
@@ -1359,10 +1399,10 @@ fn discovery_fails_closed_for_a_malformed_maximal_current_candidate() {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('current-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
-                     'backfill', ?2, 'legacy-dependency-backfill:v2')"#,
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5a-old","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     'backfill', ?2, 'legacy-dependency-backfill:v3')"#,
             params![PROJECT_ID, OLD_EPOCH_ID],
         )?;
         conn.execute(

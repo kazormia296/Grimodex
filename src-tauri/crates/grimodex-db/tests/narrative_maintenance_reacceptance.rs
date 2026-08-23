@@ -54,9 +54,9 @@ fn seed_completed_backfill_marker(db: &Database) {
                  status, coverage_json, created_at, completed_at, outcome_summary_json,
                  run_kind, semantic_epoch_id, work_key)
              VALUES ('completed-backfill-marker', ?1, 'maintenance', '{}',
-                     '{"backfillAlgorithmVersion":"2"}', 'digest', 'completed', '{}',
+                     '{"backfillAlgorithmVersion":"3"}', 'digest', 'completed', '{}',
                      '2026-08-23T09:00:00.000Z', '2026-08-23T09:00:01.000Z',
-                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"2","semanticEpochId":"epoch-c2-5b-reacceptance","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
+                     '{"maintenancePhase":"backfill-complete","backfillAlgorithmVersion":"3","semanticEpochId":"epoch-c2-5b-reacceptance","summary":{"epoch_created":false,"contributions_created":0,"edges_created":0,"applications_without_run_id":0}}',
                      'backfill', ?2, ?3)"#,
             params![PROJECT_ID, EPOCH_ID, LEGACY_BACKFILL_WORK_KEY],
         )?;

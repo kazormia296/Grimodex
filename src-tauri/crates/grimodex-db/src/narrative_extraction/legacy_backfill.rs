@@ -28,15 +28,10 @@
 //!      `narrative_projection_dependencies` row, so the Generic Graph
 //!      (`dependency_edges.rs`) carries the same Source knowledge Legacy
 //!      Freshness (`narrative_projection_freshness`) already has. Consumer
-//!      identity mirrors Producer-time C2-T1 wiring exactly
-//!      (`repository.rs`'s `record_run_dependency_edges_in_tx`):
-//!      `(RUN_CONSUMER_KIND, run_id)`, the owning `narrative_apply_commits`
-//!      row's own `run_id` column -- never the individual Application, so a
-//!      later Verify/Rebuild walking `find_edges_by_consumer` sees the same
-//!      shape whether a Run's Edges came from a live Reconciliation
-//!      Envelope or from this backfill. A commit with a `NULL` `run_id`
-//!      (predates the Run/Task/Attempt execution-state model entirely) has
-//!      no Run-scoped Consumer identity to backfill an Edge under; its
+//!      identity is `(APPLICATION_CONSUMER_KIND, application_id)`, with the
+//!      fresh Backfill Run stored in `owning_run_id`. A commit with a `NULL`
+//!      `run_id` (predates the Run/Task/Attempt execution-state model entirely)
+//!      has no durable projection lineage to backfill an Edge under; its
 //!      Contribution row is still seeded, just with no matching Edge, and
 //!      it is counted separately in the summary rather than silently
 //!      dropped.
@@ -82,7 +77,7 @@ use super::application_contributions::{
     ContributionTargetState, UNRESOLVED_TARGET_PREFIX,
 };
 use super::dependency_edges::{
-    canonical_source_object_identity, record_dependency_edge_in_tx, RUN_CONSUMER_KIND,
+    canonical_source_object_identity, record_dependency_edge_in_tx, APPLICATION_CONSUMER_KIND,
 };
 use super::digest_plan;
 use super::maintenance_lifecycle::{
@@ -105,7 +100,7 @@ use crate::Database;
 /// Generation of the production legacy dependency writer. This is the
 /// writer-owned value consumed by the bundled producer registry; it changes
 /// with the declaration semantics, not merely with a policy fixture.
-pub(crate) const LEGACY_DEPENDENCY_PRODUCER_GENERATION: &str = "legacy-dependency-backfill:v2";
+pub(crate) const LEGACY_DEPENDENCY_PRODUCER_GENERATION: &str = "legacy-dependency-backfill:v3";
 
 /// Work key every project's Legacy Dependency Backfill Run is created
 /// under (Run Kind Policy `dependency-backfill`). One logical Backfill per
@@ -124,12 +119,9 @@ pub(crate) const LEGACY_BACKFILL_WORK_KEY: &str = LEGACY_DEPENDENCY_PRODUCER_GEN
 /// row", not a bounded/versioned slice), so `backfillAlgorithmVersion` is
 /// the one parameter worth sealing: bump it if this transform's write
 /// shape ever changes in a way that would make an older completed Run
-/// unsafe to treat as equivalent to a fresh one. `"2"` since Contribution
-/// `target_object_identity` and Dependency Edge
-/// `source_object_identity` are both written in canonical form: a Run
-/// completed under `"1"` left `codex_entry:<id>` Contributions and
-/// double-prefixed Edges, so it is not equivalent to a fresh one.
-pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "2";
+/// unsafe to treat as equivalent to a fresh one. `"3"` since the writer now
+/// emits Application-grained Edges owned by the fresh Backfill Run.
+pub(crate) const LEGACY_BACKFILL_ALGORITHM_VERSION: &str = "3";
 
 /// Validate the durable completion marker owned by the Backfill phase.
 ///
@@ -502,11 +494,10 @@ pub struct BackfillSummary {
     /// total number of legacy dependency rows seen).
     pub edges_created: usize,
     /// Legacy Applications seen whose owning `narrative_apply_commits` row
-    /// has a `NULL` `run_id` -- predates the Run/Task/Attempt
-    /// execution-state model, so there is no Run-scoped Consumer identity
-    /// to backfill a Dependency Edge under. Their Contribution row is still
-    /// seeded; only Edge backfill is skipped for these, and this count
-    /// makes that skip visible rather than silent.
+    /// has a `NULL` `run_id` -- predates the Run/Task/Attempt execution-state
+    /// model. Their v3 Application Edge is still owned by the fresh Backfill
+    /// Run; this count reports how many lacked the older durable lineage the
+    /// C2-ZB migration requires.
     pub applications_without_run_id: usize,
 }
 
@@ -611,7 +602,7 @@ pub fn bootstrap_legacy_dependency_backfill_for_project(
 
     let transform_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
-            backfill_project_semantic_build_graph_in_tx(conn, project_id, &now)
+            backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, &now, &run_id)
         })
     });
 
@@ -839,17 +830,19 @@ pub fn get_backfill_status_for_project(
     .map_err(Into::into)
 }
 
-/// Backfill one project's Semantic Build Graph foundation from its
-/// pre-Gate-C2 Application history. See module docs for the epoch and
-/// Contribution seeding this performs. Ambient-transaction helper: the
-/// caller is expected to run this inside its own `BEGIN IMMEDIATE` /
-/// commit block (a one-off migration/maintenance job), matching every
-/// other `_in_tx` helper in this crate.
-pub(crate) fn backfill_project_semantic_build_graph_in_tx(
+/// Production Backfill transform. The freshly-created Backfill Run owns every
+/// Application Edge it emits; the explicit owner prevents the legacy
+/// ApplyCommit.run_id from being mistaken for the writer Run after C2-ZB.
+pub(crate) fn backfill_project_semantic_build_graph_in_tx_for_run(
     conn: &Connection,
     project_id: &str,
     now: &str,
+    backfill_run_id: &str,
 ) -> anyhow::Result<BackfillSummary> {
+    anyhow::ensure!(
+        !backfill_run_id.trim().is_empty(),
+        "NEX_BACKFILL_RUN_INVALID: backfill Run id is required"
+    );
     anyhow::ensure!(
         !project_id.is_empty(),
         "NEX_BACKFILL_PROJECT_INVALID: projectId is required"
@@ -953,18 +946,20 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
             now,
         )?;
 
-        match &application.run_id {
-            Some(run_id) => {
-                record_legacy_dependency_edges_in_tx(
-                    conn,
-                    project_id,
-                    run_id,
-                    &application.id,
-                    now,
-                )?;
-            }
-            None => applications_without_run_id += 1,
+        if application.run_id.is_none() {
+            applications_without_run_id += 1;
         }
+        // The v3 writer has its own fresh Backfill Run owner.  The
+        // ApplyCommit.run_id is lineage for the C2-ZB migration only, so a
+        // legacy Application with NULL lineage can still emit its durable
+        // projection dependency Edge under the fresh owner.
+        record_legacy_dependency_edges_in_tx(
+            conn,
+            project_id,
+            &application.id,
+            backfill_run_id,
+            now,
+        )?;
     }
     // The rows minted above all took `authority: None` -- a whole-entity
     // sentinel is not a Field Authority coordinate, so there is nothing to
@@ -986,12 +981,11 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
     })
 }
 
-/// Producer-time-shaped Dependency Edge backfill for one legacy Application:
+/// Application-grained Dependency Edge backfill for one legacy Application:
 /// every `narrative_projection_dependencies` row it left behind becomes one
-/// Edge declared by its owning Run, mirroring `repository.rs`'s
-/// `record_run_dependency_edges_in_tx` exactly (same Consumer identity, same
-/// one-element `read_set_json`) so this Run's Edge set looks identical
-/// whether it was declared live or backfilled.
+/// Edge keyed by the Application and owned by the freshly-created Backfill
+/// Run. The ApplyCommit's `run_id` is only the durable lineage used by the
+/// C2-ZB re-key planner; it is never substituted for the writer owner here.
 ///
 /// `dependency.source_key` is used directly as the Edge's
 /// `source_object_identity`, for exactly the reason `repository.rs`'s
@@ -1012,8 +1006,8 @@ pub(crate) fn backfill_project_semantic_build_graph_in_tx(
 fn record_legacy_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
-    run_id: &str,
     application_id: &str,
+    backfill_run_id: &str,
     now: &str,
 ) -> anyhow::Result<()> {
     for dependency in load_legacy_projection_dependencies(conn, application_id)? {
@@ -1023,16 +1017,15 @@ fn record_legacy_dependency_edges_in_tx(
         record_dependency_edge_in_tx(
             conn,
             project_id,
-            RUN_CONSUMER_KIND,
-            run_id,
+            APPLICATION_CONSUMER_KIND,
+            application_id,
             &source_object_identity,
             &read_set_json,
             None,
-            // SCHEMA 30. The Backfill's Consumer identity is the owning
-            // `narrative_apply_commits.run_id`, which is also the Run whose
-            // read this Edge restates -- so the same id is the honest answer
-            // on both axes here.
-            Some(run_id),
+            // C2-ZB: Application Edges carry the fresh Backfill Run as their
+            // declaring owner. `run_id` is the legacy ApplyCommit lineage and
+            // is intentionally not used as the Edge owner.
+            Some(backfill_run_id),
             now,
         )?;
     }
@@ -1055,6 +1048,33 @@ fn count_edges(conn: &Connection, project_id: &str) -> anyhow::Result<usize> {
         |row| row.get(0),
     )?;
     Ok(usize::try_from(count).unwrap_or(0))
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn backfill_project_semantic_build_graph_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    now: &str,
+) -> anyhow::Result<BackfillSummary> {
+    let backfill_run_id = format!("test-backfill-run-{project_id}");
+    if project_id.is_empty() || now.is_empty() {
+        return backfill_project_semantic_build_graph_in_tx_for_run(
+            conn,
+            project_id,
+            now,
+            &backfill_run_id,
+        );
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO narrative_extraction_runs
+            (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+             status, coverage_json, created_at, run_kind, work_key)
+         VALUES (?1, ?2, 'test', '{}', '{\"backfillAlgorithmVersion\":\"3\"}',
+                 'sha256:test', 'completed', '{}', ?3, 'backfill', ?4)",
+        params![backfill_run_id, project_id, now, LEGACY_BACKFILL_WORK_KEY],
+    )?;
+    backfill_project_semantic_build_graph_in_tx_for_run(conn, project_id, now, &backfill_run_id)
 }
 
 /// Every `narrative_projection_dependencies` row a legacy Application left
@@ -1179,8 +1199,8 @@ mod tests {
     }
 
     /// As [`seed_legacy_application`], but also lets the owning commit's
-    /// `run_id` be set -- needed to exercise Dependency Edge backfill, which
-    /// is Run-scoped.
+    /// `run_id` be set so tests can exercise the durable lineage used by the
+    /// C2-ZB migration.
     #[allow(clippy::too_many_arguments)]
     fn seed_legacy_application_with_run(
         conn: &Connection,
@@ -1554,7 +1574,8 @@ mod tests {
             assert_eq!(summary.edges_created, 1);
             assert_eq!(summary.applications_without_run_id, 0);
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source_object_identity, "project:scene:scene-1");
             assert_eq!(edges[0].read_set_json, "[\"v1@2026-08-14T00:00:00.000Z\"]");
@@ -1575,10 +1596,20 @@ mod tests {
     #[test]
     fn backfilled_edges_never_double_prefix_the_source_identity() {
         use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
+        use crate::narrative_extraction::restore_rebuild::verify_narrative_dependency_graph_for_project;
 
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "project-1");
+            conn.execute(
+                "INSERT INTO narrative_extraction_runs
+                    (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                     status, coverage_json, snapshot_digest, created_at, version)
+                 VALUES ('run-1', 'project-1', 'test', '{}', '{}', 'digest',
+                         'completed', '{}', 'sha256:snapshot',
+                         '2026-08-15T00:00:00.000Z', 0)",
+                [],
+            )?;
             seed_legacy_application_with_run(
                 conn,
                 "project-1",
@@ -1610,7 +1641,12 @@ mod tests {
                 "2026-08-15T02:00:00.000Z",
             )?;
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges = find_edges_by_consumer(
+                conn,
+                "project-1",
+                APPLICATION_CONSUMER_KIND,
+                "app-1",
+            )?;
             let mut identities = edges
                 .iter()
                 .map(|edge| edge.source_object_identity.as_str())
@@ -1624,6 +1660,31 @@ mod tests {
                     "project:scene:scene-1",
                     "snapshot:run-1",
                 ]
+            );
+            assert!(edges.iter().all(|edge| {
+                edge.consumer_kind == APPLICATION_CONSUMER_KIND
+                    && edge.owning_run_id.as_deref() == Some("test-backfill-run-project-1")
+                    && edge.owning_run_id.as_deref() != Some("run-1")
+            }));
+            let snapshot_edge_id: String = conn.query_row(
+                "SELECT id FROM narrative_dependency_edges
+                  WHERE project_id = 'project-1'
+                    AND consumer_kind = 'application'
+                    AND consumer_key = 'app-1'
+                    AND source_object_identity = 'snapshot:run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let report = verify_narrative_dependency_graph_for_project(conn, "project-1")?;
+            assert!(
+                report.edge_ids_with_unresolvable_consumer_scope.is_empty(),
+                "snapshot:run-1 must resolve through the original Apply Run while the Edge keeps the fresh Backfill owner"
+            );
+            assert!(
+                !report
+                    .edge_ids_with_missing_source
+                    .contains(&snapshot_edge_id),
+                "snapshot:run-1 must resolve as a source through the embedded Apply Run"
             );
             Ok(())
         })
@@ -1677,7 +1738,8 @@ mod tests {
                 "2026-08-15T02:00:00.000Z",
             )?;
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1);
             assert_eq!(edges[0].source_object_identity, "projection:projection-1");
             Ok(())
@@ -1777,7 +1839,7 @@ mod tests {
     }
 
     #[test]
-    fn applications_without_run_id_are_counted_and_skipped() {
+    fn applications_without_run_id_are_counted_but_still_emit_v3_edges() {
         let db = test_db();
         db.with_conn(|conn| {
             seed_project(conn, "project-1");
@@ -1809,10 +1871,7 @@ mod tests {
                 summary.contributions_created, 1,
                 "Contribution seeding must still happen with no run_id"
             );
-            assert_eq!(
-                summary.edges_created, 0,
-                "no Run-scoped Consumer identity exists to backfill an Edge under"
-            );
+            assert_eq!(summary.edges_created, 1);
             assert_eq!(summary.applications_without_run_id, 1);
             Ok(())
         })
@@ -1861,7 +1920,8 @@ mod tests {
                 "re-run must not create a duplicate Edge row"
             );
 
-            let edges = find_edges_by_consumer(conn, "project-1", RUN_CONSUMER_KIND, "run-1")?;
+            let edges =
+                find_edges_by_consumer(conn, "project-1", APPLICATION_CONSUMER_KIND, "app-1")?;
             assert_eq!(edges.len(), 1, "no duplicate edge row");
             Ok(())
         })
