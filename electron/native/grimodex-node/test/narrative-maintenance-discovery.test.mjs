@@ -5,10 +5,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { copyFileSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gunzipSync } from "node:zlib";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -47,6 +48,41 @@ function projectPayload(projectId) {
     createdAt: "2026-08-23T00:00:00.000Z",
     updatedAt: "2026-08-23T00:00:00.000Z",
   };
+}
+
+async function writeCanonicalBackup(backend, workspace, backupName) {
+  const before = new Set(
+    JSON.parse(await backend.listBackups()).map(({ fileName }) => fileName),
+  );
+  const settings = JSON.parse(await backend.getGlobalSettings());
+  settings.userPreferences = {
+    ...(settings.userPreferences ?? {}),
+    "data.autoBackup": "true",
+    "data.backupInterval": "0",
+  };
+  await backend.saveGlobalSettings(settings);
+
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const created = JSON.parse(await backend.listBackups()).find(
+      ({ fileName }) => !before.has(fileName),
+    );
+    if (created) {
+      const source = readFileSync(join(workspace, "backups", created.fileName));
+      writeFileSync(
+        join(workspace, "backups", backupName),
+        created.fileName.endsWith(".gz") ? gunzipSync(source) : source,
+      );
+      return;
+    }
+    if (Date.now() > deadline) {
+      throw new Error("trusted maintenance backup was not created within 30s");
+    }
+    // The previous open may still own the path-scoped maintenance claim.
+    // Reopen until a retry can schedule the worker that observes the setting.
+    await backend.openWorkspace(workspace);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 test(
@@ -106,9 +142,24 @@ test("restore install creates a fresh epoch whose first durable work is Verify",
     ),
   ).rows[0]?.id;
   assert.equal(typeof beforeEpoch, "string");
-  await fixture.backend.vacuumDatabase();
+  const backfill = JSON.parse(
+    await fixture.backend.dbExecute(
+      `SELECT status, semantic_epoch_id, work_key
+         FROM narrative_extraction_runs
+        WHERE project_id = ? AND run_kind = 'backfill'
+        ORDER BY created_at DESC
+        LIMIT 1`,
+      ["default-project"],
+      "get",
+    ),
+  ).rows[0];
+  assert.deepEqual(backfill, {
+    status: "completed",
+    semantic_epoch_id: beforeEpoch,
+    work_key: "legacy-dependency-backfill:v2",
+  });
   const backupName = "grimodex-maintenance-restore.db";
-  copyFileSync(join(workspace, "grimodex.db"), join(workspace, "backups", backupName));
+  await writeCanonicalBackup(fixture.backend, workspace, backupName);
   await fixture.backend.restoreBackup(backupName);
   const result = JSON.parse(
     await fixture.backend.discoverNarrativeMaintenanceWork("restore-completed"),
