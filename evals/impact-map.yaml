@@ -226,6 +226,7 @@ rules:
       - src-tauri/crates/grimodex-core/src/workspace_schema.rs
       - electron/main/index.ts
       - electron/main/narrativeMaintenance*.ts
+      - electron/main/foregroundBarrier*.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts
@@ -397,6 +398,7 @@ rules:
       - src/features/narrative-extraction/**
       - electron/main/index.ts
       - electron/main/narrativeMaintenance*.ts
+      - electron/main/foregroundBarrier*.ts
       - electron/main/narrativeMaintenance.ts
       - electron/main/narrativeMaintenance.test.ts
       - electron/main/narrativeMaintenance.phase1.test.ts

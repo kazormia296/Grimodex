@@ -283,6 +283,7 @@ export const PRODUCT_JOURNEY_COVERAGE_BACKLOG = freezeEntries([
  */
 export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/index.ts",
+  "electron/main/foregroundBarrierRelease.test.ts",
   "electron/main/narrativeMaintenance.ts",
   "electron/main/narrativeMaintenance.test.ts",
   "electron/main/narrativeMaintenance.phase1.test.ts",
@@ -290,11 +291,15 @@ export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS = Object.freeze([
   "electron/main/narrativeMaintenance.reacceptance.test.ts",
   "electron/main/narrativeMaintenance.reacceptance.wire.test.ts",
   "electron/main/narrativeMaintenance.wiring.test.ts",
+  "electron/main/narrativeMaintenanceCiSeam.ts",
+  "electron/main/narrativeMaintenanceCiSeam.test.ts",
   "electron/main/narrativeMaintenanceTriggers.ts",
   "electron/main/narrativeMaintenanceTriggers.test.ts",
 ]);
 export const NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB =
   "electron/main/narrativeMaintenance*.ts";
+export const NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB =
+  "electron/main/foregroundBarrier*.ts";
 
 /**
  * Rules are deliberately explicit. A path is safe to skip only when it
@@ -344,6 +349,7 @@ export const PRODUCT_DOMAIN_RULES = freezeEntries([
       "electron/main/narrativeFreshness.ts",
       "electron/main/narrativeFreshness.test.ts",
       NARRATIVE_MAINTENANCE_ELECTRON_OWNER_GLOB,
+      NARRATIVE_MAINTENANCE_FOREGROUND_OWNER_GLOB,
       ...NARRATIVE_MAINTENANCE_ELECTRON_OWNER_PATHS,
       "electron/native/grimodex-node/**",
       "src-tauri/crates/grimodex-db/src/migrate.rs",
