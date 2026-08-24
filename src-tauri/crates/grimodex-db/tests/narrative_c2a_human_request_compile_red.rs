@@ -744,7 +744,7 @@ fn trusted_unresolved(value: &Value) -> TrustedUnresolvedConstraint {
 #[test]
 fn accepts_native_verified_human_request_and_persists_native_human_actor() {
     let db = fixture_db();
-    let before = db
+    let before: (String, i64, i64, i64, i64, i64, i64, i64, i64) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT p.current_revision_id,
@@ -813,7 +813,7 @@ fn accepts_native_verified_human_request_and_persists_native_human_actor() {
         SURFACE_ID
     );
     let child_revision_id = revision_id.to_owned();
-    let after = db
+    let after: (String, i64, i64, i64, i64, i64, i64, i64, i64) = db
         .with_conn(|conn| {
             Ok(conn.query_row(
                 "SELECT p.current_revision_id,
