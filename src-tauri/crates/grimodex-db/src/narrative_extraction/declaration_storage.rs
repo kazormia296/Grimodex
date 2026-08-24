@@ -6,7 +6,7 @@
 //! a complete, immutable V2 declaration set and moves its Consumer head with
 //! an optimistic compare-and-swap.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use grimodex_core::narrative_dependency::{
     canonicalize_dependency_selector, compute_dependency_key, compute_dependency_set_digest,
@@ -117,10 +117,50 @@ pub(crate) enum ActiveDependencyDeclarationSetRead {
     Active(ActiveDependencyDeclarationSet),
 }
 
-/// Return the D1 Consumer identities that have a head for a project.  This
-/// is a narrow reverse lookup for shadow runtimes; it exposes no raw storage
-/// rows and leaves verification of each head/set to
-/// [`read_active_dependency_declaration_set_in_tx`].
+/// Return D1 Consumer identities whose sealed declaration entries mention an
+/// affected Feed Source. This is the bounded reverse lookup for the D2
+/// shadow runtime: unrelated heads are not planned or guarded, and each
+/// returned identity still passes through the verified reader below.
+pub(crate) fn list_dependency_declaration_head_keys_for_sources_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    source_object_identities: &[String],
+) -> anyhow::Result<Vec<(String, String)>> {
+    if source_object_identities.is_empty()
+        || !table_exists(conn, SET_TABLE)?
+        || !table_exists(conn, ENTRY_TABLE)?
+        || !table_exists(conn, HEAD_TABLE)?
+    {
+        return Ok(Vec::new());
+    }
+    let mut keys = BTreeSet::new();
+    let mut statement = conn.prepare(&format!(
+        "SELECT DISTINCT head.consumer_kind, head.consumer_key
+           FROM {HEAD_TABLE} AS head
+           JOIN {SET_TABLE} AS set_row
+             ON set_row.id = head.active_declaration_set_id
+           JOIN {ENTRY_TABLE} AS entry
+             ON entry.declaration_set_id = set_row.id
+          WHERE head.project_id = ?1
+            AND entry.source_object_identity = ?2"
+    ))?;
+    for source_object_identity in source_object_identities {
+        let rows = statement.query_map(
+            rusqlite::params![project_id, source_object_identity],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        for row in rows {
+            keys.insert(row?);
+        }
+    }
+    Ok(keys.into_iter().collect())
+}
+
+/// Return every D1 head identity for the restore/rebuild verifier. Unlike
+/// the incremental Feed path, a full rebuild intentionally verifies the
+/// project's complete active-head set, including V2-only Consumers and
+/// Sources; callers must still pass each identity through the verified reader
+/// before using it.
 pub(crate) fn list_dependency_declaration_head_keys_in_tx(
     conn: &Connection,
     project_id: &str,
@@ -132,7 +172,7 @@ pub(crate) fn list_dependency_declaration_head_keys_in_tx(
         "SELECT consumer_kind, consumer_key
            FROM {HEAD_TABLE}
           WHERE project_id = ?1
-          ORDER BY consumer_kind, consumer_key"
+          ORDER BY consumer_kind ASC, consumer_key ASC"
     ))?;
     let rows = statement
         .query_map([project_id], |row| Ok((row.get(0)?, row.get(1)?)))?
