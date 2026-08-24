@@ -484,8 +484,7 @@ fn enforces_dependency_role_selector_and_adr010_coverage() {
     assert!(validate_narrative_revision_envelope_v2(&ranking_only).is_err());
 
     let mut quality_context = valid_envelope();
-    quality_context["revisionBasis"]["contextSet"][0]["inputRef"] =
-        json!("quality:context");
+    quality_context["revisionBasis"]["contextSet"][0]["inputRef"] = json!("quality:context");
     quality_context["effectiveMaterialBasis"]["dependencySet"] = json!([
         {
             "dependencyId": "dependency:1",
