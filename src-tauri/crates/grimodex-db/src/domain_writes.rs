@@ -2419,7 +2419,7 @@ fn live_scene_subtree_count_from_snapshots(root_id: &str, snapshots: &[Value]) -
         let live = parent_live
             && node
                 .get("archivedAt")
-                .map_or(true, |archived_at| archived_at.is_null());
+                .is_none_or(|archived_at| archived_at.is_null());
         let mut count = if live && node.get("nodeType").and_then(Value::as_str) == Some("scene") {
             1
         } else {

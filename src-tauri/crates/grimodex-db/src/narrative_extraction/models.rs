@@ -179,6 +179,7 @@ pub struct ChronicleStageModelBinding {
 #[allow(clippy::enum_variant_names)]
 #[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
+#[allow(clippy::enum_variant_names)]
 pub enum ChronicleStageId {
     #[serde(rename = "narrative_observation_extract")]
     NarrativeObservationExtract,
