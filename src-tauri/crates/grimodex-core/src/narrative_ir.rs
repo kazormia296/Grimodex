@@ -508,18 +508,38 @@ fn validate_producer(value: &Value, path: &str) -> Result<(), NarrativeIrValidat
     Ok(())
 }
 
-fn validate_context_entry(value: &Value, path: &str) -> Result<(), NarrativeIrValidationError> {
+fn validate_context_entry(
+    value: &Value,
+    path: &str,
+    allow_inherited: bool,
+) -> Result<(), NarrativeIrValidationError> {
     let value = object(value, path)?;
-    reject_unknown(
-        value,
-        &["contextId", "inputRef", "stageId", "exposure", "selector"],
-        path,
-    )?;
+    let allowed: &[&str] = if allow_inherited {
+        &[
+            "contextId",
+            "inputRef",
+            "stageId",
+            "exposure",
+            "selector",
+            "inheritedFromRevisionId",
+        ]
+    } else {
+        &["contextId", "inputRef", "stageId", "exposure", "selector"]
+    };
+    reject_unknown(value, allowed, path)?;
     for field in ["contextId", "inputRef", "stageId"] {
         if !non_empty_string(require(value, field, path)?) {
             return Err(validation_error(
                 "invalid-revision-basis",
                 format!("{path}.{field}"),
+            ));
+        }
+    }
+    if let Some(inherited) = value.get("inheritedFromRevisionId") {
+        if !non_empty_string(inherited) {
+            return Err(validation_error(
+                "invalid-revision-basis",
+                format!("{path}.inheritedFromRevisionId"),
             ));
         }
     }
@@ -531,21 +551,29 @@ fn validate_context_entry(value: &Value, path: &str) -> Result<(), NarrativeIrVa
     Ok(())
 }
 
+/// `human_derived` switches the Context Set into the human-derivation lineage
+/// mode: an entry may carry `inheritedFromRevisionId` and, when it does, it is
+/// a verbatim copy of a parent Context whose original exposure (including
+/// `model-visible`) is preserved as audit provenance. Entries WITHOUT the
+/// lineage marker are this derivation's own dynamic inputs and must never be
+/// `model-visible` — a human derivation presents nothing to a model.
 fn validate_context_set(
     value: &Value,
     path: &str,
-    forbid_model_visible: bool,
+    human_derived: bool,
 ) -> Result<(), NarrativeIrValidationError> {
     let values = value
         .as_array()
         .ok_or_else(|| validation_error("invalid-revision-basis", path))?;
-    if values.is_empty() {
-        return Err(validation_error("invalid-revision-basis", path));
-    }
+    // An empty Context Set is valid: a run that presented no dynamic input
+    // records none. The TypeScript mirror and the ratified contract-string
+    // parity corpus both accept it, so rejecting here would be runtime drift.
     for (index, entry) in values.iter().enumerate() {
         let entry_path = format!("{path}[{index}]");
-        validate_context_entry(entry, &entry_path)?;
-        if forbid_model_visible
+        validate_context_entry(entry, &entry_path, human_derived)?;
+        let inherited = entry.get("inheritedFromRevisionId").is_some();
+        if human_derived
+            && !inherited
             && entry.get("exposure").and_then(Value::as_str) == Some("model-visible")
         {
             return Err(validation_error(
@@ -1049,7 +1077,28 @@ fn validate_human_basis(value: &Map<String, Value>) -> Result<(), NarrativeIrVal
         require(value, "derivationContextSet", path)?,
         "revisionBasis.derivationContextSet",
         true,
-    )
+    )?;
+    // Lineage must point at the immediate parent: an inherited entry that
+    // names any other revision would fabricate a Context closure this basis
+    // cannot prove.
+    let parent_revision_id = require(value, "parentRevisionId", path)?
+        .as_str()
+        .unwrap_or_default();
+    if let Some(entries) = value.get("derivationContextSet").and_then(Value::as_array) {
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(inherited) = entry.get("inheritedFromRevisionId").and_then(Value::as_str) {
+                if inherited != parent_revision_id {
+                    return Err(validation_error(
+                        "invalid-revision-basis",
+                        format!(
+                            "revisionBasis.derivationContextSet[{index}].inheritedFromRevisionId"
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_revision_basis(value: &Value) -> Result<(), NarrativeIrValidationError> {

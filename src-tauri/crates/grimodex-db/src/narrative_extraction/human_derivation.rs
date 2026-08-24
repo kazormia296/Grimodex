@@ -403,12 +403,15 @@ fn build_human_envelope(
         .into_iter()
         .map(|mut entry| {
             if let Some(entry) = entry.as_object_mut() {
-                if entry.get("exposure").and_then(Value::as_str) == Some("model-visible") {
-                    entry.insert(
-                        "exposure".to_owned(),
-                        Value::String("author-supplied".to_owned()),
-                    );
-                }
+                // Inherited parent Context entries are copied verbatim with
+                // their true exposure (model-visible included) and an explicit
+                // lineage marker to the immediate parent. Rewriting exposure
+                // would alter audit provenance; the marker is what allows the
+                // inherited Dependency Set to keep resolving its contextIds.
+                entry.insert(
+                    "inheritedFromRevisionId".to_owned(),
+                    Value::String(parent_revision_id.to_owned()),
+                );
             }
             entry
         })
@@ -449,6 +452,20 @@ fn build_human_envelope(
     } else {
         None
     };
+    // C2A cannot yet materialize a scope-override child faithfully: §6.3
+    // requires the child to add the scope-resolution Dependency for the
+    // resolver input, refresh Scope/Registry/Oracle inputs, drop obsolete
+    // Scope Dependencies, and recompute dependencySetDigest and
+    // materialBasisDigest — none of which this parent-cloned Envelope does.
+    // Until that materialization is wired, fail closed (after the trusted
+    // scope authority-binding checks above, so a forged sidecar still
+    // surfaces its specific mismatch code) instead of persisting an
+    // immutable child whose Material Basis omits its own Scope inputs.
+    if derivation_kind == "scope-override" {
+        anyhow::bail!(
+            "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE: Native scope authority cannot yet rebuild a scope-override Material Basis; C2A persistence is rejected"
+        );
+    }
     let mut derivation_context = derivation_context;
     if let Some(trusted_scope) = trusted_scope_for_scope {
         derivation_context.push(json!({

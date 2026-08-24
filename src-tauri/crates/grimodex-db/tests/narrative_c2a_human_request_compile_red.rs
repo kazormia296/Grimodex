@@ -1118,63 +1118,64 @@ fn title_only_human_derivation_preserves_parent_assertion_digests() {
     assert!(context_entries
         .iter()
         .all(|entry| entry["contextId"] != "context:chronicle-scope-resolver"));
+    // Inherited parent Contexts are carried verbatim under an explicit
+    // lineage marker: the original model-visible exposure is preserved as
+    // audit provenance instead of being renamed to author-supplied.
+    let inherited = context_entries
+        .iter()
+        .find(|entry| entry["contextId"] == "context:event-synthesis")
+        .expect("inherited parent context entry");
+    assert_eq!(inherited["exposure"], "model-visible");
+    assert_eq!(inherited["inheritedFromRevisionId"], PARENT_REVISION_ID);
+    assert!(context_entries
+        .iter()
+        .all(|entry| entry["exposure"] != "author-supplied"));
 }
 
 #[test]
-fn true_to_false_scope_override_does_not_consume_reveal_resolver() {
+fn true_to_false_scope_override_fails_closed_without_persisting_a_child() {
+    // A non-secret return does not need a reveal resolver, but any
+    // scope-override child would still require a re-derived Material Basis
+    // (§6.3). Until that materialization is wired, C2A fails closed.
     let parent_payload = golden_parent_payload("reveal-document-only-edit");
     let db = fixture_db_for_payload(PARENT_REVISION_ID, true, parent_payload);
     let parent_digest = parent_envelope_digest(&db);
     let mut edited = golden_parent_payload("reveal-document-only-edit");
     edited["disclosure"]["secret"] = json!(false);
-    let parent: Value = db
-        .with_conn(|conn| {
-            let json: String = conn.query_row(
-                "SELECT reconciliation_envelope_json
-                   FROM narrative_proposal_revisions
-                  WHERE id = ?1",
-                [PARENT_REVISION_ID],
-                |row| row.get(0),
-            )?;
-            Ok(serde_json::from_str(&json)?)
-        })
-        .expect("read constrained secret parent envelope");
-    let saved = submit_with_scope(
-        &db,
-        PROJECT_A,
-        None,
-        request_with_payload(
-            PARENT_REVISION_ID,
-            PARENT_REVISION_ID,
-            &parent_digest,
-            edited,
+    assert_code(
+        submit_with_scope(
+            &db,
+            PROJECT_A,
+            None,
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_digest,
+                edited,
+            ),
         ),
-    )
-    .expect("true-to-false scope override");
-    let child: Value = db
+        "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+    );
+    let revision_count: i64 = db
         .with_conn(|conn| {
-            let json: String = conn.query_row(
-                "SELECT reconciliation_envelope_json
-                   FROM narrative_proposal_revisions
-                  WHERE id = ?1",
-                [saved["revisionId"].as_str().expect("child revision")],
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_revisions",
+                [],
                 |row| row.get(0),
-            )?;
-            Ok(serde_json::from_str(&json)?)
+            )?)
         })
-        .expect("read true-to-false child envelope");
-    assert_eq!(child["assertion"]["scope"], parent_scope());
-    assert_ne!(parent["assertion"]["scope"], child["assertion"]["scope"]);
-    let context_entries = child["revisionBasis"]["derivationContextSet"]
-        .as_array()
-        .expect("true-to-false derivation context set");
-    assert!(context_entries
-        .iter()
-        .all(|entry| entry["contextId"] != "context:chronicle-scope-resolver"));
+        .expect("count revisions");
+    assert_eq!(revision_count, 1, "no scope-override child may persist");
 }
 
 #[test]
-fn scope_override_rederives_secret_reveal_and_mixed_golden_scope() {
+fn scope_override_fails_closed_after_trusted_scope_validation() {
+    // Even a fully valid trusted Native reveal basis cannot yet persist a
+    // scope-override child: the parent-cloned Envelope would omit the
+    // scope-resolution Dependency and stale Material Basis digests (§6.3).
+    // The trusted-scope authority checks still run first, so a forged
+    // sidecar keeps its specific mismatch code (covered by the dedicated
+    // mismatch tests); a well-formed override fails closed here.
     for case_id in [
         "secret-only-edit",
         "reveal-document-only-edit",
@@ -1182,98 +1183,35 @@ fn scope_override_rederives_secret_reveal_and_mixed_golden_scope() {
         "mixed-note-reveal-document-uses-scope-override",
     ] {
         let db = fixture_db_for_payload(PARENT_REVISION_ID, true, golden_parent_payload(case_id));
-        // The parent is seeded from the fixture's parentPayload with the
-        // ordinary non-secret/any Scope.  The resolver result is injected
-        // separately from the fixture's revealBasis; the expected child
-        // Scope is never used to seed the parent.
         let parent_digest = parent_envelope_digest(&db);
         let trusted_scope = trusted_scope_for_case(&db, case_id);
-        let golden_case = golden_case(case_id);
-        let parent: Value = db
-            .with_conn(|conn| {
-                let json: String = conn.query_row(
-                    "SELECT reconciliation_envelope_json
-                       FROM narrative_proposal_revisions
-                      WHERE id = ?1",
-                    [PARENT_REVISION_ID],
-                    |row| row.get(0),
-                )?;
-                Ok(serde_json::from_str(&json)?)
-            })
-            .expect("read independent golden parent envelope");
         let edited = golden_edited_payload(case_id);
-        let expected_changed_paths = golden_case["expected"]["changedPaths"]
-            .as_array()
-            .expect("golden changed paths");
-        let expected_kind = golden_case["expected"]["derivationKind"]
-            .as_str()
-            .expect("golden derivation kind");
-        let saved = submit_with_scope(
-            &db,
-            PROJECT_A,
-            Some(trusted_scope),
-            request_with_payload(
-                PARENT_REVISION_ID,
-                PARENT_REVISION_ID,
-                &parent_digest,
-                edited,
+        assert_code(
+            submit_with_scope(
+                &db,
+                PROJECT_A,
+                Some(trusted_scope),
+                request_with_payload(
+                    PARENT_REVISION_ID,
+                    PARENT_REVISION_ID,
+                    &parent_digest,
+                    edited,
+                ),
             ),
-        )
-        .expect("golden scope override");
-        let child: Value = db
+            "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
+        );
+        let revision_count: i64 = db
             .with_conn(|conn| {
-                let json: String = conn.query_row(
-                    "SELECT reconciliation_envelope_json
-                       FROM narrative_proposal_revisions
-                      WHERE id = ?1",
-                    [saved["revisionId"].as_str().expect("child revision")],
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions",
+                    [],
                     |row| row.get(0),
-                )?;
-                Ok(serde_json::from_str(&json)?)
+                )?)
             })
-            .expect("read golden child envelope");
-        assert_ne!(parent["assertion"]["scope"], child["assertion"]["scope"]);
-        assert_eq!(child["assertion"]["scope"], shared_golden_scope(case_id));
+            .expect("count revisions");
         assert_eq!(
-            child["assertionDigests"]["assertionCoreDigest"],
-            parent["assertionDigests"]["assertionCoreDigest"]
-        );
-        assert_eq!(
-            child["assertionDigests"]["scopeDigest"],
-            digest(&child["assertion"]["scope"])
-        );
-        assert_eq!(
-            child["assertionDigests"]["assertionDigest"],
-            digest(&json!({
-                "assertionCoreDigest": child["assertionDigests"]["assertionCoreDigest"],
-                "scopeDigest": child["assertionDigests"]["scopeDigest"]
-            }))
-        );
-        assert_eq!(child["revisionBasis"]["derivation"]["kind"], expected_kind);
-        assert_eq!(
-            child["revisionBasis"]["derivation"]["proposalPayloadChangedPaths"],
-            Value::Array(expected_changed_paths.clone())
-        );
-        let context_entries = child["revisionBasis"]["derivationContextSet"]
-            .as_array()
-            .expect("scope derivation context set");
-        let resolver_entry = context_entries
-            .iter()
-            .find(|entry| entry["contextId"] == "context:chronicle-scope-resolver")
-            .expect("scope resolver context entry");
-        assert_eq!(resolver_entry["inputRef"], source_key());
-        assert_eq!(
-            resolver_entry["stageId"],
-            "chronicle_scene_event_scope_resolver"
-        );
-        assert_eq!(resolver_entry["exposure"], "deterministic-stage");
-        assert_eq!(resolver_entry["selector"], json!({"kind": "whole-source"}));
-        assert_eq!(
-            child["revisionBasis"]["derivationContextSetDigest"],
-            digest(&json!({
-                "version": "chronicle.context-set/1",
-                "entries": context_entries
-            }))
+            revision_count, 1,
+            "no scope-override child may persist for case {case_id}"
         );
     }
 }
@@ -1322,7 +1260,10 @@ fn secret_scope_override_without_trusted_reveal_basis_fails_closed() {
 }
 
 #[test]
-fn explicit_unresolved_reveal_basis_is_persisted_as_unresolved_scope() {
+fn explicit_unresolved_reveal_basis_scope_override_fails_closed() {
+    // An unresolved reveal basis is a valid trusted sidecar, but the
+    // scope-override child it would produce still needs the §6.3 Material
+    // Basis re-derivation, so C2A fails closed without persisting.
     let db = fixture_db();
     let parent_digest = parent_envelope_digest(&db);
     let mut edited = proposal_payload();
@@ -1333,37 +1274,19 @@ fn explicit_unresolved_reveal_basis_is_persisted_as_unresolved_scope() {
     );
     let trusted_scope =
         trusted_scope_with_basis(&db, "scene:1", "document:missing", unresolved_basis);
-    let saved = submit_with_scope(
-        &db,
-        PROJECT_A,
-        Some(trusted_scope),
-        request_with_payload(
-            PARENT_REVISION_ID,
-            PARENT_REVISION_ID,
-            &parent_digest,
-            edited,
+    assert_code(
+        submit_with_scope(
+            &db,
+            PROJECT_A,
+            Some(trusted_scope),
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_digest,
+                edited,
+            ),
         ),
-    )
-    .expect("explicit unresolved reveal basis");
-    let child: Value = db
-        .with_conn(|conn| {
-            let json: String = conn.query_row(
-                "SELECT reconciliation_envelope_json
-                   FROM narrative_proposal_revisions
-                  WHERE id = ?1",
-                [saved["revisionId"].as_str().expect("child revision")],
-                |row| row.get(0),
-            )?;
-            Ok(serde_json::from_str(&json)?)
-        })
-        .expect("read unresolved child envelope");
-    assert_eq!(
-        child["assertion"]["scope"]["audience"]["kind"],
-        "unresolved"
-    );
-    assert_eq!(
-        child["assertion"]["scope"]["audience"]["reason"],
-        "missing-reference"
+        "NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE",
     );
 }
 

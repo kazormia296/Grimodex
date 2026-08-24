@@ -335,7 +335,14 @@ fn source_dependency_producer_writers(source: &str) -> Result<Vec<(String, Strin
 
 fn rust_function_name(line: &str) -> Option<&str> {
     let mut remaining = line.trim_start();
-    for visibility in ["pub(crate) ", "pub ", "const ", "async ", "unsafe "] {
+    for visibility in [
+        "pub(crate) ",
+        "pub(super) ",
+        "pub ",
+        "const ",
+        "async ",
+        "unsafe ",
+    ] {
         if let Some(stripped) = remaining.strip_prefix(visibility) {
             remaining = stripped;
         }

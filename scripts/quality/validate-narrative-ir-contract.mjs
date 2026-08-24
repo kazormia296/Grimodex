@@ -1285,17 +1285,40 @@ export function validateNarrativeIrContract(
         JSON.stringify(REQUIRED_TYPED_WRITER_VALIDATION),
     "Narrative IR V2 monotonicity semantic authority must remain the complete typed writer",
   );
+  // The V2 monotonicity trigger landed with the post-C2-ZB schema-bearing
+  // migration. The policy must declare the implemented runtime status and its
+  // exact production entry point, and the entry point must actually exist in
+  // source — a policy that claims a state the runtime does not have (in
+  // either direction) fails the contract.
+  const monotonicityEntryPoint =
+    "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger";
+  const [monotonicityTriggerModule, monotonicityTriggerSymbol] =
+    monotonicityEntryPoint.split("::");
+  let monotonicityTriggerInSource = false;
+  try {
+    const migrateSource = readFileSync(
+      path.join(repoRoot, monotonicityTriggerModule),
+      "utf8",
+    );
+    monotonicityTriggerInSource =
+      migrateSource.includes(`fn ${monotonicityTriggerSymbol}(`) &&
+      migrateSource.includes(`Self::${monotonicityTriggerSymbol}(`) &&
+      migrateSource.includes("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN");
+  } catch {
+    monotonicityTriggerInSource = false;
+  }
   pushIf(
     errors,
     monotonicity?.structuralDefense?.kind === "sqlite-before-insert-trigger" &&
       monotonicity?.structuralDefense?.role === "structural-defense-only" &&
-      monotonicity?.structuralDefense?.state === "deferred-until-after-c2-zb" &&
-      Array.isArray(monotonicity?.structuralDefense?.productionEntryPoints) &&
-      monotonicity.structuralDefense.productionEntryPoints.length === 0 &&
+      monotonicity?.structuralDefense?.state === "implemented-wired" &&
+      JSON.stringify(monotonicity?.structuralDefense?.productionEntryPoints) ===
+        JSON.stringify([monotonicityEntryPoint]) &&
       monotonicity?.structuralDefense?.errorCode ===
         "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN" &&
-      monotonicity?.contractFreezeOnly === true,
-    "V2 downgrade trigger must remain contract-only structural defense deferred until after C2-ZB with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
+      monotonicity?.contractFreezeOnly === false &&
+      monotonicityTriggerInSource,
+    "V2 downgrade trigger structural defense must be declared implemented-wired with its exact migrate.rs production entry point, and that trigger install/repair path must exist in source with NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
   );
 
   const chroniclePilot = contract.chroniclePilot;
@@ -1323,6 +1346,15 @@ export function validateNarrativeIrContract(
       "author-supplied",
     ]) && human?.contextExposureForbidden?.includes("model-visible"),
     "Human-derived Context Set must exclude model-visible exposure",
+  );
+  pushIf(
+    errors,
+    human?.contextLineage?.inheritedEntryMarker === "inheritedFromRevisionId" &&
+      human?.contextLineage?.inheritedEntriesKeepParentExposure === true &&
+      human?.contextLineage?.inheritedFromMustEqualParentRevisionId === true &&
+      human?.contextLineage?.exposureRulesApplyTo ===
+        "own-derivation-entries-only",
+    "Human-derived Context lineage must inherit parent entries verbatim under inheritedFromRevisionId (parent exposure preserved, marker bound to the immediate parent) with exposure rules applying only to own-derivation entries",
   );
   pushIf(
     errors,

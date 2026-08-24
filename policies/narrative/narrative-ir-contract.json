@@ -400,11 +400,13 @@
     "structuralDefense": {
       "kind": "sqlite-before-insert-trigger",
       "role": "structural-defense-only",
-      "state": "deferred-until-after-c2-zb",
-      "productionEntryPoints": [],
+      "state": "implemented-wired",
+      "productionEntryPoints": [
+        "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger"
+      ],
       "errorCode": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
     },
-    "contractFreezeOnly": true
+    "contractFreezeOnly": false
   },
   "chroniclePilot": {
     "assertionKind": "scene-event@1",
@@ -455,6 +457,12 @@
     ],
     "contextExposureAllowed": ["deterministic-stage", "author-supplied"],
     "contextExposureForbidden": ["model-visible"],
+    "contextLineage": {
+      "inheritedEntryMarker": "inheritedFromRevisionId",
+      "inheritedEntriesKeepParentExposure": true,
+      "inheritedFromMustEqualParentRevisionId": true,
+      "exposureRulesApplyTo": "own-derivation-entries-only"
+    },
     "classification": {
       "pathClasses": {
         "projectionOnly": ["/title", "/note"],

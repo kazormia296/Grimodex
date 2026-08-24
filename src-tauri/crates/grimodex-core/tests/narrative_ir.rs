@@ -684,3 +684,54 @@ fn scope_derivation_exposes_typed_result_without_runtime_side_effects() {
     .expect("scope derivation");
     let _: ChronicleScopeDerivation = result;
 }
+
+#[test]
+fn enforces_human_context_lineage_rules() {
+    // An inherited parent Context keeps its true model-visible exposure under
+    // the explicit lineage marker, and stays subject to Dependency coverage.
+    let mut inherited = human_derived_envelope();
+    inherited["effectiveMaterialBasis"]["dependencySet"][0]["contextIds"] = json!(["context:1"]);
+    inherited["revisionBasis"]["derivationContextSet"] = json!([{
+        "contextId": "context:1",
+        "inputRef": "anchor:1",
+        "stageId": "narrative_event_synthesize",
+        "exposure": "model-visible",
+        "selector": {"kind": "whole-source"},
+        "inheritedFromRevisionId": "revision:1"
+    }]);
+    assert!(
+        validate_chronicle_scene_event_v2(&inherited).is_ok(),
+        "inherited model-visible context with lineage marker must be valid"
+    );
+
+    // The same exposure WITHOUT the lineage marker is this derivation's own
+    // context and stays forbidden.
+    let mut own_model_visible = inherited.clone();
+    own_model_visible["revisionBasis"]["derivationContextSet"][0]
+        .as_object_mut()
+        .expect("entry")
+        .remove("inheritedFromRevisionId");
+    assert!(
+        validate_chronicle_scene_event_v2(&own_model_visible).is_err(),
+        "own model-visible context must remain forbidden"
+    );
+
+    // Lineage must name the immediate parent revision.
+    let mut wrong_parent = inherited.clone();
+    wrong_parent["revisionBasis"]["derivationContextSet"][0]["inheritedFromRevisionId"] =
+        json!("revision:other");
+    assert!(
+        validate_chronicle_scene_event_v2(&wrong_parent).is_err(),
+        "lineage marker naming a non-parent revision must be rejected"
+    );
+
+    // Interpretation Context Sets record the run's own execution inputs and
+    // never carry the lineage marker.
+    let mut interpretation = valid_envelope();
+    interpretation["revisionBasis"]["contextSet"][0]["inheritedFromRevisionId"] =
+        json!("revision:1");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation).is_err(),
+        "interpretation context entries must not carry a lineage marker"
+    );
+}

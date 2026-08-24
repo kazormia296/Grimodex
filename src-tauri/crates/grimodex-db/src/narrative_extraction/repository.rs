@@ -2272,6 +2272,7 @@ pub fn ensure_test_schema(conn: &Connection) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod unit_tests {
+    use super::super::execution_state::parse_run_lifecycle_instant;
     use super::super::{
         transition_run_status_in_tx, ClaimTaskPayload, FailTaskPayload, FinishTaskPayload,
         NarrativeRunStatus,
@@ -2878,7 +2879,12 @@ mod unit_tests {
     }
 
     #[test]
-    fn malformed_and_maximum_imported_lifecycle_instants_fail_closed() {
+    fn malformed_imported_lifecycle_is_ignored_and_maximum_fails_closed() {
+        // A malformed imported lifecycle component is deliberately ignored as
+        // ordering evidence (`next_run_lifecycle_timestamp_in_tx`): a broken
+        // imported marker must not hide a valid future authority, and it must
+        // not block new work either. Discovery/recovery still validate the
+        // affected row's own lifecycle shape before reusing it.
         let malformed = full_migrated_db();
         insert_imported_run_with_lifecycle(
             &malformed,
@@ -2887,10 +2893,10 @@ mod unit_tests {
             None,
             None,
         );
-        let error = create_run(
+        let saved = create_run(
             &malformed,
             CreateRunPayload {
-                run_id: Some("must-not-persist".to_string()),
+                run_id: Some("run-after-malformed".to_string()),
                 project_id: "project-1".to_string(),
                 surface_path_id: "chronicle.extract".to_string(),
                 scope_json: json!({}),
@@ -2903,10 +2909,19 @@ mod unit_tests {
                 tasks: vec![],
             },
         )
-        .expect_err("malformed imported lifecycle must fail closed");
-        assert!(error
-            .to_string()
-            .contains("NEX_MAINTENANCE_RUN_TIMESTAMP_INVALID"));
+        .expect("malformed imported component is ignored as ordering evidence");
+        assert_eq!(saved["runId"], "run-after-malformed");
+        let created_at: String = malformed
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT created_at FROM narrative_extraction_runs WHERE id = 'run-after-malformed'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .expect("read canonical created_at");
+        parse_run_lifecycle_instant(&created_at)
+            .expect("new run must receive a valid canonical lifecycle instant");
 
         let overflow = full_migrated_db();
         insert_imported_run_with_lifecycle(

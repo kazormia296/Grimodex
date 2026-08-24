@@ -767,7 +767,7 @@ describe("NIR-0 Narrative IR contract", () => {
     );
   });
 
-  it("freezes V2 monotonicity at the typed-writer boundary without activating runtime", () => {
+  it("declares the implemented V2 monotonicity trigger while keeping the typed writer authoritative", () => {
     const contract = readJson("policies/narrative/narrative-ir-contract.json");
 
     assert.deepEqual(contract.monotonicity, {
@@ -792,11 +792,13 @@ describe("NIR-0 Narrative IR contract", () => {
       structuralDefense: {
         kind: "sqlite-before-insert-trigger",
         role: "structural-defense-only",
-        state: "deferred-until-after-c2-zb",
-        productionEntryPoints: [],
+        state: "implemented-wired",
+        productionEntryPoints: [
+          "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger",
+        ],
         errorCode: "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN",
       },
-      contractFreezeOnly: true,
+      contractFreezeOnly: false,
     });
 
     const missingDowngrade = structuredClone(contract);
@@ -810,6 +812,21 @@ describe("NIR-0 Narrative IR contract", () => {
         /V2 monotonicity.*forbid every downgrade/i.test(error),
       ),
       `expected fail-closed V2 monotonicity error: ${JSON.stringify(errors)}`,
+    );
+
+    // Bidirectional status check: the trigger exists in migrate.rs, so a
+    // policy that still declares it deferred/contract-only must fail.
+    const staleDeferred = structuredClone(contract);
+    staleDeferred.monotonicity.structuralDefense.state =
+      "deferred-until-after-c2-zb";
+    staleDeferred.monotonicity.structuralDefense.productionEntryPoints = [];
+    staleDeferred.monotonicity.contractFreezeOnly = true;
+    const staleErrors = validate(staleDeferred);
+    assert.ok(
+      staleErrors.some((error) =>
+        /implemented-wired.*migrate\.rs/i.test(error),
+      ),
+      `expected stale deferred-trigger declaration error: ${JSON.stringify(staleErrors)}`,
     );
   });
 

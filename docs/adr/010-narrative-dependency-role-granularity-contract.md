@@ -69,6 +69,12 @@ interface ContextSetEntry {
     | "deterministic-stage"
     | "author-supplied";
   readonly selector: DependencySelector;
+  /**
+   * Human-derivation lineage (ADR 011 §4.1): present only on entries copied
+   * verbatim from the immediate parent revision's Context Set. Inherited
+   * entries keep their original exposure as audit provenance.
+   */
+  readonly inheritedFromRevisionId?: string;
 }
 
 interface DependencySetEntry {

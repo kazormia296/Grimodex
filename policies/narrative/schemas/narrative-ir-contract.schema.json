@@ -844,10 +844,12 @@
               "const": "structural-defense-only"
             },
             "state": {
-              "const": "deferred-until-after-c2-zb"
+              "const": "implemented-wired"
             },
             "productionEntryPoints": {
-              "const": []
+              "const": [
+                "src-tauri/crates/grimodex-db/src/migrate.rs::repair_narrative_v2_monotonicity_trigger"
+              ]
             },
             "errorCode": {
               "const": "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"
@@ -856,7 +858,7 @@
           "additionalProperties": false
         },
         "contractFreezeOnly": {
-          "const": true
+          "const": false
         }
       },
       "additionalProperties": false
@@ -894,6 +896,7 @@
         "persistedBasis",
         "contextExposureAllowed",
         "contextExposureForbidden",
+        "contextLineage",
         "classification",
         "invariants"
       ],
@@ -951,6 +954,30 @@
         },
         "contextExposureForbidden": {
           "const": ["model-visible"]
+        },
+        "contextLineage": {
+          "type": "object",
+          "required": [
+            "inheritedEntryMarker",
+            "inheritedEntriesKeepParentExposure",
+            "inheritedFromMustEqualParentRevisionId",
+            "exposureRulesApplyTo"
+          ],
+          "properties": {
+            "inheritedEntryMarker": {
+              "const": "inheritedFromRevisionId"
+            },
+            "inheritedEntriesKeepParentExposure": {
+              "const": true
+            },
+            "inheritedFromMustEqualParentRevisionId": {
+              "const": true
+            },
+            "exposureRulesApplyTo": {
+              "const": "own-derivation-entries-only"
+            }
+          },
+          "additionalProperties": false
         },
         "classification": {
           "type": "object",
