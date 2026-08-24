@@ -8420,6 +8420,131 @@ mod tests {
     }
 
     #[test]
+    fn restore_preflight_repairs_a_stale_c2a_trigger_on_current_schema() {
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects (id, title) VALUES ('project-stale-trigger', 'Stale trigger')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+                 VALUES ('set-stale-trigger', 'run-stale-trigger', 'project-stale-trigger',
+                         'chronicle.extract.review@1', '{}', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 VALUES ('proposal-stale-trigger', 'set-stale-trigger',
+                         'event:stale-trigger', 'chronicle.create-event@1', 'unreviewed',
+                         '{}', 'revision-stale-trigger-parent', datetime('now'), datetime('now'))",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-parent', 'proposal-stale-trigger', 1, '{}',
+                         'enveloped', '{\"schemaVersion\":2}', datetime('now'), 'migration-test')",
+                [],
+            )?;
+            conn.execute_batch(
+                r#"
+                DROP TRIGGER narrative_proposal_revisions_v2_monotonicity_guard;
+                CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard
+                    BEFORE INSERT ON narrative_proposal_revisions
+                    WHEN EXISTS (
+                        SELECT 1
+                          FROM narrative_proposals p
+                          JOIN narrative_proposal_revisions current_revision
+                            ON current_revision.id = p.current_revision_id
+                         WHERE p.id = NEW.proposal_id
+                           AND current_revision.origin_kind = 'enveloped'
+                           AND json_extract(current_revision.reconciliation_envelope_json,
+                                            '$.schemaVersion') = 2
+                    )
+                    AND (
+                        NEW.origin_kind <> 'enveloped'
+                        OR NEW.reconciliation_envelope_json IS NULL
+                        OR json_extract(NEW.reconciliation_envelope_json,
+                                        '$.schemaVersion') <> 2
+                    )
+                    BEGIN
+                        SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                    END;
+                "#,
+            )?;
+            assert!(!grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                conn
+            )?);
+            Ok(())
+        })
+        .expect("seed current schema with stale C2A trigger");
+
+        db.migrate_for_restore_preflight()
+            .expect("restore preflight must converge a current schema with a stale trigger");
+
+        db.with_conn(|conn| {
+            assert!(grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(
+                conn
+            )?);
+            let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+            assert_eq!(version, grimodex_core::SCHEMA_VERSION);
+            for (case, envelope_json) in [
+                ("missing-schema-version", "{}"),
+                ("null-schema-version", r#"{"schemaVersion":null}"#),
+            ] {
+                let child_id = format!("revision-stale-trigger-{case}");
+                let error = conn
+                    .execute(
+                        "INSERT INTO narrative_proposal_revisions
+                            (id, proposal_id, revision_number, payload_json, origin_kind,
+                             reconciliation_envelope_json, created_at, created_by)
+                         VALUES (?1, 'proposal-stale-trigger', 2, '{}', 'enveloped', ?2,
+                                 datetime('now'), 'migration-test')",
+                        params![child_id, envelope_json],
+                    )
+                    .expect_err("repaired trigger must reject a non-V2 child envelope");
+                assert!(
+                    error
+                        .to_string()
+                        .contains("NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN"),
+                    "{case}: unexpected trigger error: {error}"
+                );
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM narrative_proposal_revisions WHERE id = ?1",
+                    [&child_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0, "{case}: rejected child persisted");
+            }
+
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                    (id, proposal_id, revision_number, payload_json, origin_kind,
+                     reconciliation_envelope_json, created_at, created_by)
+                 VALUES ('revision-stale-trigger-numeric-boundary', 'proposal-stale-trigger',
+                         2, '{}', 'enveloped', '{\"schemaVersion\":2.0}',
+                         datetime('now'), 'migration-test')",
+                [],
+            )?;
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_revisions
+                  WHERE id = 'revision-stale-trigger-numeric-boundary'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "integer-valued 2.0 boundary must remain accepted");
+            Ok(())
+        })
+        .expect("verify repaired C2A trigger and schema checkpoint");
+    }
+
+    #[test]
     fn migrate_rejects_a_newer_schema_version() {
         let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
         db.migrate().expect("create current schema");
