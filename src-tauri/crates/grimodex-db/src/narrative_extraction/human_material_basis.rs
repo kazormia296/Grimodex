@@ -363,8 +363,15 @@ fn validate_dependency_set(
     for dependency in dependency_set {
         ensure_non_empty(&dependency.dependency_id, "dependencyId")?;
         ensure_non_empty(&dependency.input_ref, "inputRef")?;
+        let mut context_ids = HashSet::new();
         for context_id in &dependency.context_ids {
             ensure_non_empty(context_id, "contextId")?;
+            anyhow::ensure!(
+                context_ids.insert(context_id),
+                "NEX_C2B_MATERIAL_CONTEXT_DUPLICATE: dependencyId '{}' contextId '{}' is duplicated",
+                dependency.dependency_id,
+                context_id
+            );
         }
         anyhow::ensure!(
             dependency_ids.insert(dependency.dependency_id.clone()),
