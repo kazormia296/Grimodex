@@ -74,12 +74,16 @@ pub(crate) fn create_human_derived_revision_with_scope(
     })
 }
 
-fn create_human_derived_revision_in_tx(
+pub(super) fn create_human_derived_revision_in_tx(
     conn: &Connection,
     trusted_project_id: &str,
     trusted_scope: Option<&TrustedHumanDerivationScope>,
     request: &CreateHumanDerivedRevisionRequest,
 ) -> anyhow::Result<Value> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "NEX_HUMAN_DERIVATION_TRANSACTION_REQUIRED: Human derivation requires a caller-owned transaction"
+    );
     ensure_proposal_not_applied(conn, &request.proposal_id)?;
 
     let proposal_project: Option<String> = conn
@@ -119,7 +123,9 @@ fn create_human_derived_revision_in_tx(
                 r.reconciliation_envelope_digest, r.payload_json
            FROM narrative_proposals p
            JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
-           LEFT JOIN narrative_proposal_revisions r ON r.id = p.current_revision_id
+           LEFT JOIN narrative_proposal_revisions r
+             ON r.id = p.current_revision_id
+            AND r.proposal_id = p.id
           WHERE p.id = ?1 AND s.project_id = ?2",
         params![request.proposal_id, trusted_project_id],
         |row| {

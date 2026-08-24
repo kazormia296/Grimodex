@@ -26,7 +26,7 @@ use super::dependency_edges::canonical_source_object_identity;
 use super::reconciliation_envelope::SourceBasisRow;
 use super::repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 
-const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
+pub(crate) const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
 const PROPOSAL_REVISION_CONSUMER_KIND: &str = "proposal-revision";
 
 /// The exact material carried by a validated parent or derived child.

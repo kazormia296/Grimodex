@@ -47,6 +47,8 @@
 //! same hazard `cursor_reservation.rs`'s own mutating functions guard
 //! against, for the same reason.
 
+use std::collections::HashSet;
+
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::consumer_identity::{consumer_finding_key, validate_consumer_identity};
@@ -303,6 +305,121 @@ pub(crate) fn seed_consumer_freshness_unknown_in_tx(
         Some(&dependency_set_digest),
         updated_at,
     )?;
+    Ok(())
+}
+
+/// Publish a complete Consumer Freshness result without associating it with a
+/// Run. The supplied Edge set must be the exact current declaration for this
+/// Consumer; otherwise a partial result could overwrite the Consumer's
+/// whole-set Freshness with an incomplete dependency digest.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_complete_runless_freshness_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    consumer_kind: &str,
+    consumer_key: &str,
+    edges_and_observations: &[(String, EdgeObservation)],
+    semantic_epoch_id: &str,
+    now: &str,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        !conn.is_autocommit(),
+        "Narrative Publish Runtime requires a caller-owned transaction"
+    );
+    anyhow::ensure!(!project_id.trim().is_empty(), "projectId is required");
+    validate_consumer_identity(consumer_kind, consumer_key)?;
+    anyhow::ensure!(
+        !semantic_epoch_id.trim().is_empty(),
+        "semanticEpochId is required"
+    );
+    anyhow::ensure!(!now.trim().is_empty(), "now is required");
+    anyhow::ensure!(
+        !edges_and_observations.is_empty(),
+        "NEX_PUBLISH_RUNTIME_NO_EDGES: at least one edge observation is required to publish a complete Consumer Freshness result"
+    );
+
+    ensure_epoch_belongs_to_project(conn, project_id, semantic_epoch_id)?;
+    let current_epoch_id = super::semantic_epoch::get_current_epoch(conn, project_id)?
+        .map(|epoch| epoch.id)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "NEX_PUBLISH_RUNTIME_STALE_EPOCH: project '{project_id}' has no current semantic epoch"
+            )
+        })?;
+    anyhow::ensure!(
+        current_epoch_id == semantic_epoch_id,
+        "NEX_PUBLISH_RUNTIME_STALE_EPOCH: semantic epoch '{semantic_epoch_id}' is not current for project '{project_id}' (current '{current_epoch_id}')"
+    );
+
+    let mut statement = conn.prepare(
+        "SELECT id
+           FROM narrative_dependency_edges
+          WHERE project_id = ?1
+            AND consumer_kind = ?2
+            AND consumer_key = ?3
+          ORDER BY id ASC",
+    )?;
+    let stored_edge_ids = statement
+        .query_map(params![project_id, consumer_kind, consumer_key], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let provided_edge_ids = edges_and_observations
+        .iter()
+        .map(|(edge_id, _)| edge_id.clone())
+        .collect::<HashSet<_>>();
+    let stored_edge_id_set = stored_edge_ids.iter().cloned().collect::<HashSet<_>>();
+    let edge_set_mismatch = provided_edge_ids.len() != edges_and_observations.len()
+        || provided_edge_ids != stored_edge_id_set
+        || edges_and_observations
+            .iter()
+            .any(|(edge_id, _)| edge_id.trim().is_empty())
+        || stored_edge_ids
+            .iter()
+            .any(|edge_id| edge_id.trim().is_empty());
+    anyhow::ensure!(
+        !edge_set_mismatch,
+        "NEX_PUBLISH_RUNTIME_RUNLESS_EDGE_SET_MISMATCH: observations must contain each declared dependency edge exactly once for consumer '{consumer_kind}:{consumer_key}'"
+    );
+
+    for (edge_id, observation) in edges_and_observations {
+        write_edge_state_in_tx(
+            conn,
+            project_id,
+            edge_id,
+            observation,
+            semantic_epoch_id,
+            now,
+        )?;
+    }
+
+    let worst = worst_edge_state_for_consumer(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        semantic_epoch_id,
+    )?
+    .ok_or_else(|| {
+        anyhow::anyhow!(
+            "NEX_PUBLISH_RUNTIME_NO_EDGE_STATE: no Edge State at epoch '{semantic_epoch_id}' for complete Consumer Freshness publish"
+        )
+    })?;
+    let dependency_set_digest =
+        consumer_dependency_set_digest(conn, project_id, consumer_kind, consumer_key)?;
+    write_consumer_freshness_in_tx(
+        conn,
+        project_id,
+        consumer_kind,
+        consumer_key,
+        &worst,
+        semantic_epoch_id,
+        None,
+        Some(&dependency_set_digest),
+        now,
+    )?;
+
     Ok(())
 }
 

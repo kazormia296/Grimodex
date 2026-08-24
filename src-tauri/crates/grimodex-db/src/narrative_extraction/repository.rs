@@ -1392,7 +1392,7 @@ pub(crate) fn insert_source_basis_rows(
 /// re-deriving it here would prepend the prefix a second time and produce
 /// an Edge no later resolver could ever match back to its real Source.
 // NARRATIVE_DEPENDENCY_PRODUCER: proposal-revision-source-basis
-fn record_revision_dependency_edges_in_tx(
+pub(super) fn record_revision_dependency_edges_in_tx(
     conn: &Connection,
     project_id: &str,
     run_id: &str,

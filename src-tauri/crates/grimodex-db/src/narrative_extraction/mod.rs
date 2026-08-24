@@ -333,9 +333,9 @@ pub fn narrative_extraction_create_human_derived_revision_with_scope(
     )
 }
 
-/// Native-owned C2B materialization seam.  The projection path is currently
-/// RED and delegates to the dormant C2A writer; scope override fails before
-/// any DML until its Native authority is wired.
+/// Native-owned C2B materialization seam. Projection-only derives and
+/// publishes the complete child material atomically; scope override fails
+/// before any DML until its Native Registry/Oracle authority is wired.
 pub fn narrative_extraction_create_human_derived_revision_with_c2b_projection_materialization(
     db: &Database,
     trusted_project_id: &str,
