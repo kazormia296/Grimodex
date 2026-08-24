@@ -613,7 +613,7 @@ fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
             AppendRevisionPayload {
                 run_id,
                 project_id: PROJECT_A.to_owned(),
-                proposal_id,
+                proposal_id: proposal_id.clone(),
                 payload_json: proposal_payload("Arrival", false),
                 reconciliation_envelope: Some(forged_envelope),
                 inherit_reconciliation_envelope: None,
@@ -1190,15 +1190,14 @@ fn finish_bundle_with_raw(
         .as_array()
         .expect("raw observations")
         .len() as u64;
-    let raw_artifact = artifact(
+    let mut raw_artifact = artifact(
         &format!("{task_id}-raw-observations"),
         "chronicle.raw-observations@1",
         raw_observations,
     );
-    let raw_artifact = raw_payload_digest.map_or(raw_artifact, |payload_digest| ArtifactInput {
-        payload_digest: Some(payload_digest.to_owned()),
-        ..raw_artifact
-    });
+    if let Some(payload_digest) = raw_payload_digest {
+        raw_artifact.payload_digest = Some(payload_digest.to_owned());
+    }
     finish_bundle_with_artifacts(
         db,
         run_id,
