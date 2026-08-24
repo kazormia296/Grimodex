@@ -51,6 +51,7 @@ pub use maintenance_skip_evidence::{
 };
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
+pub mod human_material_basis;
 mod models;
 mod phase_operations;
 mod phase_snapshots;

@@ -134,11 +134,13 @@ fn trusted_scope_resolution(
                 source_kind: "scene-body".to_owned(),
                 source_key: SCENE_SOURCE_KEY.to_owned(),
                 revision_token: SOURCE_REVISION_TOKEN.to_owned(),
+                revision_observed_at: None,
             },
             TrustedSourceBasisEntry {
                 source_kind: "evidence-anchor".to_owned(),
                 source_key: "evidence:scope-resolution-1".to_owned(),
                 revision_token: "v0@2026-01-01T00:00:01.000Z".to_owned(),
+                revision_observed_at: None,
             },
         ],
         evidence_set: vec![TrustedEvidenceEntry {
