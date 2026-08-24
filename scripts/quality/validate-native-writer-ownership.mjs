@@ -64,6 +64,9 @@ const WRITER_TO_MODULES = {
   "narrative.authority": [
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/commit.rs",
+    // C2A's dormant Native Human writer appends immutable proposal revisions
+    // and their source-basis rows under the same authority boundary.
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/human_derivation.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/undo.rs",
     // Gate C2 item 4: narrative_application_contributions carries
@@ -138,9 +141,9 @@ const WRITER_TO_MODULES = {
     "src-tauri/crates/grimodex-db/src/domain_writes.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
   ],
-  // Stage model bindings and terminal receipts are future v34 exports. The
-  // base checkout has no table/module yet, but the owner boundary is fixed
-  // here so a later schema-bearing writer cannot silently broaden it.
+  // SCHEMA 34 stage model bindings and terminal receipts are durable
+  // non-authoritative C2A rows. The typed stage-provenance module is their
+  // sole production writer; the ephemeral closure is never a table.
   "narrative.stage-provenance": [
     "src-tauri/crates/grimodex-db/src/narrative_extraction/stage_provenance.rs",
   ],

@@ -103,8 +103,8 @@ const TABLE_TO_DRIZZLE_IDENTIFIERS = {
   narrative_extraction_tasks: ["narrativeExtractionTasks"],
   narrative_extraction_attempts: ["narrativeExtractionAttempts"],
   narrative_extraction_artifacts: ["narrativeExtractionArtifacts"],
-  // C2A stage provenance tables are intentionally registry/validator-only on
-  // this base; D1/C2A publishes the schema exports with the durable writer.
+  // C2A stage provenance tables are durable SCHEMA 34 Native-owned rows. The
+  // typed Rust stage-provenance writer is their sole production writer.
   narrative_extraction_stage_model_bindings: [
     "narrativeExtractionStageModelBindings",
   ],

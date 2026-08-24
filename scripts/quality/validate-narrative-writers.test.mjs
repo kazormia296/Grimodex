@@ -33,6 +33,11 @@ const C2A_DRIZZLE_TABLES = [
   ["narrative_extraction_tasks", "narrativeExtractionTasks"],
   ["narrative_extraction_attempts", "narrativeExtractionAttempts"],
   ["narrative_extraction_artifacts", "narrativeExtractionArtifacts"],
+  [
+    "narrative_extraction_stage_model_bindings",
+    "narrativeExtractionStageModelBindings",
+  ],
+  ["narrative_extraction_stage_receipts", "narrativeExtractionStageReceipts"],
 ];
 
 function writeActiveFixtureRegistry(root) {
