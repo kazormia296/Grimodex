@@ -254,7 +254,7 @@ fn forged_material_digest_is_rejected_separately_from_positive_projection() {
         None,
     )
     .expect_err("a forged parent material digest must fail closed");
-    assert!(error.to_string().contains("digest"));
+    assert!(error.to_string().to_ascii_lowercase().contains("digest"));
 }
 
 #[test]
