@@ -137,10 +137,6 @@ fn narrative_maintenance_binding_for_authority(
         .binding_for_authority(&narrative_authority_id(authority))
 }
 
-fn is_expected_c2zc_cutover_not_ready(error: &anyhow::Error) -> bool {
-    error.to_string().starts_with("NEX_C2ZC_CUTOVER_NOT_READY:")
-}
-
 fn idempotency_receipt_exists(
     db: &Database,
     domain: &str,
@@ -1742,25 +1738,15 @@ impl Backend {
                     "NEX_C2ZC_SCHEDULER_BINDING_CHANGED: maintenance authority binding changed during freshness cycle"
                 )));
             }
-            let liveness_evidence = narrative_extraction::record_live_scheduler_heartbeat(
+            // C2-ZC canonical cutover stays an unaccepted authority boundary:
+            // this wake only mints durable liveness evidence and must not
+            // call cut_over_workspace_freshness until the roadmap unblocks
+            // the canonical read-authority switch.
+            narrative_extraction::record_live_scheduler_heartbeat(
                 current_authority.db(),
                 &binding.authority_id,
                 binding.generation,
             )?;
-
-            // This existing main-only scheduler wake is the production owner
-            // of automatic C2-ZC activation.  Readiness is deliberately
-            // fail-soft until all durable per-workspace gates pass; malformed
-            // evidence, a marker/schema problem, or any other unexpected
-            // failure remains visible to the scheduler caller.
-            let cutover_result = current_authority.db().with_conn(|conn| {
-                narrative_extraction::cut_over_workspace_freshness(conn, &liveness_evidence)
-            });
-            if let Err(error) = cutover_result {
-                if !is_expected_c2zc_cutover_not_ready(&error) {
-                    return Err(AppError::Anyhow(error));
-                }
-            }
 
             match cycle_outcome {
                 narrative_extraction::IncrementalFreshnessCycleOutcome::Idle => Ok(None),

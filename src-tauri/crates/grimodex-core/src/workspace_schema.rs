@@ -1800,7 +1800,9 @@ fn has_c2_application_rekey_data_migration_marker(conn: &Connection) -> anyhow::
             |row| row.get(0),
         )
         .optional()?;
-    Ok(applied.is_some_and(|version| version >= C2_APPLICATION_REKEY_CONTRACT_VERSION))
+    // Exact-version contract, shared with the C2-ZB migration body: a future
+    // marker version is unsupported and must not checkpoint as complete.
+    Ok(applied.is_some_and(|version| version == C2_APPLICATION_REKEY_CONTRACT_VERSION))
 }
 
 /// Mirrors `migrate.rs`'s constants of the same name; a test pins them.

@@ -78,7 +78,9 @@ describe("narrative maintenance scheduler", () => {
   it("schedules interruption exit only for an authorized exact live binding", () => {
     const expectedBinding = { authorityId: "authority-1", generation: 7 };
     let currentBinding = expectedBinding;
-    const ack: Parameters<typeof scheduleNarrativeMaintenanceProcessInterruption>[1] = {
+    const ack: Parameters<
+      typeof scheduleNarrativeMaintenanceProcessInterruption
+    >[1] = {
       status: "ci-process-interruption-pending",
       fault: "process-interruption",
       runId: "run-1",
@@ -125,9 +127,12 @@ describe("narrative maintenance scheduler", () => {
 
   it.each([
     ["false", () => false],
-    ["throw", () => {
-      throw new Error("scheduler rejected");
-    }],
+    [
+      "throw",
+      () => {
+        throw new Error("scheduler rejected");
+      },
+    ],
   ])(
     "retains a process-interruption batch for retry when the main owner returns %s",
     async (_label, onCiProcessInterruption) => {
@@ -420,6 +425,43 @@ describe("narrative maintenance scheduler", () => {
         String(args[0]).toLowerCase().includes("retry exhausted"),
       ),
     ).toBe(false);
+  });
+
+  it("drains a null-binding enqueue fully once the workspace becomes available", async () => {
+    // Regression: work enqueued while the binding getter returns null is
+    // keyed under the "unavailable" scope. Delete/retry must recompute that
+    // exact key from the queue item, or the original entry survives forever
+    // and the retry re-sends a duplicate batch.
+    let binding: { authorityId: string; generation: number } | null = null;
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValueOnce({ status: "workspace-unavailable" })
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+
+    scheduler.request(
+      work("project-1", "backfill", "backfill:v2", "workspace-open"),
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(1);
+
+    binding = { authorityId: "authority-1", generation: 1 };
+    await vi.advanceTimersByTimeAsync(ERROR_RETRY_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
+    // The retried batch carries the single original work item, not a
+    // duplicate produced by a second differently-scoped queue entry.
+    expect(runNarrativeMaintenanceCycle.mock.calls[1]?.[0].work).toHaveLength(
+      1,
+    );
+
+    // Acceptance drains the queue completely, including the original
+    // unavailable-scoped entry: no further cycle fires.
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 3);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledTimes(2);
   });
 
   it("retains a project-scoped durable wake when its workspace is unavailable", async () => {

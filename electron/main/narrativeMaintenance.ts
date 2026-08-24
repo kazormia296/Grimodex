@@ -36,8 +36,14 @@ export interface NarrativeMaintenanceWorkspaceBinding {
 }
 
 interface PendingNarrativeMaintenanceWork extends NarrativeMaintenanceWork {
-  /** Queue-only metadata; never serialized into a Rust work item. */
-  workspaceBinding?: NarrativeMaintenanceWorkspaceBinding;
+  /**
+   * Queue-only metadata; never serialized into a Rust work item. The `null`
+   * sentinel (binding getter present but workspace unavailable) is stored
+   * as-is: `scopedWorkKey` must recompute the exact Map key the item was
+   * enqueued under, so a `null` captured at enqueue time cannot degrade to
+   * the `undefined`/"unbound" identity on delete/retry/deferred paths.
+   */
+  workspaceBinding?: NarrativeMaintenanceWorkspaceBinding | null;
 }
 
 /**
@@ -1252,11 +1258,7 @@ export function createNarrativeMaintenanceScheduler(
       };
     }
     if (queued && capturedBinding !== undefined) {
-      if (capturedBinding === null) {
-        delete queued.workspaceBinding;
-      } else {
-        queued = { ...queued, workspaceBinding: capturedBinding };
-      }
+      queued = { ...queued, workspaceBinding: capturedBinding };
     }
     if (queued) {
       pending.set(key, queued);

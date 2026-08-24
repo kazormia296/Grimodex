@@ -999,3 +999,76 @@ fn null_attention_identity_with_multiple_exact_edges_fails_closed() {
     })
     .expect("verify NULL-identity ambiguity rollback");
 }
+
+#[test]
+fn future_version_c2zb_marker_fails_closed_and_is_not_downgraded() {
+    let db = rewound_database();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+             VALUES (?1, 2, ?2)",
+            params![MARKER, SEEDED_AT],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("seed future-version C2-ZB marker");
+
+    let error = db
+        .migrate()
+        .expect_err("a future C2-ZB marker version must fail closed");
+    assert!(
+        format!("{error:#}").contains("NEX_C2ZB_MARKER_UNSUPPORTED"),
+        "unexpected error chain: {error:#}"
+    );
+    db.with_conn(|conn| {
+        let (version, applied_at): (i64, String) = conn.query_row(
+            "SELECT contract_version, applied_at FROM schema_data_migrations
+              WHERE migration_id = ?1",
+            [MARKER],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(version, 2, "marker version must not be downgraded");
+        assert_eq!(applied_at, SEEDED_AT, "marker applied_at must be preserved");
+        let schema_version: i32 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(schema_version, SCHEMA_31);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify unsupported marker is untouched");
+}
+
+#[test]
+fn current_c2zb_marker_is_a_complete_noop_and_preserves_applied_at() {
+    let db = Database::new(Path::new(":memory:")).expect("open in-memory database");
+    db.migrate().expect("materialise current schema");
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE schema_data_migrations SET applied_at = ?1 WHERE migration_id = ?2",
+            params![SEEDED_AT, MARKER],
+        )?;
+        conn.pragma_update(None, "user_version", SCHEMA_31)?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("pin marker provenance and rewind user_version");
+
+    db.migrate()
+        .expect("re-running the chain over a current marker must no-op");
+    db.with_conn(|conn| {
+        let (version, applied_at): (i64, String) = conn.query_row(
+            "SELECT contract_version, applied_at FROM schema_data_migrations
+              WHERE migration_id = ?1",
+            [MARKER],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(version, 1);
+        assert_eq!(
+            applied_at, SEEDED_AT,
+            "a current marker's applied_at must never be rewritten"
+        );
+        let schema_version: i32 =
+            conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        assert_eq!(schema_version, CURRENT_SCHEMA);
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("verify marker provenance survives a no-op re-run");
+}

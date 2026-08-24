@@ -69,9 +69,20 @@ struct ProjectPreflight {
 
 /// Run the SCHEMA 32 data migration.  The caller owns the surrounding
 /// savepoint; this function does not begin or commit a transaction.
-pub(crate) fn migrate_narrative_application_rekey_v32(conn: &Connection) -> Result<()> {
-    if has_marker(conn)? {
-        return Ok(());
+///
+/// Returns `true` when the data phase ran and the caller must record the
+/// completion marker exactly once.  A marker at the current contract version
+/// is a complete no-op (`false`): the marker, including its `applied_at`
+/// provenance, must not be rewritten.  Any other marker version is
+/// unsupported and fails closed rather than being silently accepted or
+/// downgraded.
+pub(crate) fn migrate_narrative_application_rekey_v32(conn: &Connection) -> Result<bool> {
+    match marker_version(conn)? {
+        Some(version) if version == C2_ZB_CONTRACT_VERSION => return Ok(false),
+        Some(version) => anyhow::bail!(
+            "NEX_C2ZB_MARKER_UNSUPPORTED: marker contract version {version} is not current"
+        ),
+        None => {}
     }
 
     // Every project is planned before any C2-ZB write.  Keep the plans in
@@ -106,7 +117,7 @@ pub(crate) fn migrate_narrative_application_rekey_v32(conn: &Connection) -> Resu
     // The schema owner records the marker after this data-only phase returns.
     // Keeping marker DML in `migrate.rs` makes the migration engine the sole
     // writer of schema_data_migrations while preserving one savepoint.
-    Ok(())
+    Ok(true)
 }
 
 fn load_project_ids(conn: &Connection) -> Result<Vec<String>> {
@@ -118,16 +129,15 @@ fn load_project_ids(conn: &Connection) -> Result<Vec<String>> {
     rows
 }
 
-fn has_marker(conn: &Connection) -> Result<bool> {
-    let marker: Option<i64> = conn
-        .query_row(
-            "SELECT contract_version FROM schema_data_migrations
-              WHERE migration_id = ?1",
-            [C2_ZB_MIGRATION_ID],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(marker.is_some_and(|version| version >= C2_ZB_CONTRACT_VERSION))
+fn marker_version(conn: &Connection) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT contract_version FROM schema_data_migrations
+          WHERE migration_id = ?1",
+        [C2_ZB_MIGRATION_ID],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn preflight_plan(

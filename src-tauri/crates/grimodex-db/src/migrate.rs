@@ -3821,7 +3821,7 @@ impl Database {
         // `user_version` remains unchanged until the checkpoint below.
         conn.execute_batch("SAVEPOINT narrative_c2_schema_32")?;
         let c2zb_result = (|| -> anyhow::Result<()> {
-            crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
+            let c2zb_marker_due = crate::narrative_extraction::c2zb_application_rekey::migrate_narrative_application_rekey_v32(
                 &conn,
             )?;
 
@@ -3830,21 +3830,24 @@ impl Database {
             // savepoint, after all data re-key writes and before the
             // checkpoint/user_version stamp, so marker-trigger failures and
             // deferred-constraint failures can unwind the whole migration.
-            conn.execute(
-                "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(migration_id) DO UPDATE SET
-                     contract_version = excluded.contract_version,
-                     applied_at = excluded.applied_at",
-                params![
-                    crate::narrative_extraction::c2zb_application_rekey::C2_ZB_MIGRATION_ID,
-                    crate::narrative_extraction::c2zb_application_rekey::C2_ZB_CONTRACT_VERSION,
-                    chrono::Utc::now()
-                        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                        .to_string(),
-                ],
-            )
-            .context("recording the C2-ZB Application re-key marker")?;
+            // The marker is written exactly once, when the data phase ran: an
+            // existing marker is either a current-version no-op or fails
+            // closed upstream, and its contract_version/applied_at provenance
+            // is never rewritten here.
+            if c2zb_marker_due {
+                conn.execute(
+                    "INSERT INTO schema_data_migrations (migration_id, contract_version, applied_at)
+                     VALUES (?1, ?2, ?3)",
+                    params![
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_MIGRATION_ID,
+                        crate::narrative_extraction::c2zb_application_rekey::C2_ZB_CONTRACT_VERSION,
+                        chrono::Utc::now()
+                            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                            .to_string(),
+                    ],
+                )
+                .context("recording the C2-ZB Application re-key marker")?;
+            }
 
             // The marker is part of the checkpoint, not a substitute for it.
             // Keep both the invariant check and the user_version stamp inside
