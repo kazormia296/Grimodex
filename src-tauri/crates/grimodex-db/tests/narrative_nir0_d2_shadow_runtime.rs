@@ -258,6 +258,82 @@ fn seed_v2_snapshot_head(db: &Database) {
     .expect("seed V2 snapshot head");
 }
 
+fn seed_v2_component_contract_head(db: &Database) {
+    write_dependency_declaration_set(
+        db,
+        DependencyDeclarationSetRequest {
+            project_id: PROJECT_ID.to_owned(),
+            consumer_kind: CONSUMER_KIND.to_owned(),
+            consumer_key: CONSUMER_KEY.to_owned(),
+            producer_id: "nir0-d2-component-contract-producer".to_owned(),
+            producer_generation: 1,
+            expected_head_version: 0,
+            declarations: vec![DependencyDeclaration {
+                source_object_identity: "component-contract:extractor".to_owned(),
+                role: DependencyRole::ComponentContract,
+                selector: DependencySelector::ComponentContract {
+                    contract_id: "extractor".to_owned(),
+                    contract_digest:
+                        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_owned(),
+                },
+            }],
+            created_at: CREATED_AT.to_owned(),
+        },
+    )
+    .expect("seed V2 component-contract head");
+}
+
+fn mark_component_schema_change(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = ?1,
+                    structural_impact_json = ?2
+              WHERE id = 'nir0-d2-change-1'",
+            params![
+                json!({
+                    "kind": "component",
+                    "componentId": "extractor",
+                })
+                .to_string(),
+                json!({
+                    "event": "schema-component-changed",
+                    "requiresFullRebuild": true,
+                })
+                .to_string(),
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("mark D2 Feed event as a component schema change");
+}
+
+fn mark_project_restore_change(db: &Database) {
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_change_events
+                SET object_key_json = ?1,
+                    structural_impact_json = ?2
+              WHERE id = 'nir0-d2-change-1'",
+            params![
+                json!({
+                    "kind": "project",
+                    "projectId": PROJECT_ID,
+                })
+                .to_string(),
+                json!({
+                    "event": "project-restored",
+                    "requiresFullRebuild": true,
+                })
+                .to_string(),
+            ],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("mark D2 Feed event as a project restore marker");
+}
+
 fn seed_unrelated_v2_head(db: &Database) {
     write_dependency_declaration_set(
         db,
@@ -474,6 +550,65 @@ fn active_v2_head_is_reached_for_a_v2_only_source_without_a_v1_reverse_edge() {
     assert_eq!(summary.affected_edge_count, 0);
     assert_eq!(summary.v2_shadow.active_head_count, 1);
     assert_eq!(summary.v2_shadow.evaluated_declaration_count, 2);
+}
+
+#[test]
+fn component_schema_change_selects_v2_component_contract_project_wide_and_keeps_v1_authority() {
+    let db = fixture_db();
+    seed_v2_component_contract_head(&db);
+    mark_component_schema_change(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run component-schema shadow cycle")
+    else {
+        panic!("the component schema Feed range must be processed");
+    };
+
+    assert_eq!(summary.affected_edge_count, 1);
+    assert_eq!(summary.v2_shadow.active_head_count, 1);
+    assert_eq!(summary.v2_shadow.declaration_count, 1);
+    assert_eq!(summary.v2_shadow.evaluated_declaration_count, 1);
+    let consumer = &summary.v2_shadow.consumers[0];
+    assert_eq!(consumer.freshness, "unknown");
+    assert_eq!(consumer.required_actions, vec!["manual"]);
+    assert_eq!(consumer.compatibility_primary_action, "manual");
+
+    let v1_state: (String, String) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT evidence_freshness, build_action
+                   FROM narrative_dependency_edge_states
+                  WHERE edge_id = 'nir0-d2-v1-edge'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read V1 authority after component schema change");
+    assert_eq!(v1_state, ("unknown".to_owned(), "resolve-only".to_owned()));
+}
+
+#[test]
+fn project_restore_shadow_is_project_wide_or_explicitly_deferred_to_rebuild() {
+    let db = fixture_db();
+    seed_v2_component_contract_head(&db);
+    mark_project_restore_change(&db);
+
+    let IncrementalFreshnessCycleOutcome::Processed(summary) =
+        run_incremental_freshness_cycle(&db).expect("run project-restore shadow cycle")
+    else {
+        panic!("the project restore Feed range must be processed");
+    };
+
+    assert!(
+        summary.v2_shadow.active_head_count > 0
+            || summary
+                .v2_shadow
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.contains("DEFERRED_TO_REBUILD")),
+        "project restore must not silently produce an empty V2 shadow: {:?}",
+        summary.v2_shadow
+    );
 }
 
 #[test]
