@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+import Ajv2020 from "ajv/dist/2020.js";
 
 import {
   validateArtifactAuthorityContract,
@@ -22,6 +23,15 @@ import {
 const REPO_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../..",
+);
+
+const PRODUCER_REGISTRY_SCHEMA_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/schemas/narrative-dependency-producer-registry.schema.json",
+);
+const PRODUCER_REGISTRY_POLICY_PATH = path.join(
+  REPO_ROOT,
+  "policies/narrative/narrative-dependency-producer-registry.json",
 );
 
 function writeJson(root, relativePath, value) {
@@ -262,6 +272,65 @@ describe("validate-semantic-core-boundary", () => {
     assert.equal(result.checks.dependencyRoleContract, true);
     assert.equal(result.checks.artifactAuthorityContract, true);
     assert.equal(result.checks.interpreterBoundary, true);
+  });
+
+  it("closes declarationSetGeneration to the proposal producer only", () => {
+    const schema = JSON.parse(
+      readFileSync(PRODUCER_REGISTRY_SCHEMA_PATH, "utf8"),
+    );
+    const policy = JSON.parse(
+      readFileSync(PRODUCER_REGISTRY_POLICY_PATH, "utf8"),
+    );
+    const validate = new Ajv2020({ allErrors: true, strict: false }).compile(
+      schema,
+    );
+    const proposal = policy.entries.find(
+      (entry) => entry.id === "proposal-revision-source-basis",
+    );
+    const legacy = policy.entries.find(
+      (entry) => entry.id === "legacy-application-projection-dependency",
+    );
+    assert.ok(proposal);
+    assert.ok(legacy);
+
+    assert.equal(validate(policy), true, validate.errorsText?.());
+
+    const proposalMissingGeneration = {
+      ...policy,
+      entries: [
+        {
+          ...proposal,
+          declarationSetGeneration: undefined,
+        },
+        legacy,
+      ],
+    };
+    delete proposalMissingGeneration.entries[0].declarationSetGeneration;
+    assert.equal(validate(proposalMissingGeneration), false);
+
+    const proposalWrongGeneration = {
+      ...policy,
+      entries: [
+        { ...proposal, declarationSetGeneration: 2 },
+        legacy,
+      ],
+    };
+    assert.equal(validate(proposalWrongGeneration), false);
+
+    for (const entry of [
+      { ...legacy, declarationSetGeneration: 1 },
+      {
+        ...legacy,
+        id: "future-experimental-producer",
+        declarationSetGeneration: 1,
+      },
+    ]) {
+      assert.equal(
+        validate({ ...policy, entries: [proposal, entry] }),
+        false,
+        `${entry.id} must not declare declarationSetGeneration`,
+      );
+    }
   });
 
   it("keeps raw model response ephemeral while retaining a response digest", () => {
