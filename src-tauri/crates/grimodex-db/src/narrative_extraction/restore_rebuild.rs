@@ -1566,13 +1566,17 @@ pub fn run_dependency_verify_for_project_with_coordinates(
                                 report_digest: report_digest.clone(),
                             },
                         )?;
+                        // Only a clean confirmation resolves the work's
+                        // terminal Findings. A completed-but-defective
+                        // report must keep the semantic-graph-requires-
+                        // repair Finding open, or the halt goes dark again.
+                        resolve_terminal_failure_for_run_in_tx(
+                            conn,
+                            project_id,
+                            &run_id,
+                            &finalized_at,
+                        )?;
                     }
-                    resolve_terminal_failure_for_run_in_tx(
-                        conn,
-                        project_id,
-                        &run_id,
-                        &finalized_at,
-                    )?;
                     Ok(())
                 })
             })?;

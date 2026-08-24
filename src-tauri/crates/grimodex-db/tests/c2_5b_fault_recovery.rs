@@ -345,6 +345,16 @@ fn transient_fault_is_followed_by_a_distinct_completed_retry_run() {
         other => panic!("expected durable transient failure, got {other:?}"),
     };
 
+    // An immediate re-dispatch must be refused by the durable not-before
+    // boundary written by the failing Attempt (1s for the first retry).
+    let deferred = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
+        .expect("early retry is refused without touching the ledger");
+    assert_eq!(deferred, MaintenanceCycleResult::accepted(true));
+    assert_eq!(backfill_run_statuses(&db), vec!["failed"]);
+    assert_eq!(terminal_failure_inbox_count(&db), 0);
+
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
     let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::SameProcessLive)
         .expect("retry dispatch completes the sealed Backfill work");
     assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
@@ -372,6 +382,83 @@ fn transient_fault_is_followed_by_a_distinct_completed_retry_run() {
     assert_eq!(retry.task_kind, "maintenance-backfill");
     assert_eq!(retry.attempt_number, 1);
     assert_eq!((retry.task_count, retry.attempt_count), (1, 1));
+    assert_eq!(terminal_failure_inbox_count(&db), 0);
+}
+
+fn attempt_backoff_window(db: &Database, run_id: &str) -> (String, String) {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT a.completed_at, a.next_attempt_at
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+              WHERE t.run_id = ?1",
+            [run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .map_err(Into::into)
+    })
+    .expect("read durable backoff window")
+}
+
+fn backoff_delta_ms(completed_at: &str, next_attempt_at: &str) -> i64 {
+    let completed =
+        chrono::DateTime::parse_from_rfc3339(completed_at).expect("parse attempt completed_at");
+    let next = chrono::DateTime::parse_from_rfc3339(next_attempt_at)
+        .expect("parse attempt next_attempt_at");
+    (next - completed).num_milliseconds()
+}
+
+#[test]
+fn durable_backoff_not_before_survives_process_restart() {
+    let db = fixture_db();
+    let first = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::TransientIo,
+    )
+    .expect("inject first transient fault");
+    let first_run_id = match first {
+        LegacyBackfillFaultOutcome::Failed { run_id, .. } => run_id,
+        other => panic!("expected durable transient failure, got {other:?}"),
+    };
+    let (first_completed, first_not_before) = attempt_backoff_window(&db, &first_run_id);
+    assert_eq!(backoff_delta_ms(&first_completed, &first_not_before), 1_000);
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let second = inject_legacy_backfill_fault_for_project(
+        &db,
+        PROJECT_ID,
+        NarrativeMaintenanceCiFault::TransientIo,
+    )
+    .expect("inject second transient fault after the first boundary passes");
+    let second_run_id = match second {
+        LegacyBackfillFaultOutcome::Failed { run_id, .. } => run_id,
+        other => panic!("expected durable transient failure, got {other:?}"),
+    };
+    assert_ne!(second_run_id, first_run_id);
+    let (second_completed, second_not_before) = attempt_backoff_window(&db, &second_run_id);
+    assert_eq!(
+        backoff_delta_ms(&second_completed, &second_not_before),
+        2_000
+    );
+
+    // Simulated process restart: startup recovery reads only durable state,
+    // so the 2s not-before boundary written before the "restart" must still
+    // refuse an early third attempt.
+    let deferred = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+        .expect("startup recovery defers inside the durable boundary");
+    assert_eq!(deferred, MaintenanceCycleResult::accepted(true));
+    assert_eq!(backfill_run_statuses(&db), vec!["failed", "failed"]);
+    assert_eq!(terminal_failure_inbox_count(&db), 0);
+
+    std::thread::sleep(std::time::Duration::from_millis(2_100));
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+        .expect("post-boundary retry completes the Backfill");
+    assert_eq!(result.status, MaintenanceCycleStatus::Accepted);
+    assert_eq!(
+        backfill_run_statuses(&db),
+        vec!["failed", "failed", "completed"]
+    );
     assert_eq!(terminal_failure_inbox_count(&db), 0);
 }
 

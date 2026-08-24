@@ -19,10 +19,10 @@ use super::finding_observation::{
     latest_terminal_failure_observation_order, record_terminal_failure_lifecycle_in_tx,
     record_terminal_failure_observation_in_tx, resolve_terminal_failure_lifecycle_in_tx,
     validate_terminal_failure_replay_in_tx, FindingLifecycleState, TerminalFailureLifecycleWrite,
-    TerminalFailureObservationWrite, TerminalFailureResolutionWrite,
+    TerminalFailureObservationWrite, TerminalFailureResolutionWrite, TerminalFailureRunBinding,
 };
 use super::maintenance_runtime::{
-    classify_failure, AutomaticRunKind, FailureClass, LEGACY_BACKFILL_WORK_KEY,
+    classify_failure, AutomaticRunKind, FailureClass, WorkKey, LEGACY_BACKFILL_WORK_KEY,
     REBUILD_DERIVED_WORK_KEY, VERIFY_WORK_KEY_PREFIX,
 };
 use super::task_leases::with_immediate_transaction;
@@ -361,7 +361,31 @@ pub(crate) fn project_terminal_failure_for_run_in_tx(
         return skipped_outcome(&context, classification.code);
     }
 
-    let failure_code = classification.code;
+    record_failure_projection_in_tx(
+        conn,
+        project_id,
+        run_id,
+        &context,
+        &classification.code,
+        TerminalFailureRunBinding::TerminalCode,
+        observed_at,
+    )
+}
+
+/// Shared projection core: write the append-only Observation and lifecycle
+/// transition for one terminal failure evidence tuple, deduplicating exact
+/// replays. `failure_code` is the exact immutable evidence; the retry class
+/// never overwrites it.
+fn record_failure_projection_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    context: &MaintenanceRunContext,
+    failure_code: &str,
+    run_binding: TerminalFailureRunBinding,
+    observed_at: &str,
+) -> anyhow::Result<TerminalFailureProjectionOutcome> {
+    let failure_code = failure_code.to_string();
     let reason_code = reason_code_for_failure(&failure_code)?;
     let stable_subject = context.stable_subject()?;
     let finding_identity = stable_finding_identity(
@@ -389,6 +413,7 @@ pub(crate) fn project_terminal_failure_for_run_in_tx(
             observation_digest: &observation_digest,
             material_basis_digest: &material_basis_digest,
             observed_at,
+            run_binding,
         },
     )?;
 
@@ -488,6 +513,136 @@ pub fn project_terminal_failure_for_run(
             )
         })
     })
+}
+
+/// Graph defects a Rebuild cannot fix require a manual Repair. This is the
+/// dedicated Finding code behind the `semantic-graph-requires-repair` UI
+/// degradation declared by the Run Kind policy.
+pub const SEMANTIC_GRAPH_REQUIRES_REPAIR_CODE: &str = "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR";
+
+/// Recovery-synthesized manual codes have no failing Run finalizer of their
+/// own: the individual failed Runs were transient (Finding route `none`),
+/// yet automatic maintenance halts durably. These codes must still surface
+/// in the Maintenance Inbox or the user sees an unexplained permanent stop.
+fn is_synthetic_manual_code(code: &str) -> bool {
+    matches!(
+        code,
+        "NEX_MAINTENANCE_RETRY_EXHAUSTED"
+            | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
+            | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
+    )
+}
+
+/// Durably project a recovery-synthesized `ManualIntervention` decision as a
+/// terminal Finding bound to the stable work subject, the synthetic failure
+/// code, and the anchored epoch. Exact contract codes are skipped: their
+/// failing finalizer already projected the exact evidence. Idempotent across
+/// repeated cycles; returns `None` when nothing needed projection.
+pub(crate) fn project_manual_intervention_finding(
+    db: &Database,
+    work: &WorkKey,
+    code: &str,
+) -> anyhow::Result<Option<TerminalFailureProjectionOutcome>> {
+    if !is_synthetic_manual_code(code) {
+        return Ok(None);
+    }
+    let observed_at = grimodex_core::now_rfc3339_millis();
+    db.with_conn(|conn| {
+        with_immediate_transaction(conn, |conn| {
+            // Anchor on the latest failed Run for the work identity; the
+            // Finding identity itself is run-independent.
+            let anchor: Option<(String, Option<String>, String)> = conn
+                .query_row(
+                    "SELECT id, semantic_epoch_id,
+                            COALESCE(completed_at, started_at, created_at)
+                       FROM narrative_extraction_runs
+                      WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                        AND status = 'failed'
+                        AND (?4 IS NULL OR semantic_epoch_id = ?4)
+                      ORDER BY julianday(COALESCE(completed_at, started_at, created_at)) DESC,
+                               id ASC
+                      LIMIT 1",
+                    params![
+                        work.project_id,
+                        work.run_kind.as_str(),
+                        work.work_key,
+                        work.semantic_epoch_id.as_deref(),
+                    ],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()?;
+            let Some((run_id, row_epoch_id, terminal_order_time)) = anchor else {
+                return Ok(None);
+            };
+            let Some(semantic_epoch_id) = work
+                .semantic_epoch_id
+                .clone()
+                .or(row_epoch_id)
+                .filter(|epoch| !epoch.trim().is_empty())
+            else {
+                // A legacy epoch-less anchor cannot carry an epoch-bound
+                // Finding; leave it to the epoch-bound rediscovery.
+                return Ok(None);
+            };
+            ensure_epoch_project(conn, &work.project_id, &semantic_epoch_id)?;
+            let context = MaintenanceRunContext {
+                project_id: work.project_id.clone(),
+                _run_id: run_id.clone(),
+                run_kind: work.run_kind.as_str().to_string(),
+                work_key: work.work_key.clone(),
+                semantic_epoch_id,
+                terminal_order_time,
+            };
+            validate_canonical_work_key(&context)?;
+            record_failure_projection_in_tx(
+                conn,
+                &work.project_id,
+                &run_id,
+                &context,
+                code,
+                TerminalFailureRunBinding::SyntheticRecovery,
+                &observed_at,
+            )
+            .map(Some)
+        })
+    })
+}
+
+/// Project the durable "graph requires manual Repair" Finding for a
+/// completed, non-clean, non-rebuild Verify report. The Finding is anchored
+/// on the completed Verify Run whose outcome carries the exact report,
+/// report digest, and repair candidates; a semantically different report is
+/// produced by a newer Verify Run and re-surfaces the Finding through that
+/// new anchor. A later clean confirmation Verify for the same epoch-bound
+/// work key resolves the chain.
+pub(crate) fn project_graph_repair_required_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    semantic_epoch_id: &str,
+    report_digest: &str,
+    observed_at: &str,
+) -> anyhow::Result<TerminalFailureProjectionOutcome> {
+    anyhow::ensure!(!report_digest.trim().is_empty(), "reportDigest is required");
+    ensure_epoch_project(conn, project_id, semantic_epoch_id)?;
+    let context = MaintenanceRunContext {
+        project_id: project_id.to_string(),
+        _run_id: run_id.to_string(),
+        run_kind: "dependency-verify".to_string(),
+        work_key: format!("{VERIFY_WORK_KEY_PREFIX}{semantic_epoch_id}"),
+        semantic_epoch_id: semantic_epoch_id.to_string(),
+        terminal_order_time: observed_at.to_string(),
+    };
+    validate_canonical_work_key(&context)?;
+    record_failure_projection_in_tx(
+        conn,
+        project_id,
+        run_id,
+        &context,
+        SEMANTIC_GRAPH_REQUIRES_REPAIR_CODE,
+        TerminalFailureRunBinding::CompletedReport,
+        observed_at,
+    )
 }
 
 pub(crate) fn resolve_terminal_failure_for_run_in_tx(

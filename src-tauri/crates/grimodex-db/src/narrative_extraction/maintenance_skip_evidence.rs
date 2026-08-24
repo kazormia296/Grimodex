@@ -171,38 +171,58 @@ fn select_latest_run(
 ) -> Result<LatestRunSelection> {
     let mut statement = conn.prepare(
         "SELECT id, project_id, run_kind, status, semantic_epoch_id, work_key,
-                completed_at, outcome_summary_json, created_at
+                completed_at, outcome_summary_json, created_at, started_at
            FROM narrative_extraction_runs
           WHERE project_id = ?1 AND run_kind = ?2",
     )?;
     let rows = statement.query_map(params![project_id, run_kind], |row| {
-        Ok(LatestRun {
-            id: row.get(0)?,
-            project_id: row.get(1)?,
-            run_kind: row.get(2)?,
-            status: row.get(3)?,
-            semantic_epoch_id: row.get(4)?,
-            work_key: row.get(5)?,
-            completed_at: row.get(6)?,
-            outcome_summary_json: row.get(7)?,
-            created_at: row.get(8)?,
-        })
+        Ok((
+            LatestRun {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                run_kind: row.get(2)?,
+                status: row.get(3)?,
+                semantic_epoch_id: row.get(4)?,
+                work_key: row.get(5)?,
+                completed_at: row.get(6)?,
+                outcome_summary_json: row.get(7)?,
+                created_at: row.get(8)?,
+            },
+            row.get::<_, Option<String>>(9)?,
+        ))
     })?;
+    // "Latest" is the run with the newest lifecycle instant
+    // (`completed_at -> started_at -> created_at`), not the newest
+    // `created_at`: run creation order and terminal order can interleave, and
+    // a newer failure must not be bypassed by an older run that merely
+    // started later. Ties and unparseable instants fail closed.
     let mut candidates = Vec::new();
     for row in rows {
-        let run = row?;
-        let created_at = match parse_run_created_at(&run.created_at) {
-            Ok(created_at) => created_at,
+        let (run, started_at) = row?;
+        let lifecycle_raw = run
+            .completed_at
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .or(started_at
+                .as_deref()
+                .filter(|value| !value.trim().is_empty()))
+            .unwrap_or(run.created_at.as_str());
+        let lifecycle_at = match parse_run_created_at(lifecycle_raw) {
+            Ok(lifecycle_at) => lifecycle_at,
             Err(_) => return Ok(LatestRunSelection::InvalidTimestamp),
         };
-        candidates.push((created_at, run));
+        candidates.push((lifecycle_at, run));
     }
-    let Some(max_created_at) = candidates.iter().map(|(created_at, _)| *created_at).max() else {
+    let Some(max_lifecycle_at) = candidates
+        .iter()
+        .map(|(lifecycle_at, _)| *lifecycle_at)
+        .max()
+    else {
         return Ok(LatestRunSelection::None);
     };
     let mut maximal = candidates
         .into_iter()
-        .filter_map(|(created_at, run)| (created_at == max_created_at).then_some(run));
+        .filter_map(|(lifecycle_at, run)| (lifecycle_at == max_lifecycle_at).then_some(run));
     let Some(latest) = maximal.next() else {
         return Ok(LatestRunSelection::None);
     };

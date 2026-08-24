@@ -13,7 +13,8 @@ use uuid::Uuid;
 use super::commit::digest_plan;
 use super::execution_state::{next_run_lifecycle_timestamp_in_tx, parse_run_lifecycle_instant};
 use super::maintenance_runtime::{
-    canonical_work_key_for_epoch, spec_with_active_system_work_marker, NarrativeSystemWorkMarker,
+    canonical_work_key_for_epoch, explicit_failure_code, retry_backoff_ms,
+    spec_with_active_system_work_marker, NarrativeSystemWorkMarker,
 };
 use super::repository::{create_system_run_in_tx, SystemRunWorkKeyReuse};
 use super::restore_rebuild::VERIFY_CONTRACT_VERSION;
@@ -59,10 +60,18 @@ impl MaintenanceFailureKind {
     }
 }
 
+/// Ensure the failure message leads with an explicit `NEX_*` code. A message
+/// that already carries one is preserved verbatim: the exact code is the
+/// primary immutable evidence, and prefixing the retry-class bucket code
+/// would let e.g. every Verify/Rebuild contract violation collapse into
+/// "Backfill contract violation" at persistence time.
 pub(crate) fn canonical_failure_message(
     failure_kind: MaintenanceFailureKind,
     message: &str,
 ) -> String {
+    if explicit_failure_code(message).is_some() {
+        return message.to_string();
+    }
     format!("{}: {message}", failure_kind.failure_code())
 }
 
@@ -1124,9 +1133,40 @@ pub(crate) fn fail_maintenance_run_in_tx(
     );
     validate_handle_in_tx(conn, handle)?;
     let completed_at = next_maintenance_terminal_timestamp_in_tx(conn, handle)?;
-    let next_attempt_at = failure_kind.is_retryable().then_some(completed_at.as_str());
-    let failure_code = failure_kind.failure_code();
+    // The exact code carried by the message is the primary immutable
+    // evidence; the retry-class bucket code is only a fallback for a message
+    // with no explicit code (for example a raw SQLite error string).
+    let failure_code =
+        explicit_failure_code(error_message).unwrap_or_else(|| failure_kind.failure_code());
     let retry_disposition = failure_kind.retry_disposition();
+    // Durable exponential backoff: `next_attempt_at` is the not-before
+    // instant computed from the Run ledger's failed count, not the failure
+    // instant itself. Recovery must refuse to dispatch a retry earlier than
+    // this durable boundary, including across process restarts.
+    let next_attempt_at = if failure_kind.is_retryable() {
+        let prior_failed: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM narrative_extraction_runs
+              WHERE project_id = ?1 AND run_kind = ?2 AND work_key = ?3
+                AND status = 'failed'",
+            params![&handle.project_id, &handle.run_kind, &handle.work_key],
+            |row| row.get(0),
+        )?;
+        let attempt = u32::try_from(prior_failed.saturating_add(1)).unwrap_or(u32::MAX);
+        let failed_at = parse_run_lifecycle_instant(&completed_at)?;
+        let not_before = failed_at
+            .checked_add_signed(Duration::milliseconds(i64::try_from(retry_backoff_ms(
+                attempt,
+            ))?))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_MAINTENANCE_RUN_TIMESTAMP_OVERFLOW: cannot compute retry not-before"
+                )
+            })?;
+        Some(not_before.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+    } else {
+        None
+    };
+    let next_attempt_at = next_attempt_at.as_deref();
     let attempt_updated = conn.execute(
         "UPDATE narrative_extraction_attempts
             SET status = 'failed',

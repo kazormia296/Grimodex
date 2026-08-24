@@ -25,7 +25,11 @@ const BUNDLED_PRODUCER_REGISTRY: &str = include_str!(concat!(
 ));
 
 const GRAPH_CONTRACT_DOMAIN: &str = "grimodex:narrative:graph-contract:v1";
-const FINDING_RULE_DOMAIN: &str = "grimodex:narrative:finding-rule-registry:v1";
+/// Domain for the combined rule/effect/normalizer contract coordinate. `v2`
+/// marks the widening from the Finding Rule Registry alone (previously
+/// `grimodex:narrative:finding-rule-registry:v1`) to the complete set of
+/// contracts a D2 evaluation reads.
+const RULE_CONTRACT_DOMAIN: &str = "grimodex:narrative:maintenance-rule-contracts:v2";
 const PRODUCER_GENERATION_DOMAIN: &str = "grimodex:narrative:producer-generation-set:v1";
 const CI_COORDINATE_MISMATCH_DOMAIN: &str = "grimodex:narrative:ci-coordinate-mismatch:v1";
 
@@ -404,8 +408,29 @@ pub fn current_maintenance_coordinates() -> Result<MaintenanceContractCoordinate
     let graph_contract_digest = domain_digest(GRAPH_CONTRACT_DOMAIN, &graph_contract)?;
 
     let finding_registry = bundled_finding_rule_registry()?;
-    let rule_registry_digest =
-        domain_digest(FINDING_RULE_DOMAIN, &finding_registry.canonical_value()?)?;
+    // The rule-registry coordinate covers every contract that decides what a
+    // Verify/D2 evaluation means, not only the Finding Rule Registry: the
+    // Dependency Role / Effect Registry (roles, selector semantics via its
+    // role contract version, and the Role x Consumer x Source Change Class
+    // effect mapping) and the cross-runtime text-normalizer whitespace
+    // grammar. Changing any of these must invalidate completed Verify skip
+    // evidence — a stale clean report sealed under the old semantics is not
+    // reusable evidence for the new ones.
+    let dependency_role_registry: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../policies/narrative/narrative-dependency-role-registry.json"
+    ))
+    .map_err(|error| {
+        anyhow::anyhow!("NEX_PRODUCER_REGISTRY_INVALID: dependency role registry JSON: {error}")
+    })?;
+    let rule_registry_digest = domain_digest(
+        RULE_CONTRACT_DOMAIN,
+        &json!({
+            "findingRuleRegistry": finding_registry.canonical_value()?,
+            "dependencyRoleRegistry": dependency_role_registry,
+            "textNormalizerWhitespaceCodePoints":
+                grimodex_core::contract_string::CONTRACT_WHITESPACE_CODE_POINTS,
+        }),
+    )?;
 
     let producer_registry = bundled_dependency_producer_registry()?;
     let producer_generation_set_digest = producer_generation_set_digest(&producer_registry)?;

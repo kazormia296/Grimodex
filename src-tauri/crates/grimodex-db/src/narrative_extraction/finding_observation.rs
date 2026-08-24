@@ -233,6 +233,25 @@ pub(crate) struct TerminalFailureObservationWrite<'a> {
     pub observation_digest: &'a str,
     pub material_basis_digest: &'a str,
     pub observed_at: &'a str,
+    pub run_binding: TerminalFailureRunBinding,
+}
+
+/// How the projected failure code binds to the anchored Run row. The
+/// anti-forgery invariant differs per projection class; each class still
+/// fails closed on the shapes it does not expect.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TerminalFailureRunBinding {
+    /// The anchored failed Run's `terminal_reason_code` must equal the
+    /// projected failure code exactly (the ordinary finalizer projection).
+    TerminalCode,
+    /// A recovery-synthesized manual decision (retry exhausted, missing
+    /// detail/ledger). The anchored Run is a failed row carrying its own
+    /// retryable terminal code; the projected code is the recovery verdict.
+    SyntheticRecovery,
+    /// A completed Verify Run anchoring a graph-defect report. The Run has
+    /// no terminal code at all; the report itself is the evidence and stays
+    /// reachable through the anchored Run's outcome.
+    CompletedReport,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -636,16 +655,16 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
     );
     ensure_epoch_project(conn, write.project_id, write.semantic_epoch_id)?;
 
-    let run: Option<(String, String)> = conn
+    let run: Option<(String, String, String)> = conn
         .query_row(
-            "SELECT project_id, COALESCE(terminal_reason_code, '')
+            "SELECT project_id, status, COALESCE(terminal_reason_code, '')
                FROM narrative_extraction_runs
               WHERE id = ?1",
             params![write.run_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((run_project_id, terminal_reason_code)) = run else {
+    let Some((run_project_id, run_status, terminal_reason_code)) = run else {
         anyhow::bail!(
             "NEX_FINDING_RUN_MISSING: run '{}' was not found",
             write.run_id
@@ -655,10 +674,41 @@ pub(crate) fn record_terminal_failure_observation_in_tx(
         run_project_id == write.project_id,
         "NEX_FINDING_RUN_PROJECT_MISMATCH: run belongs to another project"
     );
-    anyhow::ensure!(
-        terminal_reason_code == write.failure_code,
-        "NEX_FINDING_FAILURE_CODE_MISMATCH: run terminal reason does not match the projected failure"
-    );
+    match write.run_binding {
+        TerminalFailureRunBinding::TerminalCode => {
+            anyhow::ensure!(
+                terminal_reason_code == write.failure_code,
+                "NEX_FINDING_FAILURE_CODE_MISMATCH: run terminal reason does not match the projected failure"
+            );
+        }
+        TerminalFailureRunBinding::SyntheticRecovery => {
+            anyhow::ensure!(
+                matches!(
+                    write.failure_code,
+                    "NEX_MAINTENANCE_RETRY_EXHAUSTED"
+                        | "NEX_MAINTENANCE_FAILURE_DETAIL_MISSING"
+                        | "NEX_MAINTENANCE_FAILURE_LEDGER_MISSING"
+                ),
+                "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a recovery-synthesized code",
+                write.failure_code
+            );
+            anyhow::ensure!(
+                run_status == "failed" && !terminal_reason_code.is_empty(),
+                "NEX_FINDING_RUN_STATUS_INVALID: synthetic recovery evidence requires a terminalized failed Run"
+            );
+        }
+        TerminalFailureRunBinding::CompletedReport => {
+            anyhow::ensure!(
+                write.failure_code == "NEX_SEMANTIC_GRAPH_REQUIRES_REPAIR",
+                "NEX_FINDING_FAILURE_CODE_MISMATCH: '{}' is not a completed-report code",
+                write.failure_code
+            );
+            anyhow::ensure!(
+                run_status == "completed" && terminal_reason_code.is_empty(),
+                "NEX_FINDING_RUN_STATUS_INVALID: completed-report evidence requires a completed Run without terminal failure"
+            );
+        }
+    }
 
     let existing: Option<(String, Option<String>, String, String)> = conn
         .query_row(

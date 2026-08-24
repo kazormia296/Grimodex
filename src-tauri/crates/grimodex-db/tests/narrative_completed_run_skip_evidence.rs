@@ -651,7 +651,9 @@ fn missing_or_non_successful_latest_run_never_falls_back_to_an_older_success() {
     db.with_conn(|conn| {
         conn.execute(
             "UPDATE narrative_extraction_runs
-                SET id = 'run-old-success', created_at = '2026-08-20T00:00:00.000Z'
+                SET id = 'run-old-success',
+                    created_at = '2026-08-20T00:00:00.000Z',
+                    completed_at = '2026-08-20T00:00:00.000Z'
               WHERE id = ?1",
             [RUN_ID],
         )?;

@@ -1715,6 +1715,33 @@ pub(crate) fn discover_durable_maintenance_work_in_tx(
                 }
                 return Ok(None);
             }
+            // Non-clean and not rebuildable: duplicate Edges, cross-project
+            // consumer scope, or other defects that only a manual Repair can
+            // fix. Automatic maintenance halts here on every wake, so the
+            // halt must be visible: project the durable
+            // semantic-graph-requires-repair Finding (idempotent per report
+            // digest) before returning no work. A later clean confirmation
+            // Verify for this epoch resolves it.
+            let report_digest =
+                serde_json::from_str::<Value>(outcome_json)
+                    .ok()
+                    .and_then(|outcome| {
+                        outcome
+                            .get("reportDigest")
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    });
+            if let Some(report_digest) = report_digest {
+                let observed_at = grimodex_core::now_rfc3339_millis();
+                super::terminal_failure::project_graph_repair_required_in_tx(
+                    conn,
+                    project_id,
+                    &latest.run_id,
+                    &current_epoch_id,
+                    &report_digest,
+                    &observed_at,
+                )?;
+            }
             Ok(None)
         }
         "semantic-index-rebuild" => {
@@ -2151,10 +2178,18 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 }
                 continue;
             }
-            RecoveryAction::ManualIntervention { .. } => {
-                // The durable Run already owns the terminal failure and its
-                // Inbox projection. It is not a delivery failure and must
-                // not be retried or converted into an automatic Repair.
+            RecoveryAction::ManualIntervention { code } => {
+                // A contract failure's durable Run already owns the terminal
+                // failure and its Inbox projection. Recovery-synthesized
+                // codes (retry exhausted, missing detail/ledger) have no
+                // failing finalizer of their own, so project them here —
+                // otherwise automatic maintenance halts with nothing in the
+                // Maintenance Inbox to explain why or how to recover.
+                super::terminal_failure::project_manual_intervention_finding(
+                    db,
+                    &recovery_work,
+                    &code,
+                )?;
                 handled_non_coalesced = true;
                 terminal_halted_work.insert(recovery_work_key);
                 continue;
@@ -2168,6 +2203,73 @@ pub fn run_system_work_cycle_with_modes_and_config_and_foreground_owner(
                 )
             }
             RecoveryAction::StartFresh | RecoveryAction::Retry { .. } => {
+                if matches!(action, RecoveryAction::Retry { .. }) {
+                    // Honor the durable exponential backoff boundary written
+                    // by the failing Attempt. A retry earlier than its
+                    // not-before instant is refused; the durable wake keeps
+                    // the scheduler polling until the boundary passes, so
+                    // the 1s -> 2s -> 4s policy holds across restarts too.
+                    if let Some(not_before) = retry_not_before(db, &recovery_work)? {
+                        if let Ok(not_before_at) = parse_maintenance_instant(&not_before) {
+                            if chrono::Utc::now() < not_before_at {
+                                has_more = true;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                // A Rebuild that already committed under the current epoch
+                // and contract must not be re-executed merely because
+                // another item in the same Electron batch failed and the
+                // whole batch was re-queued: Rebuild is the expensive phase
+                // and each item commits its own transaction. When such a
+                // committed outcome exists, reconcile the re-sent item
+                // against the durable state machine and only dispatch when
+                // discovery still demands this exact canonical Rebuild (for
+                // example a newer Verify requires a fresh one).
+                let committed_current_rebuild = item.run_kind == AutomaticRunKind::RebuildDerived
+                    && item.semantic_epoch_id.as_deref().is_some_and(|epoch| {
+                        db.with_conn(|conn| {
+                            let runs = load_durable_maintenance_runs(conn, &item.project_id)?;
+                            select_latest_relevant_run(&runs, Some(epoch), false, |run| {
+                                run.run_kind == "semantic-index-rebuild"
+                                    && run.status == "completed"
+                            })
+                        })
+                        .ok()
+                        .flatten()
+                        .is_some_and(|run| {
+                            completed_rebuild_outcome_is_current(&item.project_id, epoch, &run)
+                        })
+                    });
+                if committed_current_rebuild {
+                    let next = discover_durable_maintenance_work_with_coordinates(
+                        db,
+                        &item.project_id,
+                        item.reasons
+                            .first()
+                            .map(String::as_str)
+                            .unwrap_or("durable-wake"),
+                        Some(&effective_coordinates),
+                    )?;
+                    match next {
+                        Some(next) if next.canonical_key() != item.canonical_key() => {
+                            // The durable ledger moved past this Rebuild
+                            // (it committed before the batch failure); hand
+                            // the cycle its real next phase.
+                            handled_non_coalesced = true;
+                            queue.push_back(next);
+                            continue;
+                        }
+                        None => {
+                            handled_non_coalesced = true;
+                            continue;
+                        }
+                        Some(_) => {
+                            // Discovery still demands this exact Rebuild.
+                        }
+                    }
+                }
                 let current_epoch = db
                     .with_conn(|conn| {
                         super::semantic_epoch::get_current_epoch(conn, &item.project_id)
@@ -2285,7 +2387,7 @@ fn recover_cycle_work(
     let work_key = recovery_work_key_for_item(db, item)?;
     let expected_epoch = work_key.semantic_epoch_id.as_deref();
     let decision = decide_run_recovery_for_epoch(db, &work_key, expected_epoch, mode, None)?;
-    match decision.action {
+    let terminalized = match decision.action {
         RecoveryAction::RecoverInterrupted { run_ids } => {
             terminalize_interrupted_runs_for_epoch(
                 db,
@@ -2294,10 +2396,7 @@ fn recover_cycle_work(
                 expected_epoch,
                 &run_ids,
             )?;
-            // The just-terminalized row is provenance for this recovery, not
-            // a failed attempt that should consume the next cycle's retry
-            // budget. Start the same durable WorkKey anew.
-            Ok(RecoveryAction::StartFresh)
+            true
         }
         RecoveryAction::RecoverStaleEpoch { runs } => {
             let expected_epoch = expected_epoch.ok_or_else(|| {
@@ -2312,7 +2411,27 @@ fn recover_cycle_work(
                 expected_epoch,
                 &runs,
             )?;
-            Ok(RecoveryAction::StartFresh)
+            true
+        }
+        action => return Ok(action),
+    };
+    debug_assert!(terminalized);
+    // Startup interruption must not bypass the bounded failure policy: an
+    // unconditional StartFresh here would let crash -> restart -> new Run
+    // loop forever with `NEX_MAINTENANCE_INTERRUPTED maxAttempts` never
+    // applied. Re-load the updated ledger and route the terminalized rows
+    // through the ordinary recovery decision (retry with durable backoff,
+    // exhausted -> manual intervention).
+    let second = decide_run_recovery_for_epoch(
+        db,
+        &work_key,
+        expected_epoch,
+        RecoveryMode::SameProcessLive,
+        None,
+    )?;
+    match second.action {
+        RecoveryAction::RecoverInterrupted { .. } | RecoveryAction::RecoverStaleEpoch { .. } => {
+            anyhow::bail!("NEX_MAINTENANCE_RECOVERY_INCOMPLETE: active Run remained after recovery")
         }
         action => Ok(action),
     }
@@ -2647,26 +2766,55 @@ pub struct FailureClassification {
     pub retryable: bool,
 }
 
+/// Extract the leading explicit `NEX_*` code from a failure message, if any.
+pub(crate) fn explicit_failure_code(message: &str) -> Option<&str> {
+    message
+        .split(|character: char| character == ':' || character.is_whitespace())
+        .find(|token| token.starts_with("NEX_"))
+}
+
 /// Classify only failures known to be safe to retry.  Unknown failures are
 /// deliberately contract/manual failures (fail closed).
+///
+/// Priority order is part of the failure-identity contract:
+/// 1. A known explicit `NEX_*` code maps to its exact policy, no matter what
+///    ambient words ("busy", "database is locked", ...) the rest of the
+///    message contains — a contract violation whose detail mentions a lock
+///    must not silently become a retried transient.
+/// 2. An unknown explicit `NEX_*` code fails closed to manual with that code
+///    preserved as the primary immutable evidence.
+/// 3. Only a message with no explicit code at all falls back to the fuzzy
+///    raw SQLite / I/O substring markers.
 pub fn classify_failure(message: &str) -> FailureClassification {
-    let lower = message.to_ascii_lowercase();
-    let explicit_code = message
-        .split(|character: char| character == ':' || character.is_whitespace())
-        .find(|token| token.starts_with("NEX_"));
-    if explicit_code == Some("NEX_MAINTENANCE_INTERRUPTED") {
+    if let Some(code) = explicit_failure_code(message) {
+        let retryable = matches!(
+            code,
+            "NEX_MAINTENANCE_INTERRUPTED"
+                | "NEX_MAINTENANCE_TRANSIENT"
+                | "NEX_MAINTENANCE_SQLITE_LOCKED"
+                | "NEX_MAINTENANCE_SQLITE_IOERR"
+                | "NEX_SEMANTIC_EPOCH_CHANGED"
+                | "NEX_CURSOR_RESERVATION_CONFLICT"
+                | "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
+                | "NEX_INCREMENTAL_FRESHNESS_INTERRUPTED"
+                | "NEX_REBUILD_DERIVED_STALE_EPOCH"
+                | "NEX_VERIFY_STALE_EPOCH"
+        );
         return FailureClassification {
-            class: FailureClass::Transient,
-            code: "NEX_MAINTENANCE_INTERRUPTED".to_string(),
-            retryable: true,
+            class: if retryable {
+                FailureClass::Transient
+            } else {
+                FailureClass::Contract
+            },
+            code: code.to_string(),
+            retryable,
         };
     }
+
+    let lower = message.to_ascii_lowercase();
     let transient = [
         "sqlite_busy",
         "sqlite_locked",
-        "nex_maintenance_sqlite_locked",
-        "nex_maintenance_transient",
-        "nex_maintenance_sqlite_ioerr",
         "database is locked",
         "database table is locked",
         "interrupted",
@@ -2690,30 +2838,9 @@ pub fn classify_failure(message: &str) -> FailureClassification {
             retryable: true,
         };
     }
-
-    let code = explicit_code
-        .unwrap_or("NEX_MAINTENANCE_UNCLASSIFIED")
-        .to_string();
-    if matches!(
-        code.as_str(),
-        "NEX_SEMANTIC_EPOCH_CHANGED"
-            | "NEX_CURSOR_RESERVATION_CONFLICT"
-            | "NEX_INCREMENTAL_FRESHNESS_RETRYABLE"
-            | "NEX_INCREMENTAL_FRESHNESS_INTERRUPTED"
-            | "NEX_MAINTENANCE_INTERRUPTED"
-            | "NEX_MAINTENANCE_TRANSIENT"
-            | "NEX_REBUILD_DERIVED_STALE_EPOCH"
-            | "NEX_VERIFY_STALE_EPOCH"
-    ) {
-        return FailureClassification {
-            class: FailureClass::Transient,
-            code,
-            retryable: true,
-        };
-    }
     FailureClassification {
         class: FailureClass::Contract,
-        code,
+        code: "NEX_MAINTENANCE_UNCLASSIFIED".to_string(),
         retryable: false,
     }
 }
@@ -2902,11 +3029,17 @@ pub fn read_run_ledger_for_epoch(
             current_rows.push((lifecycle_at, id, status, terminal_reason_code));
         }
 
-        let latest_completed_key = current_rows
+        // Chronology is decided by lifecycle instants alone. Run IDs are
+        // identity, not time: an imported/restored ledger where a failed and
+        // a completed row share the same instant must fail closed instead of
+        // letting UUID lexicographic order decide which one "wins". The
+        // canonical lifecycle allocator issues strictly increasing instants
+        // per project, so a tie can only come from imported evidence.
+        let latest_completed_at = current_rows
             .iter()
             .filter(|(_, _, status, _)| status == "completed")
-            .map(|(lifecycle_at, id, _, _)| (*lifecycle_at, id.as_str()))
-            .max_by(|left, right| left.cmp(right));
+            .map(|(lifecycle_at, _, _, _)| *lifecycle_at)
+            .max();
         let mut pending_run_ids = Vec::new();
         let mut running_run_ids = Vec::new();
         let mut failed_runs = 0_u32;
@@ -2916,17 +3049,18 @@ pub fn read_run_ledger_for_epoch(
             match status.as_str() {
                 "pending" => pending_run_ids.push(id.clone()),
                 "running" => running_run_ids.push(id.clone()),
-                "failed"
-                    if latest_completed_key
-                        .as_ref()
-                        .map(|(completed_at, completed_id)| {
-                            (*lifecycle_at, id.as_str()) > (*completed_at, *completed_id)
-                        })
-                        .unwrap_or(true) =>
-                {
-                    failed_runs = failed_runs.saturating_add(1);
-                    latest_failed_terminal_reason_code = terminal_reason_code.clone();
-                }
+                "failed" => match latest_completed_at {
+                    Some(completed_at) if *lifecycle_at == completed_at => {
+                        anyhow::bail!(
+                            "NEX_MAINTENANCE_RUN_ORDER_AMBIGUOUS: failed Run '{id}' shares its lifecycle instant with a completed Run"
+                        );
+                    }
+                    Some(completed_at) if *lifecycle_at < completed_at => {}
+                    _ => {
+                        failed_runs = failed_runs.saturating_add(1);
+                        latest_failed_terminal_reason_code = terminal_reason_code.clone();
+                    }
+                },
                 "completed" => completed_runs = completed_runs.saturating_add(1),
                 _ => {}
             }
@@ -3402,6 +3536,35 @@ pub const fn retry_backoff_ms(attempt: u32) -> u64 {
         2 => INITIAL_RETRY_BACKOFF_MS * 2,
         _ => INITIAL_RETRY_BACKOFF_MS * 4,
     }
+}
+
+/// Durable retry not-before boundary for one work identity: the
+/// `next_attempt_at` persisted by the latest failed Attempt. Dispatch must
+/// not start a retry before this instant, including after a process restart.
+fn retry_not_before(db: &Database, work: &WorkKey) -> anyhow::Result<Option<String>> {
+    db.with_conn(|conn| {
+        conn.query_row(
+            "SELECT a.next_attempt_at
+               FROM narrative_extraction_attempts a
+               JOIN narrative_extraction_tasks t ON t.id = a.task_id
+               JOIN narrative_extraction_runs r ON r.id = t.run_id
+              WHERE r.project_id = ?1 AND r.run_kind = ?2 AND r.work_key = ?3
+                AND (?4 IS NULL OR r.semantic_epoch_id = ?4)
+                AND r.status = 'failed' AND a.status = 'failed'
+              ORDER BY julianday(a.completed_at) DESC, a.id ASC
+              LIMIT 1",
+            params![
+                work.project_id,
+                work.run_kind.as_str(),
+                work.work_key,
+                work.semantic_epoch_id.as_deref(),
+            ],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(Option::flatten)
+        .map_err(Into::into)
+    })
 }
 
 #[cfg(test)]

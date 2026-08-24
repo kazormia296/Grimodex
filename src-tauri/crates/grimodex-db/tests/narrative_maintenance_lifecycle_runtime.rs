@@ -891,7 +891,19 @@ fn startup_interruption_fails_the_exact_attempt_and_preserves_failure_metadata()
     assert!(metadata.3.is_some());
     assert_eq!(metadata.3, metadata.4);
     assert_eq!(metadata.4, metadata.5);
-    assert_eq!(metadata.5, metadata.9);
+    // Durable exponential backoff: the first failure's retry not-before is
+    // one second after the terminal instant, not the failure instant itself.
+    let completed_at =
+        chrono::DateTime::parse_from_rfc3339(metadata.5.as_deref().expect("terminal completed_at"))
+            .expect("terminal completed_at parses");
+    let next_attempt_at =
+        chrono::DateTime::parse_from_rfc3339(metadata.9.as_deref().expect("retry not-before"))
+            .expect("retry not-before parses");
+    assert_eq!(
+        next_attempt_at - completed_at,
+        chrono::Duration::milliseconds(1000),
+        "first failure must defer its retry by the 1s backoff"
+    );
     assert_eq!(
         metadata.6.as_deref(),
         Some("NEX_MAINTENANCE_INTERRUPTED: process interruption")

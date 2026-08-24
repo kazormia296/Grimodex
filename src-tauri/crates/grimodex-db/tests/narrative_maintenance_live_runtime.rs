@@ -90,8 +90,17 @@ fn startup_cycle_recovers_an_interrupted_run_before_reusing_work_identity() {
     })
     .expect("seed interrupted run");
 
-    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+    // Startup recovery terminalizes the interrupted Run and routes it through
+    // the ordinary retry ledger: the recovered interruption consumes one
+    // retry attempt, so its 1s durable backoff refuses an immediate
+    // redispatch inside the same cycle.
+    let deferred = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
         .expect("startup recovery cycle");
+    assert_eq!(deferred, MaintenanceCycleResult::accepted(true));
+
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    let result = run_system_work_cycle(&db, &backfill_request(), RecoveryMode::StartupRecovery)
+        .expect("post-backoff startup retry cycle");
     assert_eq!(result, MaintenanceCycleResult::accepted(false));
 
     let statuses: Vec<(String, String, Option<String>)> = db
