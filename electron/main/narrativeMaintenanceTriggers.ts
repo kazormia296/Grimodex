@@ -1,6 +1,7 @@
 import {
   canonicalNarrativeMaintenanceWorkKey,
   NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE,
+  normalizeWorkspaceBinding,
   type NarrativeMaintenanceRequest,
   type NarrativeMaintenanceScheduler,
   type NarrativeMaintenanceWorkspaceBinding,
@@ -58,28 +59,20 @@ function parseJsonWire(raw: unknown): unknown {
 }
 
 function normalizeBinding(raw: unknown): NarrativeMaintenanceWorkspaceBinding {
-  if (!isRecord(raw)) {
+  const normalized = normalizeWorkspaceBinding(raw);
+  if (normalized === null) {
     throw new Error("native maintenance discovery returned invalid binding");
   }
-  if (
-    typeof raw.authorityId !== "string" ||
-    raw.authorityId.trim().length === 0 ||
-    !Number.isSafeInteger(raw.generation) ||
-    (raw.generation as number) < 0
-  ) {
-    throw new Error("native maintenance discovery returned invalid binding");
-  }
-  return {
-    authorityId: raw.authorityId,
-    generation: raw.generation as number,
-  };
+  return normalized;
 }
 
 function normalizeOptionalBinding(
   raw: unknown,
 ): NarrativeMaintenanceWorkspaceBinding | null {
   const parsed = parseJsonWire(raw);
-  return parsed === null || parsed === undefined ? null : normalizeBinding(parsed);
+  return parsed === null || parsed === undefined
+    ? null
+    : normalizeBinding(parsed);
 }
 
 function sameBinding(
@@ -94,9 +87,13 @@ function sameBinding(
   );
 }
 
-function epochEventBinding(payload: unknown): NarrativeMaintenanceWorkspaceBinding {
+function epochEventBinding(
+  payload: unknown,
+): NarrativeMaintenanceWorkspaceBinding {
   if (!isRecord(payload)) {
-    throw new Error("narrative maintenance epoch event has no workspace binding");
+    throw new Error(
+      "narrative maintenance epoch event has no workspace binding",
+    );
   }
   return normalizeBinding({
     authorityId: payload.authorityId,
@@ -166,9 +163,7 @@ function normalizeDiscoveryResponse(
     throw new Error("native maintenance discovery returned invalid response");
   }
   if (raw.status === "workspace-unavailable") {
-    if (
-      Object.keys(raw).some((key) => key !== "status" && key !== "reason")
-    ) {
+    if (Object.keys(raw).some((key) => key !== "status" && key !== "reason")) {
       throw new Error("native maintenance discovery returned invalid response");
     }
     return {
@@ -196,9 +191,7 @@ function normalizeDiscoveryResponse(
     ) {
       throw new Error("native maintenance discovery returned invalid page");
     }
-    if (
-      rawPage.work.length > NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE
-    ) {
+    if (rawPage.work.length > NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE) {
       throw new Error(
         `native maintenance discovery returned a page larger than ${NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE} work items`,
       );
@@ -267,20 +260,13 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   ): void => {
     if (disposed) return;
     if (generation !== chainGeneration) return;
-    const timerReason = reason;
     lastWakeReason = reason;
-    scheduledReason = timerReason;
-    scheduledGeneration = generation;
-    if (
-      timer !== null &&
-      scheduledDelayMs !== null &&
-      scheduledGeneration === generation
-    ) {
+    if (timer !== null && scheduledDelayMs !== null) {
       if (delayMs >= scheduledDelayMs) return;
       clearTimer();
-      scheduledReason = timerReason;
-      scheduledGeneration = generation;
     }
+    scheduledReason = reason;
+    scheduledGeneration = generation;
     scheduledDelayMs = delayMs;
     const timerGeneration = generation;
     timer = setTimeout(() => {
@@ -333,7 +319,12 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         if (response.work.length === 0) {
           // The Rust planner has no durable next phase. End this wake chain;
           // a later ordinary open must not inherit RestoreCompleted forever.
-          lastWakeReason = null;
+          // A rediscovery queued while this discovery was in flight means an
+          // accepted cycle created newer durable work this (stale) empty
+          // result cannot see, so keep the chain alive for that retry.
+          if (pendingRetryDelayMs === null) {
+            lastWakeReason = null;
+          }
           rediscoveryAttempts = 0;
           lastDiscoveryFingerprint = null;
         } else {

@@ -182,13 +182,17 @@ type ForegroundBarrierClaimStatus =
   | { status: "ignored" }
   | { status: "workspace-unavailable"; reason?: string };
 
-function parseForegroundBarrierClaim(raw: unknown): ForegroundBarrierClaimStatus {
+function parseForegroundBarrierClaim(
+  raw: unknown,
+): ForegroundBarrierClaimStatus {
   let value: unknown = raw;
   if (typeof raw === "string") {
     try {
       value = JSON.parse(raw) as unknown;
     } catch {
-      throw new Error("native foreground barrier claim returned malformed JSON");
+      throw new Error(
+        "native foreground barrier claim returned malformed JSON",
+      );
     }
   }
   if (
@@ -203,31 +207,43 @@ function parseForegroundBarrierClaim(raw: unknown): ForegroundBarrierClaimStatus
   switch (record.status) {
     case "claimed":
       if (
-        Object.keys(record).some((key) => key !== "status" && key !== "runId") ||
+        Object.keys(record).some(
+          (key) => key !== "status" && key !== "runId",
+        ) ||
         !isNonEmptyTrimmedString(record.runId)
       ) {
-        throw new Error("native foreground barrier claim returned invalid claimed status");
+        throw new Error(
+          "native foreground barrier claim returned invalid claimed status",
+        );
       }
       return { status: "claimed", runId: record.runId };
     case "not-held":
     case "ignored":
       if (Object.keys(record).some((key) => key !== "status")) {
-        throw new Error("native foreground barrier claim returned invalid status");
+        throw new Error(
+          "native foreground barrier claim returned invalid status",
+        );
       }
       return { status: record.status };
     case "workspace-unavailable":
       if (
-        Object.keys(record).some((key) => key !== "status" && key !== "reason") ||
+        Object.keys(record).some(
+          (key) => key !== "status" && key !== "reason",
+        ) ||
         (record.reason !== undefined && typeof record.reason !== "string")
       ) {
-        throw new Error("native foreground barrier claim returned invalid status");
+        throw new Error(
+          "native foreground barrier claim returned invalid status",
+        );
       }
       return {
         status: "workspace-unavailable",
         ...(typeof record.reason === "string" ? { reason: record.reason } : {}),
       };
     default:
-      throw new Error("native foreground barrier claim returned unknown status");
+      throw new Error(
+        "native foreground barrier claim returned unknown status",
+      );
   }
 }
 
@@ -241,9 +257,8 @@ export async function claimNarrativeMaintenanceForegroundRelease(
   projectId: string,
 ): Promise<string | null> {
   if (!isNonEmptyTrimmedString(projectId)) return null;
-  const claim = (
-    backend as NarrativeMaintenanceForegroundReleaseBackend | null
-  )?.claimNarrativeMaintenanceForegroundBarrier;
+  const claim = (backend as NarrativeMaintenanceForegroundReleaseBackend | null)
+    ?.claimNarrativeMaintenanceForegroundBarrier;
   if (typeof claim !== "function") return null;
   try {
     const result = parseForegroundBarrierClaim(
@@ -267,10 +282,7 @@ export function scheduleNarrativeMaintenanceForegroundRelease(
   projectId: string,
   expectedRunId: string,
   schedule: ForegroundBarrierReleaseScheduler = (callback) => {
-    setTimeout(
-      callback,
-      NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS,
-    );
+    setTimeout(callback, NARRATIVE_MAINTENANCE_FOREGROUND_RELEASE_DELAY_MS);
   },
 ): void {
   if (
@@ -287,10 +299,7 @@ export function scheduleNarrativeMaintenanceForegroundRelease(
     void Promise.resolve()
       .then(() => release.call(backend, projectId, expectedRunId))
       .catch((error: unknown) => {
-        console.warn(
-          "[grim:invoke] foreground barrier release failed",
-          error,
-        );
+        console.warn("[grim:invoke] foreground barrier release failed", error);
       });
   });
 }
@@ -416,7 +425,7 @@ function validateRequest(
   };
 }
 
-function normalizeWorkspaceBinding(
+export function normalizeWorkspaceBinding(
   raw: unknown,
 ): NarrativeMaintenanceWorkspaceBinding | null {
   if (raw === null || raw === undefined) return null;
@@ -425,11 +434,15 @@ function normalizeWorkspaceBinding(
     try {
       value = JSON.parse(raw) as unknown;
     } catch {
-      throw new Error("native maintenance workspace binding returned malformed JSON");
+      throw new Error(
+        "native maintenance workspace binding returned malformed JSON",
+      );
     }
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("native maintenance workspace binding returned invalid status");
+    throw new Error(
+      "native maintenance workspace binding returned invalid status",
+    );
   }
   const binding = value as Record<string, unknown>;
   if (
@@ -440,7 +453,9 @@ function normalizeWorkspaceBinding(
     binding.authorityId !== binding.authorityId.trim() ||
     binding.authorityId.includes("\u0000")
   ) {
-    throw new Error("native maintenance workspace binding returned invalid status");
+    throw new Error(
+      "native maintenance workspace binding returned invalid status",
+    );
   }
   return {
     authorityId: binding.authorityId,
@@ -541,9 +556,7 @@ function normalizeCycleResult(raw: unknown): NarrativeMaintenanceCycleResult {
     if (value.status === "workspace-unavailable") {
       return {
         status: "workspace-unavailable",
-        ...(typeof value.reason === "string"
-          ? { reason: value.reason }
-          : {}),
+        ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
       };
     }
     if (value.status === "coalesced") {
@@ -575,9 +588,8 @@ function isCanonicalTransientFailure(error: unknown): boolean {
         : null;
   return (
     message === NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE ||
-    message?.startsWith(
-      `${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE}:`,
-    ) === true
+    message?.startsWith(`${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE}:`) ===
+      true
   );
 }
 
@@ -824,8 +836,7 @@ export function createNarrativeMaintenanceScheduler(
     if (pending.size === 0 && durableWakeProjects.size === 0) return;
 
     const candidates = [...pending.values()].filter(
-      (work) =>
-        !deferredWorkKeys.has(scopedWorkKey(work)),
+      (work) => !deferredWorkKeys.has(scopedWorkKey(work)),
     );
     // Select one authority snapshot before claiming projects. This keeps
     // replacement-workspace identities out of one native cycle and bounds a
@@ -849,7 +860,8 @@ export function createNarrativeMaintenanceScheduler(
     );
     const selectedWakeEntries = wakeCandidates
       .filter(
-        (entry) => workspaceBindingKey(entry.workspaceBinding) === wakeBindingKey,
+        (entry) =>
+          workspaceBindingKey(entry.workspaceBinding) === wakeBindingKey,
       )
       .slice(0, NARRATIVE_MAINTENANCE_MAX_WORK_ITEMS_PER_CYCLE);
     // Process ordinary work first. A wake-only cycle is represented by an
@@ -1098,12 +1110,14 @@ export function createNarrativeMaintenanceScheduler(
           );
           try {
             const rediscovery = options.onWorkspaceBindingMismatch?.();
-            void Promise.resolve(rediscovery).catch((callbackError: unknown) => {
-              warn(
-                "[narrative-maintenance] authority rediscovery callback failed:",
-                callbackError,
-              );
-            });
+            void Promise.resolve(rediscovery).catch(
+              (callbackError: unknown) => {
+                warn(
+                  "[narrative-maintenance] authority rediscovery callback failed:",
+                  callbackError,
+                );
+              },
+            );
           } catch (callbackError) {
             warn(
               "[narrative-maintenance] authority rediscovery callback failed:",
@@ -1153,8 +1167,7 @@ export function createNarrativeMaintenanceScheduler(
           if (sendingWakeProjects.length > 0) {
             for (const projectId of sendingWakeProjects) {
               const wakeKey = scopedWakeKey(projectId, cycleBinding);
-              const retryCount =
-                (durableWakeRetryCounts.get(wakeKey) ?? 0) + 1;
+              const retryCount = (durableWakeRetryCounts.get(wakeKey) ?? 0) + 1;
               if (retryCount <= NARRATIVE_MAINTENANCE_MAX_RETRIES) {
                 durableWakeRetryCounts.set(wakeKey, retryCount);
                 durableWakeProjects.set(wakeKey, {
@@ -1173,10 +1186,7 @@ export function createNarrativeMaintenanceScheduler(
               }
             }
           }
-          if (
-            requeuedCount > 0 &&
-            isCanonicalTransientFailure(error)
-          ) {
+          if (requeuedCount > 0 && isCanonicalTransientFailure(error)) {
             warn(
               `[narrative-maintenance] ${NARRATIVE_MAINTENANCE_TRANSIENT_FAILURE_CODE} retry scheduled (${requeuedCount} queued, attempt ${firstRetryCount ?? 1}/${NARRATIVE_MAINTENANCE_MAX_RETRIES})`,
             );
