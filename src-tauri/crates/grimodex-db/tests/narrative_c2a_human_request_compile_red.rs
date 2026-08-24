@@ -1759,6 +1759,12 @@ mod c2b_atomic_materialization_red {
                    BEFORE INSERT ON narrative_proposal_revisions
                    BEGIN
                        SELECT RAISE(ABORT, 'C2B_TEST_CHILD_DML_REACHED');
+                   END;
+
+                 CREATE TEMP TRIGGER c2b_test_abort_proposal_dml
+                   BEFORE UPDATE ON narrative_proposals
+                   BEGIN
+                       SELECT RAISE(ABORT, 'C2B_TEST_PROPOSAL_DML_REACHED');
                    END;",
             )?;
             Ok::<_, anyhow::Error>(())
@@ -1770,7 +1776,7 @@ mod c2b_atomic_materialization_red {
         db.with_conn(|conn| {
             conn.execute_batch(
                 "CREATE TEMP TRIGGER c2b_test_require_material_before_pointer
-                   BEFORE UPDATE OF current_revision_id ON narrative_proposals
+                   BEFORE UPDATE OF payload_json, current_revision_id ON narrative_proposals
                    WHEN OLD.id = 'proposal-human'
                     AND NEW.current_revision_id <> OLD.current_revision_id
                    BEGIN
