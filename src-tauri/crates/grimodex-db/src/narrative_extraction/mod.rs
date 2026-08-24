@@ -160,7 +160,8 @@ pub use c2zc_canonical_cutover::{
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessBatchSummary,
-    IncrementalFreshnessCycleOutcome,
+    IncrementalFreshnessCycleOutcome, IncrementalFreshnessShadowConsumerSummary,
+    IncrementalFreshnessShadowSummary, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
@@ -225,7 +226,8 @@ pub use restore_rebuild::{
     ensure_restore_epochs_for_workspace, rebuild_narrative_derived_state_for_project,
     run_dependency_verify_for_project, run_dependency_verify_for_project_with_coordinates,
     verify_narrative_dependency_graph_for_project, DependencyGraphVerifyReport,
-    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, VerifyRunOutcome,
+    RebuildDerivedStateOutcome, RebuildDerivedStateSummary, RebuildShadowVerificationSummary,
+    VerifyRunOutcome,
 };
 #[allow(unused_imports)]
 pub(crate) use semantic_epoch::{create_epoch_in_tx, list_epochs};

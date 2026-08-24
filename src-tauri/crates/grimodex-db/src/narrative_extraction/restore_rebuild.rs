@@ -12,7 +12,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use grimodex_core::narrative_dependency::{
+    aggregate_dependency_build_actions, evaluate_dependency_effect, load_dependency_role_registry,
+    DependencyEffectInput, SourceChangeClass,
+};
+
 use super::consumer_identity::{is_declared_consumer_kind, owning_run_id_for_consumer};
+use super::declaration_storage::{
+    list_dependency_declaration_head_keys_in_tx, read_active_dependency_declaration_set_in_tx,
+    ActiveDependencyDeclarationSetRead,
+};
 use super::dependency_edges::{
     consumer_dependency_set_digest, find_edges_by_consumer,
     parse_snapshot_run_id_from_source_identity, project_id_for_run,
@@ -686,7 +695,7 @@ pub enum RebuildDerivedStateOutcome {
 
 /// Counts from one completed `rebuild_narrative_derived_state_for_project`
 /// pass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RebuildDerivedStateSummary {
     pub consumers_evaluated: usize,
@@ -715,6 +724,12 @@ pub struct RebuildDerivedStateSummary {
     /// Run, which is how a present Source gets called missing. Every such Edge
     /// receives an explicit `Unknown` state for authority invalidation.
     pub edges_skipped_unresolvable_scope: usize,
+    /// Ephemeral D2 verification from the complete active D1 head set. This
+    /// sidecar is intentionally omitted from the persisted rebuild outcome;
+    /// it is returned only to the in-process caller and never becomes V2
+    /// Freshness authority.
+    #[serde(skip)]
+    pub v2_shadow: RebuildShadowVerificationSummary,
 }
 
 /// `dependency-rebuild-derived` (Run Kind Policy): discards and recomputes
@@ -838,6 +853,208 @@ fn list_distinct_consumers(
     Ok(rows)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RebuildShadowVerificationSummary {
+    pub active_head_count: usize,
+    pub declaration_count: usize,
+    pub evaluated_declaration_count: usize,
+    pub diagnostics: Vec<String>,
+}
+
+/// Verify every active D1 head in the project against current Sources during
+/// a Rebuild. Full rebuild is deliberately project-wide (unlike the bounded
+/// incremental Feed lookup), so V2-only Consumers and Sources are covered.
+/// This is an in-memory observation only: Rebuild never writes a V2
+/// Freshness row, changes a V1 dependency-set digest, or treats a D1 defect
+/// as a V1 failure. Selectors that need a Feed position/anchor proof remain
+/// Unknown here because Rebuild has no mutation-local mapping input.
+fn verify_v2_shadow_for_rebuild_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+) -> anyhow::Result<RebuildShadowVerificationSummary> {
+    let mut verification = RebuildShadowVerificationSummary::default();
+    let head_keys = match list_dependency_declaration_head_keys_in_tx(conn, project_id) {
+        Ok(keys) => keys,
+        Err(error) => {
+            verification
+                .diagnostics
+                .push(format!("NEX_V2_SHADOW_REBUILD_HEAD_LOOKUP_UNKNOWN:{error}"));
+            return Ok(verification);
+        }
+    };
+    let registry = match load_dependency_role_registry() {
+        Ok(registry) => Some(registry),
+        Err(error) => {
+            verification
+                .diagnostics
+                .push(format!("NEX_V2_SHADOW_REBUILD_REGISTRY_UNKNOWN:{error}"));
+            None
+        }
+    };
+    for (consumer_kind, consumer_key) in head_keys {
+        let active_set = match read_active_dependency_declaration_set_in_tx(
+            conn,
+            project_id,
+            &consumer_kind,
+            &consumer_key,
+        ) {
+            Ok(ActiveDependencyDeclarationSetRead::Missing) => {
+                verification.diagnostics.push(format!(
+                    "NEX_V2_SHADOW_REBUILD_DECLARATION_HEAD_INCOHERENT:{consumer_kind}:{consumer_key}"
+                ));
+                continue;
+            }
+            Ok(ActiveDependencyDeclarationSetRead::Corrupt) => {
+                verification.diagnostics.push(format!(
+                    "NEX_V2_SHADOW_REBUILD_DECLARATION_HEAD_CORRUPT:{consumer_kind}:{consumer_key}"
+                ));
+                continue;
+            }
+            Ok(ActiveDependencyDeclarationSetRead::Active(active_set)) => active_set,
+            Err(error) => {
+                verification.diagnostics.push(format!(
+                    "NEX_V2_SHADOW_REBUILD_DECLARATION_HEAD_UNKNOWN:{consumer_kind}:{consumer_key}:{error}"
+                ));
+                continue;
+            }
+        };
+        verification.active_head_count += 1;
+        verification.declaration_count += active_set.entries.len();
+        let mut effects = Vec::new();
+        let mut unknown_mapping = false;
+        for entry in active_set.entries {
+            let base_change_class = rebuild_source_change_class_from_source(
+                conn,
+                project_id,
+                run_id,
+                &entry.source_object_identity,
+            );
+            let selector_value: Value = match serde_json::from_str(&entry.selector_json) {
+                Ok(value) => value,
+                Err(error) => {
+                    unknown_mapping = true;
+                    verification.diagnostics.push(format!(
+                        "NEX_V2_SHADOW_REBUILD_SELECTOR_UNKNOWN:{}:{}:{}:{error}",
+                        consumer_kind, consumer_key, entry.id
+                    ));
+                    continue;
+                }
+            };
+            let selector =
+                match grimodex_core::narrative_dependency::validate_dependency_selector_value(
+                    &selector_value,
+                    None,
+                ) {
+                    Ok(selector) => selector,
+                    Err(error) => {
+                        unknown_mapping = true;
+                        verification.diagnostics.push(format!(
+                            "NEX_V2_SHADOW_REBUILD_SELECTOR_UNKNOWN:{}:{}:{}:{error}",
+                            consumer_kind, consumer_key, entry.id
+                        ));
+                        continue;
+                    }
+                };
+            let change_class = match selector {
+                grimodex_core::narrative_dependency::DependencySelector::WholeSource => {
+                    rebuild_source_change_class_for_role(entry.dependency_role, base_change_class)
+                }
+                _ => {
+                    unknown_mapping = true;
+                    verification.diagnostics.push(format!(
+                        "NEX_V2_SHADOW_REBUILD_SELECTOR_UNKNOWN:{}:{}:{}:no Feed projection",
+                        consumer_kind, consumer_key, entry.id
+                    ));
+                    continue;
+                }
+            };
+            let Some(registry) = registry.as_ref() else {
+                unknown_mapping = true;
+                continue;
+            };
+            match evaluate_dependency_effect(
+                registry,
+                DependencyEffectInput {
+                    role: entry.dependency_role.as_str(),
+                    consumer_kind: &consumer_kind,
+                    change_class: change_class.as_str(),
+                },
+            ) {
+                Ok(effect) => effects.push(effect),
+                Err(error) => {
+                    unknown_mapping = true;
+                    verification.diagnostics.push(format!(
+                        "NEX_V2_SHADOW_REBUILD_EFFECT_UNKNOWN:{}:{}:{}:{}:{error}",
+                        consumer_kind,
+                        consumer_key,
+                        entry.dependency_role.as_str(),
+                        change_class.as_str()
+                    ));
+                }
+            }
+            verification.evaluated_declaration_count += 1;
+        }
+        // Exercise the same independent required/advisory aggregation used by
+        // the incremental shadow path. The result is deliberately discarded
+        // at this non-authoritative restore boundary.
+        if !unknown_mapping {
+            let _ = aggregate_dependency_build_actions(&effects);
+        }
+    }
+    verification.diagnostics.sort();
+    Ok(verification)
+}
+
+fn rebuild_source_change_class_from_source(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    source_object_identity: &str,
+) -> SourceChangeClass {
+    let Some(source_kind) = infer_source_kind(source_object_identity) else {
+        return SourceChangeClass::ComponentUnavailable;
+    };
+    let resolver_run_id = match parse_snapshot_run_id_from_source_identity(source_object_identity) {
+        Ok(Some(snapshot_run_id)) => match project_id_for_run(conn, snapshot_run_id) {
+            Ok(Some(owner)) if owner != project_id => {
+                return SourceChangeClass::ComponentUnavailable;
+            }
+            Ok(_) => snapshot_run_id,
+            Err(_) => return SourceChangeClass::ComponentUnavailable,
+        },
+        Ok(None) => run_id,
+        Err(_) => return SourceChangeClass::ComponentUnavailable,
+    };
+    match resolve_current_source_state(
+        conn,
+        project_id,
+        resolver_run_id,
+        source_kind,
+        source_object_identity,
+    ) {
+        Ok(state) if !state.exists => SourceChangeClass::SourceMissing,
+        Ok(state) if !state.usable => SourceChangeClass::ComponentUnavailable,
+        Ok(_) => SourceChangeClass::SourceContentChanged,
+        Err(_) => SourceChangeClass::ComponentUnavailable,
+    }
+}
+
+fn rebuild_source_change_class_for_role(
+    role: grimodex_core::narrative_dependency::DependencyRole,
+    base: SourceChangeClass,
+) -> SourceChangeClass {
+    match role {
+        grimodex_core::narrative_dependency::DependencyRole::QualityContext => {
+            SourceChangeClass::QualityInputChanged
+        }
+        grimodex_core::narrative_dependency::DependencyRole::RankingOnly => {
+            SourceChangeClass::RankingInputChanged
+        }
+        _ => base,
+    }
+}
+
 /// Phase 2 of [`rebuild_narrative_derived_state_for_project`]: evaluate and
 /// publish every Consumer's Edges, one transaction per Consumer.
 fn rebuild_derived_state_edges_in_project(
@@ -849,6 +1066,11 @@ fn rebuild_derived_state_edges_in_project(
 ) -> anyhow::Result<RebuildDerivedStateSummary> {
     let consumers = db.with_conn(|conn| list_distinct_consumers(conn, project_id))?;
     let mut summary = RebuildDerivedStateSummary::default();
+    // Full Rebuild verifies the complete active D1 head set once, including
+    // V2-only Consumers that have no V1 compatibility Edge. The sidecar is
+    // returned in memory and skipped by the persisted Run outcome.
+    summary.v2_shadow =
+        db.with_conn(|conn| verify_v2_shadow_for_rebuild_in_tx(conn, project_id, run_id))?;
     for (consumer_kind, consumer_key) in consumers {
         // Counted inside the per-Consumer closure, which cannot borrow
         // `summary` mutably alongside the counters it already updates.

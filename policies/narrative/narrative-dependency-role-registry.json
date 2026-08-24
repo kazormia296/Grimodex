@@ -9,8 +9,11 @@
   ],
   "fixtureFile": "policies/narrative/fixtures/dependency-role-contract.json",
   "implementationStatus": {
-    "state": "declared",
-    "productionEntryPoints": [],
+    "state": "shadow",
+    "productionEntryPoints": [
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/incremental_freshness.rs",
+      "src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs"
+    ],
     "scanRoots": [
       "src/features/narrative-semantic-core",
       "src/features/narrative-extraction",
@@ -18,15 +21,13 @@
       "src-tauri/crates/grimodex-db/src/narrative_extraction"
     ],
     "productionMarkers": [
-      "NARRATIVE_DEPENDENCY_V2_RUNTIME_AUTHORITY",
-      "evaluate_v2_dependency_declarations",
-      "publish_v2_dependency_declarations"
+      "NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME"
     ],
     "blockedOn": [
       "reconciliation-envelope-v2",
       "dependency-selector-v2",
-      "dependency-shadow-runtime-integration",
-      "independent-build-action-summary"
+      "v2-authority-cutover",
+      "v2-persistence-boundary"
     ]
   },
   "sets": {
