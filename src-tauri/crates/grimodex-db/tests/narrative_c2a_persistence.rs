@@ -1836,7 +1836,7 @@ fn typed_stage_bundle_requires_exactly_one_native_raw_artifact() {
             "missing-payload" => {
                 raw_artifact.payload_json = None;
                 artifacts = vec![raw_artifact];
-                "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"
+                "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID"
             }
             "missing-digest" => {
                 raw_artifact.payload_digest = None;
