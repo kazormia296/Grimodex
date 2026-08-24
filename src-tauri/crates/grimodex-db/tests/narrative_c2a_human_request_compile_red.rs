@@ -1847,11 +1847,27 @@ mod c2b_atomic_materialization_red {
     fn install_post_freshness_pointer_competitor(db: &Database) {
         db.with_conn(|conn| {
             conn.execute_batch(
-                "INSERT INTO narrative_proposal_revisions
+                "INSERT INTO narrative_proposal_sets
+                    (id, run_id, project_id, set_kind, summary_json, created_at, updated_at)
+                 VALUES ('set-competing-c2b', 'run-human', 'project-a',
+                         'chronicle.extract.review@1', '{}',
+                         '2026-08-24T00:00:00.000Z', '2026-08-24T00:00:00.000Z');
+
+                 INSERT INTO narrative_proposals
+                    (id, proposal_set_id, proposal_key, kind, status, payload_json,
+                     current_revision_id, created_at, updated_at)
+                 SELECT 'proposal-competing-c2b', 'set-competing-c2b', 'event:competing:0',
+                        kind, status, payload_json, 'revision-competing-c2b',
+                        created_at, updated_at
+                   FROM narrative_proposals
+                  WHERE id = 'proposal-human';
+
+                 INSERT INTO narrative_proposal_revisions
                     (id, proposal_id, revision_number, payload_json, origin_kind,
                      reconciliation_envelope_json, reconciliation_envelope_digest,
                      created_at, created_by)
-                 SELECT 'revision-competing-c2b', proposal_id, 2, payload_json, 'enveloped',
+                 SELECT 'revision-competing-c2b', 'proposal-competing-c2b', 1,
+                        payload_json, 'enveloped',
                         reconciliation_envelope_json, reconciliation_envelope_digest,
                         created_at, created_by
                    FROM narrative_proposal_revisions
