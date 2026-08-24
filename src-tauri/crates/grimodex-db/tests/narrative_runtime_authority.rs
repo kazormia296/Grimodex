@@ -217,6 +217,7 @@ fn disabled_runtime_still_allows_in_flight_work_to_terminalize_and_release_lease
             lease_owner: "worker-finish".into(),
             output_json: Some(json!({ "ok": true })),
             artifacts: vec![],
+            chronicle_stage_bundle: None,
         },
     )
     .expect("finish in-flight task after disable");

@@ -93,7 +93,9 @@ fn migration_adds_schema_33_sealed_declaration_storage() {
         })
         .expect("inspect D1 schema");
 
-    assert_eq!(version, 33);
+    // D1's declaration tables are introduced at SCHEMA 33; the current
+    // migration continues through the C2A SCHEMA 34 checkpoint.
+    assert_eq!(version, 34);
     assert_eq!(
         tables,
         vec![
@@ -372,6 +374,8 @@ fn rewinding_the_marker_and_removing_d1_objects_replays_migration() {
     let version: i32 = db
         .with_conn(|conn| Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?))
         .expect("read replayed marker");
-    assert_eq!(version, 33);
+    // Replaying from the historical SCHEMA 32 parent runs D1 (33) and then
+    // reaches the current C2A checkpoint (34).
+    assert_eq!(version, 34);
     assert!(verify_dependency_declaration_storage(&db).expect("verify replayed schema"));
 }

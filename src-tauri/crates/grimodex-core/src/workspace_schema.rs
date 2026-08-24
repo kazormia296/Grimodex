@@ -582,9 +582,11 @@ pub fn has_v13_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> 
 /// re-keys legacy Backfill Run Edges onto Application Consumers and records
 /// the completion marker only after every project passes preflight. Version
 /// 33 adds sealed Dependency declaration sets, immutable entries, and
-/// optimistic Consumer heads for the NIR-0 D1 storage boundary.
+/// optimistic Consumer heads for the NIR-0 D1 storage boundary. Version 34
+/// adds C2A's durable stage audit metadata and the structural V2 lineage
+/// monotonicity guard.
 pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Result<bool> {
-    Ok(SCHEMA_VERSION == 33
+    Ok(SCHEMA_VERSION == 34
         && has_v3_physical_invariants(conn)?
         && has_v13_checkpoint_invariants(conn)?
         && table_exists(conn, "import_captures")?
@@ -622,7 +624,157 @@ pub fn has_current_schema_checkpoint_invariants(conn: &Connection) -> anyhow::Re
         // D1 stores only complete, sealed Dependency declaration sets. The
         // physical shape is checked here before the schema marker advances;
         // V2 remains a non-authoritative shadow until a later cutover lane.
-        && has_v33_dependency_declaration_storage(conn)?)
+        && has_v33_dependency_declaration_storage(conn)?
+        && has_v34_c2a_stage_storage(conn)?)
+}
+
+/// SCHEMA 34 / NIR-0 C2A: durable, non-authoritative Stage model bindings and
+/// terminal receipts. The C1 closure is validated transaction-locally and is
+/// intentionally ephemeral (ADR 011 §2.1/plan 34f).
+fn has_v34_c2a_stage_storage(conn: &Connection) -> anyhow::Result<bool> {
+    for table in [
+        "narrative_extraction_stage_model_bindings",
+        "narrative_extraction_stage_receipts",
+    ] {
+        if !table_exists(conn, table)? {
+            return Ok(false);
+        }
+    }
+
+    let binding_table_columns = table_columns(conn, "narrative_extraction_stage_model_bindings")?;
+    let receipt_table_columns = table_columns(conn, "narrative_extraction_stage_receipts")?;
+    let binding_columns = [
+        ("id", "TEXT", true),
+        ("project_id", "TEXT", true),
+        ("run_id", "TEXT", true),
+        ("task_id", "TEXT", true),
+        ("attempt_id", "TEXT", true),
+        ("stage_execution_id", "TEXT", true),
+        ("binding_json", "TEXT", true),
+        ("binding_digest", "TEXT", true),
+        ("created_at", "TEXT", true),
+    ];
+    let receipt_columns = [
+        ("id", "TEXT", true),
+        ("project_id", "TEXT", true),
+        ("run_id", "TEXT", true),
+        ("task_id", "TEXT", true),
+        ("attempt_id", "TEXT", true),
+        ("stage_execution_id", "TEXT", true),
+        ("receipt_json", "TEXT", true),
+        ("receipt_digest", "TEXT", true),
+        ("model_binding_digest", "TEXT", true),
+        ("terminal_status", "TEXT", true),
+        ("created_at", "TEXT", true),
+    ];
+    let columns_ok = |table_columns: &[ColumnShape], columns: &[(&str, &str, bool)]| {
+        table_columns.len() == columns.len()
+            && columns
+                .iter()
+                .enumerate()
+                .all(|(index, (name, declared_type, not_null))| {
+                    let Some(column) = table_columns.get(index) else {
+                        return false;
+                    };
+                    column.name == *name
+                        && column.declared_type == *declared_type
+                        && column.not_null == *not_null
+                        && (index != 0 || column.primary_key == 1)
+                        && (index == 0 || column.primary_key == 0)
+                })
+    };
+    let index_matches = |index: &str, expected: &[&str]| -> anyhow::Result<bool> {
+        Ok(index_columns(conn, index)?
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied()))
+    };
+    let fk_matches = |table: &str, from: &str, parent: &str, to: &str| {
+        foreign_key_matches(conn, table, from, parent, to)
+    };
+    let binding_sql = compact_sql(&table_sql(
+        conn,
+        "narrative_extraction_stage_model_bindings",
+    )?);
+    let receipt_sql = compact_sql(&table_sql(conn, "narrative_extraction_stage_receipts")?);
+    let digest_check = |sql: &str, field: &str| {
+        sql.contains(&format!(
+            "check(length({field})=71and{field}glob'sha256:*'andsubstr({field},8)notglob'*[^0-9a-f]*')"
+        ))
+    };
+    let trigger_sql = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master
+              WHERE type = 'trigger'
+                AND name = 'narrative_proposal_revisions_v2_monotonicity_guard'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|sql| compact_sql(&sql));
+
+    Ok(columns_ok(&binding_table_columns, &binding_columns)
+        && columns_ok(&receipt_table_columns, &receipt_columns)
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_model_bindings_1",
+            &["id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_model_bindings_2",
+            &["project_id", "stage_execution_id"],
+        )?
+        && index_matches(
+            "idx_narrative_stage_model_bindings_owner",
+            &["project_id", "run_id", "task_id", "attempt_id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_receipts_1",
+            &["id"],
+        )?
+        && index_matches(
+            "sqlite_autoindex_narrative_extraction_stage_receipts_2",
+            &["project_id", "stage_execution_id"],
+        )?
+        && index_matches(
+            "idx_narrative_stage_receipts_owner",
+            &["project_id", "run_id", "task_id", "attempt_id"],
+        )?
+        && fk_matches(
+            "narrative_extraction_stage_model_bindings",
+            "project_id",
+            "projects",
+            "id",
+        )?
+        && fk_matches(
+            "narrative_extraction_stage_receipts",
+            "project_id",
+            "projects",
+            "id",
+        )?
+        && binding_sql.contains(
+            "check(json_valid(binding_json)andjson_type(binding_json)='object')",
+        )
+        && digest_check(&binding_sql, "binding_digest")
+        && binding_sql.contains("unique(project_id,stage_execution_id)")
+        && receipt_sql.contains(
+            "check(json_valid(receipt_json)andjson_type(receipt_json)='object')",
+        )
+        && digest_check(&receipt_sql, "receipt_digest")
+        && digest_check(&receipt_sql, "model_binding_digest")
+        && receipt_sql.contains(
+            "check(terminal_statusin('succeeded','failed','cancelled','skipped'))",
+        )
+        && receipt_sql.contains("unique(project_id,stage_execution_id)")
+        && trigger_sql.is_some_and(|sql| {
+            sql.contains("beforeinsertonnarrative_proposal_revisions")
+                && sql.contains("whenexists(select1fromnarrative_proposalspjoinnarrative_proposal_revisionscurrent_revision")
+                && sql.contains("current_revision.origin_kind='enveloped'")
+                && sql.contains("json_extract(current_revision.reconciliation_envelope_json,'$.schemaversion')=2")
+                && sql.contains("new.origin_kind<>'enveloped'")
+                && sql.contains("new.reconciliation_envelope_jsonisnull")
+                && sql.contains("json_extract(new.reconciliation_envelope_json,'$.schemaversion')<>2")
+                && sql.contains("nex_revision_envelope_downgrade_forbidden")
+        }))
 }
 
 /// SCHEMA 33 / NIR-0 D1: durable Dependency declaration storage is append
@@ -1712,6 +1864,37 @@ fn index_columns(conn: &Connection, index: &str) -> anyhow::Result<Vec<String>> 
         .collect::<Result<Vec<_>, _>>()
         .map_err(anyhow::Error::from)?;
     Ok(columns)
+}
+
+fn foreign_key_matches(
+    conn: &Connection,
+    table: &str,
+    from: &str,
+    parent: &str,
+    to: &str,
+) -> anyhow::Result<bool> {
+    let mut statement = conn.prepare(
+        "SELECT \"from\", \"table\", \"to\", on_delete
+           FROM pragma_foreign_key_list(?1)",
+    )?;
+    let foreign_keys = statement
+        .query_map([table], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(foreign_keys
+        .iter()
+        .any(|(actual_from, actual_parent, actual_to, on_delete)| {
+            actual_from == from
+                && actual_parent == parent
+                && actual_to == to
+                && on_delete.eq_ignore_ascii_case("CASCADE")
+        }))
 }
 
 fn compact_sql(sql: &str) -> String {

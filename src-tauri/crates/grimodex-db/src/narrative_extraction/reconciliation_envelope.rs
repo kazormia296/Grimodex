@@ -8,6 +8,11 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{anyhow, Context};
+use grimodex_core::narrative_ir::validate_chronicle_scene_event_v2;
+use grimodex_core::{
+    canonical_json_digest as core_canonical_json_digest,
+    canonical_json_string as core_canonical_json_string,
+};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -99,8 +104,12 @@ pub(crate) fn validate_reconciliation_envelope(
         .as_object()
         .context("NEX_ENVELOPE_INVALID: envelope must be a JSON object")?;
 
+    if envelope_schema_version(envelope) == Some(2) {
+        return validate_v2_reconciliation_envelope(conn, project_id, run_id, envelope);
+    }
+
     anyhow::ensure!(
-        object.get("schemaVersion").and_then(Value::as_u64) == Some(1),
+        envelope_schema_version(envelope) == Some(1),
         "NEX_ENVELOPE_SCHEMA_UNSUPPORTED: schemaVersion must be 1"
     );
     let envelope_run_id = required_string(object, "runId")?;
@@ -317,13 +326,242 @@ pub(crate) fn validate_reconciliation_envelope(
         return Ok(None);
     }
 
-    let canonical_json = canonical_json_string(envelope)?;
+    let canonical_json = core_canonical_json_string(envelope)?;
     let digest = digest_bytes(canonical_json.as_bytes());
     Ok(Some(ValidatedReconciliationEnvelope {
         canonical_json,
         digest,
         source_basis,
     }))
+}
+
+/// Validate and canonicalise the C1 Chronicle Envelope V2 persistence shape.
+/// The pure Core validator owns the structural vocabulary; this persistence
+/// boundary additionally binds the run/task identity, recomputes every
+/// durable nested digest, and extracts the immutable source basis rows.
+fn validate_v2_reconciliation_envelope(
+    conn: &Connection,
+    project_id: &str,
+    run_id: &str,
+    envelope: &Value,
+) -> anyhow::Result<Option<ValidatedReconciliationEnvelope>> {
+    validate_chronicle_scene_event_v2(envelope)
+        .map_err(|error| anyhow!("NEX_ENVELOPE_V2_INVALID: {error}"))?;
+    let object = envelope
+        .as_object()
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_INVALID: envelope must be a JSON object"))?;
+
+    let run_project: Option<String> = conn
+        .query_row(
+            "SELECT project_id FROM narrative_extraction_runs WHERE id = ?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    anyhow::ensure!(
+        run_project.as_deref() == Some(project_id),
+        "NEX_ENVELOPE_PROJECT_MISMATCH: run does not belong to project"
+    );
+
+    let basis = object
+        .get("revisionBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: revisionBasis must be an object"))?;
+    if basis.get("kind").and_then(Value::as_str) == Some("interpretation") {
+        let envelope_run_id = required_string(basis, "runId")?;
+        anyhow::ensure!(
+            envelope_run_id == run_id,
+            "NEX_ENVELOPE_RUN_MISMATCH: envelope runId does not match payload runId"
+        );
+        let task_id = required_string(basis, "taskId")?;
+        let task_run: Option<String> = conn
+            .query_row(
+                "SELECT run_id FROM narrative_extraction_tasks WHERE id = ?1",
+                params![task_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        anyhow::ensure!(
+            task_run.as_deref() == Some(run_id),
+            "NEX_ENVELOPE_TASK_MISMATCH: task does not belong to run"
+        );
+    }
+
+    validate_v2_nested_digest_fields(object)?;
+    let source_basis_values = object
+        .get("effectiveMaterialBasis")
+        .and_then(Value::as_object)
+        .and_then(|material| material.get("sourceBasis"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_SOURCE_BASIS_INVALID: sourceBasis is missing"))?;
+    let mut source_keys = HashSet::new();
+    let mut source_basis = Vec::with_capacity(source_basis_values.len());
+    for (ordinal, value) in source_basis_values.iter().enumerate() {
+        let source = value.as_object().ok_or_else(|| {
+            anyhow!("NEX_ENVELOPE_SOURCE_BASIS_INVALID: entry {ordinal} is not an object")
+        })?;
+        let source_kind = required_string(source, "sourceKind")?;
+        let source_key = required_string(source, "sourceKey")?;
+        let revision_token = required_string(source, "revisionToken")?;
+        anyhow::ensure!(
+            source_keys.insert(source_key),
+            "NEX_ENVELOPE_SOURCE_BASIS_DUPLICATE: sourceKey '{source_key}' is duplicated"
+        );
+        source_basis.push(SourceBasisRow {
+            ordinal: i64::try_from(ordinal).context("source basis ordinal overflow")?,
+            source_kind: source_kind.to_owned(),
+            source_key: source_key.to_owned(),
+            revision_token: revision_token.to_owned(),
+            observed_at: source
+                .get("revisionObservedAt")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        });
+    }
+
+    let canonical_json = core_canonical_json_string(envelope)?;
+    let digest = digest_bytes(canonical_json.as_bytes());
+    Ok(Some(ValidatedReconciliationEnvelope {
+        canonical_json,
+        digest,
+        source_basis,
+    }))
+}
+
+/// Recompute the seven C2A durable Envelope V2 digest fields. A caller may
+/// supply a syntactically valid forged digest, but it can never become a
+/// persisted authority: the stable mismatch code is intentionally shared by
+/// every nested field.
+pub(crate) fn validate_v2_nested_digest_fields(object: &Map<String, Value>) -> anyhow::Result<()> {
+    let assertion = object
+        .get("assertion")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertion is missing"))?;
+    let assertion_digests = object
+        .get("assertionDigests")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertionDigests is missing"))?;
+    let mut assertion_core_input = serde_json::json!({
+        "assertionKind": assertion.get("assertionKind"),
+        "payloadSchemaRef": assertion.get("payloadSchemaRef"),
+        "typedSemanticPayload": assertion.get("payload"),
+        "modality": assertion.get("modality"),
+        "polarity": assertion.get("polarity"),
+        "supportClass": assertion.get("supportClass"),
+        "producer": assertion.get("producer")
+    });
+    // `producerConfidence` is optional in the C1 assertion shape. Match the
+    // canonical object domain exactly: absent means the key is omitted, while
+    // an explicitly supplied confidence participates in the digest.
+    if let Some(producer_confidence) = assertion.get("producerConfidence") {
+        assertion_core_input["producerConfidence"] = producer_confidence.clone();
+    }
+    let assertion_core = digest_json(&assertion_core_input)?;
+    ensure_nested_digest(assertion_digests, "assertionCoreDigest", &assertion_core)?;
+    let scope_digest = digest_json(
+        assertion
+            .get("scope")
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: assertion.scope is missing"))?,
+    )?;
+    ensure_nested_digest(assertion_digests, "scopeDigest", &scope_digest)?;
+    let assertion_digest = digest_json(&serde_json::json!({
+        "assertionCoreDigest": assertion_core,
+        "scopeDigest": scope_digest
+    }))?;
+    ensure_nested_digest(assertion_digests, "assertionDigest", &assertion_digest)?;
+
+    let material = object
+        .get("effectiveMaterialBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: effectiveMaterialBasis is missing"))?;
+    let dependency_set = material
+        .get("dependencySet")
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: dependencySet is missing"))?;
+    let evidence_set = material
+        .get("evidenceSet")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: evidenceSet is missing"))?;
+    for (index, evidence) in evidence_set.iter().enumerate() {
+        let evidence = evidence.as_object().ok_or_else(|| {
+            anyhow!("NEX_ENVELOPE_V2_INVALID: evidenceSet entry {index} is not an object")
+        })?;
+        let quote = required_string(evidence, "quote")?;
+        let supplied_quote_digest = required_string(evidence, "quoteDigest")?;
+        ensure_sha256_digest(supplied_quote_digest, "quoteDigest")?;
+        anyhow::ensure!(
+            supplied_quote_digest == digest_bytes(quote.as_bytes()),
+            "NEX_ENVELOPE_DIGEST_MISMATCH: quoteDigest does not match raw UTF-8 quote bytes"
+        );
+    }
+    let dependency_digest = digest_json(dependency_set)?;
+    ensure_nested_digest(material, "dependencySetDigest", &dependency_digest)?;
+    let material_digest = digest_json(&serde_json::json!({
+        "sourceBasis": material.get("sourceBasis"),
+        "evidenceSet": material.get("evidenceSet"),
+        "dependencySet": dependency_set
+    }))?;
+    ensure_nested_digest(material, "materialBasisDigest", &material_digest)?;
+
+    let basis = object
+        .get("revisionBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: revisionBasis is missing"))?;
+    let context_key = match basis.get("kind").and_then(Value::as_str) {
+        Some("interpretation") => "contextSet",
+        Some("human-derived") => "derivationContextSet",
+        _ => "contextSet",
+    };
+    let context = basis
+        .get(context_key)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_V2_INVALID: {context_key} is missing"))?;
+    let context_digest = digest_json(&serde_json::json!({
+        "version": "chronicle.context-set/1",
+        "entries": context
+    }))?;
+    let context_digest_key = if context_key == "contextSet" {
+        "contextSetDigest"
+    } else {
+        "derivationContextSetDigest"
+    };
+    ensure_nested_digest(basis, context_digest_key, &context_digest)?;
+    Ok(())
+}
+
+fn ensure_nested_digest(
+    object: &Map<String, Value>,
+    field: &str,
+    expected: &str,
+) -> anyhow::Result<()> {
+    let supplied = object
+        .get(field)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_DIGEST_MISMATCH: {field} is missing"))?;
+    ensure_sha256_digest(supplied, field)?;
+    anyhow::ensure!(
+        supplied == expected,
+        "NEX_ENVELOPE_DIGEST_MISMATCH: {field} does not match Native recomputation"
+    );
+    Ok(())
+}
+
+pub(crate) fn ensure_v2_proposal_payload_digest(
+    envelope: &Value,
+    proposal_payload: &Value,
+) -> anyhow::Result<()> {
+    if envelope_schema_version(envelope) != Some(2) {
+        return Ok(());
+    }
+    let supplied = envelope
+        .pointer("/projectionBinding/proposalPayloadDigest")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("NEX_ENVELOPE_DIGEST_MISMATCH: proposalPayloadDigest is missing"))?;
+    let expected = digest_json(proposal_payload)?;
+    ensure_sha256_digest(supplied, "proposalPayloadDigest")?;
+    anyhow::ensure!(
+        supplied == expected,
+        "NEX_ENVELOPE_DIGEST_MISMATCH: proposalPayloadDigest does not match Native recomputation"
+    );
+    Ok(())
 }
 
 /// Validate the live revision vector at proposal/revision save time. Legacy
@@ -335,6 +573,30 @@ pub(crate) fn validate_envelope_source_tokens(
     run_id: &str,
     envelope: &Value,
 ) -> anyhow::Result<()> {
+    if envelope_schema_version(envelope) == Some(2) {
+        let source_basis = envelope
+            .pointer("/effectiveMaterialBasis/sourceBasis")
+            .and_then(Value::as_array)
+            .ok_or_else(|| anyhow!("NEX_ENVELOPE_SOURCE_BASIS_INVALID: sourceBasis is missing"))?;
+        for (index, entry) in source_basis.iter().enumerate() {
+            let object = entry.as_object().ok_or_else(|| {
+                anyhow!("NEX_ENVELOPE_SOURCE_BASIS_INVALID: entry {index} is not an object")
+            })?;
+            let source_kind = required_string(object, "sourceKind")?;
+            let source_key = required_string(object, "sourceKey")?;
+            let expected = required_string(object, "revisionToken")?;
+            let current =
+                resolve_source_revision(conn, project_id, run_id, source_kind, source_key)?;
+            anyhow::ensure!(
+                current.revision_token == expected,
+                "NEX_READ_SET_STALE: input '{}' expected '{}' but found '{}'",
+                source_key,
+                expected,
+                current.revision_token
+            );
+        }
+        return Ok(());
+    }
     let read_set = required_array(
         envelope
             .as_object()
@@ -391,6 +653,21 @@ fn required_string<'a>(object: &'a Map<String, Value>, field: &str) -> anyhow::R
         "NEX_ENVELOPE_FIELD_INVALID: {field} must not be empty"
     );
     Ok(value)
+}
+
+/// Match the Core validator's integer-valued JSON contract. JavaScript parses
+/// `2.0` and `2e0` as the same Number as `2`; the V2 ingress must classify
+/// those spellings as schema version 2 before choosing the V1/V2 path.
+pub(crate) fn envelope_schema_version(value: &Value) -> Option<u64> {
+    let number = value.get("schemaVersion")?.as_number()?;
+    if let Some(integer) = number.as_u64() {
+        return Some(integer);
+    }
+    let float = number.as_f64()?;
+    if !float.is_finite() || float < 0.0 || float.fract() != 0.0 || float >= u64::MAX as f64 {
+        return None;
+    }
+    Some(float as u64)
 }
 
 fn read_set_kind_for_source_kind(source_kind: &str) -> anyhow::Result<&'static str> {
@@ -454,27 +731,8 @@ fn ensure_sha256_digest(value: &str, field: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn canonical_json_string(value: &Value) -> anyhow::Result<String> {
-    serde_json::to_string(&canonical_json_value(value)).context("serialize canonical envelope")
-}
-
-fn canonical_json_value(value: &Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.iter().map(canonical_json_value).collect()),
-        Value::Object(map) => {
-            let sorted: BTreeMap<_, _> = map
-                .iter()
-                .map(|(key, value)| (key.clone(), canonical_json_value(value)))
-                .collect();
-            Value::Object(sorted.into_iter().collect())
-        }
-        _ => value.clone(),
-    }
-}
-
 fn digest_json(value: &Value) -> anyhow::Result<String> {
-    let canonical = canonical_json_string(value)?;
-    Ok(digest_bytes(canonical.as_bytes()))
+    core_canonical_json_digest(value).context("digest canonical envelope")
 }
 
 fn digest_bytes(bytes: &[u8]) -> String {
@@ -483,7 +741,7 @@ fn digest_bytes(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{canonical_json_string, digest_json};
+    use super::{core_canonical_json_string as canonical_json_string, digest_json};
     use serde_json::json;
 
     #[test]

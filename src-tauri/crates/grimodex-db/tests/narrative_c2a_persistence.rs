@@ -12,8 +12,9 @@
 
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
-    self, AppendRevisionPayload, ArtifactInput, CreateRunPayload, CreateTaskSeed,
-    FinishTaskPayload, ProposalSeed, SaveProposalSetPayload,
+    self, AppendRevisionPayload, ArtifactInput, ChronicleStageC1ExecutionBinding,
+    ChronicleStageProvenanceClosure, CreateRunPayload, CreateTaskSeed, FinishTaskPayload,
+    ProposalSeed, SaveProposalSetPayload,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -155,7 +156,7 @@ fn create_run(db: &Database, project_id: &str, run_id: &str, task_id: &str) {
             coverage_json: None,
             tasks: vec![CreateTaskSeed {
                 task_id: Some(task_id.to_owned()),
-                task_kind: "chronicle.plan-proposals".to_owned(),
+                task_kind: "chronicle.plan-proposals@1".to_owned(),
                 input_json: None,
                 priority: None,
             }],
@@ -451,6 +452,20 @@ fn assert_envelope_digest_fields(envelope: &Value) {
         "supportClass": assertion["supportClass"],
         "producer": producer
     }));
+    let assertion_core = if let Some(producer_confidence) = assertion.get("producerConfidence") {
+        digest(&json!({
+            "assertionKind": assertion["assertionKind"],
+            "payloadSchemaRef": assertion["payloadSchemaRef"],
+            "typedSemanticPayload": semantic,
+            "modality": assertion["modality"],
+            "polarity": assertion["polarity"],
+            "supportClass": assertion["supportClass"],
+            "producer": producer,
+            "producerConfidence": producer_confidence
+        }))
+    } else {
+        assertion_core
+    };
     let scope_digest = digest(&assertion["scope"]);
     let assertion_digest = digest(&json!({
         "assertionCoreDigest": assertion_core,
@@ -502,27 +517,17 @@ fn save_v2_root(
     task_id: &str,
     proposal_id: &str,
 ) -> Value {
-    let envelope = envelope_v2(db, project_id, run_id, task_id, "Arrival");
-    assert_envelope_digest_fields(&envelope);
-    narrative_extraction::narrative_extraction_save_proposal_set(
+    let revision_id = format!("revision-{proposal_id}");
+    let source_token = scene_revision_token(db, project_id);
+    seed_v2_parent(
         db,
-        SaveProposalSetPayload {
-            run_id: run_id.to_owned(),
-            project_id: project_id.to_owned(),
-            proposal_set_id: Some(format!("set-{proposal_id}")),
-            set_kind: "chronicle.extract.review@1".to_owned(),
-            summary_json: None,
-            proposals: vec![ProposalSeed {
-                proposal_id: Some(proposal_id.to_owned()),
-                proposal_key: "event:arrival:0".to_owned(),
-                kind: PROPOSAL_KIND.to_owned(),
-                payload_json: proposal_payload("Arrival", false),
-                reconciliation_envelope: Some(envelope),
-            }],
-        },
+        project_id,
+        run_id,
+        task_id,
+        proposal_id,
+        &revision_id,
+        &source_token,
     )
-    .expect("Native must persist a C1-compatible Envelope V2")["proposals"][0]
-        .clone()
 }
 
 const FORGED_DIGEST: &str =
@@ -536,6 +541,7 @@ fn forge_envelope_digest(envelope: &mut Value, field: &str) {
         "dependencySetDigest" | "materialBasisDigest" => {
             &mut envelope["effectiveMaterialBasis"][field]
         }
+        "quoteDigest" => &mut envelope["effectiveMaterialBasis"]["evidenceSet"][0][field],
         "contextSetDigest" => &mut envelope["revisionBasis"][field],
         "proposalPayloadDigest" => &mut envelope["projectionBinding"][field],
         other => panic!("unknown Envelope digest field {other}"),
@@ -547,56 +553,27 @@ fn assert_forged_digest_was_not_persisted(
     db: &Database,
     result: anyhow::Result<Value>,
     proposal_id: &str,
-    expected_envelope: &Value,
+    _expected_envelope: &Value,
     field: &str,
 ) {
-    match result {
-        Ok(saved) => {
-            let revision_id = saved["proposals"][0]["revisionId"]
-                .as_str()
-                .expect("saved revision id");
-            let (stored_json, stored_digest): (String, String) = db
-                .with_conn(|conn| {
-                    Ok(conn.query_row(
-                        "SELECT reconciliation_envelope_json,
-                                reconciliation_envelope_digest
-                           FROM narrative_proposal_revisions
-                          WHERE id = ?1",
-                        [revision_id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )?)
-                })
-                .expect("read persisted forged-digest fixture");
-            let stored: Value = serde_json::from_str(&stored_json).expect("stored Envelope JSON");
-            let stored_field = match field {
-                "assertionCoreDigest" | "scopeDigest" | "assertionDigest" => {
-                    &stored["assertionDigests"][field]
-                }
-                "dependencySetDigest" | "materialBasisDigest" => {
-                    &stored["effectiveMaterialBasis"][field]
-                }
-                "contextSetDigest" => &stored["revisionBasis"][field],
-                "proposalPayloadDigest" => &stored["projectionBinding"][field],
-                other => panic!("unknown Envelope digest field {other}"),
-            };
-            assert_ne!(
-                stored_field,
-                &Value::String(FORGED_DIGEST.to_owned()),
-                "Native must not persist a forged nested digest ({field})"
-            );
-            assert_eq!(&stored, expected_envelope);
-            assert_eq!(stored_json, canonical(expected_envelope));
-            assert_eq!(stored_digest, digest(&stored));
-        }
-        Err(error) => {
-            assert!(
-                error
-                    .to_string()
-                    .contains(ENVELOPE_NESTED_DIGEST_MISMATCH_CODE),
-                "forged {field} must fail with {ENVELOPE_NESTED_DIGEST_MISMATCH_CODE}, got {error:#}"
-            );
-        }
-    }
+    let error = result.expect_err("forged nested digest must not persist");
+    let expected_code = ENVELOPE_NESTED_DIGEST_MISMATCH_CODE;
+    assert!(
+        error.to_string().contains(expected_code),
+        "forged {field} must fail with {expected_code}, got {error:#}"
+    );
+    let revision_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*)
+                   FROM narrative_proposal_revisions r
+                  WHERE r.proposal_id = ?1",
+                [proposal_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read rollback count after forged digest");
+    assert_eq!(revision_count, 1, "forged {field} must not append a child");
 }
 
 #[test]
@@ -607,6 +584,7 @@ fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
         "assertionDigest",
         "dependencySetDigest",
         "materialBasisDigest",
+        "quoteDigest",
         "contextSetDigest",
         "proposalPayloadDigest",
     ];
@@ -616,26 +594,34 @@ fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
         let run_id = format!("run-forged-digest-{index}");
         let task_id = format!("task-forged-digest-{index}");
         let proposal_id = format!("proposal-forged-digest-{index}");
-        create_run(&db, PROJECT_A, &run_id, &task_id);
         let expected_envelope = envelope_v2(&db, PROJECT_A, &run_id, &task_id, "Arrival");
         assert_envelope_digest_fields(&expected_envelope);
         let mut forged_envelope = expected_envelope.clone();
         forge_envelope_digest(&mut forged_envelope, field);
-        let result = narrative_extraction::narrative_extraction_save_proposal_set(
+        let parent_revision_id = format!("revision-forged-digest-{index}");
+        let parent = seed_v2_parent(
             &db,
-            SaveProposalSetPayload {
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &proposal_id,
+            &parent_revision_id,
+            &scene_revision_token(&db, PROJECT_A),
+        );
+        let result = narrative_extraction::narrative_extraction_append_revision(
+            &db,
+            AppendRevisionPayload {
                 run_id,
                 project_id: PROJECT_A.to_owned(),
-                proposal_set_id: Some(format!("set-{proposal_id}")),
-                set_kind: "chronicle.extract.review@1".to_owned(),
-                summary_json: None,
-                proposals: vec![ProposalSeed {
-                    proposal_id: Some(proposal_id.clone()),
-                    proposal_key: format!("event:arrival:{index}"),
-                    kind: PROPOSAL_KIND.to_owned(),
-                    payload_json: proposal_payload("Arrival", false),
-                    reconciliation_envelope: Some(forged_envelope),
-                }],
+                proposal_id,
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(forged_envelope),
+                inherit_reconciliation_envelope: None,
+                expected_current_revision_id: parent["revisionId"]
+                    .as_str()
+                    .expect("parent revision")
+                    .to_owned(),
+                created_by: Some("c2a-digest-test".to_owned()),
             },
         );
         assert_forged_digest_was_not_persisted(
@@ -645,6 +631,175 @@ fn native_recomputes_or_rejects_each_nested_envelope_digest_field() {
             &expected_envelope,
             field,
         );
+    }
+}
+
+#[test]
+fn public_v2_save_is_activation_disabled_and_rolls_back_without_breaking_v1_save() {
+    let db = migrated_db();
+    let run_id = "run-public-v2-save";
+    let task_id = "task-public-v2-save";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let error = narrative_extraction::narrative_extraction_save_proposal_set(
+        &db,
+        SaveProposalSetPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_set_id: Some("set-public-v2-save".to_owned()),
+            set_kind: "chronicle.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some("proposal-public-v2-save".to_owned()),
+                proposal_key: "event:arrival:public-v2-save".to_owned(),
+                kind: PROPOSAL_KIND.to_owned(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope_v2(
+                    &db, PROJECT_A, run_id, task_id, "Arrival",
+                )),
+            }],
+        },
+    )
+    .expect_err("public V2 save must remain dormant");
+    assert!(error
+        .to_string()
+        .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"));
+    let set_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_proposal_sets WHERE id = 'set-public-v2-save'",
+                [],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read V2 save rollback");
+    assert_eq!(set_count, 0);
+
+    create_run(&db, PROJECT_A, "run-public-v1-save", "task-public-v1-save");
+    let legacy = save_legacy_root(
+        &db,
+        PROJECT_A,
+        "run-public-v1-save",
+        "task-public-v1-save",
+        "proposal-public-v1-save",
+    );
+    assert_eq!(legacy["originKind"], "legacy-unbound");
+}
+
+#[test]
+fn v2_ingress_binds_optional_producer_confidence_and_shared_numeric_canonicalization() {
+    let db = migrated_db();
+    let run_id = "run-v2-canonical-boundary";
+    let task_id = "task-v2-canonical-boundary";
+    let proposal_id = "proposal-v2-canonical-boundary";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let parent = save_legacy_root(&db, PROJECT_A, run_id, task_id, proposal_id);
+    let mut child = envelope_v2(&db, PROJECT_A, run_id, task_id, "Arrival");
+    child["schemaVersion"] = serde_json::from_str("2.0").expect("integer-valued schema");
+    child["assertion"]["scope"]["schemaVersion"] =
+        serde_json::from_str("2e0").expect("integer-valued nested schema");
+    child["assertion"]["scope"]["scene"]["ref"] = json!("scene:😀");
+    child["assertion"]["producerConfidence"] = json!(0.75);
+    let assertion_core = digest(&json!({
+        "assertionKind": child["assertion"]["assertionKind"],
+        "payloadSchemaRef": child["assertion"]["payloadSchemaRef"],
+        "typedSemanticPayload": child["assertion"]["payload"],
+        "modality": child["assertion"]["modality"],
+        "polarity": child["assertion"]["polarity"],
+        "supportClass": child["assertion"]["supportClass"],
+        "producer": child["assertion"]["producer"],
+        "producerConfidence": child["assertion"]["producerConfidence"]
+    }));
+    let scope_digest = digest(&child["assertion"]["scope"]);
+    child["assertionDigests"]["assertionCoreDigest"] = json!(assertion_core);
+    child["assertionDigests"]["scopeDigest"] = json!(scope_digest);
+    child["assertionDigests"]["assertionDigest"] = json!(digest(&json!({
+        "assertionCoreDigest": assertion_core,
+        "scopeDigest": scope_digest
+    })));
+    assert_envelope_digest_fields(&child);
+
+    let error = narrative_extraction::narrative_extraction_append_revision(
+        &db,
+        AppendRevisionPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            proposal_id: proposal_id.to_owned(),
+            payload_json: proposal_payload("Arrival", false),
+            reconciliation_envelope: Some(child),
+            inherit_reconciliation_envelope: None,
+            expected_current_revision_id: parent["revisionId"]
+                .as_str()
+                .expect("legacy parent revision")
+                .to_owned(),
+            created_by: Some("c2a-canonical-boundary".to_owned()),
+        },
+    )
+    .expect_err("V2 ingress remains activation-disabled after digest validation");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"),
+        "numeric/producer V2 was not recognized before activation gate: {error:#}"
+    );
+}
+
+#[test]
+fn public_v2_append_is_activation_disabled_for_v2_and_legacy_current_without_pointer_change() {
+    for (case, use_v2_current) in [("v2-current", true), ("legacy-current", false)] {
+        let db = migrated_db();
+        let run_id = format!("run-public-v2-append-{case}");
+        let task_id = format!("task-public-v2-append-{case}");
+        let proposal_id = format!("proposal-public-v2-append-{case}");
+        if !use_v2_current {
+            create_run(&db, PROJECT_A, &run_id, &task_id);
+        }
+        let parent = if use_v2_current {
+            save_v2_root(&db, PROJECT_A, &run_id, &task_id, &proposal_id)
+        } else {
+            save_legacy_root(&db, PROJECT_A, &run_id, &task_id, &proposal_id)
+        };
+        let expected_current = parent["revisionId"]
+            .as_str()
+            .expect("parent revision")
+            .to_owned();
+        let error = narrative_extraction::narrative_extraction_append_revision(
+            &db,
+            AppendRevisionPayload {
+                run_id: run_id.clone(),
+                project_id: PROJECT_A.to_owned(),
+                proposal_id: proposal_id.clone(),
+                payload_json: proposal_payload("Arrival", false),
+                reconciliation_envelope: Some(envelope_v2(
+                    &db, PROJECT_A, &run_id, &task_id, "Arrival",
+                )),
+                inherit_reconciliation_envelope: None,
+                expected_current_revision_id: expected_current.clone(),
+                created_by: Some("c2a-activation-test".to_owned()),
+            },
+        )
+        .expect_err("public V2 append must remain dormant");
+        assert!(
+            error
+                .to_string()
+                .contains("NEX_NARRATIVE_V2_ACTIVATION_DISABLED"),
+            "{case}: {error:#}"
+        );
+        let (current_revision, revision_count): (String, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT current_revision_id,
+                            (SELECT COUNT(*) FROM narrative_proposal_revisions WHERE proposal_id = ?1)
+                       FROM narrative_proposals WHERE id = ?1",
+                    rusqlite::params![proposal_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .expect("read V2 append rollback");
+        assert_eq!(
+            current_revision, expected_current,
+            "{case}: pointer changed"
+        );
+        assert_eq!(revision_count, 1, "{case}: child revision persisted");
     }
 }
 
@@ -798,13 +953,45 @@ fn stage_receipt(
     request_digest: &str,
     response: &Value,
 ) -> Value {
+    stage_receipt_with_state(
+        project_id,
+        run_id,
+        task_id,
+        attempt_id,
+        stage_id,
+        stage_execution_id,
+        None,
+        context_digest,
+        component_digest,
+        request_digest,
+        "parsed",
+        "succeeded",
+        Some(response),
+    )
+}
+
+fn stage_receipt_with_state(
+    project_id: &str,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    stage_id: &str,
+    stage_execution_id: &str,
+    parent_stage_execution_id: Option<&str>,
+    context_digest: &str,
+    component_digest: &str,
+    request_digest: &str,
+    parse_status: &str,
+    terminal_status: &str,
+    response: Option<&Value>,
+) -> Value {
     let binding = model_binding();
     let binding_digest = digest(&json!({
         "domain": MODEL_BINDING_DOMAIN,
         "binding": binding
     }));
-    let response_digest = digest(response);
-    let stage_execution = json!({
+    let response_digest = response.map(digest);
+    let mut stage_execution = json!({
         "projectId": project_id,
         "runId": run_id,
         "taskId": task_id,
@@ -812,6 +999,10 @@ fn stage_receipt(
         "stageId": stage_id,
         "stageExecutionId": stage_execution_id
     });
+    if let Some(parent_stage_execution_id) = parent_stage_execution_id {
+        stage_execution["parentStageExecutionId"] =
+            Value::String(parent_stage_execution_id.to_owned());
+    }
     let without_digest = json!({
         "kind": TERMINAL_RECEIPT_KIND,
         "version": 1,
@@ -823,8 +1014,8 @@ fn stage_receipt(
         "modelExecutionBinding": binding,
         "modelBindingDigest": binding_digest,
         "responseDigest": response_digest,
-        "parseStatus": "parsed",
-        "terminalStatus": "succeeded"
+        "parseStatus": parse_status,
+        "terminalStatus": terminal_status
     });
     let receipt_digest = digest(&json!({
         "domain": TERMINAL_RECEIPT_DOMAIN,
@@ -878,16 +1069,45 @@ fn valid_stage_closure(
     );
     // C1 requires canonical code-unit ordering by stageExecutionId.
     let receipts = json!([synthesis_receipt, observation_receipt]);
-    let receipt_refs = json!([
-        {
-            "stageExecutionId": "stage:event-synthesis",
-            "stageExecutionReceiptDigest": receipts[0]["stageExecutionReceiptDigest"]
-        },
-        {
-            "stageExecutionId": "stage:observation",
-            "stageExecutionReceiptDigest": receipts[1]["stageExecutionReceiptDigest"]
-        }
-    ]);
+    closure_for_receipts(
+        project_id,
+        run_id,
+        owner_task_id,
+        owner_attempt_id,
+        receipts,
+    )
+}
+
+fn closure_for_receipts(
+    project_id: &str,
+    run_id: &str,
+    owner_task_id: &str,
+    owner_attempt_id: &str,
+    receipts: Value,
+) -> Value {
+    let receipt_refs = json!(receipts
+        .as_array()
+        .expect("closure receipts")
+        .iter()
+        .map(|receipt| {
+            json!({
+                "stageExecutionId": receipt["stageExecution"]["stageExecutionId"],
+                "stageExecutionReceiptDigest": receipt["stageExecutionReceiptDigest"]
+            })
+        })
+        .collect::<Vec<_>>());
+    let mut receipt_refs = receipt_refs;
+    let refs = receipt_refs.as_array_mut().expect("closure receipt refs");
+    refs.sort_by(|left, right| {
+        left["stageExecutionId"]
+            .as_str()
+            .cmp(&right["stageExecutionId"].as_str())
+            .then_with(|| {
+                left["stageExecutionReceiptDigest"]
+                    .as_str()
+                    .cmp(&right["stageExecutionReceiptDigest"].as_str())
+            })
+    });
     let without_digest = json!({
         "kind": CLOSURE_KIND,
         "version": 1,
@@ -935,11 +1155,50 @@ fn finish_bundle(
         "version": 1,
         "observations": [observation_payload()]
     });
+    finish_bundle_with_raw(
+        db,
+        run_id,
+        task_id,
+        attempt_id,
+        closure,
+        raw_observations,
+        None,
+        None,
+    )
+}
+
+fn finish_bundle_with_raw(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    closure: Value,
+    raw_observations: Value,
+    output_closure_digest: Option<&str>,
+    raw_payload_digest: Option<&str>,
+) -> anyhow::Result<Value> {
+    let closure_digest = closure["stageProvenanceClosureDigest"]
+        .as_str()
+        .expect("closure digest")
+        .to_owned();
+    let typed_closure: ChronicleStageProvenanceClosure =
+        serde_json::from_value(closure).expect("typed ephemeral closure");
     let output = json!({
         "kind": "chronicle.event-synthesis-output@1",
         "observationCount": 1,
         "eventCount": 1,
-        "stageProvenanceClosureDigest": closure["stageProvenanceClosureDigest"]
+        "observationRefs": ["observation:arrival"],
+        "stageProvenanceClosureDigest": output_closure_digest
+            .map_or_else(|| closure["stageProvenanceClosureDigest"].clone(), |digest| json!(digest))
+    });
+    let raw_artifact = artifact(
+        &format!("{task_id}-raw-observations"),
+        "chronicle.raw-observations@1",
+        raw_observations,
+    );
+    let raw_artifact = raw_payload_digest.map_or(raw_artifact, |payload_digest| ArtifactInput {
+        payload_digest: Some(payload_digest.to_owned()),
+        ..raw_artifact
     });
     narrative_extraction::narrative_extraction_finish_task(
         db,
@@ -950,18 +1209,18 @@ fn finish_bundle(
             attempt_id: attempt_id.to_owned(),
             lease_owner: "c2a-test-worker".to_owned(),
             output_json: Some(output),
-            artifacts: vec![
-                artifact(
-                    &format!("{task_id}-raw-observations"),
-                    "chronicle.raw-observations@1",
-                    raw_observations,
-                ),
-                artifact(
-                    &format!("{task_id}-stage-closure"),
-                    "chronicle.stage-provenance-closure@1",
-                    closure,
-                ),
-            ],
+            artifacts: vec![raw_artifact],
+            chronicle_stage_bundle: Some(ChronicleStageC1ExecutionBinding {
+                project_id: PROJECT_A.to_owned(),
+                run_id: run_id.to_owned(),
+                task_id: task_id.to_owned(),
+                attempt_id: attempt_id.to_owned(),
+                context_set_digest: context_set_digest(),
+                component_contract_digest: component_contract_digest(),
+                final_request_digest: final_request_digest(),
+                stage_provenance_closure_digest: closure_digest,
+                closure: typed_closure,
+            }),
         },
     )
 }
@@ -969,8 +1228,6 @@ fn finish_bundle(
 #[test]
 fn persists_native_canonical_envelope_v2_and_project_qualified_identity() {
     let db = migrated_db();
-    create_run(&db, PROJECT_A, "run-v2-a", "task-v2-a");
-    create_run(&db, PROJECT_B, "run-v2-b", "task-v2-b");
     let expected_a = envelope_v2(&db, PROJECT_A, "run-v2-a", "task-v2-a", "Arrival");
     let expected_b = envelope_v2(&db, PROJECT_B, "run-v2-b", "task-v2-b", "Arrival");
     assert_envelope_digest_fields(&expected_a);
@@ -1101,7 +1358,492 @@ fn persists_a_valid_atomic_stage_bundle_with_receipts_bindings_output_and_artifa
         output["stageProvenanceClosureDigest"],
         closure["stageProvenanceClosureDigest"]
     );
-    assert_eq!(artifact_count, 2);
+    assert_eq!(
+        artifact_count, 1,
+        "only durable raw observations are retained"
+    );
+}
+
+#[test]
+fn persists_a_valid_structured_repair_path_without_new_task_or_attempt() {
+    let db = migrated_db();
+    let run_id = "run-stage-repair";
+    let task_id = "task-stage-repair";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let context_digest = context_set_digest();
+    let component_digest = component_contract_digest();
+    let request_digest = final_request_digest();
+    let failed_observation = stage_receipt_with_state(
+        PROJECT_A,
+        run_id,
+        "task:observation",
+        "attempt:observation",
+        OBSERVATION_STAGE_ID,
+        "stage:observation-failed",
+        None,
+        &context_digest,
+        &component_digest,
+        &request_digest,
+        "invalid",
+        "failed",
+        Some(&json!({"error": "invalid observation shape"})),
+    );
+    let repaired_observation = stage_receipt_with_state(
+        PROJECT_A,
+        run_id,
+        "task:observation",
+        "attempt:observation",
+        "narrative_structured_repair",
+        "stage:observation-repair",
+        Some("stage:observation-failed"),
+        &context_digest,
+        &component_digest,
+        &request_digest,
+        "parsed",
+        "succeeded",
+        Some(&json!({"observations": [observation_payload()]})),
+    );
+    let synthesis = stage_receipt(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:event-synthesis",
+        &context_digest,
+        &component_digest,
+        &request_digest,
+        &json!({"proposal": proposal_payload("Arrival", false)}),
+    );
+    let closure = closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        json!([synthesis, failed_observation, repaired_observation]),
+    );
+    finish_bundle(&db, run_id, task_id, &attempt_id, closure)
+        .expect("failed root plus parsed repair child must close atomically");
+
+    let (receipt_count, binding_count): (i64, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                      WHERE project_id = ?1 AND run_id = ?2),
+                    (SELECT COUNT(*) FROM narrative_extraction_stage_model_bindings
+                      WHERE project_id = ?1 AND run_id = ?2)",
+                rusqlite::params![PROJECT_A, run_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("read persisted repair closure");
+    assert_eq!(receipt_count, 3);
+    assert_eq!(binding_count, 3);
+}
+
+#[test]
+fn rejects_owner_synthesis_c1_digest_forgery_against_trusted_binding_atomically() {
+    let db = migrated_db();
+    let run_id = "run-stage-owner-digest-forged";
+    let task_id = "task-stage-owner-digest-forged";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let forged_context_digest = digest(&json!({"forged": "owner-context"}));
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &forged_context_digest,
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let error = finish_bundle(&db, run_id, task_id, &attempt_id, closure)
+        .expect_err("owner synthesis C1 digest must be bound to trusted execution input");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_STAGE_BUNDLE_DIGEST_MISMATCH"),
+        "unexpected owner digest error: {error:#}"
+    );
+    let (task_status, attempt_status, artifact_count, receipt_count, binding_count): (
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+    ) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2),
+                        (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                          WHERE run_id = ?1),
+                        (SELECT COUNT(*) FROM narrative_extraction_stage_model_bindings
+                          WHERE run_id = ?1)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )?)
+        })
+        .expect("read owner digest rollback");
+    assert_eq!(task_status, "running");
+    assert_eq!(attempt_status, "running");
+    assert_eq!(artifact_count, 0);
+    assert_eq!(receipt_count, 0);
+    assert_eq!(binding_count, 0);
+}
+
+#[test]
+fn owner_synthesis_binding_cannot_use_unrelated_successful_root() {
+    let db = migrated_db();
+    let run_id = "run-stage-owner-path";
+    let task_id = "task-stage-owner-path";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let context_digest = context_set_digest();
+    let component_digest = component_contract_digest();
+    let request_digest = final_request_digest();
+    let failed_owner = stage_receipt_with_state(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:owner-failed",
+        None,
+        &context_digest,
+        &component_digest,
+        &request_digest,
+        "invalid",
+        "failed",
+        Some(&json!({"error": "owner synthesis failed"})),
+    );
+    let unrelated_success = stage_receipt(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        EVENT_SYNTHESIS_STAGE_ID,
+        "stage:owner-unrelated-success",
+        &digest(&json!({"unrelated": "context"})),
+        &component_digest,
+        &request_digest,
+        &json!({"proposal": proposal_payload("Unrelated", false)}),
+    );
+    let observation = stage_receipt(
+        PROJECT_A,
+        run_id,
+        "task:observation",
+        "attempt:observation",
+        OBSERVATION_STAGE_ID,
+        "stage:observation-owner-path",
+        &context_digest,
+        &component_digest,
+        &request_digest,
+        &json!({"observations": [observation_payload()]}),
+    );
+    let closure = closure_for_receipts(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        json!([failed_owner, unrelated_success, observation]),
+    );
+    let error = finish_bundle(&db, run_id, task_id, &attempt_id, closure)
+        .expect_err("unrelated synthesis success must not satisfy owner binding");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_STAGE_BUNDLE_OWNER_PATH_MISMATCH"),
+        "unexpected owner path error: {error:#}"
+    );
+}
+
+#[test]
+fn chronicle_synthesis_requires_typed_closure_raw_output_link_atomically() {
+    let db = migrated_db();
+    let run_id = "run-stage-companion-missing";
+    let task_id = "task-stage-companion-missing";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let output = json!({
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": 1,
+        "eventCount": 1,
+        "observationRefs": ["observation:arrival"],
+        "stageProvenanceClosureDigest": FORGED_DIGEST
+    });
+    let raw = json!({
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": [observation_payload()]
+    });
+    let error = narrative_extraction::narrative_extraction_finish_task(
+        &db,
+        FinishTaskPayload {
+            run_id: run_id.to_owned(),
+            project_id: PROJECT_A.to_owned(),
+            task_id: task_id.to_owned(),
+            attempt_id: attempt_id.clone(),
+            lease_owner: "c2a-test-worker".to_owned(),
+            output_json: Some(output),
+            artifacts: vec![artifact(
+                "missing-closure-raw",
+                "chronicle.raw-observations@1",
+                raw,
+            )],
+            // The output/raw reserved pair intentionally enters the generic
+            // path here to prove the typed closure bundle cannot be omitted.
+            chronicle_stage_bundle: None,
+        },
+    )
+    .expect_err("typed Chronicle output without closure must fail closed");
+    assert!(error
+        .to_string()
+        .contains("NEX_CHRONICLE_STAGE_BUNDLE_REQUIRED"));
+    let (task_status, attempt_status, artifact_count): (String, String, i64) = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("read missing-companion rollback");
+    assert_eq!(task_status, "running");
+    assert_eq!(attempt_status, "running");
+    assert_eq!(artifact_count, 0);
+}
+
+#[test]
+fn chronicle_synthesis_rejects_forged_output_link_and_sensitive_raw_sibling() {
+    for (case, output_digest, raw_extra) in [
+        ("output-link", Some(FORGED_DIGEST), None),
+        (
+            "raw-sensitive",
+            None,
+            Some(json!({"rawResponse": "secret"})),
+        ),
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-companion-{case}");
+        let task_id = format!("task-stage-companion-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        let mut raw = json!({
+            "kind": "chronicle.raw-observations@1",
+            "version": 1,
+            "observations": [observation_payload()]
+        });
+        if let Some(extra) = raw_extra {
+            raw.as_object_mut()
+                .expect("raw object")
+                .extend(extra.as_object().expect("raw extra object").clone());
+        }
+        let error = finish_bundle_with_raw(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            raw,
+            output_digest,
+            None,
+        )
+        .expect_err("companion forgery must roll back atomically");
+        let expected = if case == "output-link" {
+            "NEX_CHRONICLE_SYNTHESIS_CLOSURE_DIGEST_MISMATCH"
+        } else {
+            "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"
+        };
+        assert!(error.to_string().contains(expected), "{case}: {error:#}");
+        let (task_status, attempt_status, artifact_count): (String, String, i64) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                              WHERE run_id = ?1 AND task_id = ?2)
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.id = ?3
+                      WHERE t.id = ?2 AND t.run_id = ?1",
+                    rusqlite::params![run_id, task_id, attempt_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("read companion rollback");
+        assert_eq!(task_status, "running");
+        assert_eq!(attempt_status, "running");
+        assert_eq!(artifact_count, 0);
+    }
+}
+
+#[test]
+fn chronicle_synthesis_requires_native_raw_observation_digest() {
+    let db = migrated_db();
+    let run_id = "run-stage-raw-digest";
+    let task_id = "task-stage-raw-digest";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let error = finish_bundle_with_raw(
+        &db,
+        run_id,
+        task_id,
+        &attempt_id,
+        closure,
+        json!({
+            "kind": "chronicle.raw-observations@1",
+            "version": 1,
+            "observations": [observation_payload()]
+        }),
+        None,
+        Some(FORGED_DIGEST),
+    )
+    .expect_err("forged raw observation digest must roll back atomically");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RAW_OBSERVATIONS_DIGEST_MISMATCH"),
+        "unexpected raw digest error: {error:#}"
+    );
+    let (task_status, attempt_status, artifact_count, receipt_count): (String, String, i64, i64) =
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT t.status, a.status,
+                        (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                          WHERE run_id = ?1 AND task_id = ?2),
+                        (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                          WHERE run_id = ?1 AND task_id = ?2)
+                   FROM narrative_extraction_tasks t
+                   JOIN narrative_extraction_attempts a ON a.id = ?3
+                  WHERE t.id = ?2 AND t.run_id = ?1",
+                rusqlite::params![run_id, task_id, attempt_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )?)
+        })
+        .expect("read raw digest rollback");
+    assert_eq!(task_status, "running");
+    assert_eq!(attempt_status, "running");
+    assert_eq!(artifact_count, 0);
+    assert_eq!(receipt_count, 0);
+}
+
+#[test]
+fn rejects_stage_closure_shape_and_digest_forgeries_atomically() {
+    for mutation in [
+        "missing-binding-field",
+        "extra-receipt-field",
+        "forged-binding-digest",
+        "missing-receipt-digest",
+    ] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-shape-{mutation}");
+        let task_id = format!("task-stage-shape-{mutation}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let mut closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        match mutation {
+            "missing-binding-field" => {
+                closure["receipts"][0]["modelExecutionBinding"]
+                    .as_object_mut()
+                    .expect("model binding")
+                    .remove("provider");
+            }
+            "extra-receipt-field" => {
+                closure["receipts"][0]["unexpectedField"] = json!(true);
+            }
+            "forged-binding-digest" => {
+                closure["receipts"][0]["modelBindingDigest"] =
+                    Value::String(FORGED_DIGEST.to_owned());
+            }
+            "missing-receipt-digest" => {
+                closure["receipts"][0]
+                    .as_object_mut()
+                    .expect("receipt")
+                    .remove("stageExecutionReceiptDigest");
+            }
+            _ => unreachable!(),
+        }
+        let error = match serde_json::from_value::<ChronicleStageProvenanceClosure>(closure.clone())
+        {
+            Ok(_) => finish_bundle(&db, &run_id, &task_id, &attempt_id, closure)
+                .expect_err("malformed closure must fail closed"),
+            Err(error) => anyhow::anyhow!("NEX_STAGE_TYPED_INGRESS: {error}"),
+        };
+        assert!(
+            error.to_string().contains("NEX_STAGE_"),
+            "unexpected {mutation} error: {error:#}"
+        );
+        let (task_status, attempt_status, artifact_count, receipt_count): (
+            String,
+            String,
+            i64,
+            i64,
+        ) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                              WHERE run_id = ?1 AND task_id = ?2),
+                            (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                              WHERE run_id = ?1)
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.id = ?3
+                      WHERE t.id = ?2 AND t.run_id = ?1",
+                    rusqlite::params![run_id, task_id, attempt_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })
+            .expect("read atomic rollback state");
+        assert_eq!(task_status, "running");
+        assert_eq!(attempt_status, "running");
+        assert_eq!(artifact_count, 0);
+        assert_eq!(receipt_count, 0);
+    }
 }
 
 #[test]
@@ -1120,8 +1862,9 @@ fn rejects_only_corrupt_closure_and_rolls_back_all_siblings() {
         &component_contract_digest(),
         &final_request_digest(),
     );
-    // Only the closure's internal digest is corrupted; the outer artifact
-    // payload digest is still recomputed over that exact corrupted payload.
+    // Only the typed ephemeral closure's internal digest is corrupted; the
+    // durable raw-observation artifact remains valid and must roll back with
+    // the task output and receipt/model-binding siblings.
     corrupt_closure["stageProvenanceClosureDigest"] =
         Value::String(digest(&json!({"corrupt": "closure-only"})));
     let error = finish_bundle(&db, run_id, task_id, &attempt_id, corrupt_closure)

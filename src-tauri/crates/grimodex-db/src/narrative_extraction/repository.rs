@@ -2,6 +2,7 @@
 
 use anyhow::Context;
 use chrono::Utc;
+use grimodex_core::narrative_ir::validate_chronicle_scene_event_proposal_payload;
 use rusqlite::{params, Connection, OptionalExtension, Row};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -23,8 +24,8 @@ use super::models::{
     ProposalSeed, ReviseAndDecidePayload, SaveProposalSetPayload,
 };
 use super::reconciliation_envelope::{
-    validate_envelope_source_tokens, validate_reconciliation_envelope, SourceBasisRow,
-    ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
+    ensure_v2_proposal_payload_digest, envelope_schema_version, validate_envelope_source_tokens,
+    validate_reconciliation_envelope, SourceBasisRow, ORIGIN_ENVELOPED, ORIGIN_LEGACY_UNBOUND,
 };
 use super::task_leases::{
     claim_next_task, claimed_task_to_value, load_task_row, persist_task_artifacts,
@@ -743,12 +744,11 @@ pub fn claim_task(
 }
 
 pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<Value> {
-    let output_json = serde_json::to_string(
-        payload
-            .output_json
-            .as_ref()
-            .unwrap_or(&default_object_json()),
-    )?;
+    let output_value = payload
+        .output_json
+        .clone()
+        .unwrap_or_else(default_object_json);
+    let output_json = serde_json::to_string(&output_value)?;
 
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -760,6 +760,19 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
+            let attempt_status: Option<String> = conn
+                .query_row(
+                    "SELECT status
+                       FROM narrative_extraction_attempts
+                      WHERE id = ?1 AND task_id = ?2",
+                    params![payload.attempt_id, payload.task_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                attempt_status.as_deref() == Some("running"),
+                "attempt is not the running attempt owned by task"
+            );
             let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
             let updated = conn.execute(
@@ -777,12 +790,12 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
             )?;
             anyhow::ensure!(updated == 1, "task is not running");
 
-            conn.execute(
+            let attempt_updated = conn.execute(
                 "UPDATE narrative_extraction_attempts
                     SET status = 'completed',
                         completed_at = ?4,
                         output_json = ?1
-                  WHERE id = ?2 AND task_id = ?3",
+                  WHERE id = ?2 AND task_id = ?3 AND status = 'running'",
                 params![
                     output_json,
                     payload.attempt_id,
@@ -790,12 +803,19 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                     lifecycle_at
                 ],
             )?;
+            anyhow::ensure!(
+                attempt_updated == 1,
+                "attempt completion lost ownership or status race"
+            );
 
             persist_task_artifacts(
                 conn,
+                &payload.project_id,
                 &payload.run_id,
                 &payload.task_id,
                 &payload.attempt_id,
+                &output_value,
+                payload.chronicle_stage_bundle.as_ref(),
                 &payload.artifacts,
             )?;
 
@@ -1042,6 +1062,14 @@ pub fn get_run_review_bundle(
 }
 
 pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyhow::Result<Value> {
+    save_proposal_set_with_v2_mode(db, payload, false)
+}
+
+fn save_proposal_set_with_v2_mode(
+    db: &Database,
+    payload: SaveProposalSetPayload,
+    allow_dormant_v2: bool,
+) -> anyhow::Result<Value> {
     let proposal_set_id = payload
         .proposal_set_id
         .clone()
@@ -1080,6 +1108,7 @@ pub fn save_proposal_set(db: &Database, payload: SaveProposalSetPayload) -> anyh
                     &payload.run_id,
                     &payload.project_id,
                     proposal,
+                    allow_dormant_v2,
                 )?);
             }
 
@@ -1097,6 +1126,7 @@ fn insert_proposal_seed(
     run_id: &str,
     project_id: &str,
     seed: &ProposalSeed,
+    allow_dormant_v2: bool,
 ) -> anyhow::Result<Value> {
     let proposal_id = seed
         .proposal_id
@@ -1112,6 +1142,29 @@ fn insert_proposal_seed(
         seed.reconciliation_envelope.as_ref(),
     )?;
     if let Some(envelope) = seed.reconciliation_envelope.as_ref() {
+        if envelope_schema_version(envelope) == Some(2) {
+            anyhow::ensure!(
+                allow_dormant_v2,
+                "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production ProposalSet ingress cannot activate Envelope V2"
+            );
+            let envelope_kind = envelope
+                .pointer("/projectionBinding/proposalKind")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "NEX_ENVELOPE_PROPOSAL_KIND_MISMATCH: V2 projectionBinding.proposalKind is missing"
+                    )
+                })?;
+            anyhow::ensure!(
+                seed.kind == envelope_kind,
+                "NEX_ENVELOPE_PROPOSAL_KIND_MISMATCH: ProposalSeed.kind does not match projectionBinding.proposalKind"
+            );
+            validate_chronicle_scene_event_proposal_payload(&seed.payload_json).map_err(
+                |error| anyhow::anyhow!("NEX_ENVELOPE_PROPOSAL_PAYLOAD_INVALID: {error}"),
+            )?;
+            ensure_v2_proposal_evidence_binding(envelope, &seed.payload_json)?;
+        }
+        ensure_v2_proposal_payload_digest(envelope, &seed.payload_json)?;
         validate_envelope_source_tokens(conn, project_id, run_id, envelope)?;
     }
     let origin_kind = if validated_envelope.is_some() {
@@ -1182,7 +1235,93 @@ fn insert_proposal_seed(
     }))
 }
 
-fn insert_source_basis_rows(
+/// Bind the typed proposal's evidence anchors/documents to the exact V2
+/// material evidence set.  The Core proposal validator owns field shape and
+/// vocabulary; this narrow cross-field check prevents storing two divergent
+/// provenance claims for one revision.
+pub(crate) fn ensure_v2_proposal_evidence_binding(
+    envelope: &Value,
+    proposal_payload: &Value,
+) -> anyhow::Result<()> {
+    let proposal = proposal_payload.as_object().ok_or_else(|| {
+        anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: proposal is not an object")
+    })?;
+    let anchor_ids = proposal
+        .get("evidenceAnchorIds")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceAnchorIds missing")
+        })?;
+    let document_refs = proposal
+        .get("evidenceDocumentRefs")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceDocumentRefs missing")
+        })?;
+    let material = envelope
+        .get("effectiveMaterialBasis")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: material basis missing")
+        })?;
+    let evidence = material
+        .get("evidenceSet")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceSet missing"))?;
+    let mut material_ids = Vec::with_capacity(evidence.len());
+    let mut material_documents = Vec::with_capacity(evidence.len());
+    for entry in evidence {
+        let entry = entry.as_object().ok_or_else(|| {
+            anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidence entry is not an object")
+        })?;
+        material_ids.push(
+            entry
+                .get("evidenceRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidenceRef missing")
+                })?
+                .to_owned(),
+        );
+        material_documents.push(
+            entry
+                .get("documentRef")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: documentRef missing")
+                })?
+                .to_owned(),
+        );
+    }
+    let collect_strings = |values: &[Value]| -> anyhow::Result<Vec<String>> {
+        values
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| anyhow::anyhow!("NEX_ENVELOPE_PROVENANCE_MISMATCH: evidence reference must be non-empty"))
+            })
+            .collect()
+    };
+    let mut expected_ids = collect_strings(anchor_ids)?;
+    let mut expected_documents = collect_strings(document_refs)?;
+    expected_ids.sort();
+    expected_documents.sort();
+    material_ids.sort();
+    material_documents.sort();
+    anyhow::ensure!(
+        expected_ids.windows(2).all(|window| window[0] != window[1])
+            && expected_documents.windows(2).all(|window| window[0] != window[1])
+            && expected_ids == material_ids
+            && expected_documents == material_documents,
+        "NEX_ENVELOPE_PROVENANCE_MISMATCH: proposal evidence anchors/documents do not exactly match Envelope evidenceSet"
+    );
+    Ok(())
+}
+
+pub(crate) fn insert_source_basis_rows(
     conn: &Connection,
     revision_id: &str,
     rows: &[SourceBasisRow],
@@ -1338,6 +1477,24 @@ fn append_revision_on_conn(
         current_revision_id
     );
 
+    let current_is_v2 = current_origin_kind == ORIGIN_ENVELOPED
+        && current_envelope_json
+            .as_deref()
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+            .and_then(|envelope| envelope_schema_version(&envelope))
+            == Some(2);
+    if current_is_v2 {
+        let child_is_v2 = payload
+            .reconciliation_envelope
+            .as_ref()
+            .and_then(envelope_schema_version)
+            == Some(2);
+        anyhow::ensure!(
+            child_is_v2 && payload.inherit_reconciliation_envelope.is_none(),
+            "NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN: a V2 current requires a V2 child envelope"
+        );
+    }
+
     anyhow::ensure!(
         !(payload.reconciliation_envelope.is_some()
             && payload.inherit_reconciliation_envelope.is_some()),
@@ -1385,6 +1542,11 @@ fn append_revision_on_conn(
         envelope_input,
     )?;
     if let Some(envelope) = envelope_input {
+        anyhow::ensure!(
+            envelope_schema_version(envelope) != Some(2),
+            "NEX_NARRATIVE_V2_ACTIVATION_DISABLED: production revision append cannot activate Envelope V2"
+        );
+        ensure_v2_proposal_payload_digest(envelope, &payload.payload_json)?;
         validate_envelope_source_tokens(conn, &payload.project_id, &payload.run_id, envelope)?;
     }
     let origin_kind = if validated_envelope.is_some() {
@@ -2394,6 +2556,7 @@ mod unit_tests {
                     lease_owner: "generic-api-test".to_string(),
                     output_json: None,
                     artifacts: vec![],
+                    chronicle_stage_bundle: None,
                 },
             ));
             assert_forbidden(fail_task(
@@ -2657,6 +2820,7 @@ mod unit_tests {
                 lease_owner: "finish-owner".to_string(),
                 output_json: Some(json!({"ok": true})),
                 artifacts: vec![],
+                chronicle_stage_bundle: None,
             },
         )
         .expect("finish task");

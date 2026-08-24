@@ -1,9 +1,9 @@
-//! Compile-RED contract for the C2A Native Human Derivation writer.
+//! Behavioral contract for the C2A Native Human Derivation writer.
 //!
-//! C2A must publish the public typed request/API after D1 publishes the
-//! sealed declaration storage/schema before this file can compile.
-//! The tests intentionally use only the policy-shaped request and the
-//! trusted Native project argument.  They do not route forged actor or
+//! This file preserves the accepted compile-RED seam's history while now
+//! exercising the landed typed request/API against D1's sealed declaration
+//! storage.  The tests intentionally use only the policy-shaped request and
+//! trusted Native authority arguments.  They do not route forged actor or
 //! derivation metadata through the legacy decision JSON facade.
 //!
 //! The request has no `projectId`, `actor`, `derivation`, `changedPaths`,
@@ -13,12 +13,15 @@
 
 use anyhow::Result;
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
+use grimodex_core::narrative_ir::derive_chronicle_scene_event_scope;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
-    narrative_extraction_create_human_derived_revision, narrative_extraction_create_run,
+    narrative_extraction_create_human_derived_revision,
+    narrative_extraction_create_human_derived_revision_with_scope, narrative_extraction_create_run,
     write_dependency_declaration_set, CreateHumanDerivedRevisionRequest, CreateRunPayload,
     CreateTaskSeed, DependencyDeclaration, DependencyDeclarationSetRequest,
-    NarrativeAdapterIdentity,
+    NarrativeAdapterIdentity, TrustedHumanDerivationScope, TrustedRevealBasis,
+    TrustedScopeBoundary, TrustedScopeInterval, TrustedUnresolvedConstraint,
 };
 use grimodex_db::Database;
 use serde_json::{json, Value};
@@ -42,6 +45,7 @@ const PROJECT_MISMATCH: &str = "NEX_HUMAN_DERIVATION_PROJECT_MISMATCH";
 const ADAPTER_UNSUPPORTED: &str = "NEX_HUMAN_DERIVATION_ADAPTER_UNSUPPORTED";
 const SURFACE_UNSUPPORTED: &str = "NEX_HUMAN_DERIVATION_SURFACE_UNSUPPORTED";
 const ZERO_EDGE: &str = "NEX_HUMAN_DERIVATION_ZERO_EDGE";
+const DECLARATION_HEAD_UNAVAILABLE: &str = "NEX_HUMAN_DERIVATION_DECLARATION_HEAD_UNAVAILABLE";
 
 fn digest(value: &Value) -> String {
     canonical_json_digest(value).expect("canonical digest")
@@ -107,12 +111,39 @@ fn parent_dependency_set() -> Value {
         "contextIds": ["context:event-synthesis"],
         "role": "direct-evidence",
         "selector": {"kind": "whole-source"}
+    }, {
+        "dependencyId": "dependency:component-contract",
+        "inputRef": "component:chronicle.event-synthesis.prompt",
+        "contextIds": [],
+        "role": "component-contract",
+        "selector": {
+            "kind": "component-contract",
+            "contractId": "chronicle.event-synthesis.prompt",
+            "contractDigest": parent_component_contract_digest()
+        }
     }])
 }
 
-fn parent_envelope(source_revision_token: &str) -> Value {
+fn parent_component_contract_digest() -> String {
+    digest(&json!({
+        "schemaVersion": 1,
+        "contextSetVersion": "chronicle.context-set/1",
+        "stageId": "narrative_event_synthesize",
+        "componentContract": {
+            "contractId": "chronicle.event-synthesis.prompt",
+            "contractVersion": "1",
+            "instruction": "Extract the Chronicle scene event from the declared context.",
+            "outputShape": "JSON object matching chronicle.create-event@1."
+        }
+    }))
+}
+
+fn parent_envelope_with_payload(
+    source_revision_token: &str,
+    proposal: &Value,
+    scope: &Value,
+) -> Value {
     let semantic = parent_semantic_payload();
-    let scope = parent_scope();
     let source = json!([{
         "sourceKind": "scene-body",
         "sourceKey": source_key(),
@@ -160,7 +191,6 @@ fn parent_envelope(source_revision_token: &str) -> Value {
             "content": "Extract the Chronicle scene event from the declared context."
         }]
     }));
-    let proposal = proposal_payload();
     let assertion_core_digest = digest(&json!({
         "assertionKind": "scene-event@1",
         "payloadSchemaRef": {
@@ -247,6 +277,14 @@ fn zero_edge_fixture_db() -> Database {
 }
 
 fn fixture_db_for(parent_revision_id: &str, include_v1_edge: bool) -> Database {
+    fixture_db_for_payload(parent_revision_id, include_v1_edge, proposal_payload())
+}
+
+fn fixture_db_for_payload(
+    parent_revision_id: &str,
+    include_v1_edge: bool,
+    parent_payload: Value,
+) -> Database {
     // The typed API and D1 tables are intentionally missing on the frozen
     // base, so this setup is reached only after D1 publishes the contract.
     // Keeping the fixture executable (rather than ignored) makes that missing
@@ -297,10 +335,12 @@ fn fixture_db_for(parent_revision_id: &str, include_v1_edge: bool) -> Database {
     .expect("seed Human run and task");
 
     let source_revision_token = source_revision_token(&db);
-    let envelope = parent_envelope(&source_revision_token);
+    let parent_scope = parent_scope_for_payload(&parent_payload);
+    let envelope =
+        parent_envelope_with_payload(&source_revision_token, &parent_payload, &parent_scope);
     let envelope_json = canonical_json_string(&envelope).expect("canonical parent Envelope");
     let envelope_digest = digest(&envelope);
-    let payload_json = canonical_json_string(&proposal_payload()).expect("canonical proposal");
+    let payload_json = canonical_json_string(&parent_payload).expect("canonical proposal");
     let read_set_json = serde_json::to_string(&json!([{
         "inputRef": source_key(),
         "kind": "snapshot-document",
@@ -428,7 +468,20 @@ fn source_revision_token(db: &Database) -> String {
 }
 
 fn parent_envelope_digest(db: &Database) -> String {
-    digest(&parent_envelope(&source_revision_token(db)))
+    persisted_parent_envelope_digest_for(db, PARENT_REVISION_ID)
+}
+
+fn persisted_parent_envelope_digest_for(db: &Database, revision_id: &str) -> String {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT reconciliation_envelope_digest
+               FROM narrative_proposal_revisions
+              WHERE id = ?1 AND proposal_id = ?2",
+            rusqlite::params![revision_id, PROPOSAL_ID],
+            |row| row.get(0),
+        )?)
+    })
+    .expect("read persisted parent envelope digest")
 }
 
 fn advance_source(db: &Database) -> (String, String) {
@@ -466,17 +519,59 @@ fn proposal_payload() -> Value {
     })
 }
 
+fn parent_scope_for_payload(payload: &Value) -> Value {
+    let secret = payload["disclosure"]["secret"]
+        .as_bool()
+        .expect("parent disclosure secret");
+    if !secret {
+        return parent_scope();
+    }
+    let document_ref = payload["disclosure"]["revealDocumentRef"]
+        .as_str()
+        .expect("parent reveal document");
+    let basis = json!({
+        "status": "resolved",
+        "documentRef": document_ref,
+        "audienceRef": "reader-doc2",
+        "readingOrder": {
+            "from": {"ref": "reading:2", "inclusive": true},
+            "until": {"ref": "reading:4", "inclusive": false}
+        },
+        "storyTime": {
+            "from": {"ref": "story:2", "inclusive": true},
+            "until": {"ref": "story:5", "inclusive": false}
+        }
+    });
+    derive_chronicle_scene_event_scope("scene:1", payload, &basis)
+        .expect("derive explicit parent reveal scope")
+        .scope
+}
+
 fn request(
     current_revision_id: &str,
     parent_revision_id: &str,
     parent_envelope_digest: &str,
+) -> CreateHumanDerivedRevisionRequest {
+    request_with_payload(
+        current_revision_id,
+        parent_revision_id,
+        parent_envelope_digest,
+        proposal_payload(),
+    )
+}
+
+fn request_with_payload(
+    current_revision_id: &str,
+    parent_revision_id: &str,
+    parent_envelope_digest: &str,
+    proposal_payload: Value,
 ) -> CreateHumanDerivedRevisionRequest {
     CreateHumanDerivedRevisionRequest {
         proposal_id: PROPOSAL_ID.to_owned(),
         expected_current_revision_id: current_revision_id.to_owned(),
         parent_revision_id: parent_revision_id.to_owned(),
         expected_parent_envelope_digest: parent_envelope_digest.to_owned(),
-        proposal_payload: proposal_payload(),
+        proposal_payload,
         adapter: NarrativeAdapterIdentity {
             id: ADAPTER_ID.to_owned(),
             version: ADAPTER_VERSION.to_owned(),
@@ -495,6 +590,20 @@ fn submit(
     narrative_extraction_create_human_derived_revision(db, trusted_project_id, request)
 }
 
+fn submit_with_scope(
+    db: &Database,
+    trusted_project_id: &str,
+    trusted_scope: Option<TrustedHumanDerivationScope>,
+    request: CreateHumanDerivedRevisionRequest,
+) -> Result<Value> {
+    narrative_extraction_create_human_derived_revision_with_scope(
+        db,
+        trusted_project_id,
+        trusted_scope,
+        request,
+    )
+}
+
 fn assert_code(result: Result<Value>, expected_code: &str) {
     let error = result.expect_err("negative Human Derivation case must fail");
     assert!(
@@ -503,9 +612,175 @@ fn assert_code(result: Result<Value>, expected_code: &str) {
     );
 }
 
+fn shared_golden_scope(case_id: &str) -> Value {
+    golden_case(case_id)["expected"]["canonicalScopeJson"]
+        .as_str()
+        .map(|canonical| serde_json::from_str(canonical).expect("golden scope JSON"))
+        .expect("golden scope case")
+}
+
+fn golden_case(case_id: &str) -> Value {
+    let corpus: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../policies/narrative/fixtures/narrative-ir/chronicle-scene-event-v2.json"
+    )))
+    .expect("read shared Chronicle golden corpus");
+    corpus["cases"]
+        .as_array()
+        .expect("golden cases")
+        .iter()
+        .find(|case| case["id"] == case_id)
+        .cloned()
+        .expect("golden scope case")
+}
+
+fn golden_parent_payload(case_id: &str) -> Value {
+    golden_case(case_id)["input"]["parentPayload"].clone()
+}
+
+fn golden_edited_payload(case_id: &str) -> Value {
+    golden_case(case_id)["input"]["editedPayload"].clone()
+}
+
+fn trusted_scope_for_case(db: &Database, case_id: &str) -> TrustedHumanDerivationScope {
+    let case = golden_case(case_id);
+    let input = &case["input"];
+    let edited_document_ref = input["editedPayload"]["disclosure"]["revealDocumentRef"]
+        .as_str()
+        .expect("golden edited reveal document")
+        .to_owned();
+    trusted_scope_with_basis(
+        db,
+        input["sceneRef"].as_str().expect("golden scene ref"),
+        &edited_document_ref,
+        trusted_reveal_basis(&input["revealBasis"]),
+    )
+}
+
+fn trusted_scope_with_basis(
+    db: &Database,
+    scene_ref: &str,
+    edited_document_ref: &str,
+    reveal_basis: TrustedRevealBasis,
+) -> TrustedHumanDerivationScope {
+    let source_revision_token = source_revision_token(db);
+    let source_revision_digest = digest(&json!({
+        "sourceKind": "scene-body",
+        "sourceKey": source_key(),
+        "revisionToken": source_revision_token.clone()
+    }));
+    TrustedHumanDerivationScope {
+        project_id: PROJECT_A.to_owned(),
+        parent_revision_id: PARENT_REVISION_ID.to_owned(),
+        expected_parent_envelope_digest: parent_envelope_digest(db),
+        edited_document_ref: edited_document_ref.to_owned(),
+        source_key: source_key(),
+        source_revision_token,
+        source_revision_digest,
+        scene_ref: scene_ref.to_owned(),
+        reveal_basis,
+    }
+}
+
+fn trusted_reveal_basis(value: &Value) -> TrustedRevealBasis {
+    match value["status"].as_str().expect("golden reveal status") {
+        "not-secret" => TrustedRevealBasis::NotSecret,
+        "resolved" => TrustedRevealBasis::Resolved {
+            document_ref: value["documentRef"]
+                .as_str()
+                .expect("resolved document ref")
+                .to_owned(),
+            audience_ref: value["audienceRef"]
+                .as_str()
+                .expect("resolved audience ref")
+                .to_owned(),
+            reading_order: trusted_interval(&value["readingOrder"]),
+            story_time: trusted_interval(&value["storyTime"]),
+        },
+        "unresolved" => TrustedRevealBasis::Unresolved {
+            document_ref: value["documentRef"]
+                .as_str()
+                .expect("unresolved document ref")
+                .to_owned(),
+            audience: trusted_unresolved(&value["audience"]),
+            reading_order: trusted_unresolved(&value["readingOrder"]),
+        },
+        status => panic!("unexpected golden reveal status: {status}"),
+    }
+}
+
+fn trusted_interval(value: &Value) -> TrustedScopeInterval {
+    TrustedScopeInterval {
+        from: value.get("from").map(trusted_boundary),
+        until: value.get("until").map(trusted_boundary),
+    }
+}
+
+fn trusted_boundary(value: &Value) -> TrustedScopeBoundary {
+    TrustedScopeBoundary {
+        reference: value["ref"]
+            .as_str()
+            .expect("golden boundary ref")
+            .to_owned(),
+        inclusive: value["inclusive"]
+            .as_bool()
+            .expect("golden boundary inclusivity"),
+    }
+}
+
+fn trusted_unresolved(value: &Value) -> TrustedUnresolvedConstraint {
+    TrustedUnresolvedConstraint {
+        reason: value["reason"]
+            .as_str()
+            .expect("golden unresolved reason")
+            .to_owned(),
+        constraint_id: value["constraintId"]
+            .as_str()
+            .expect("golden unresolved constraint id")
+            .to_owned(),
+    }
+}
+
 #[test]
 fn accepts_native_verified_human_request_and_persists_native_human_actor() {
     let db = fixture_db();
+    let before = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT p.current_revision_id,
+                        (SELECT COUNT(*) FROM narrative_semantic_epochs),
+                        (SELECT COUNT(*) FROM narrative_consumer_freshness),
+                        (SELECT COUNT(*) FROM narrative_projection_freshness),
+                        (SELECT COUNT(*) FROM narrative_dependency_edge_states),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_sets
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_heads
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_entries e
+                           JOIN narrative_dependency_declaration_sets s
+                             ON s.id = e.declaration_set_id
+                          WHERE s.consumer_kind = 'proposal-revision' AND s.consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_edges
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1)
+                   FROM narrative_proposals p
+                  WHERE p.id = ?2",
+                rusqlite::params![PARENT_REVISION_ID, PROPOSAL_ID],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )?)
+        })
+        .expect("snapshot dormant Human side effects before write");
     let saved = submit(
         &db,
         PROJECT_A,
@@ -537,6 +812,434 @@ fn accepts_native_verified_human_request_and_persists_native_human_actor() {
         envelope["revisionBasis"]["revisionActor"]["surfaceId"],
         SURFACE_ID
     );
+    let child_revision_id = revision_id.to_owned();
+    let after = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT p.current_revision_id,
+                        (SELECT COUNT(*) FROM narrative_semantic_epochs),
+                        (SELECT COUNT(*) FROM narrative_consumer_freshness),
+                        (SELECT COUNT(*) FROM narrative_projection_freshness),
+                        (SELECT COUNT(*) FROM narrative_dependency_edge_states),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_sets
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_heads
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_declaration_entries e
+                           JOIN narrative_dependency_declaration_sets s
+                             ON s.id = e.declaration_set_id
+                          WHERE s.consumer_kind = 'proposal-revision' AND s.consumer_key = ?1),
+                        (SELECT COUNT(*) FROM narrative_dependency_edges
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1)
+                   FROM narrative_proposals p
+                  WHERE p.id = ?2",
+                rusqlite::params![child_revision_id, PROPOSAL_ID],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )?)
+        })
+        .expect("snapshot dormant Human side effects after write");
+    assert_eq!(
+        after.0, before.0,
+        "Human writer must not promote current revision"
+    );
+    assert_eq!(
+        (after.1, after.2, after.3, after.4, after.5, after.6, after.7, after.8),
+        (before.1, before.2, before.3, before.4, before.5, before.6, before.7, before.8),
+        "Human writer must not initialize C2B state or child declarations/edges"
+    );
+}
+
+#[test]
+fn title_only_human_derivation_preserves_parent_assertion_digests() {
+    let db = fixture_db();
+    let parent_digest = parent_envelope_digest(&db);
+    let parent: Value = db
+        .with_conn(|conn| {
+            let json: String = conn.query_row(
+                "SELECT reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [PARENT_REVISION_ID],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&json)?)
+        })
+        .expect("read parent envelope");
+    let mut edited = proposal_payload();
+    edited["title"] = json!("Arrival at Dawn");
+    let saved = submit(
+        &db,
+        PROJECT_A,
+        request_with_payload(
+            PARENT_REVISION_ID,
+            PARENT_REVISION_ID,
+            &parent_digest,
+            edited,
+        ),
+    )
+    .expect("title-only Human derivation");
+    let child: Value = db
+        .with_conn(|conn| {
+            let json: String = conn.query_row(
+                "SELECT reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [saved["revisionId"].as_str().expect("child revision")],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&json)?)
+        })
+        .expect("read child envelope");
+    for field in ["assertionCoreDigest", "scopeDigest", "assertionDigest"] {
+        assert_eq!(
+            child["assertionDigests"][field],
+            parent["assertionDigests"][field]
+        );
+    }
+    let context_entries = child["revisionBasis"]["derivationContextSet"]
+        .as_array()
+        .expect("projection derivation context set");
+    assert!(context_entries
+        .iter()
+        .all(|entry| entry["contextId"] != "context:chronicle-scope-resolver"));
+}
+
+#[test]
+fn true_to_false_scope_override_does_not_consume_reveal_resolver() {
+    let parent_payload = golden_parent_payload("reveal-document-only-edit");
+    let db = fixture_db_for_payload(PARENT_REVISION_ID, true, parent_payload);
+    let parent_digest = parent_envelope_digest(&db);
+    let mut edited = golden_parent_payload("reveal-document-only-edit");
+    edited["disclosure"]["secret"] = json!(false);
+    let parent: Value = db
+        .with_conn(|conn| {
+            let json: String = conn.query_row(
+                "SELECT reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [PARENT_REVISION_ID],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&json)?)
+        })
+        .expect("read constrained secret parent envelope");
+    let saved = submit_with_scope(
+        &db,
+        PROJECT_A,
+        None,
+        request_with_payload(
+            PARENT_REVISION_ID,
+            PARENT_REVISION_ID,
+            &parent_digest,
+            edited,
+        ),
+    )
+    .expect("true-to-false scope override");
+    let child: Value = db
+        .with_conn(|conn| {
+            let json: String = conn.query_row(
+                "SELECT reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [saved["revisionId"].as_str().expect("child revision")],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&json)?)
+        })
+        .expect("read true-to-false child envelope");
+    assert_eq!(child["assertion"]["scope"], parent_scope());
+    assert_ne!(parent["assertion"]["scope"], child["assertion"]["scope"]);
+    let context_entries = child["revisionBasis"]["derivationContextSet"]
+        .as_array()
+        .expect("true-to-false derivation context set");
+    assert!(context_entries
+        .iter()
+        .all(|entry| entry["contextId"] != "context:chronicle-scope-resolver"));
+}
+
+#[test]
+fn scope_override_rederives_secret_reveal_and_mixed_golden_scope() {
+    for case_id in [
+        "secret-only-edit",
+        "reveal-document-only-edit",
+        "mixed-title-secret-uses-scope-override",
+        "mixed-note-reveal-document-uses-scope-override",
+    ] {
+        let db = fixture_db_for_payload(PARENT_REVISION_ID, true, golden_parent_payload(case_id));
+        // The parent is seeded from the fixture's parentPayload with the
+        // ordinary non-secret/any Scope.  The resolver result is injected
+        // separately from the fixture's revealBasis; the expected child
+        // Scope is never used to seed the parent.
+        let parent_digest = parent_envelope_digest(&db);
+        let trusted_scope = trusted_scope_for_case(&db, case_id);
+        let golden_case = golden_case(case_id);
+        let parent: Value = db
+            .with_conn(|conn| {
+                let json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1",
+                    [PARENT_REVISION_ID],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str(&json)?)
+            })
+            .expect("read independent golden parent envelope");
+        let edited = golden_edited_payload(case_id);
+        let expected_changed_paths = golden_case["expected"]["changedPaths"]
+            .as_array()
+            .expect("golden changed paths");
+        let expected_kind = golden_case["expected"]["derivationKind"]
+            .as_str()
+            .expect("golden derivation kind");
+        let saved = submit_with_scope(
+            &db,
+            PROJECT_A,
+            Some(trusted_scope),
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_digest,
+                edited,
+            ),
+        )
+        .expect("golden scope override");
+        let child: Value = db
+            .with_conn(|conn| {
+                let json: String = conn.query_row(
+                    "SELECT reconciliation_envelope_json
+                       FROM narrative_proposal_revisions
+                      WHERE id = ?1",
+                    [saved["revisionId"].as_str().expect("child revision")],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str(&json)?)
+            })
+            .expect("read golden child envelope");
+        assert_ne!(parent["assertion"]["scope"], child["assertion"]["scope"]);
+        assert_eq!(child["assertion"]["scope"], shared_golden_scope(case_id));
+        assert_eq!(
+            child["assertionDigests"]["assertionCoreDigest"],
+            parent["assertionDigests"]["assertionCoreDigest"]
+        );
+        assert_eq!(
+            child["assertionDigests"]["scopeDigest"],
+            digest(&child["assertion"]["scope"])
+        );
+        assert_eq!(
+            child["assertionDigests"]["assertionDigest"],
+            digest(&json!({
+                "assertionCoreDigest": child["assertionDigests"]["assertionCoreDigest"],
+                "scopeDigest": child["assertionDigests"]["scopeDigest"]
+            }))
+        );
+        assert_eq!(child["revisionBasis"]["derivation"]["kind"], expected_kind);
+        assert_eq!(
+            child["revisionBasis"]["derivation"]["proposalPayloadChangedPaths"],
+            Value::Array(expected_changed_paths.clone())
+        );
+        let context_entries = child["revisionBasis"]["derivationContextSet"]
+            .as_array()
+            .expect("scope derivation context set");
+        let resolver_entry = context_entries
+            .iter()
+            .find(|entry| entry["contextId"] == "context:chronicle-scope-resolver")
+            .expect("scope resolver context entry");
+        assert_eq!(resolver_entry["inputRef"], source_key());
+        assert_eq!(
+            resolver_entry["stageId"],
+            "chronicle_scene_event_scope_resolver"
+        );
+        assert_eq!(resolver_entry["exposure"], "deterministic-stage");
+        assert_eq!(resolver_entry["selector"], json!({"kind": "whole-source"}));
+        assert_eq!(
+            child["revisionBasis"]["derivationContextSetDigest"],
+            digest(&json!({
+                "version": "chronicle.context-set/1",
+                "entries": context_entries
+            }))
+        );
+    }
+}
+
+#[test]
+fn unsupported_human_path_is_rejected_before_scope_derivation() {
+    let db = fixture_db();
+    let mut edited = proposal_payload();
+    edited["actuality"] = json!("prevented");
+    assert_code(
+        submit(
+            &db,
+            PROJECT_A,
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_envelope_digest(&db),
+                edited,
+            ),
+        ),
+        "NEX_HUMAN_DERIVATION_UNSUPPORTED_PATH",
+    );
+}
+
+#[test]
+fn secret_scope_override_without_trusted_reveal_basis_fails_closed() {
+    let db = fixture_db();
+    let parent_digest = parent_envelope_digest(&db);
+    let mut edited = proposal_payload();
+    edited["disclosure"]["secret"] = json!(true);
+    edited["disclosure"]["revealDocumentRef"] = json!("document:3");
+    assert_code(
+        submit_with_scope(
+            &db,
+            PROJECT_A,
+            None,
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_digest,
+                edited,
+            ),
+        ),
+        "NEX_HUMAN_DERIVATION_REVEAL_BASIS_UNAVAILABLE",
+    );
+}
+
+#[test]
+fn explicit_unresolved_reveal_basis_is_persisted_as_unresolved_scope() {
+    let db = fixture_db();
+    let parent_digest = parent_envelope_digest(&db);
+    let mut edited = proposal_payload();
+    edited["disclosure"]["secret"] = json!(true);
+    edited["disclosure"]["revealDocumentRef"] = json!("document:missing");
+    let unresolved_basis = trusted_reveal_basis(
+        &golden_case("secret-event-with-unresolved-reveal")["input"]["revealBasis"],
+    );
+    let trusted_scope =
+        trusted_scope_with_basis(&db, "scene:1", "document:missing", unresolved_basis);
+    let saved = submit_with_scope(
+        &db,
+        PROJECT_A,
+        Some(trusted_scope),
+        request_with_payload(
+            PARENT_REVISION_ID,
+            PARENT_REVISION_ID,
+            &parent_digest,
+            edited,
+        ),
+    )
+    .expect("explicit unresolved reveal basis");
+    let child: Value = db
+        .with_conn(|conn| {
+            let json: String = conn.query_row(
+                "SELECT reconciliation_envelope_json
+                   FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [saved["revisionId"].as_str().expect("child revision")],
+                |row| row.get(0),
+            )?;
+            Ok(serde_json::from_str(&json)?)
+        })
+        .expect("read unresolved child envelope");
+    assert_eq!(
+        child["assertion"]["scope"]["audience"]["kind"],
+        "unresolved"
+    );
+    assert_eq!(
+        child["assertion"]["scope"]["audience"]["reason"],
+        "missing-reference"
+    );
+}
+
+#[test]
+fn mismatched_trusted_reveal_document_fails_closed() {
+    let db = fixture_db();
+    let parent_digest = parent_envelope_digest(&db);
+    let mut edited = proposal_payload();
+    edited["disclosure"]["secret"] = json!(true);
+    edited["disclosure"]["revealDocumentRef"] = json!("document:3");
+    let mut trusted_scope = trusted_scope_for_case(&db, "secret-only-edit");
+    trusted_scope.expected_parent_envelope_digest = parent_digest.clone();
+    trusted_scope.edited_document_ref = "document:wrong".to_owned();
+    assert_code(
+        submit_with_scope(
+            &db,
+            PROJECT_A,
+            Some(trusted_scope),
+            request_with_payload(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_digest,
+                edited,
+            ),
+        ),
+        "NEX_HUMAN_DERIVATION_REVEAL_BASIS_MISMATCH",
+    );
+}
+
+#[test]
+fn mismatched_trusted_scope_project_cas_or_source_fails_closed() {
+    for mutate in ["project", "cas", "token", "digest"] {
+        let db = fixture_db();
+        let parent_digest = parent_envelope_digest(&db);
+        let mut edited = proposal_payload();
+        edited["disclosure"]["secret"] = json!(true);
+        edited["disclosure"]["revealDocumentRef"] = json!("document:3");
+        let mut trusted_scope = trusted_scope_for_case(&db, "secret-only-edit");
+        trusted_scope.expected_parent_envelope_digest = parent_digest.clone();
+        match mutate {
+            "project" => trusted_scope.project_id = PROJECT_B.to_owned(),
+            "cas" => trusted_scope.parent_revision_id = "revision-other".to_owned(),
+            "token" => trusted_scope.source_revision_token = "v999@forged".to_owned(),
+            "digest" => {
+                trusted_scope.source_revision_digest =
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        .to_owned()
+            }
+            _ => unreachable!(),
+        }
+        assert_code(
+            submit_with_scope(
+                &db,
+                PROJECT_A,
+                Some(trusted_scope),
+                request_with_payload(
+                    PARENT_REVISION_ID,
+                    PARENT_REVISION_ID,
+                    &parent_digest,
+                    edited,
+                ),
+            ),
+            "NEX_HUMAN_DERIVATION_REVEAL_BASIS_MISMATCH",
+        );
+    }
+}
+
+#[test]
+fn typed_human_request_rejects_forged_project_actor_and_derivation_fields() {
+    let mut wire = serde_json::to_value(request(
+        PARENT_REVISION_ID,
+        PARENT_REVISION_ID,
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    ))
+    .expect("serialize typed request");
+    let object = wire.as_object_mut().expect("typed request object");
+    object.insert("projectId".to_owned(), json!(PROJECT_A));
+    object.insert("actor".to_owned(), json!("forged-actor"));
+    object.insert("derivation".to_owned(), json!({"kind": "forged"}));
+    assert!(serde_json::from_value::<CreateHumanDerivedRevisionRequest>(wire).is_err());
 }
 
 #[test]
@@ -608,6 +1311,35 @@ fn rejects_wrong_trusted_project_boundary() {
 }
 
 #[test]
+fn rejects_a_forged_d1_head_even_when_the_head_foreign_key_is_valid() {
+    let db = fixture_db();
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE narrative_dependency_declaration_heads
+                SET producer_id = 'forged-producer'
+              WHERE project_id = ?1
+                AND consumer_kind = 'proposal-revision'
+                AND consumer_key = ?2",
+            rusqlite::params![PROJECT_A, PARENT_REVISION_ID],
+        )?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .expect("forge only the D1 head producer identity");
+    assert_code(
+        submit(
+            &db,
+            PROJECT_A,
+            request(
+                PARENT_REVISION_ID,
+                PARENT_REVISION_ID,
+                &parent_envelope_digest(&db),
+            ),
+        ),
+        DECLARATION_HEAD_UNAVAILABLE,
+    );
+}
+
+#[test]
 fn rejects_wrong_adapter_identity() {
     let db = fixture_db();
     let mut invalid = request(
@@ -653,7 +1385,7 @@ fn rejects_zero_edge_parent_without_c2b_child_declaration() {
             request(
                 "revision-zero-edge",
                 "revision-zero-edge",
-                &parent_envelope_digest(&db),
+                &persisted_parent_envelope_digest_for(&db, "revision-zero-edge"),
             ),
         ),
         ZERO_EDGE,

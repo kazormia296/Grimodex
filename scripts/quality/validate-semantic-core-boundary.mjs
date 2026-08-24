@@ -34,7 +34,9 @@ const REPO_ROOT = path.resolve(
 // SCHEMA 33 (NIR-0 D1) adds sealed Dependency declaration storage. It is a
 // shadow persistence boundary only; V1 remains the canonical Freshness
 // authority, so the authority matrix is still unchanged.
-export const EXPECTED_SCHEMA_VERSION = 33;
+// SCHEMA 34 (NIR-0 C2A) adds non-authoritative Chronicle V2 persistence and
+// stage-provenance closure storage; V1 remains the production fallback.
+export const EXPECTED_SCHEMA_VERSION = 34;
 
 // The manifest may add narrower roots as the architecture evolves, but it
 // may not remove the roots that currently contain semantic interpreters,

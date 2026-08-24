@@ -14,7 +14,7 @@ use grimodex_db::Database;
 use rusqlite::{params, Connection};
 
 const SCHEMA_31: i32 = 31;
-const SCHEMA_33: i32 = 33;
+const CURRENT_SCHEMA: i32 = 34;
 const MARKER: &str = "narrative-c2-application-rekey-v32";
 const RUN_KIND: &str = "narrative-extraction-run";
 const APPLICATION_KIND: &str = "application";
@@ -434,7 +434,7 @@ fn checkpoint_failure_after_marker_rolls_back_every_c2zb_write_and_retry_succeed
     db.migrate().expect("retry after checkpoint failure");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(version, SCHEMA_33);
+        assert_eq!(version, CURRENT_SCHEMA);
         let marker_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
             [MARKER],
@@ -530,7 +530,7 @@ fn release_failure_rolls_back_c2zb_savepoint_and_leaves_connection_autocommit() 
     db.migrate().expect("retry after RELEASE failure");
     db.with_conn(|conn| {
         let version: i32 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        assert_eq!(version, SCHEMA_33);
+        assert_eq!(version, CURRENT_SCHEMA);
         let marker_count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM schema_data_migrations WHERE migration_id = ?1",
             [MARKER],

@@ -52,12 +52,31 @@ fn valid_envelope() -> Value {
             "assertionId": null,
             "assertionKind": "scene-event@1",
             "payloadSchemaRef": {"id": "narrative.chronicle.scene-event", "version": "1"},
-            "payload": {"eventId": "event:1"},
+            "payload": {
+                "eventId": "event:1",
+                "summary": "A arrives.",
+                "actuality": "actual",
+                "significance": "major",
+                "attribution": "narrator",
+                "narrativeFrame": "story-world",
+                "observationRefs": ["observation:1"],
+                "originalObservationRefs": ["observation:1"],
+                "mergedObservationRefs": ["observation:1"],
+                "observationSummaries": [{
+                    "observationRef": "observation:1",
+                    "predicate": "arrival",
+                    "semanticType": "arrival",
+                    "participants": [{"surface": "A", "role": "subject"}],
+                    "locationSurface": "station",
+                    "temporalExpressions": ["morning"],
+                    "durationKind": "instant"
+                }]
+            },
             "scope": scope,
             "modality": "modality-explicit-text",
             "polarity": "affirmative",
             "supportClass": "direct-source",
-            "producer": {"kind": "reconciler-proposal", "id": "chronicle", "version": "1"}
+            "producer": {"kind": "reconciler-proposal", "id": "chronicle.reconciler", "version": "1"}
         },
         "assertionDigests": {
             "assertionCoreDigest": DIGEST,
@@ -67,13 +86,23 @@ fn valid_envelope() -> Value {
         "changeIntent": {"changeKind": "add"},
         "effectiveMaterialBasis": {
             "sourceBasis": [{"sourceKind": "scene", "sourceKey": "scene:1", "revisionToken": "rev:1"}],
-            "evidenceSet": [{"evidenceRef": "anchor:1"}],
+            "evidenceSet": [{"evidenceRef": "anchor:1", "documentRef": "document:1"}],
             "dependencySet": [{
                 "dependencyId": "dependency:1",
                 "inputRef": "anchor:1",
-                "contextIds": [],
+                "contextIds": ["context:1"],
                 "role": "direct-evidence",
                 "selector": {"kind": "whole-source"}
+            }, {
+                "dependencyId": "dependency:component",
+                "inputRef": "component:chronicle.event-synthesis.prompt",
+                "contextIds": [],
+                "role": "component-contract",
+                "selector": {
+                    "kind": "component-contract",
+                    "contractId": "chronicle.event-synthesis.prompt",
+                    "contractDigest": DIGEST
+                }
             }],
             "dependencySetDigest": DIGEST,
             "materialBasisDigest": DIGEST
@@ -82,8 +111,14 @@ fn valid_envelope() -> Value {
             "kind": "interpretation",
             "runId": "run:1",
             "taskId": "task:1",
-            "producer": {"kind": "reconciler-proposal", "id": "chronicle", "version": "1"},
-            "contextSet": [],
+            "producer": {"kind": "reconciler-proposal", "id": "chronicle.reconciler", "version": "1"},
+            "contextSet": [{
+                "contextId": "context:1",
+                "inputRef": "anchor:1",
+                "stageId": "narrative_event_synthesize",
+                "exposure": "model-visible",
+                "selector": {"kind": "whole-source"}
+            }],
             "contextSetDigest": DIGEST,
             "componentContractDigest": DIGEST,
             "finalRequestDigest": DIGEST
@@ -200,6 +235,42 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
         candidate["assertion"]["payload"] = payload;
         assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
     }
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"] = json!({});
+    assert!(
+        validate_chronicle_scene_event_v2(&candidate).is_err(),
+        "an empty semantic payload must not become valid merely by recomputing digests"
+    );
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["producer"]["id"] = json!("reconciler-run-42");
+    candidate["revisionBasis"]["producer"]["id"] = json!("reconciler-run-42");
+    candidate["assertion"]["producer"]["version"] = json!("2026-08");
+    candidate["revisionBasis"]["producer"]["version"] = json!("2026-08");
+    assert!(
+        validate_chronicle_scene_event_v2(&candidate).is_ok(),
+        "producer identity/version are execution-bound, not hard-coded"
+    );
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"]["attribution"] = json!("character:alice");
+    candidate["assertion"]["payload"]["observationSummaries"][0]
+        .as_object_mut()
+        .expect("summary")
+        .remove("semanticType");
+    candidate["assertion"]["payload"]["observationSummaries"][0]
+        .as_object_mut()
+        .expect("summary")
+        .remove("locationSurface");
+    candidate["assertion"]["payload"]["observationSummaries"][0]["participants"] = json!([]);
+    candidate["assertion"]["payload"]["observationSummaries"][0]["temporalExpressions"] = json!([]);
+    assert!(validate_chronicle_scene_event_v2(&candidate).is_ok());
+
+    let mut candidate = valid_envelope();
+    candidate["assertion"]["payload"]["observationSummaries"][0]["durationKind"] =
+        json!("unbounded");
+    assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
 }
 
 #[test]

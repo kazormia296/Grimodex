@@ -214,11 +214,31 @@ pub(crate) fn verify_task_lease(
 
 pub(crate) fn persist_task_artifacts(
     conn: &Connection,
+    project_id: &str,
     run_id: &str,
     task_id: &str,
     attempt_id: &str,
+    output_json: &serde_json::Value,
+    chronicle_stage_bundle: Option<&super::models::ChronicleStageC1ExecutionBinding>,
     artifacts: &[super::models::ArtifactInput],
 ) -> anyhow::Result<()> {
+    if let Some(binding) = chronicle_stage_bundle {
+        super::stage_provenance::persist_chronicle_stage_bundle(
+            conn,
+            project_id,
+            run_id,
+            task_id,
+            attempt_id,
+            binding,
+            output_json,
+            artifacts,
+        )?;
+    } else {
+        // Generic/V1 finishes deliberately retain their pre-C2A behavior, but
+        // reserved Chronicle C2A kinds may not bypass the explicit typed
+        // binding by smuggling stage JSON through the generic path.
+        super::stage_provenance::reject_reserved_chronicle_stage_bundle(output_json, artifacts)?;
+    }
     insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, artifacts)
 }
 

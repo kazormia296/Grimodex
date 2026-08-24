@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 33,
+  "schemaVersion": 34,
   "tables": {
     "ab_comparison_runs": {
       "kind": "table",
@@ -8105,6 +8105,198 @@
       "uniqueConstraints": [],
       "createSql": "CREATE TABLE \"narrative_extraction_runs\" ( id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, surface_path_id TEXT NOT NULL, scope_json TEXT NOT NULL, spec_json TEXT NOT NULL, spec_digest TEXT NOT NULL, snapshot_digest TEXT, catalog_digest TEXT, registry_digest TEXT, status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','cancelled','superseded')), coverage_json TEXT NOT NULL DEFAULT '{}', outcome_summary_json TEXT, created_at TEXT NOT NULL, started_at TEXT, completed_at TEXT, version INTEGER NOT NULL DEFAULT 0, run_kind TEXT NOT NULL DEFAULT 'interpretation' CHECK(run_kind IN ( 'interpretation','freshness-evaluation','semantic-index-rebuild', 'manual-rebuild','backfill','dependency-verify','dependency-repair' )), consumer_id TEXT, semantic_epoch_id TEXT REFERENCES narrative_semantic_epochs(id), work_key TEXT, terminal_reason_code TEXT CHECK(terminal_reason_code IS NULL OR terminal_reason_code GLOB 'NEX_*'), superseded_by_run_id TEXT REFERENCES narrative_extraction_runs(id) , request_id TEXT, idempotency_domain TEXT, request_payload_digest TEXT, actor_id TEXT)"
     },
+    "narrative_extraction_stage_model_bindings": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "binding_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "binding_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "stage_execution_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "stage_execution_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_extraction_stage_model_bindings ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, stage_execution_id TEXT NOT NULL, binding_json TEXT NOT NULL CHECK(json_valid(binding_json) AND json_type(binding_json) = 'object'), binding_digest TEXT NOT NULL CHECK(length(binding_digest) = 71 AND binding_digest GLOB 'sha256:*' AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'), created_at TEXT NOT NULL, UNIQUE(project_id, stage_execution_id) )"
+    },
+    "narrative_extraction_stage_receipts": {
+      "kind": "table",
+      "columns": {
+        "attempt_id": {
+          "ordinal": 4,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "created_at": {
+          "ordinal": 10,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "id": {
+          "ordinal": 0,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 1
+        },
+        "model_binding_digest": {
+          "ordinal": 8,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "project_id": {
+          "ordinal": 1,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_digest": {
+          "ordinal": 7,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "receipt_json": {
+          "ordinal": 6,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "run_id": {
+          "ordinal": 2,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "stage_execution_id": {
+          "ordinal": 5,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "task_id": {
+          "ordinal": 3,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        },
+        "terminal_status": {
+          "ordinal": 9,
+          "declaredType": "TEXT",
+          "notNull": true,
+          "default": null,
+          "primaryKey": 0
+        }
+      },
+      "foreignKeys": [
+        {
+          "id": 0,
+          "sequence": 0,
+          "table": "projects",
+          "from": "project_id",
+          "to": "id",
+          "onUpdate": "NO ACTION",
+          "onDelete": "CASCADE",
+          "match": "NONE"
+        }
+      ],
+      "uniqueConstraints": [
+        {
+          "columns": [
+            "project_id",
+            "stage_execution_id"
+          ]
+        }
+      ],
+      "createSql": "CREATE TABLE narrative_extraction_stage_receipts ( id TEXT NOT NULL PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE, run_id TEXT NOT NULL, task_id TEXT NOT NULL, attempt_id TEXT NOT NULL, stage_execution_id TEXT NOT NULL, receipt_json TEXT NOT NULL CHECK(json_valid(receipt_json) AND json_type(receipt_json) = 'object'), receipt_digest TEXT NOT NULL CHECK(length(receipt_digest) = 71 AND receipt_digest GLOB 'sha256:*' AND substr(receipt_digest, 8) NOT GLOB '*[^0-9a-f]*'), model_binding_digest TEXT NOT NULL CHECK(length(model_binding_digest) = 71 AND model_binding_digest GLOB 'sha256:*' AND substr(model_binding_digest, 8) NOT GLOB '*[^0-9a-f]*'), terminal_status TEXT NOT NULL CHECK(terminal_status IN ('succeeded', 'failed', 'cancelled', 'skipped')), created_at TEXT NOT NULL, UNIQUE(project_id, stage_execution_id) )"
+    },
     "narrative_extraction_task_edges": {
       "kind": "table",
       "columns": {
@@ -15034,6 +15226,54 @@
       ],
       "createSql": "CREATE INDEX idx_narrative_semantic_epochs_project ON narrative_semantic_epochs(project_id, epoch_number)"
     },
+    "idx_narrative_stage_model_bindings_owner": {
+      "table": "narrative_extraction_stage_model_bindings",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "attempt_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_stage_model_bindings_owner ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id)"
+    },
+    "idx_narrative_stage_receipts_owner": {
+      "table": "narrative_extraction_stage_receipts",
+      "unique": false,
+      "partial": false,
+      "columns": [
+        {
+          "ordinal": 0,
+          "column": "project_id"
+        },
+        {
+          "ordinal": 1,
+          "column": "run_id"
+        },
+        {
+          "ordinal": 2,
+          "column": "task_id"
+        },
+        {
+          "ordinal": 3,
+          "column": "attempt_id"
+        }
+      ],
+      "createSql": "CREATE INDEX idx_narrative_stage_receipts_owner ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id)"
+    },
     "idx_narrative_temporal_constraints_project": {
       "table": "narrative_temporal_constraints",
       "unique": false,
@@ -16161,6 +16401,7 @@
     "narrative_application_kind_guard": "CREATE TRIGGER narrative_application_kind_guard BEFORE INSERT ON narrative_proposal_applications WHEN NEW.application_kind NOT IN ('normal','compensation') BEGIN SELECT RAISE(ABORT, 'NEX_APPLICATION_KIND_INVALID'); END",
     "narrative_decision_immutable_after_apply_delete": "CREATE TRIGGER narrative_decision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
     "narrative_decision_immutable_after_apply_update": "CREATE TRIGGER narrative_decision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_decisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE proposal_id = OLD.proposal_id AND revision_id = OLD.revision_id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_DECISION'); END",
+    "narrative_proposal_revisions_v2_monotonicity_guard": "CREATE TRIGGER narrative_proposal_revisions_v2_monotonicity_guard BEFORE INSERT ON narrative_proposal_revisions WHEN EXISTS ( SELECT 1 FROM narrative_proposals p JOIN narrative_proposal_revisions current_revision ON current_revision.id = p.current_revision_id WHERE p.id = NEW.proposal_id AND current_revision.origin_kind = 'enveloped' AND json_extract(current_revision.reconciliation_envelope_json, '$.schemaVersion') = 2 ) AND ( NEW.origin_kind <> 'enveloped' OR NEW.reconciliation_envelope_json IS NULL OR json_extract(NEW.reconciliation_envelope_json, '$.schemaVersion') <> 2 ) BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN'); END",
     "narrative_revision_envelope_immutable_update": "CREATE TRIGGER narrative_revision_envelope_immutable_update BEFORE UPDATE ON narrative_proposal_revisions WHEN OLD.origin_kind IS NOT NEW.origin_kind OR OLD.reconciliation_envelope_json IS NOT NEW.reconciliation_envelope_json OR OLD.reconciliation_envelope_digest IS NOT NEW.reconciliation_envelope_digest BEGIN SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_IMMUTABLE'); END",
     "narrative_revision_immutable_after_apply_delete": "CREATE TRIGGER narrative_revision_immutable_after_apply_delete BEFORE DELETE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",
     "narrative_revision_immutable_after_apply_update": "CREATE TRIGGER narrative_revision_immutable_after_apply_update BEFORE UPDATE ON narrative_proposal_revisions WHEN EXISTS( SELECT 1 FROM narrative_proposal_applications WHERE revision_id = OLD.id ) BEGIN SELECT RAISE(ABORT, 'NEX_IMMUTABLE_APPLIED_REVISION'); END",

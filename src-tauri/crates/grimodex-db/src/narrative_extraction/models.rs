@@ -68,6 +68,140 @@ pub struct FinishTaskPayload {
     pub output_json: Option<Value>,
     #[serde(default)]
     pub artifacts: Vec<ArtifactInput>,
+    /// Explicit C2A Chronicle stage persistence mode. `None` preserves the
+    /// existing generic/V1 finish path; `Some` is a typed all-or-nothing
+    /// companion contract and cannot be inferred from artifact JSON.
+    #[serde(default)]
+    pub chronicle_stage_bundle: Option<ChronicleStageC1ExecutionBinding>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageC1ExecutionBinding {
+    pub project_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub context_set_digest: String,
+    pub component_contract_digest: String,
+    pub final_request_digest: String,
+    pub stage_provenance_closure_digest: String,
+    /// The C1 closure is a typed, ephemeral proof input.  It is validated in
+    /// the same transaction as the output/raw-observation companions and is
+    /// deliberately never inserted into the durable artifact table.
+    pub closure: ChronicleStageProvenanceClosure,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageProvenanceClosure {
+    pub kind: String,
+    pub version: u64,
+    pub project_id: String,
+    pub run_id: String,
+    pub owner_task_id: String,
+    pub owner_attempt_id: String,
+    pub receipts: Vec<ChronicleStageTerminalReceipt>,
+    pub receipt_refs: Vec<ChronicleStageReceiptRef>,
+    pub stage_provenance_closure_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageReceiptRef {
+    pub stage_execution_id: String,
+    pub stage_execution_receipt_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageTerminalReceipt {
+    pub kind: String,
+    pub version: u64,
+    pub stage_execution: ChronicleStageExecution,
+    pub context_set_version: String,
+    pub context_set_digest: String,
+    pub component_contract_digest: String,
+    pub final_request_digest: String,
+    pub model_execution_binding: ChronicleStageModelBinding,
+    pub model_binding_digest: String,
+    pub response_digest: Option<String>,
+    pub parse_status: ChronicleStageParseStatus,
+    pub terminal_status: ChronicleStageTerminalStatus,
+    pub stage_execution_receipt_digest: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageExecution {
+    pub project_id: String,
+    pub run_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub stage_id: ChronicleStageId,
+    pub stage_execution_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_stage_execution_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChronicleStageModelBinding {
+    pub kind: String,
+    pub version: u64,
+    pub provider: Option<String>,
+    pub endpoint_binding_id: Option<String>,
+    pub requested_model: Option<String>,
+    pub effective_model: Option<String>,
+    pub model_fingerprint: Option<String>,
+    pub api_variant: Option<String>,
+    pub reasoning_mode: Option<String>,
+    pub generation_mode: ChronicleStageGenerationMode,
+    pub resolution_status: ChronicleStageResolutionStatus,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageId {
+    #[serde(rename = "narrative_observation_extract")]
+    NarrativeObservationExtract,
+    #[serde(rename = "narrative_event_synthesize")]
+    NarrativeEventSynthesize,
+    #[serde(rename = "narrative_structured_repair")]
+    NarrativeStructuredRepair,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageParseStatus {
+    Parsed,
+    Invalid,
+    NotAttempted,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageTerminalStatus {
+    Succeeded,
+    Failed,
+    Cancelled,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageGenerationMode {
+    ProviderDefault,
+    Explicit,
+}
+
+#[derive(Debug, Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChronicleStageResolutionStatus {
+    Fingerprinted,
+    ProviderReported,
+    RequestedOnly,
+    Unresolved,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -150,6 +284,93 @@ pub struct AppendRevisionPayload {
     pub expected_current_revision_id: String,
     #[serde(default)]
     pub created_by: Option<String>,
+}
+
+/// Trusted Native identity of the Chronicle Human Derivation Adapter. The
+/// renderer may request an adapter/version, but the writer validates it
+/// against the registered C2A contract before persisting any revision.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NarrativeAdapterIdentity {
+    pub id: String,
+    pub version: String,
+}
+
+/// Exact public C2A ingress for a Native-verified Human-derived revision.
+/// Project and actor identity deliberately do not live in this request:
+/// project is a separate trusted Native argument and the writer fixes the
+/// actor to `human` plus the supplied review surface.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateHumanDerivedRevisionRequest {
+    pub proposal_id: String,
+    pub expected_current_revision_id: String,
+    pub parent_revision_id: String,
+    pub expected_parent_envelope_digest: String,
+    pub proposal_payload: Value,
+    pub adapter: NarrativeAdapterIdentity,
+    pub surface_id: String,
+}
+
+/// Trusted Native authority for a scope-affecting Human derivation.  This is
+/// deliberately not deserializable: the renderer-shaped request cannot carry
+/// a completed reveal basis, and C3 must resolve this authority before calling
+/// the dormant C2A writer.
+#[derive(Debug, Clone)]
+pub struct TrustedHumanDerivationScope {
+    /// Native's trusted project boundary.  This is checked against the
+    /// separate `trusted_project_id` argument and is never decoded from the
+    /// renderer request.
+    pub project_id: String,
+    /// The parent CAS this resolver result was computed for.
+    pub parent_revision_id: String,
+    pub expected_parent_envelope_digest: String,
+    /// The edited proposal's disclosure document.  The writer binds this to
+    /// the request before handing the basis to the pure Core derivation.
+    pub edited_document_ref: String,
+    /// Stable source identity observed while resolving the reveal basis.
+    /// These fields are checked against the persisted parent source basis;
+    /// the live source is intentionally not re-resolved here so a stale
+    /// parent remains an immutable, auditable observation.
+    pub source_key: String,
+    pub source_revision_token: String,
+    pub source_revision_digest: String,
+    pub scene_ref: String,
+    pub reveal_basis: TrustedRevealBasis,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedScopeBoundary {
+    pub reference: String,
+    pub inclusive: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct TrustedScopeInterval {
+    pub from: Option<TrustedScopeBoundary>,
+    pub until: Option<TrustedScopeBoundary>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrustedUnresolvedConstraint {
+    pub reason: String,
+    pub constraint_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum TrustedRevealBasis {
+    NotSecret,
+    Resolved {
+        document_ref: String,
+        audience_ref: String,
+        reading_order: TrustedScopeInterval,
+        story_time: TrustedScopeInterval,
+    },
+    Unresolved {
+        document_ref: String,
+        audience: TrustedUnresolvedConstraint,
+        reading_order: TrustedUnresolvedConstraint,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

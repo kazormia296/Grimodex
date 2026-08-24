@@ -659,6 +659,7 @@ fn finish_task_rejects_after_lease_expiry() {
             lease_owner: "worker-a".to_string(),
             output_json: Some(json!({ "ok": true })),
             artifacts: vec![],
+            chronicle_stage_bundle: None,
         },
     )
     .expect_err("finish must reject expired lease");
@@ -1521,6 +1522,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
                     payload_digest: None,
                 },
             ],
+            chronicle_stage_bundle: None,
         },
     )
     .expect("finish with artifacts");

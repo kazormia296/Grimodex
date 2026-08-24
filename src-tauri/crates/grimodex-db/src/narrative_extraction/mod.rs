@@ -49,6 +49,7 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
+mod human_derivation;
 mod models;
 mod phase_operations;
 mod phase_snapshots;
@@ -64,6 +65,7 @@ mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
 mod source_revision;
+mod stage_provenance;
 mod task_leases;
 mod temporal_constraints;
 mod temporal_nodes;
@@ -260,14 +262,18 @@ pub(crate) use field_authority::{
 };
 pub use models::{
     AppendDecisionPayload, AppendRevisionPayload, ApplyCommitPayload, ArtifactInput,
-    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
-    EntityBindingSeed, FailTaskPayload, FinishTaskPayload, GetCommitStatusPayload,
-    GetNarrativeBackfillStatusPayload, HumanFieldLockPayload, ListResumableRunsPayload,
-    NarrativeMaintenanceAttentionClearPayload, NarrativeMaintenanceAttentionSetPayload,
-    NarrativeMaintenanceInboxListPayload, PrepareCommitPayload, ProposalSeed,
-    RebuildNarrativeDerivedStatePayload, ReconciliationEnvelopeInheritance,
-    RepairNarrativeDependencyDeclarationsPayload, RetryNarrativeLegacyBackfillPayload,
-    ReviseAndDecidePayload, RunRefPayload, SaveProposalSetPayload, UndoCommitPayload,
+    ChronicleStageC1ExecutionBinding, ChronicleStageExecution, ChronicleStageModelBinding,
+    ChronicleStageProvenanceClosure, ChronicleStageReceiptRef, ChronicleStageTerminalReceipt,
+    ClaimTaskPayload, CommitApplicationRef, CommitOperation, CreateHumanDerivedRevisionRequest,
+    CreateRunPayload, CreateTaskSeed, EntityBindingSeed, FailTaskPayload, FinishTaskPayload,
+    GetCommitStatusPayload, GetNarrativeBackfillStatusPayload, HumanFieldLockPayload,
+    ListResumableRunsPayload, NarrativeAdapterIdentity, NarrativeMaintenanceAttentionClearPayload,
+    NarrativeMaintenanceAttentionSetPayload, NarrativeMaintenanceInboxListPayload,
+    PrepareCommitPayload, ProposalSeed, RebuildNarrativeDerivedStatePayload,
+    ReconciliationEnvelopeInheritance, RepairNarrativeDependencyDeclarationsPayload,
+    RetryNarrativeLegacyBackfillPayload, ReviseAndDecidePayload, RunRefPayload,
+    SaveProposalSetPayload, TrustedHumanDerivationScope, TrustedRevealBasis, TrustedScopeBoundary,
+    TrustedScopeInterval, TrustedUnresolvedConstraint, UndoCommitPayload,
     VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
@@ -292,6 +298,35 @@ pub fn narrative_extraction_create_run(
     payload: CreateRunPayload,
 ) -> anyhow::Result<Value> {
     repository::create_run(db, payload)
+}
+
+/// Native-only Chronicle Human Derivation writer.  The trusted project
+/// boundary is deliberately separate from the renderer-shaped request; the
+/// implementation fixes actor/derivation metadata and consumes (but never
+/// mutates) the D1 sealed declaration head.
+pub fn narrative_extraction_create_human_derived_revision(
+    db: &Database,
+    trusted_project_id: &str,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_derivation::create_human_derived_revision(db, trusted_project_id, request)
+}
+
+/// Native-only scope-aware Human Derivation writer.  The renderer-shaped
+/// request remains unchanged; a trusted resolver supplies the non-Serde
+/// context only when a secret Scope must be re-derived.
+pub fn narrative_extraction_create_human_derived_revision_with_scope(
+    db: &Database,
+    trusted_project_id: &str,
+    trusted_scope: Option<TrustedHumanDerivationScope>,
+    request: CreateHumanDerivedRevisionRequest,
+) -> anyhow::Result<Value> {
+    human_derivation::create_human_derived_revision_with_scope(
+        db,
+        trusted_project_id,
+        trusted_scope,
+        request,
+    )
 }
 
 pub fn narrative_extraction_get_run(

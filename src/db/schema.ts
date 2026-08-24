@@ -2307,6 +2307,69 @@ export const narrativeExtractionArtifacts = sqliteTable(
   },
 );
 
+// SCHEMA_VERSION 34 (NIR-0 C2A): durable, non-authoritative Chronicle stage
+// audit metadata. The closure remains validated at task completion; these
+// rows are the durable receipt/binding evidence, not a Freshness authority.
+export const narrativeExtractionStageModelBindings = sqliteTable(
+  "narrative_extraction_stage_model_bindings",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    stageExecutionId: text("stage_execution_id").notNull(),
+    bindingJson: text("binding_json").notNull(),
+    bindingDigest: text("binding_digest").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_stage_model_bindings_execution").on(
+      table.projectId,
+      table.stageExecutionId,
+    ),
+    index("idx_narrative_stage_model_bindings_owner").on(
+      table.projectId,
+      table.runId,
+      table.taskId,
+      table.attemptId,
+    ),
+  ],
+);
+
+export const narrativeExtractionStageReceipts = sqliteTable(
+  "narrative_extraction_stage_receipts",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull(),
+    taskId: text("task_id").notNull(),
+    attemptId: text("attempt_id").notNull(),
+    stageExecutionId: text("stage_execution_id").notNull(),
+    receiptJson: text("receipt_json").notNull(),
+    receiptDigest: text("receipt_digest").notNull(),
+    modelBindingDigest: text("model_binding_digest").notNull(),
+    terminalStatus: text("terminal_status").notNull(),
+    createdAt: text("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_narrative_stage_receipts_execution").on(
+      table.projectId,
+      table.stageExecutionId,
+    ),
+    index("idx_narrative_stage_receipts_owner").on(
+      table.projectId,
+      table.runId,
+      table.taskId,
+      table.attemptId,
+    ),
+  ],
+);
+
 export const narrativeProposalSets = sqliteTable("narrative_proposal_sets", {
   id: text("id").primaryKey(),
   runId: text("run_id").notNull(),
@@ -4040,6 +4103,18 @@ export type NarrativeExtractionArtifact =
   typeof narrativeExtractionArtifacts.$inferSelect;
 export type NewNarrativeExtractionArtifact =
   typeof narrativeExtractionArtifacts.$inferInsert;
+export type NarrativeExtractionStageModelBinding =
+  typeof narrativeExtractionStageModelBindings.$inferSelect;
+export type NewNarrativeExtractionStageModelBinding =
+  typeof narrativeExtractionStageModelBindings.$inferInsert;
+export type NarrativeExtractionStageReceipt =
+  typeof narrativeExtractionStageReceipts.$inferSelect;
+export type NewNarrativeExtractionStageReceipt =
+  typeof narrativeExtractionStageReceipts.$inferInsert;
+export type NarrativeExtractionStageClosure =
+  typeof narrativeExtractionStageClosures.$inferSelect;
+export type NewNarrativeExtractionStageClosure =
+  typeof narrativeExtractionStageClosures.$inferInsert;
 export type NarrativeDependencyDeclarationSet =
   typeof narrativeDependencyDeclarationSets.$inferSelect;
 export type NewNarrativeDependencyDeclarationSet =

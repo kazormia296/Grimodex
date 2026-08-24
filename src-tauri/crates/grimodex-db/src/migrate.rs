@@ -3558,6 +3558,80 @@ impl Database {
                 ON narrative_dependency_declaration_heads(active_declaration_set_id);",
         )?;
 
+        // SCHEMA_VERSION 34 / NIR-0 C2A: durable, non-authoritative Chronicle
+        // stage audit metadata.  The pure closure remains an input-side
+        // contract, but a successful task completion stores the verified
+        // model bindings and terminal receipts atomically with the task output
+        // and extraction artifacts. The C1 closure remains ephemeral and is
+        // never retained as a durable row (ADR 011 §2.1/plan 34f).
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS narrative_extraction_stage_model_bindings (
+                id                  TEXT NOT NULL PRIMARY KEY,
+                project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id              TEXT NOT NULL,
+                task_id             TEXT NOT NULL,
+                attempt_id          TEXT NOT NULL,
+                stage_execution_id  TEXT NOT NULL,
+                binding_json        TEXT NOT NULL
+                    CHECK(json_valid(binding_json)
+                      AND json_type(binding_json) = 'object'),
+                binding_digest      TEXT NOT NULL
+                    CHECK(length(binding_digest) = 71
+                      AND binding_digest GLOB 'sha256:*'
+                      AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                created_at          TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE TABLE IF NOT EXISTS narrative_extraction_stage_receipts (
+                id                    TEXT NOT NULL PRIMARY KEY,
+                project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                run_id               TEXT NOT NULL,
+                task_id              TEXT NOT NULL,
+                attempt_id           TEXT NOT NULL,
+                stage_execution_id   TEXT NOT NULL,
+                receipt_json         TEXT NOT NULL
+                    CHECK(json_valid(receipt_json)
+                      AND json_type(receipt_json) = 'object'),
+                receipt_digest       TEXT NOT NULL
+                    CHECK(length(receipt_digest) = 71
+                      AND receipt_digest GLOB 'sha256:*'
+                      AND substr(receipt_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                model_binding_digest TEXT NOT NULL
+                    CHECK(length(model_binding_digest) = 71
+                      AND model_binding_digest GLOB 'sha256:*'
+                      AND substr(model_binding_digest, 8) NOT GLOB '*[^0-9a-f]*'),
+                terminal_status      TEXT NOT NULL
+                    CHECK(terminal_status IN ('succeeded', 'failed', 'cancelled', 'skipped')),
+                created_at           TEXT NOT NULL,
+                UNIQUE(project_id, stage_execution_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_model_bindings_owner
+                ON narrative_extraction_stage_model_bindings(project_id, run_id, task_id, attempt_id);
+            CREATE INDEX IF NOT EXISTS idx_narrative_stage_receipts_owner
+                ON narrative_extraction_stage_receipts(project_id, run_id, task_id, attempt_id);
+            CREATE TRIGGER IF NOT EXISTS narrative_proposal_revisions_v2_monotonicity_guard
+                BEFORE INSERT ON narrative_proposal_revisions
+                WHEN EXISTS (
+                    SELECT 1
+                      FROM narrative_proposals p
+                      JOIN narrative_proposal_revisions current_revision
+                        ON current_revision.id = p.current_revision_id
+                     WHERE p.id = NEW.proposal_id
+                       AND current_revision.origin_kind = 'enveloped'
+                       AND json_extract(current_revision.reconciliation_envelope_json,
+                                        '$.schemaVersion') = 2
+                )
+                AND (
+                    NEW.origin_kind <> 'enveloped'
+                    OR NEW.reconciliation_envelope_json IS NULL
+                    OR json_extract(NEW.reconciliation_envelope_json,
+                                    '$.schemaVersion') <> 2
+                )
+                BEGIN
+                    SELECT RAISE(ABORT, 'NEX_REVISION_ENVELOPE_DOWNGRADE_FORBIDDEN');
+                END;",
+        )?;
+
         // New Run columns: run_kind distinguishes cursor-bound Runs (the
         // Freshness evaluator) from non-cursor-bound Runs (interpretation,
         // Semantic Index rebuild, manual rebuild, backfill); the Cursor
