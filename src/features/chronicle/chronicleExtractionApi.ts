@@ -1,9 +1,8 @@
+import type { ChronicleExtractionRequest } from "@/application/narrative-extraction/extractionCoordinator";
 import {
   CHRONICLE_EXTRACT_ARTIFACT_KINDS,
   CHRONICLE_EXTRACT_SURFACE_PATH,
-  runChronicleExtractionCoordinator,
-  type ChronicleExtractionRequest,
-} from "@/application/narrative-extraction/extractionCoordinator";
+} from "@/application/narrative-extraction/extractionContract";
 import {
   hydrateInlineArtifactsFromNative,
   loadInlineJsonArtifact,
@@ -362,6 +361,8 @@ export async function startChronicleExtraction(
     existingEvents: request.existingEvents,
   };
 
+  const { runChronicleExtractionCoordinator } =
+    await import("@/application/narrative-extraction/extractionCoordinator");
   const result = await runChronicleExtractionCoordinator(coordinatorRequest, {
     useAi: request.useAi ?? true,
   });

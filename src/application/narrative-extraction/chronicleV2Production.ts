@@ -56,6 +56,33 @@ export interface ChronicleV2ProductionResult {
   readonly provenanceBinding: ChronicleStageProvenanceBindingV1;
 }
 
+export interface ChronicleV2PlannedProposal {
+  readonly proposal: CreateChronicleEventProposalPayloadV1;
+  readonly match: ChronicleExistingMatch;
+  readonly hypothesisId: string;
+}
+
+export interface ChronicleV2ProductionBatchInput {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly plannedProposals: readonly ChronicleV2PlannedProposal[];
+  readonly hypotheses: readonly EventHypothesis[];
+  readonly originalObservations: readonly RawChronicleEventObservation[];
+  readonly mergedObservations: readonly RawChronicleEventObservation[];
+  readonly evidenceAnchors: readonly ResolvedEvidenceAnchor[];
+  readonly snapshot: NarrativeCorpusSnapshot;
+  readonly sourceBasis: SourceBasis;
+  readonly stageReceipts: readonly ChronicleStageTerminalReceiptV1[];
+}
+
+export interface ChronicleV2ProductionBatchResult {
+  readonly envelopeByProposalKey: ReadonlyMap<
+    string,
+    ChronicleV2ProductionResult["envelope"]
+  >;
+  readonly stageProvenanceBundle?: ChronicleV2ProductionResult;
+}
+
 /** The Context Set must be identical to the Event Synthesis prompt builder. */
 export function buildEventSynthesisContextManifests(
   clusterRef: string,
@@ -316,5 +343,49 @@ export async function buildChronicleProductionV2Envelope(
     envelope: result.envelope,
     stageProvenanceClosure: closure,
     provenanceBinding: binding,
+  };
+}
+
+export async function buildChronicleProductionV2Envelopes(
+  input: ChronicleV2ProductionBatchInput,
+): Promise<ChronicleV2ProductionBatchResult> {
+  const hypothesesById = new Map(
+    input.hypotheses.map((hypothesis) => [hypothesis.hypothesisId, hypothesis]),
+  );
+  const envelopeByProposalKey = new Map<
+    string,
+    ChronicleV2ProductionResult["envelope"]
+  >();
+  let stageProvenanceBundle: ChronicleV2ProductionResult | undefined;
+
+  for (const [index, plannedRow] of input.plannedProposals.entries()) {
+    const proposalKey = `${plannedRow.proposal.eventId}:${index}`;
+    const hypothesis = hypothesesById.get(plannedRow.hypothesisId);
+    if (!hypothesis) {
+      throw new Error(
+        `Missing hypothesis for Chronicle V2 proposal ${proposalKey}`,
+      );
+    }
+    const builtV2 = await buildChronicleProductionV2Envelope({
+      projectId: input.projectId,
+      runId: input.runId,
+      proposalKey,
+      proposal: plannedRow.proposal,
+      hypothesis,
+      originalObservations: input.originalObservations,
+      mergedObservations: input.mergedObservations,
+      evidenceAnchors: input.evidenceAnchors,
+      existingEventMatch: plannedRow.match,
+      snapshot: input.snapshot,
+      sourceBasis: input.sourceBasis,
+      stageReceipts: input.stageReceipts,
+    });
+    envelopeByProposalKey.set(proposalKey, builtV2.envelope);
+    stageProvenanceBundle ??= builtV2;
+  }
+
+  return {
+    envelopeByProposalKey,
+    ...(stageProvenanceBundle ? { stageProvenanceBundle } : {}),
   };
 }

@@ -7,6 +7,7 @@ import type { RawChronicleEventObservation } from "@/features/narrative-extracti
 import { buildSnapshotSourceBasis } from "./proposalRepository";
 import {
   buildChronicleProductionV2Envelope,
+  buildChronicleProductionV2Envelopes,
   buildEventSynthesisContextManifests,
 } from "./chronicleV2Production";
 import type { CreateChronicleEventProposalPayloadV1 } from "@/features/narrative-extraction/proposals/chronicleEventProposal";
@@ -214,6 +215,31 @@ describe("Chronicle V2 production adapter boundary", () => {
     );
     expect(result.stageProvenanceClosure.receipts).toHaveLength(2);
     expect(result.provenanceBinding.taskId).toBe("task:synthesis");
+  });
+
+  it("builds the production batch map without moving orchestration into the UI chunk", async () => {
+    const stageReceipts = await receipts();
+    const result = await buildChronicleProductionV2Envelopes({
+      projectId: "project:chronicle",
+      runId: "run:production",
+      plannedProposals: [
+        {
+          proposal,
+          match: { status: "none" } satisfies ChronicleExistingMatch,
+          hypothesisId: hypothesis.hypothesisId,
+        },
+      ],
+      hypotheses: [hypothesis],
+      originalObservations: [observation],
+      mergedObservations: [observation],
+      evidenceAnchors: [anchor],
+      snapshot,
+      sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
+      stageReceipts,
+    });
+
+    expect(result.envelopeByProposalKey.has("event:arrival:0")).toBe(true);
+    expect(result.stageProvenanceBundle?.proposalKey).toBe("event:arrival:0");
   });
 
   it("fails closed when the C1 synthesis receipt is absent", async () => {

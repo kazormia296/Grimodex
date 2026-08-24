@@ -11,7 +11,7 @@ const createRunMock = vi.hoisted(() => vi.fn());
 const cancelRunMock = vi.hoisted(() => vi.fn());
 const saveProposalSetMock = vi.hoisted(() => vi.fn());
 const buildSnapshotSourceBasisMock = vi.hoisted(() => vi.fn());
-const buildProductionV2EnvelopeMock = vi.hoisted(() => vi.fn());
+const buildProductionV2EnvelopesMock = vi.hoisted(() => vi.fn());
 
 vi.mock("./nativeApi", () => ({
   narrativeExtractionClaimTask: claimMock,
@@ -38,7 +38,7 @@ vi.mock("./proposalRepository", () => ({
 }));
 
 vi.mock("./chronicleV2Production", () => ({
-  buildChronicleProductionV2Envelope: buildProductionV2EnvelopeMock,
+  buildChronicleProductionV2Envelopes: buildProductionV2EnvelopesMock,
   CHRONICLE_SCENE_EVENT_V2_PRODUCTION: true,
 }));
 
@@ -126,11 +126,16 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         },
       ],
     });
-    buildProductionV2EnvelopeMock.mockResolvedValue({
-      proposalKey: "test-proposal-key",
-      envelope: { schemaVersion: 2 },
-      stageProvenanceClosure: { schemaVersion: 1 },
-      provenanceBinding: { schemaVersion: 1 },
+    buildProductionV2EnvelopesMock.mockResolvedValue({
+      envelopeByProposalKey: new Map([
+        ["test-proposal-key", { schemaVersion: 2 }],
+      ]),
+      stageProvenanceBundle: {
+        proposalKey: "test-proposal-key",
+        envelope: { schemaVersion: 2 },
+        stageProvenanceClosure: { schemaVersion: 1 },
+        provenanceBinding: { schemaVersion: 1 },
+      },
     });
   });
 
@@ -422,7 +427,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
     expect(observationById.size).toBe(2);
     expect(localIds.every((id) => observationById.has(id))).toBe(true);
     expect(result.proposals.length).toBeGreaterThan(0);
-    expect(buildProductionV2EnvelopeMock).toHaveBeenCalledTimes(1);
+    expect(buildProductionV2EnvelopesMock).toHaveBeenCalledTimes(1);
     expect(saveProposalSetMock).toHaveBeenCalledWith(
       expect.objectContaining({
         v2EnvelopeByProposalKey: expect.any(Map),
