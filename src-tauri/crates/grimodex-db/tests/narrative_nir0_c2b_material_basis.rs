@@ -206,6 +206,7 @@ fn d1_parent_authority() -> D1ParentAuthority {
 
 fn v1_parent_authority() -> V1ParentAuthority {
     V1ParentAuthority {
+        project_id: "project-a".to_owned(),
         consumer_kind: "proposal-revision".to_owned(),
         consumer_key: PARENT_REVISION_ID.to_owned(),
         owning_run_id: PARENT_RUN_ID.to_owned(),
@@ -426,6 +427,9 @@ fn d1_projection_requires_direct_and_component_declarations_and_parent_parity() 
         .declarations
         .iter()
         .any(|declaration| declaration.role == DependencyRole::ComponentContract));
+    let mut wrong_consumer = authority.clone();
+    wrong_consumer.consumer_kind = "narrative-extraction-run".to_owned();
+    assert!(project_d1_declaration_set(&resolved.material_basis, &wrong_consumer).is_err());
     let snapshot = D1ParentSnapshot {
         project_id: authority.project_id.clone(),
         consumer_kind: authority.consumer_kind.clone(),
@@ -468,9 +472,13 @@ fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
         }]
     );
     let persisted = vec![V1PersistedEdge {
+        project_id: "project-a".to_owned(),
+        consumer_kind: "proposal-revision".to_owned(),
+        consumer_key: PARENT_REVISION_ID.to_owned(),
         source_object_identity: SCENE_SOURCE_KEY.to_owned(),
         read_set_json: json!([SOURCE_REVISION_TOKEN]).to_string(),
         owning_run_id: Some(PARENT_RUN_ID.to_owned()),
+        generated_by_transaction_id: None,
     }];
     validate_v1_parent_authority(&expected, &persisted, &authority).expect("V1 parent parity");
 
@@ -485,6 +493,25 @@ fn v1_projection_is_source_basis_only_and_rejects_shape_or_owner_drift() {
     let mut wrong_owner = persisted;
     wrong_owner[0].owning_run_id = Some("run-other".to_owned());
     assert!(validate_v1_parent_authority(&expected, &wrong_owner, &authority).is_err());
+
+    let mut foreign_project = vec![V1PersistedEdge {
+        project_id: "project-other".to_owned(),
+        consumer_kind: "proposal-revision".to_owned(),
+        consumer_key: PARENT_REVISION_ID.to_owned(),
+        source_object_identity: SCENE_SOURCE_KEY.to_owned(),
+        read_set_json: json!([SOURCE_REVISION_TOKEN]).to_string(),
+        owning_run_id: Some(PARENT_RUN_ID.to_owned()),
+        generated_by_transaction_id: None,
+    }];
+    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
+
+    foreign_project[0].project_id = "project-a".to_owned();
+    foreign_project[0].consumer_key = "revision-other".to_owned();
+    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
+
+    foreign_project[0].consumer_key = PARENT_REVISION_ID.to_owned();
+    foreign_project[0].generated_by_transaction_id = Some("tx-current".to_owned());
+    assert!(validate_v1_parent_authority(&expected, &foreign_project, &authority).is_err());
 }
 
 #[test]

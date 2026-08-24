@@ -21,6 +21,7 @@ use super::dependency_edges::canonical_source_object_identity;
 use super::repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 
 const D1_PRODUCER_ID: &str = "proposal-revision-source-basis";
+const PROPOSAL_REVISION_CONSUMER_KIND: &str = "proposal-revision";
 
 /// The exact material carried by a validated parent or derived child.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -163,6 +164,7 @@ pub struct D1ParentSnapshot {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct V1ParentAuthority {
+    pub project_id: String,
     pub consumer_kind: String,
     pub consumer_key: String,
     pub owning_run_id: String,
@@ -177,9 +179,13 @@ pub struct V1EdgeExpectation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct V1PersistedEdge {
+    pub project_id: String,
+    pub consumer_kind: String,
+    pub consumer_key: String,
     pub source_object_identity: String,
     pub read_set_json: String,
     pub owning_run_id: Option<String>,
+    pub generated_by_transaction_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -636,7 +642,11 @@ pub fn project_d1_declaration_set(
 ) -> anyhow::Result<D1DeclarationProjection> {
     validate_material_basis(material)?;
     ensure_non_empty(&authority.project_id, "projectId")?;
-    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    anyhow::ensure!(
+        authority.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_D1_CONSUMER_KIND_INVALID: consumerKind must be '{}'",
+        PROPOSAL_REVISION_CONSUMER_KIND
+    );
     ensure_non_empty(&authority.consumer_key, "consumerKey")?;
     anyhow::ensure!(
         authority.producer_id == D1_PRODUCER_ID,
@@ -729,7 +739,11 @@ pub fn validate_d1_parent_authority(
     actual: &D1ParentSnapshot,
 ) -> anyhow::Result<()> {
     ensure_non_empty(&expected.project_id, "projectId")?;
-    ensure_non_empty(&expected.consumer_kind, "consumerKind")?;
+    anyhow::ensure!(
+        expected.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_D1_CONSUMER_KIND_INVALID: expected consumerKind must be '{}'",
+        PROPOSAL_REVISION_CONSUMER_KIND
+    );
     ensure_non_empty(&expected.consumer_key, "consumerKey")?;
     anyhow::ensure!(
         expected.producer_id == D1_PRODUCER_ID,
@@ -763,7 +777,12 @@ pub fn project_v1_expectations(
     authority: &V1ParentAuthority,
 ) -> anyhow::Result<Vec<V1EdgeExpectation>> {
     validate_material_basis(material)?;
-    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&authority.project_id, "projectId")?;
+    anyhow::ensure!(
+        authority.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_V1_CONSUMER_KIND_INVALID: consumerKind must be '{}'",
+        PROPOSAL_REVISION_CONSUMER_KIND
+    );
     ensure_non_empty(&authority.consumer_key, "consumerKey")?;
     ensure_non_empty(&authority.owning_run_id, "owningRunId")?;
 
@@ -802,7 +821,12 @@ pub fn validate_v1_parent_authority(
     persisted: &[V1PersistedEdge],
     authority: &V1ParentAuthority,
 ) -> anyhow::Result<()> {
-    ensure_non_empty(&authority.consumer_kind, "consumerKind")?;
+    ensure_non_empty(&authority.project_id, "projectId")?;
+    anyhow::ensure!(
+        authority.consumer_kind == PROPOSAL_REVISION_CONSUMER_KIND,
+        "NEX_C2B_MATERIAL_V1_CONSUMER_KIND_INVALID: consumerKind must be '{}'",
+        PROPOSAL_REVISION_CONSUMER_KIND
+    );
     ensure_non_empty(&authority.consumer_key, "consumerKey")?;
     ensure_non_empty(&authority.owning_run_id, "owningRunId")?;
     anyhow::ensure!(
@@ -830,6 +854,22 @@ pub fn validate_v1_parent_authority(
 
     let mut persisted_sources = HashSet::<String>::new();
     for edge in persisted {
+        anyhow::ensure!(
+            edge.project_id == authority.project_id,
+            "NEX_C2B_MATERIAL_V1_PROJECT_MISMATCH: persisted edge '{}' belongs to another project",
+            edge.source_object_identity
+        );
+        anyhow::ensure!(
+            edge.consumer_kind == authority.consumer_kind
+                && edge.consumer_key == authority.consumer_key,
+            "NEX_C2B_MATERIAL_V1_CONSUMER_MISMATCH: persisted edge '{}' belongs to another Consumer",
+            edge.source_object_identity
+        );
+        anyhow::ensure!(
+            edge.generated_by_transaction_id.is_none(),
+            "NEX_C2B_MATERIAL_V1_TRANSACTION_UNEXPECTED: current revision edge '{}' must not carry a generated transaction id",
+            edge.source_object_identity
+        );
         ensure_non_empty(&edge.source_object_identity, "sourceObjectIdentity")?;
         anyhow::ensure!(
             persisted_sources.insert(edge.source_object_identity.clone()),
