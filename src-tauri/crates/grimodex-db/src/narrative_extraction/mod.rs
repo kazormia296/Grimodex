@@ -65,6 +65,7 @@ mod reconciliation_envelope;
 mod repair;
 mod repository;
 mod restore_rebuild;
+mod scope_authority_runtime;
 mod semantic_bindings;
 mod semantic_epoch;
 mod semantic_index_diagnostics;
@@ -281,6 +282,9 @@ pub use models::{
     VerifyNarrativeDependencyGraphPayload,
 };
 pub use repository::ensure_test_schema;
+pub use scope_authority_runtime::{
+    load_historical_scope_authority_basis, HISTORICAL_SCOPE_AUTHORITY_ARTIFACT_KIND,
+};
 pub use temporal_operations::TemporalScenePatchPayload;
 
 use serde_json::Value;

@@ -220,8 +220,16 @@ pub(crate) fn persist_task_artifacts(
     attempt_id: &str,
     output_json: &serde_json::Value,
     chronicle_stage_bundle: Option<&super::models::ChronicleStageC1ExecutionBinding>,
+    historical_scope_authority_basis: Option<
+        &grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2,
+    >,
     artifacts: &[super::models::ArtifactInput],
 ) -> anyhow::Result<()> {
+    // source.snapshot@2 is never accepted through the generic artifact list,
+    // including when the typed sidecar is also present.
+    super::scope_authority_runtime::reject_reserved_historical_scope_authority_artifacts(
+        artifacts,
+    )?;
     if let Some(binding) = chronicle_stage_bundle {
         super::stage_provenance::persist_chronicle_stage_bundle(
             conn,
@@ -239,7 +247,18 @@ pub(crate) fn persist_task_artifacts(
         // binding by smuggling stage JSON through the generic path.
         super::stage_provenance::reject_reserved_chronicle_stage_bundle(output_json, artifacts)?;
     }
-    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, artifacts)
+    let typed_scope_artifact = historical_scope_authority_basis
+        .map(|basis| {
+            super::scope_authority_runtime::persist_historical_scope_authority_basis_in_tx(
+                conn, project_id, run_id, task_id, attempt_id, basis,
+            )
+        })
+        .transpose()?;
+    let mut durable_artifacts =
+        Vec::with_capacity(artifacts.len() + usize::from(typed_scope_artifact.is_some()));
+    durable_artifacts.extend_from_slice(artifacts);
+    durable_artifacts.extend(typed_scope_artifact);
+    insert_artifacts_for_attempt(conn, run_id, task_id, attempt_id, &durable_artifacts)
 }
 
 pub(crate) fn claimed_task_to_value(claimed: &ClaimedTask) -> serde_json::Value {

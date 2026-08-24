@@ -18,11 +18,13 @@
       "rebuildRequired": true
     },
     "implementationStatus": {
-      "state": "declared",
-      "productionEntryPoints": [],
+      "state": "shadow",
+      "productionEntryPoints": [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis"
+      ],
       "blockedOn": [
-        "native-scope-authority-basis-producer",
-        "native-scope-authority-basis-resolver",
         "c2b-scope-override-wiring",
         "project-scope-order-authority"
       ]

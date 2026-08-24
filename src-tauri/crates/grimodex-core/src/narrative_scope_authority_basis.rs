@@ -157,6 +157,15 @@ pub struct NarrativeScopeAuthoritySourceDocumentV2 {
     pub node_id: String,
 }
 
+/// Ordered Native input used to build a historical basis. The caller owns the
+/// reading order; this module derives every axis identity and story-time rank.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NarrativeScopeAuthorityDocumentInputV2 {
+    pub document_ref: String,
+    pub source_key: String,
+    pub raw_story_key: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CanonicalScopeRegistryRevisionInputV1 {
@@ -405,6 +414,131 @@ pub fn canonical_narrative_source_snapshot_revision_input(
         corpus_digest: basis.digests.corpus_digest.clone(),
         authority_digest: basis.digests.authority_digest.clone(),
     }
+}
+
+pub fn build_narrative_scope_authority_basis_v2(
+    project_id: &str,
+    run_id: &str,
+    corpus_digest: &str,
+    documents: &[NarrativeScopeAuthorityDocumentInputV2],
+) -> Result<NarrativeScopeAuthorityBasisV2, NarrativeScopeAuthorityBasisError> {
+    require_contract_string(project_id, "projectId")?;
+    require_contract_string(run_id, "runId")?;
+    if !is_sha256_digest(corpus_digest) {
+        return Err(invalid("corpusDigest must be a lowercase sha256 digest"));
+    }
+    if documents.is_empty() || documents.len() > MAX_DOCUMENT_COUNT {
+        return Err(invalid("documents must contain 1..=999999 entries"));
+    }
+
+    let mut story_counts = HashMap::<&str, usize>::new();
+    for (index, document) in documents.iter().enumerate() {
+        let expected_document_ref = format!("D{:06}", index + 1);
+        if document.document_ref != expected_document_ref {
+            return Err(invalid(format!(
+                "documents[{index}].documentRef must equal {expected_document_ref}"
+            )));
+        }
+        suffix(
+            &document.source_key,
+            PROJECT_SCENE_PREFIX,
+            &format!("documents[{index}].sourceKey"),
+        )?;
+        if let Some(raw_story_key) = document.raw_story_key.as_deref() {
+            require_contract_string(raw_story_key, &format!("documents[{index}].rawStoryKey"))?;
+            *story_counts.entry(raw_story_key).or_default() += 1;
+        }
+    }
+
+    let mut unique_story_keys = story_counts
+        .iter()
+        .filter_map(|(key, count)| (*count == 1).then_some(*key))
+        .collect::<Vec<_>>();
+    unique_story_keys.sort_by(|left, right| compare_utf16(left, right));
+    let story_ranks = unique_story_keys
+        .into_iter()
+        .enumerate()
+        .map(|(rank, key)| (key, rank as u64))
+        .collect::<HashMap<_, _>>();
+
+    let mappings = documents
+        .iter()
+        .enumerate()
+        .map(|(index, document)| {
+            let node_id = document
+                .source_key
+                .strip_prefix(PROJECT_SCENE_PREFIX)
+                .ok_or_else(|| invalid("document source prefix changed after validation"))?;
+            let story_time_order = match document.raw_story_key.as_deref() {
+                None => NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved {
+                    reason: NarrativeScopeAuthorityUnresolvedReasonV2::NotProvided,
+                    raw_story_key: NarrativeScopeAuthorityNullableStoryKeyV2(None),
+                },
+                Some(raw_story_key)
+                    if story_counts.get(raw_story_key).copied().unwrap_or_default() > 1 =>
+                {
+                    NarrativeScopeAuthorityStoryTimeOrderV2::Unresolved {
+                        reason: NarrativeScopeAuthorityUnresolvedReasonV2::Ambiguous,
+                        raw_story_key: NarrativeScopeAuthorityNullableStoryKeyV2(Some(
+                            raw_story_key.to_owned(),
+                        )),
+                    }
+                }
+                Some(raw_story_key) => NarrativeScopeAuthorityStoryTimeOrderV2::Resolved {
+                    raw_story_key: raw_story_key.to_owned(),
+                    story_rank: story_ranks
+                        .get(raw_story_key)
+                        .copied()
+                        .ok_or_else(|| invalid("unique story key is missing its derived rank"))?,
+                },
+            };
+            Ok(NarrativeScopeAuthorityMappingV2 {
+                document_ref: document.document_ref.clone(),
+                source_key: document.source_key.clone(),
+                scene_ref: format!("{SCENE_REF_PREFIX}{node_id}"),
+                reading_order_ref: format!("{READING_REF_PREFIX}{node_id}"),
+                story_time_ref: format!("{STORY_REF_PREFIX}{node_id}"),
+                reading_rank: index as u64,
+                story_time_order,
+            })
+        })
+        .collect::<Result<Vec<_>, NarrativeScopeAuthorityBasisError>>()?;
+
+    let mut basis = NarrativeScopeAuthorityBasisV2 {
+        schema_version: NARRATIVE_SCOPE_AUTHORITY_BASIS_SCHEMA_VERSION,
+        contract_id: NARRATIVE_SCOPE_AUTHORITY_BASIS_CONTRACT_ID.to_owned(),
+        basis_kind: NARRATIVE_SCOPE_AUTHORITY_BASIS_KIND.to_owned(),
+        project_id: project_id.to_owned(),
+        source: NarrativeScopeAuthoritySourceV2 {
+            source_kind: NARRATIVE_SCOPE_AUTHORITY_SOURCE_KIND.to_owned(),
+            source_key: format!("{SOURCE_SNAPSHOT_PREFIX}{run_id}"),
+        },
+        scope_registry: NarrativeScopeAuthorityRegistryV2 {
+            registry_version: NARRATIVE_SCOPE_AUTHORITY_REGISTRY_VERSION.to_owned(),
+            reserved_audience_refs: vec!["reader".to_owned()],
+        },
+        mappings,
+        digests: NarrativeScopeAuthorityDigestsV2 {
+            corpus_digest: corpus_digest.to_owned(),
+            scope_registry_revision: String::new(),
+            reading_order_revision: String::new(),
+            story_time_order_revision: String::new(),
+            authority_digest: String::new(),
+            composite_digest: String::new(),
+        },
+    };
+    basis.digests.scope_registry_revision =
+        canonical_digest(&canonical_scope_registry_revision_input(&basis))?;
+    basis.digests.reading_order_revision =
+        canonical_digest(&canonical_reading_order_revision_input(&basis))?;
+    basis.digests.story_time_order_revision =
+        canonical_digest(&canonical_story_time_order_revision_input(&basis))?;
+    basis.digests.authority_digest =
+        canonical_digest(&canonical_scope_authority_digest_input(&basis))?;
+    basis.digests.composite_digest =
+        canonical_digest(&canonical_narrative_source_snapshot_revision_input(&basis))?;
+    basis.validate()?;
+    Ok(basis)
 }
 
 impl NarrativeScopeAuthorityBasisV2 {

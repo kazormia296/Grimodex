@@ -1200,6 +1200,7 @@ fn finish_bundle_with_artifacts(
                 stage_provenance_closure_digest: closure_digest,
                 closure: typed_closure,
             }),
+            historical_scope_authority_basis: None,
         },
     )
 }
@@ -1588,6 +1589,7 @@ fn chronicle_synthesis_requires_typed_closure_raw_output_link_atomically() {
             // The output/raw reserved pair intentionally enters the generic
             // path here to prove the typed closure bundle cannot be omitted.
             chronicle_stage_bundle: None,
+            historical_scope_authority_basis: None,
         },
     )
     .expect_err("typed Chronicle output without closure must fail closed");

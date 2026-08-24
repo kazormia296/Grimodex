@@ -46,20 +46,19 @@ resolver of scope authority. Duplicate Story keys remain explicitly
 unresolved; a unique key must resolve to its UTF-16 lexical rank. Neither case
 falls back to Reading Order.
 
-The future carrier token `source.snapshot@2` is reserved for a later typed
-writer/reader slice. The existing `source.snapshot@1` source identity
-authority remains unchanged and is not promoted into Scope authority by this
-basis. The historical basis is therefore declared with no production entry
-points, and generic artifact authority must not claim the reserved carrier.
+The carrier token `source.snapshot@2` is reserved to the typed snapshot-task
+writer/reader. The Electron coordinator supplies a closed basis companion;
+Native independently re-derives it from the durable Run scope and tree rows
+before it stores one shadow artifact. Generic artifact input cannot mint this
+carrier. The existing `source.snapshot@1` source identity authority remains
+unchanged, and the shadow artifact is not promoted into live Scope authority.
 V1 data has no implicit upgrade path; a rebuild is required.
 
-Until a native producer, native resolver, and C2B ScopeOverride wiring are
-landed together, runtime ScopeOverride handling stops with the exact
-`NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` code. Those are necessary but not
-sufficient: a separate project-scope order authority must establish any
-live/current Oracle before a future runtime can claim current Scope authority.
-This contract-only slice adds no runtime route, persistence migration, or
-current-Revision promotion.
+The historical producer/reader is a `shadow` foundation only. Until C2B
+ScopeOverride wiring and a separate project-scope order authority establish a
+live/current Oracle, runtime ScopeOverride handling continues to stop with the
+exact `NEX_C2B_SCOPE_AUTHORITY_UNAVAILABLE` code. This slice adds no new IPC
+command, persistence migration, or current-Revision promotion.
 
 ## Context
 

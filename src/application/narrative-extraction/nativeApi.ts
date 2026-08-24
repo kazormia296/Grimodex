@@ -6,6 +6,7 @@ import type {
   NarrativeProposalStatus,
 } from "@/features/narrative-extraction/runtime/types";
 import type { ReconciliationEnvelopeV1 } from "@/features/narrative-extraction/reconciler/types";
+import type { NarrativeScopeAuthorityBasisV2 } from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
 
 export interface CreateRunTaskSeed {
   readonly taskId?: string;
@@ -64,6 +65,7 @@ export interface FinishTaskPayload {
   readonly leaseOwner: string;
   readonly outputJson?: Readonly<Record<string, unknown>>;
   readonly artifacts?: readonly ArtifactInput[];
+  readonly historicalScopeAuthorityBasis?: NarrativeScopeAuthorityBasisV2;
 }
 
 export interface FailTaskPayload {

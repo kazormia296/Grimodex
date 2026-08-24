@@ -1,8 +1,9 @@
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_scope_authority_basis::{
-    canonical_narrative_source_snapshot_revision_input, canonical_reading_order_revision_input,
-    canonical_scope_authority_digest_input, canonical_scope_registry_revision_input,
-    canonical_story_time_order_revision_input, NarrativeScopeAuthorityBasisV2,
+    build_narrative_scope_authority_basis_v2, canonical_narrative_source_snapshot_revision_input,
+    canonical_reading_order_revision_input, canonical_scope_authority_digest_input,
+    canonical_scope_registry_revision_input, canonical_story_time_order_revision_input,
+    NarrativeScopeAuthorityBasisV2, NarrativeScopeAuthorityDocumentInputV2,
     NarrativeScopeAuthoritySourceDocumentV2, NarrativeScopeAuthorityTrustedContextV2,
 };
 use serde::Serialize;
@@ -95,6 +96,35 @@ fn accepts_the_shared_typed_golden_and_exact_document_coverage() {
     fixture
         .validate_trusted_context(&trusted_context())
         .expect("source coverage");
+}
+
+#[test]
+fn typed_builder_reproduces_the_shared_golden_from_ordered_scene_inputs() {
+    let documents = [
+        ("D000001", "project:scene:\u{e000}", Some("\u{e000}")),
+        ("D000002", "project:scene:\u{1f600}", Some("\u{1f600}")),
+        ("D000003", "project:scene:scene-three", None),
+        ("D000004", "project:scene:scene-four", Some("b0")),
+        ("D000005", "project:scene:scene-five", Some("b0")),
+    ]
+    .into_iter()
+    .map(
+        |(document_ref, source_key, raw_story_key)| NarrativeScopeAuthorityDocumentInputV2 {
+            document_ref: document_ref.to_owned(),
+            source_key: source_key.to_owned(),
+            raw_story_key: raw_story_key.map(str::to_owned),
+        },
+    )
+    .collect::<Vec<_>>();
+
+    let built = build_narrative_scope_authority_basis_v2(
+        "project-a",
+        "run-a",
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        &documents,
+    )
+    .expect("build typed historical basis");
+    assert_eq!(built, golden());
 }
 
 #[test]

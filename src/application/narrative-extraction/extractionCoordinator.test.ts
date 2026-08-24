@@ -236,6 +236,15 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         }),
       }),
     );
+    const finishPayloads = finishMock.mock.calls.map(
+      ([payload]) => payload as Record<string, unknown>,
+    );
+    expect(finishPayloads[0]?.historicalScopeAuthorityBasis).toBeDefined();
+    expect(
+      finishPayloads
+        .slice(1)
+        .every((payload) => !("historicalScopeAuthorityBasis" in payload)),
+    ).toBe(true);
     expect(saveProposalSetMock).toHaveBeenCalled();
   });
 
@@ -305,6 +314,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         buildSnapshot: async () => ({
           ok: true as const,
           snapshot: built.snapshot,
+          scopeAuthorityDocuments: [],
           flush: {
             status: "already-clean" as const,
             blockedDocuments: [],
@@ -439,6 +449,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
           buildSnapshot: async () => ({
             ok: true as const,
             snapshot: built.snapshot,
+            scopeAuthorityDocuments: [],
             flush: {
               status: "already-clean" as const,
               blockedDocuments: [],
@@ -524,6 +535,7 @@ describe("runChronicleExtractionCoordinator (fake path)", () => {
         buildSnapshot: async () => ({
           ok: true as const,
           snapshot: built.snapshot,
+          scopeAuthorityDocuments: [],
           flush: {
             status: "already-clean" as const,
             blockedDocuments: [],

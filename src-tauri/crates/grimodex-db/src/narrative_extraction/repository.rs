@@ -765,18 +765,22 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.run_id,
                 &payload.lease_owner,
             )?;
-            let attempt_status: Option<String> = conn
+            let attempt_is_current: Option<i64> = conn
                 .query_row(
-                    "SELECT status
-                       FROM narrative_extraction_attempts
-                      WHERE id = ?1 AND task_id = ?2",
+                    "SELECT 1
+                       FROM narrative_extraction_attempts a
+                       JOIN narrative_extraction_tasks t ON t.id = a.task_id
+                      WHERE a.id = ?1
+                        AND a.task_id = ?2
+                        AND a.status = 'running'
+                        AND a.attempt_number = t.attempt_count",
                     params![payload.attempt_id, payload.task_id],
                     |row| row.get(0),
                 )
                 .optional()?;
             anyhow::ensure!(
-                attempt_status.as_deref() == Some("running"),
-                "attempt is not the running attempt owned by task"
+                attempt_is_current == Some(1),
+                "attempt is not the current running attempt owned by task"
             );
             let lifecycle_at = grimodex_core::now_rfc3339_millis();
 
@@ -821,6 +825,7 @@ pub fn finish_task(db: &Database, payload: FinishTaskPayload) -> anyhow::Result<
                 &payload.attempt_id,
                 &output_value,
                 payload.chronicle_stage_bundle.as_ref(),
+                payload.historical_scope_authority_basis.as_ref(),
                 &payload.artifacts,
             )?;
 
@@ -2562,6 +2567,7 @@ mod unit_tests {
                     output_json: None,
                     artifacts: vec![],
                     chronicle_stage_bundle: None,
+                    historical_scope_authority_basis: None,
                 },
             ));
             assert_forbidden(fail_task(
@@ -2826,6 +2832,7 @@ mod unit_tests {
                 output_json: Some(json!({"ok": true})),
                 artifacts: vec![],
                 chronicle_stage_bundle: None,
+                historical_scope_authority_basis: None,
             },
         )
         .expect("finish task");

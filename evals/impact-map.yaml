@@ -193,6 +193,15 @@ rules:
       - src/features/narrative-extraction/source/canonicalJsonNumberParity.test.ts
       - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
       - src/features/narrative-extraction/source/scopeAuthorityBasisV2.contract.test.ts
+      - src/features/narrative-extraction/source/types.ts
+      - src/features/tree/api.ts
+      - src/features/tree/api.listProjection.test.ts
+      - src/application/narrative-extraction/nativeApi.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - electron/shared/ipcContract.ts
+      - electron/shared/ipcContract.test.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/tests/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
@@ -222,6 +231,7 @@ rules:
       - src/application/narrative-extraction/extractionCoordinator.ts
       - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
@@ -241,6 +251,7 @@ rules:
       - electron/main/narrativeMaintenanceTriggers.ts
       - electron/main/narrativeMaintenanceTriggers.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - scripts/quality/validate-semantic-core-boundary.mjs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
     requirements:

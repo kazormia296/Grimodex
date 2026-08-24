@@ -3,6 +3,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use grimodex_core::narrative_scope_authority_basis::NarrativeScopeAuthorityBasisV2;
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateRunPayload {
@@ -73,6 +75,11 @@ pub struct FinishTaskPayload {
     /// companion contract and cannot be inferred from artifact JSON.
     #[serde(default)]
     pub chronicle_stage_bundle: Option<ChronicleStageC1ExecutionBinding>,
+    /// Typed historical Scope-authority companion. Generic ArtifactInput JSON
+    /// cannot mint its reserved artifact kind; Native re-derives this value
+    /// from the durable Run and project tree before persistence.
+    #[serde(default)]
+    pub historical_scope_authority_basis: Option<NarrativeScopeAuthorityBasisV2>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

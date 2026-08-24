@@ -2327,6 +2327,7 @@ fn generic_task_apis_cannot_take_over_the_system_owned_freshness_lifecycle() {
             output_json: Some(serde_json::json!({ "forged": true })),
             artifacts: Vec::new(),
             chronicle_stage_bundle: None,
+            historical_scope_authority_basis: None,
         },
     )
     .expect_err("generic finish must be denied");

@@ -376,17 +376,16 @@
       "type": "object",
       "required": ["state", "productionEntryPoints", "blockedOn"],
       "properties": {
-        "state": { "const": "declared" },
+        "state": { "const": "shadow" },
         "productionEntryPoints": {
-          "type": "array",
-          "maxItems": 0,
-          "uniqueItems": true,
-          "items": { "$ref": "#/$defs/nonEmptyString" }
+          "const": [
+            "runChronicleExtractionCoordinator",
+            "persist_historical_scope_authority_basis_in_tx",
+            "load_historical_scope_authority_basis"
+          ]
         },
         "blockedOn": {
           "const": [
-            "native-scope-authority-basis-producer",
-            "native-scope-authority-basis-resolver",
             "c2b-scope-override-wiring",
             "project-scope-order-authority"
           ]

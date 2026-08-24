@@ -33,7 +33,7 @@ function readArtifactPolicy() {
   );
 }
 
-test("declares historical scope authority as future-only and stopped", () => {
+test("declares historical scope authority as shadow-only and stopped", () => {
   const historical = readScopePolicy().historicalAuthorityBasis;
   assert.deepEqual(historical, {
     contractId: "narrative-scope-authority-basis/2",
@@ -50,14 +50,13 @@ test("declares historical scope authority as future-only and stopped", () => {
       rebuildRequired: true,
     },
     implementationStatus: {
-      state: "declared",
-      productionEntryPoints: [],
-      blockedOn: [
-        "native-scope-authority-basis-producer",
-        "native-scope-authority-basis-resolver",
-        "c2b-scope-override-wiring",
-        "project-scope-order-authority",
+      state: "shadow",
+      productionEntryPoints: [
+        "runChronicleExtractionCoordinator",
+        "persist_historical_scope_authority_basis_in_tx",
+        "load_historical_scope_authority_basis",
       ],
+      blockedOn: ["c2b-scope-override-wiring", "project-scope-order-authority"],
     },
   });
 });

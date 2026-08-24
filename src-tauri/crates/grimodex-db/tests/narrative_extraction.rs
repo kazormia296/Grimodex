@@ -660,6 +660,7 @@ fn finish_task_rejects_after_lease_expiry() {
             output_json: Some(json!({ "ok": true })),
             artifacts: vec![],
             chronicle_stage_bundle: None,
+            historical_scope_authority_basis: None,
         },
     )
     .expect_err("finish must reject expired lease");
@@ -1523,6 +1524,7 @@ fn get_run_review_bundle_returns_artifacts_proposals_and_latest_decision() {
                 },
             ],
             chronicle_stage_bundle: None,
+            historical_scope_authority_basis: None,
         },
     )
     .expect("finish with artifacts");

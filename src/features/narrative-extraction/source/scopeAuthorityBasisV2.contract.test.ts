@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { digestStableJson } from "./digest";
 import type { Sha256Digest } from "./types";
 import {
+  buildNarrativeScopeAuthorityBasisV2,
   canonicalNarrativeSourceSnapshotRevisionInput,
   canonicalReadingOrderRevisionInput,
   canonicalScopeAuthorityDigestInput,
@@ -328,5 +329,82 @@ describe("NIR-0 scope authority basis v2 schema contract", () => {
     };
 
     await expect(pending).resolves.toEqual(fixture.digests);
+  });
+
+  it("builds the shared golden with exact raw keys, duplicate ambiguity, and UTF-16 ranks", async () => {
+    const built = await buildNarrativeScopeAuthorityBasisV2({
+      projectId: "project-a",
+      runId: "run-a",
+      corpusDigest: fixture.digests.corpusDigest,
+      documents: [
+        {
+          documentRef: "D000001",
+          sourceKey: "project:scene:\uE000",
+          rawStoryKey: "\uE000",
+        },
+        {
+          documentRef: "D000002",
+          sourceKey: "project:scene:\uD83D\uDE00",
+          rawStoryKey: "\uD83D\uDE00",
+        },
+        {
+          documentRef: "D000003",
+          sourceKey: "project:scene:scene-three",
+          rawStoryKey: null,
+        },
+        {
+          documentRef: "D000004",
+          sourceKey: "project:scene:scene-four",
+          rawStoryKey: "b0",
+        },
+        {
+          documentRef: "D000005",
+          sourceKey: "project:scene:scene-five",
+          rawStoryKey: "b0",
+        },
+      ],
+    });
+
+    expect(built).toEqual(fixture);
+    expect(Object.isFrozen(built)).toBe(true);
+    expect(Object.isFrozen(built.mappings)).toBe(true);
+    const validate = compileSchema();
+    expect(validate(built), JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it("rejects malformed derived identities and raw story keys instead of normalizing them", async () => {
+    const valid = {
+      projectId: "project-a",
+      runId: "run-a",
+      corpusDigest: fixture.digests.corpusDigest,
+      documents: [
+        {
+          documentRef: "D000001",
+          sourceKey: "project:scene:scene-one" as const,
+          rawStoryKey: "story-1",
+        },
+      ],
+    };
+
+    await expect(
+      buildNarrativeScopeAuthorityBasisV2({
+        ...valid,
+        documents: [{ ...valid.documents[0], documentRef: "D000002" }],
+      }),
+    ).rejects.toThrow("documentRef");
+    await expect(
+      buildNarrativeScopeAuthorityBasisV2({
+        ...valid,
+        documents: [{ ...valid.documents[0], rawStoryKey: " story-1" }],
+      }),
+    ).rejects.toThrow("rawStoryKey");
+    await expect(
+      buildNarrativeScopeAuthorityBasisV2({
+        ...valid,
+        documents: [
+          { ...valid.documents[0], sourceKey: "project:scene:\ud800" },
+        ],
+      }),
+    ).rejects.toThrow("sourceKey scene id");
   });
 });

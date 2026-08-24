@@ -1,4 +1,6 @@
-import { digestStableJson } from "./digest";
+import { isContractTrimmedNonEmptyString } from "@/features/narrative-semantic-core/contracts/contractString";
+import { digestStableJson, hasLoneSurrogate } from "./digest";
+import { freezeDeep } from "./immutability";
 import type { Sha256Digest } from "./types";
 
 export const NARRATIVE_SCOPE_AUTHORITY_BASIS_V2_CONTRACT_ID =
@@ -82,6 +84,21 @@ export interface NarrativeScopeAuthorityBasisContentV2 {
 
 export interface NarrativeScopeAuthorityBasisV2 extends NarrativeScopeAuthorityBasisContentV2 {
   readonly digests: NarrativeScopeAuthorityDigestsV2;
+}
+
+export interface NarrativeScopeAuthorityDocumentInputV2 {
+  readonly documentRef: string;
+  readonly sourceKey: `project:scene:${string}`;
+  /** Persisted value exactly as stored; this contract never trims or normalizes it. */
+  readonly rawStoryKey: string | null;
+}
+
+export interface BuildNarrativeScopeAuthorityBasisV2Input {
+  readonly projectId: string;
+  readonly runId: string;
+  readonly corpusDigest: Sha256Digest;
+  /** Snapshot document order is the authoritative reading order. */
+  readonly documents: readonly NarrativeScopeAuthorityDocumentInputV2[];
 }
 
 export type NarrativeScopeRegistryRevisionInput = {
@@ -293,6 +310,135 @@ async function computeNarrativeScopeAuthorityBasisDigestsFromContent(
     authorityDigest,
     compositeDigest,
   };
+}
+
+const SOURCE_KEY_PREFIX = "project:scene:" as const;
+const SHA256_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+
+function assertContractString(label: string, value: string): void {
+  if (!isContractTrimmedNonEmptyString(value) || hasLoneSurrogate(value)) {
+    throw new TypeError(`${label} must be a contract string`);
+  }
+}
+
+/**
+ * Build the historical scope/order authority captured by one sealed corpus.
+ *
+ * This is intentionally a small typed constructor, not a generic JSON
+ * validator. The JSON Schema and Native reader remain the untrusted-boundary
+ * validators; this function only derives the closed production shape.
+ */
+export async function buildNarrativeScopeAuthorityBasisV2(
+  input: BuildNarrativeScopeAuthorityBasisV2Input,
+): Promise<NarrativeScopeAuthorityBasisV2> {
+  assertContractString("projectId", input.projectId);
+  assertContractString("runId", input.runId);
+  if (!SHA256_DIGEST_PATTERN.test(input.corpusDigest)) {
+    throw new TypeError("corpusDigest must be a canonical SHA-256 digest");
+  }
+  if (input.documents.length < 1 || input.documents.length > 999_999) {
+    throw new RangeError(
+      "scope authority basis requires between 1 and 999999 documents",
+    );
+  }
+
+  const sourceKeys = new Set<string>();
+  const rawStoryKeyCounts = new Map<string, number>();
+  const prepared = input.documents.map((document, readingRank) => {
+    const expectedDocumentRef = `D${String(readingRank + 1).padStart(6, "0")}`;
+    if (document.documentRef !== expectedDocumentRef) {
+      throw new TypeError(
+        `documentRef at reading rank ${readingRank} must be ${expectedDocumentRef}`,
+      );
+    }
+    if (!document.sourceKey.startsWith(SOURCE_KEY_PREFIX)) {
+      throw new TypeError("sourceKey must use the project:scene: namespace");
+    }
+    const sceneId = document.sourceKey.slice(SOURCE_KEY_PREFIX.length);
+    assertContractString("sourceKey scene id", sceneId);
+    if (sourceKeys.has(document.sourceKey)) {
+      throw new TypeError(`duplicate sourceKey: ${document.sourceKey}`);
+    }
+    sourceKeys.add(document.sourceKey);
+
+    if (document.rawStoryKey !== null) {
+      assertContractString("rawStoryKey", document.rawStoryKey);
+      rawStoryKeyCounts.set(
+        document.rawStoryKey,
+        (rawStoryKeyCounts.get(document.rawStoryKey) ?? 0) + 1,
+      );
+    }
+
+    return {
+      documentRef: document.documentRef,
+      sourceKey: document.sourceKey,
+      sceneId,
+      readingRank,
+      rawStoryKey: document.rawStoryKey,
+    };
+  });
+
+  const uniqueStoryRanks = new Map(
+    [...rawStoryKeyCounts]
+      .filter(([, count]) => count === 1)
+      .map(([rawStoryKey]) => rawStoryKey)
+      .sort(compareUtf16)
+      .map((rawStoryKey, storyRank) => [rawStoryKey, storyRank] as const),
+  );
+  const requireUniqueStoryRank = (rawStoryKey: string): number => {
+    const storyRank = uniqueStoryRanks.get(rawStoryKey);
+    if (storyRank === undefined) {
+      throw new Error(`missing unique Story rank: ${rawStoryKey}`);
+    }
+    return storyRank;
+  };
+  const content = freezeDeep<NarrativeScopeAuthorityBasisContentV2>({
+    schemaVersion: NARRATIVE_SCOPE_AUTHORITY_BASIS_V2_SCHEMA_VERSION,
+    contractId: NARRATIVE_SCOPE_AUTHORITY_BASIS_V2_CONTRACT_ID,
+    basisKind: NARRATIVE_SCOPE_AUTHORITY_BASIS_V2_KIND,
+    projectId: input.projectId,
+    source: {
+      sourceKind: NARRATIVE_SCOPE_AUTHORITY_SOURCE_KIND,
+      sourceKey: `snapshot:${input.runId}`,
+    },
+    scopeRegistry: {
+      registryVersion: NARRATIVE_SCOPE_REGISTRY_VERSION,
+      reservedAudienceRefs: [
+        NARRATIVE_SCOPE_AUTHORITY_RESERVED_AUDIENCE_REFS[0],
+      ],
+    },
+    mappings: prepared.map((document) => ({
+      documentRef: document.documentRef,
+      sourceKey: document.sourceKey,
+      sceneRef: `scene:${document.sceneId}`,
+      readingOrderRef: `reading:${document.sceneId}`,
+      storyTimeRef: `story:${document.sceneId}`,
+      readingRank: document.readingRank,
+      storyTimeOrder:
+        document.rawStoryKey === null
+          ? {
+              status: "unresolved",
+              reason: "not-provided",
+              rawStoryKey: null,
+            }
+          : rawStoryKeyCounts.get(document.rawStoryKey) !== 1
+            ? {
+                status: "unresolved",
+                reason: "ambiguous",
+                rawStoryKey: document.rawStoryKey,
+              }
+            : {
+                status: "resolved",
+                rawStoryKey: document.rawStoryKey,
+                storyRank: requireUniqueStoryRank(document.rawStoryKey),
+              },
+    })),
+  });
+  const digests = await computeNarrativeScopeAuthorityBasisDigestsFromContent(
+    content,
+    input.corpusDigest,
+  );
+  return freezeDeep({ ...content, digests });
 }
 
 export async function computeNarrativeScopeAuthorityBasisDigests(

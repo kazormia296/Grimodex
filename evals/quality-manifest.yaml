@@ -461,6 +461,11 @@ requirements:
       - src/features/narrative-semantic-core/contracts/dependencyRole.ts
       - src/features/narrative-extraction/source/digest.ts
       - src/features/narrative-extraction/source/scopeAuthorityBasisV2.ts
+      - src/features/narrative-extraction/source/types.ts
+      - src/features/tree/api.ts
+      - src/application/narrative-extraction/nativeApi.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.ts
+      - electron/shared/ipcContract.ts
       - src-tauri/crates/grimodex-core/src/canonical_json.rs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
       - src-tauri/crates/grimodex-core/src/narrative_dependency.rs
@@ -486,6 +491,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scope_authority_runtime.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
@@ -535,8 +541,13 @@ requirements:
       - src/features/narrative-extraction/reconciler/stageProvenance.test.ts
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
+      - src/features/tree/api.listProjection.test.ts
+      - src/application/narrative-extraction/projectSnapshotAdapter.test.ts
+      - src/application/narrative-extraction/extractionCoordinator.test.ts
+      - electron/shared/ipcContract.test.ts
       - scripts/quality/validate-execution-state-authority.test.mjs
       - src-tauri/crates/grimodex-db/tests/narrative_maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/tests/narrative_scope_authority_runtime.rs
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs

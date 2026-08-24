@@ -12,6 +12,10 @@ import type {
   NarrativeSourceView,
   Sha256Digest,
 } from "@/features/narrative-extraction/source/types";
+import {
+  buildNarrativeScopeAuthorityBasisV2,
+  type NarrativeScopeAuthorityBasisV2,
+} from "@/features/narrative-extraction/source/scopeAuthorityBasisV2";
 import { clusterEventObservations } from "@/features/chronicle/extraction/eventClustering";
 import { chronicleEvidenceTupleKey } from "@/features/chronicle/extraction/evidenceTupleKey";
 import { mergeObservationsByEvidence } from "@/features/chronicle/extraction/observationMerger";
@@ -843,6 +847,25 @@ export async function runChronicleExtractionCoordinator(
   });
 
   const runId = createdRun.runId;
+  let historicalScopeAuthorityBasis: NarrativeScopeAuthorityBasisV2 | undefined;
+  try {
+    historicalScopeAuthorityBasis =
+      snapshotResult.scopeAuthorityDocuments.length === 0
+        ? undefined
+        : await buildNarrativeScopeAuthorityBasisV2({
+            projectId: request.projectId,
+            runId,
+            corpusDigest: snapshotResult.snapshot.digest,
+            documents: snapshotResult.scopeAuthorityDocuments,
+          });
+  } catch (error) {
+    try {
+      await cancelRun(runId, request.projectId);
+    } catch {
+      // Prefer the invalid historical authority failure; cancel is best-effort.
+    }
+    throw error;
+  }
   let savedProposalSetId: string | undefined;
   let savedProposals: readonly SavedProposalSeed[] = [];
 
@@ -891,6 +914,9 @@ export async function runChronicleExtractionCoordinator(
             documentCount: snapshotResult.snapshot.documents.length,
           },
           artifacts: [snapshotDraft.artifactInput],
+          ...(historicalScopeAuthorityBasis
+            ? { historicalScopeAuthorityBasis }
+            : {}),
         });
         continue;
       }

@@ -930,6 +930,33 @@ describe("toErrorString", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("dispatchInvoke", () => {
+  it("forwards the typed historical Scope-authority companion unchanged", async () => {
+    const { backend, calls } = fakeBackend();
+    const payload = {
+      runId: "run-scope-runtime",
+      projectId: "project-scope-runtime",
+      taskId: "task-scope-runtime",
+      attemptId: "attempt-scope-runtime",
+      leaseOwner: "scope-runtime-test",
+      historicalScopeAuthorityBasis: {
+        schemaVersion: 2,
+        contractId: "narrative-scope-authority-basis/2",
+        source: { sourceKey: "snapshot:run-scope-runtime" },
+      },
+    };
+
+    const result = await dispatchInvoke(
+      "narrative_extraction_finish_task",
+      { payload },
+      { backend, shell: noShell },
+    );
+
+    expect(result).toMatchObject({ ok: true });
+    expect(calls).toEqual([
+      { method: "narrativeExtractionFinishTask", args: [payload] },
+    ]);
+  });
+
   it("未知コマンドは IPC_UNIMPLEMENTED: マーカー付き envelope", async () => {
     const { backend } = fakeBackend();
     const command = "definitely_unknown_command";
