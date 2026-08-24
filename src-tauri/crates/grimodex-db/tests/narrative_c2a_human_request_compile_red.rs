@@ -379,13 +379,8 @@ fn fixture_db_for_payload_kind(
     let envelope_json = canonical_json_string(&envelope).expect("canonical parent Envelope");
     let envelope_digest = digest(&envelope);
     let payload_json = canonical_json_string(&parent_payload).expect("canonical proposal");
-    let read_set_json = serde_json::to_string(&json!([{
-        "inputRef": source_key(),
-        "kind": "snapshot-document",
-        "sourceKind": "scene-body",
-        "revisionToken": source_revision_token.clone()
-    }]))
-    .expect("parent read set JSON");
+    let read_set_json =
+        serde_json::to_string(&vec![source_revision_token.clone()]).expect("parent read set JSON");
 
     db.with_conn(|conn| {
         conn.execute(
