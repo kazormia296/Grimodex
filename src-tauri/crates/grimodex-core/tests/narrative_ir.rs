@@ -133,6 +133,48 @@ fn valid_envelope() -> Value {
     })
 }
 
+fn human_derived_envelope() -> Value {
+    let mut envelope = valid_envelope();
+    let basis = envelope
+        .get_mut("revisionBasis")
+        .and_then(Value::as_object_mut)
+        .expect("interpretation revision basis");
+    basis.remove("producer");
+    basis.insert("kind".to_owned(), json!("human-derived"));
+    basis.insert("parentRevisionId".to_owned(), json!("revision:1"));
+    basis.insert("expectedParentEnvelopeDigest".to_owned(), json!(DIGEST));
+    basis.insert("parentAssertionDigest".to_owned(), json!(DIGEST));
+    basis.insert(
+        "rootInterpretationRevisionId".to_owned(),
+        json!("revision:1"),
+    );
+    basis.insert(
+        "derivation".to_owned(),
+        json!({
+            "adapterId": "chronicle.scene-event",
+            "adapterVersion": "1",
+            "kind": "projection-only",
+            "proposalPayloadChangedPaths": ["/title"]
+        }),
+    );
+    basis.insert(
+        "revisionActor".to_owned(),
+        json!({"kind": "human", "surfaceId": "chronicle-review"}),
+    );
+    basis.insert(
+        "derivationContextSet".to_owned(),
+        json!([{
+            "contextId": "context:1",
+            "inputRef": "anchor:1",
+            "stageId": "narrative_event_synthesize",
+            "exposure": "author-supplied",
+            "selector": {"kind": "whole-source"}
+        }]),
+    );
+    basis.insert("derivationContextSetDigest".to_owned(), json!(DIGEST));
+    envelope
+}
+
 #[test]
 fn validates_scope_and_reuses_k0_for_canonical_bytes_and_digest() {
     let scope = valid_scope();
@@ -271,6 +313,36 @@ fn validates_envelope_and_rejects_unknown_vocabularies_and_add_targets() {
     candidate["assertion"]["payload"]["observationSummaries"][0]["durationKind"] =
         json!("unbounded");
     assert!(validate_chronicle_scene_event_v2(&candidate).is_err());
+}
+
+#[test]
+fn applies_basis_specific_chronicle_producer_contracts() {
+    let human = human_derived_envelope();
+    assert!(
+        validate_chronicle_scene_event_v2(&human).is_ok(),
+        "Human-derived revisionBasis intentionally omits producer"
+    );
+
+    let mut human_with_producer = human_derived_envelope();
+    human_with_producer["revisionBasis"]["producer"] = json!({
+        "kind": "reconciler-proposal",
+        "id": "reconciler-run-42",
+        "version": "2026-08"
+    });
+    assert!(
+        validate_chronicle_scene_event_v2(&human_with_producer).is_err(),
+        "Human-derived revisionBasis must reject a producer claim"
+    );
+
+    let mut interpretation_without_producer = valid_envelope();
+    interpretation_without_producer["revisionBasis"]
+        .as_object_mut()
+        .expect("interpretation revision basis")
+        .remove("producer");
+    assert!(
+        validate_chronicle_scene_event_v2(&interpretation_without_producer).is_err(),
+        "model-derived revisionBasis must retain its producer requirement"
+    );
 }
 
 #[test]

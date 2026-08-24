@@ -925,6 +925,22 @@ fn observation_payload() -> Value {
     })
 }
 
+fn raw_observations(local_ids: &[&str]) -> Value {
+    let observations = local_ids
+        .iter()
+        .map(|local_id| {
+            let mut observation = observation_payload();
+            observation["localId"] = Value::String((*local_id).to_owned());
+            observation
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "kind": "chronicle.raw-observations@1",
+        "version": 1,
+        "observations": observations
+    })
+}
+
 fn model_binding() -> Value {
     json!({
         "kind": MODEL_BINDING_KIND,
@@ -1150,21 +1166,8 @@ fn finish_bundle(
     attempt_id: &str,
     closure: Value,
 ) -> anyhow::Result<Value> {
-    let raw_observations = json!({
-        "kind": "chronicle.raw-observations@1",
-        "version": 1,
-        "observations": [observation_payload()]
-    });
-    finish_bundle_with_raw(
-        db,
-        run_id,
-        task_id,
-        attempt_id,
-        closure,
-        raw_observations,
-        None,
-        None,
-    )
+    let raw = raw_observations(&["observation:arrival"]);
+    finish_bundle_with_raw(db, run_id, task_id, attempt_id, closure, raw, None, None)
 }
 
 fn finish_bundle_with_raw(
@@ -1177,20 +1180,16 @@ fn finish_bundle_with_raw(
     output_closure_digest: Option<&str>,
     raw_payload_digest: Option<&str>,
 ) -> anyhow::Result<Value> {
-    let closure_digest = closure["stageProvenanceClosureDigest"]
-        .as_str()
-        .expect("closure digest")
-        .to_owned();
-    let typed_closure: ChronicleStageProvenanceClosure =
-        serde_json::from_value(closure).expect("typed ephemeral closure");
-    let output = json!({
-        "kind": "chronicle.event-synthesis-output@1",
-        "observationCount": 1,
-        "eventCount": 1,
-        "observationRefs": ["observation:arrival"],
-        "stageProvenanceClosureDigest": output_closure_digest
-            .map_or_else(|| closure["stageProvenanceClosureDigest"].clone(), |digest| json!(digest))
-    });
+    let observation_refs = raw_observations["observations"]
+        .as_array()
+        .expect("raw observations")
+        .iter()
+        .map(|observation| observation["localId"].clone())
+        .collect::<Vec<_>>();
+    let observation_count = raw_observations["observations"]
+        .as_array()
+        .expect("raw observations")
+        .len() as u64;
     let raw_artifact = artifact(
         &format!("{task_id}-raw-observations"),
         "chronicle.raw-observations@1",
@@ -1199,6 +1198,44 @@ fn finish_bundle_with_raw(
     let raw_artifact = raw_payload_digest.map_or(raw_artifact, |payload_digest| ArtifactInput {
         payload_digest: Some(payload_digest.to_owned()),
         ..raw_artifact
+    });
+    finish_bundle_with_artifacts(
+        db,
+        run_id,
+        task_id,
+        attempt_id,
+        closure,
+        observation_count,
+        Value::Array(observation_refs),
+        vec![raw_artifact],
+        output_closure_digest,
+    )
+}
+
+fn finish_bundle_with_artifacts(
+    db: &Database,
+    run_id: &str,
+    task_id: &str,
+    attempt_id: &str,
+    closure: Value,
+    observation_count: u64,
+    observation_refs: Value,
+    artifacts: Vec<ArtifactInput>,
+    output_closure_digest: Option<&str>,
+) -> anyhow::Result<Value> {
+    let closure_digest = closure["stageProvenanceClosureDigest"]
+        .as_str()
+        .expect("closure digest")
+        .to_owned();
+    let typed_closure: ChronicleStageProvenanceClosure =
+        serde_json::from_value(closure.clone()).expect("typed ephemeral closure");
+    let output = json!({
+        "kind": "chronicle.event-synthesis-output@1",
+        "observationCount": observation_count,
+        "eventCount": 1,
+        "observationRefs": observation_refs,
+        "stageProvenanceClosureDigest": output_closure_digest
+            .map_or_else(|| closure["stageProvenanceClosureDigest"].clone(), |digest| json!(digest))
     });
     narrative_extraction::narrative_extraction_finish_task(
         db,
@@ -1209,7 +1246,7 @@ fn finish_bundle_with_raw(
             attempt_id: attempt_id.to_owned(),
             lease_owner: "c2a-test-worker".to_owned(),
             output_json: Some(output),
-            artifacts: vec![raw_artifact],
+            artifacts,
             chronicle_stage_bundle: Some(ChronicleStageC1ExecutionBinding {
                 project_id: PROJECT_A.to_owned(),
                 run_id: run_id.to_owned(),
@@ -1762,6 +1799,161 @@ fn chronicle_synthesis_requires_native_raw_observation_digest() {
     assert_eq!(attempt_status, "running");
     assert_eq!(artifact_count, 0);
     assert_eq!(receipt_count, 0);
+}
+
+#[test]
+fn typed_stage_bundle_requires_exactly_one_native_raw_artifact() {
+    for case in ["extra-artifact", "missing-payload", "missing-digest"] {
+        let db = migrated_db();
+        let run_id = format!("run-stage-raw-shape-{case}");
+        let task_id = format!("task-stage-raw-shape-{case}");
+        create_run(&db, PROJECT_A, &run_id, &task_id);
+        let attempt_id = claim_task(&db, PROJECT_A, &run_id);
+        let closure = valid_stage_closure(
+            PROJECT_A,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            &context_set_digest(),
+            &component_contract_digest(),
+            &final_request_digest(),
+        );
+        let raw = raw_observations(&["observation:arrival"]);
+        let mut raw_artifact = artifact(
+            &format!("{task_id}-raw-observations"),
+            "chronicle.raw-observations@1",
+            raw,
+        );
+        let mut artifacts = vec![raw_artifact.clone()];
+        let expected_code = match case {
+            "extra-artifact" => {
+                artifacts.push(artifact(
+                    &format!("{task_id}-unexpected"),
+                    "chronicle.unexpected@1",
+                    json!({"unexpected": true}),
+                ));
+                "NEX_CHRONICLE_SYNTHESIS_COMPANION_INVALID"
+            }
+            "missing-payload" => {
+                raw_artifact.payload_json = None;
+                artifacts = vec![raw_artifact];
+                "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"
+            }
+            "missing-digest" => {
+                raw_artifact.payload_digest = None;
+                artifacts = vec![raw_artifact];
+                "NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"
+            }
+            _ => unreachable!("known raw artifact case"),
+        };
+        let error = finish_bundle_with_artifacts(
+            &db,
+            &run_id,
+            &task_id,
+            &attempt_id,
+            closure,
+            1,
+            json!(["observation:arrival"]),
+            artifacts,
+            None,
+        )
+        .expect_err("raw companion shape must fail closed");
+        assert!(
+            error.to_string().contains(expected_code),
+            "{case}: unexpected error: {error:#}"
+        );
+        let (task_status, attempt_status, artifact_count, receipt_count): (
+            String,
+            String,
+            i64,
+            i64,
+        ) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT t.status, a.status,
+                            (SELECT COUNT(*) FROM narrative_extraction_artifacts
+                              WHERE run_id = ?1 AND task_id = ?2),
+                            (SELECT COUNT(*) FROM narrative_extraction_stage_receipts
+                              WHERE run_id = ?1 AND task_id = ?2)
+                       FROM narrative_extraction_tasks t
+                       JOIN narrative_extraction_attempts a ON a.id = ?3
+                      WHERE t.id = ?2 AND t.run_id = ?1",
+                    rusqlite::params![run_id, task_id, attempt_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?)
+            })
+            .expect("read exact raw artifact rollback");
+        assert_eq!(task_status, "running");
+        assert_eq!(attempt_status, "running");
+        assert_eq!(artifact_count, 0);
+        assert_eq!(receipt_count, 0);
+    }
+}
+
+#[test]
+fn typed_stage_bundle_requires_observation_refs_exact_raw_local_id_set() {
+    let db = migrated_db();
+    let run_id = "run-stage-raw-cardinality";
+    let task_id = "task-stage-raw-cardinality";
+    create_run(&db, PROJECT_A, run_id, task_id);
+    let attempt_id = claim_task(&db, PROJECT_A, run_id);
+    let closure = valid_stage_closure(
+        PROJECT_A,
+        run_id,
+        task_id,
+        &attempt_id,
+        &context_set_digest(),
+        &component_contract_digest(),
+        &final_request_digest(),
+    );
+    let raw = raw_observations(&["observation:arrival", "observation:departure"]);
+    let raw_artifact = artifact(
+        &format!("{task_id}-raw-observations"),
+        "chronicle.raw-observations@1",
+        raw,
+    );
+    let error = finish_bundle_with_artifacts(
+        &db,
+        run_id,
+        task_id,
+        &attempt_id,
+        closure.clone(),
+        2,
+        json!(["observation:arrival"]),
+        vec![raw_artifact.clone()],
+        None,
+    )
+    .expect_err("one observationRef cannot claim two raw observations");
+    assert!(
+        error
+            .to_string()
+            .contains("NEX_CHRONICLE_RAW_OBSERVATIONS_INVALID"),
+        "unexpected cardinality error: {error:#}"
+    );
+
+    finish_bundle_with_artifacts(
+        &db,
+        run_id,
+        task_id,
+        &attempt_id,
+        closure,
+        2,
+        json!(["observation:arrival", "observation:departure"]),
+        vec![raw_artifact],
+        None,
+    )
+    .expect("exact raw localId set must finish atomically");
+    let artifact_count: i64 = db
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT COUNT(*) FROM narrative_extraction_artifacts
+                  WHERE run_id = ?1 AND task_id = ?2",
+                rusqlite::params![run_id, task_id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("read exact raw localId artifact");
+    assert_eq!(artifact_count, 1);
 }
 
 #[test]
