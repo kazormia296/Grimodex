@@ -622,10 +622,7 @@ describe("Narrative Scope Relation S2 contract", () => {
       "audience",
       "narrativeLayer",
     ];
-    const temporalAxes: readonly ScopeAxis[] = [
-      "storyTime",
-      "readingOrder",
-    ];
+    const temporalAxes: readonly ScopeAxis[] = ["storyTime", "readingOrder"];
     const interval = {
       kind: "interval",
       from: { ref: "story:1", inclusive: true },

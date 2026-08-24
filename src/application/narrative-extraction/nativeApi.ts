@@ -111,7 +111,9 @@ export interface ProposalSeed {
   readonly kind: string;
   readonly payloadJson: object;
   /** Optional V1 contract; omitted legacy revisions remain reviewable but cannot Apply. */
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
+  readonly reconciliationEnvelope?:
+    | ReconciliationEnvelopeV1
+    | ReconciliationEnvelopeV2<unknown>;
 }
 
 export interface SaveProposalSetPayload {
@@ -223,7 +225,9 @@ export interface AppendRevisionPayload {
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
   /** Optional V1 contract; omitted revisions are explicitly legacy-unbound. */
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
+  readonly reconciliationEnvelope?:
+    | ReconciliationEnvelopeV1
+    | ReconciliationEnvelopeV2<unknown>;
   /** Optional explicit CAS inheritance; omission never inherits implicitly. */
   readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */
@@ -261,7 +265,9 @@ export interface ReviseAndDecidePayload {
   readonly projectId: string;
   readonly proposalId: string;
   readonly payloadJson: Readonly<Record<string, unknown>>;
-  readonly reconciliationEnvelope?: ReconciliationEnvelopeV1 | ReconciliationEnvelopeV2<unknown>;
+  readonly reconciliationEnvelope?:
+    | ReconciliationEnvelopeV1
+    | ReconciliationEnvelopeV2<unknown>;
   /** Optional explicit CAS inheritance; omission never inherits implicitly. */
   readonly inheritReconciliationEnvelope?: ReconciliationEnvelopeInheritance;
   /** Must match Native `current_revision_id` (OCC). */

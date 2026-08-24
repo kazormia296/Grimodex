@@ -978,7 +978,9 @@ export async function runChronicleExtractionCoordinator(
             CHRONICLE_EXTRACT_ARTIFACT_KINDS.observations,
           );
         if (!originalObservationPayload) {
-          throw new Error("Missing original observations for proposal persistence");
+          throw new Error(
+            "Missing original observations for proposal persistence",
+          );
         }
         const mergedObservationPayload =
           await loadInlineJsonArtifact<ObservationArtifactPayload>(
@@ -991,7 +993,9 @@ export async function runChronicleExtractionCoordinator(
             CHRONICLE_EXTRACT_ARTIFACT_KINDS.hypotheses,
           );
         if (!mergedObservationPayload || !hypothesisPayload) {
-          throw new Error("Missing merged observations or hypotheses for proposal persistence");
+          throw new Error(
+            "Missing merged observations or hypotheses for proposal persistence",
+          );
         }
         const sourceBasis = buildSnapshotSourceBasis(
           runId,
@@ -1000,7 +1004,9 @@ export async function runChronicleExtractionCoordinator(
         const plannedRows = proposalPayload?.planned ?? [];
         const v2EnvelopeByProposalKey = new Map<
           string,
-          Awaited<ReturnType<typeof buildChronicleProductionV2Envelope>>["envelope"]
+          Awaited<
+            ReturnType<typeof buildChronicleProductionV2Envelope>
+          >["envelope"]
         >();
         let stageProvenanceBundle:
           | Awaited<ReturnType<typeof buildChronicleProductionV2Envelope>>

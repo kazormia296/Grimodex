@@ -166,7 +166,10 @@ describe("narrative dependency role contract", () => {
     const validCase = dependencyFixture.cases.find(
       (candidate) => candidate.id === "utf16-range-accepts-ascii-normalizer",
     )!;
-    expect(validateDependencySelector(validCase.selector), validCase.id).toEqual({
+    expect(
+      validateDependencySelector(validCase.selector),
+      validCase.id,
+    ).toEqual({
       valid: true,
       selector: validCase.selector,
     });

@@ -88,7 +88,8 @@ const snapshot = {
       parentRef: null,
       title: "Arrival",
       orderIndex: 0,
-      canonical: {} as NarrativeCorpusSnapshot["documents"][number]["canonical"],
+      canonical:
+        {} as NarrativeCorpusSnapshot["documents"][number]["canonical"],
       contentDigest: DIGEST,
       documentDigest: DIGEST,
       artifactDigest: DIGEST,
@@ -128,11 +129,14 @@ async function receipts() {
     hypothesis.clusterRef,
     [observation],
   );
-  const contextDigest = await import(
-    "@/features/narrative-extraction/reconciler/chroniclePromptBuilder"
-  ).then(({ digestChronicleContextSet }) =>
-    digestChronicleContextSet(contextSet, NARRATIVE_STAGE_IDS.eventSynthesis),
-  );
+  const contextDigest =
+    await import("@/features/narrative-extraction/reconciler/chroniclePromptBuilder").then(
+      ({ digestChronicleContextSet }) =>
+        digestChronicleContextSet(
+          contextSet,
+          NARRATIVE_STAGE_IDS.eventSynthesis,
+        ),
+    );
   const model = createStageModelExecutionBindingV1({
     provider: "test",
     requestedModel: "test-model",
@@ -229,7 +233,8 @@ describe("Chronicle V2 production adapter boundary", () => {
         sourceBasis: buildSnapshotSourceBasis("run:production", snapshot),
         stageReceipts: stageReceipts.filter(
           (receipt) =>
-            receipt.stageExecution.stageId !== NARRATIVE_STAGE_IDS.eventSynthesis,
+            receipt.stageExecution.stageId !==
+            NARRATIVE_STAGE_IDS.eventSynthesis,
         ),
       }),
     ).rejects.toThrow("synthesis receipt");

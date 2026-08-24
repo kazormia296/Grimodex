@@ -252,14 +252,16 @@ function isNormalizerVersionToken(value: unknown): value is string {
   if (characters.length === 0 || !isAsciiAlphaNumeric(characters[0])) {
     return false;
   }
-  return characters.slice(1).every(
-    (character) =>
-      isAsciiAlphaNumeric(character) ||
-      character === "-" ||
-      character === "_" ||
-      character === "." ||
-      character === "/",
-  );
+  return characters
+    .slice(1)
+    .every(
+      (character) =>
+        isAsciiAlphaNumeric(character) ||
+        character === "-" ||
+        character === "_" ||
+        character === "." ||
+        character === "/",
+    );
 }
 
 function isDigest(value: unknown): value is string {

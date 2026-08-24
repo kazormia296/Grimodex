@@ -207,7 +207,10 @@ export interface SaveChronicleProposalSetInput {
       readonly revisionToken?: string;
     }
   >;
-  readonly v2EnvelopeByProposalKey?: ReadonlyMap<string, ReconciliationEnvelopeV2<unknown>>;
+  readonly v2EnvelopeByProposalKey?: ReadonlyMap<
+    string,
+    ReconciliationEnvelopeV2<unknown>
+  >;
   readonly stageProvenanceBundle?: Readonly<{
     readonly closure: unknown;
     readonly binding: unknown;
