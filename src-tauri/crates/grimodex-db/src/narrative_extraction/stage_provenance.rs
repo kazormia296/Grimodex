@@ -313,10 +313,13 @@ pub(crate) fn persist_chronicle_stage_bundle(
     ] {
         ensure_digest(digest, field)?;
     }
+    // The reserved raw-observation artifact has a Chronicle-specific digest
+    // contract. Validate that domain companion first so malformed Chronicle
+    // input cannot be reclassified as a generic artifact failure.
+    validate_chronicle_synthesis_companion(output_json, artifacts, &binding.closure)?;
     for artifact in artifacts {
         validate_artifact_digest(artifact)?;
     }
-    validate_chronicle_synthesis_companion(output_json, artifacts, &binding.closure)?;
     anyhow::ensure!(
         binding.closure.stage_provenance_closure_digest
             == binding.stage_provenance_closure_digest,
