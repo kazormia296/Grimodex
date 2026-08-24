@@ -15,7 +15,9 @@ use super::consumer_identity::{
 use super::dependency_edges::SOURCE_IDENTITY_PREFIXES;
 use super::finding_identity::bundled_finding_rule_registry;
 use super::legacy_backfill::LEGACY_DEPENDENCY_PRODUCER_GENERATION;
-use super::repository::PROPOSAL_REVISION_DEPENDENCY_GENERATION;
+use super::repository::{
+    PROPOSAL_REVISION_D1_PRODUCER_GENERATION, PROPOSAL_REVISION_DEPENDENCY_GENERATION,
+};
 
 const BUNDLED_PRODUCER_REGISTRY: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -27,13 +29,14 @@ const FINDING_RULE_DOMAIN: &str = "grimodex:narrative:finding-rule-registry:v1";
 const PRODUCER_GENERATION_DOMAIN: &str = "grimodex:narrative:producer-generation-set:v1";
 const CI_COORDINATE_MISMATCH_DOMAIN: &str = "grimodex:narrative:ci-coordinate-mismatch:v1";
 
-const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str)] = &[
+const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str, Option<i64>)] = &[
     (
         "proposal-revision-source-basis",
         "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs",
         "record_revision_dependency_edges_in_tx",
         PROPOSAL_REVISION_DEPENDENCY_GENERATION,
         PROPOSAL_REVISION_CONSUMER_KIND,
+        Some(PROPOSAL_REVISION_D1_PRODUCER_GENERATION),
     ),
     (
         "legacy-application-projection-dependency",
@@ -41,6 +44,7 @@ const EXPECTED_PRODUCER_WRITERS: &[(&str, &str, &str, &str, &str)] = &[
         "record_legacy_dependency_edges_in_tx",
         LEGACY_DEPENDENCY_PRODUCER_GENERATION,
         APPLICATION_CONSUMER_KIND,
+        None,
     ),
 ];
 
@@ -75,6 +79,8 @@ pub struct DependencyProducerEntry {
     pub id: String,
     pub writer: DependencyProducerWriter,
     pub generation: String,
+    #[serde(default)]
+    pub declaration_set_generation: Option<i64>,
     pub consumer_kind: String,
     pub declaration: String,
 }
@@ -111,11 +117,16 @@ impl DependencyProducerRegistry {
 
 /// Parse and validate the bundled V1 registry. Every entry is tied to a
 /// concrete writer symbol and a generation owned by the corresponding Rust
-/// writer path; malformed or incomplete registry data fails closed.
+/// writer path. The applicable D1 declaration-set generation is separately
+/// numeric and writer-owned; malformed or incomplete registry data fails
+/// closed.
 pub fn bundled_dependency_producer_registry() -> Result<DependencyProducerRegistry> {
-    let document: DependencyProducerRegistryDocument =
-        serde_json::from_str(BUNDLED_PRODUCER_REGISTRY)
-            .context("NEX_PRODUCER_REGISTRY_INVALID: bundled registry JSON")?;
+    parse_dependency_producer_registry(BUNDLED_PRODUCER_REGISTRY)
+}
+
+fn parse_dependency_producer_registry(registry_json: &str) -> Result<DependencyProducerRegistry> {
+    let document: DependencyProducerRegistryDocument = serde_json::from_str(registry_json)
+        .context("NEX_PRODUCER_REGISTRY_INVALID: bundled registry JSON")?;
     ensure!(
         document.schema_version == 1,
         "NEX_PRODUCER_REGISTRY_INVALID: unsupported schemaVersion {}",
@@ -158,7 +169,9 @@ pub fn bundled_dependency_producer_registry() -> Result<DependencyProducerRegist
             entry.id
         );
     }
-    for (id, module, symbol, generation, consumer_kind) in EXPECTED_PRODUCER_WRITERS {
+    for (id, module, symbol, generation, consumer_kind, declaration_set_generation) in
+        EXPECTED_PRODUCER_WRITERS
+    {
         let entry = document
             .entries
             .iter()
@@ -174,6 +187,10 @@ pub fn bundled_dependency_producer_registry() -> Result<DependencyProducerRegist
                 && entry.generation == *generation
                 && entry.consumer_kind == *consumer_kind,
             "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' does not match its Rust source contract"
+        );
+        ensure!(
+            entry.declaration_set_generation == *declaration_set_generation,
+            "NEX_PRODUCER_REGISTRY_INVALID: writer '{id}' declarationSetGeneration does not match its Rust source contract"
         );
         let source = match *module {
             "src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs" => {
@@ -479,8 +496,6 @@ mod tests {
 
         let error = parse_dependency_producer_registry(&document.to_string())
             .expect_err("a drifted D1 declaration generation must fail closed");
-        assert!(error
-            .to_string()
-            .contains("declarationSetGeneration"));
+        assert!(error.to_string().contains("declarationSetGeneration"));
     }
 }

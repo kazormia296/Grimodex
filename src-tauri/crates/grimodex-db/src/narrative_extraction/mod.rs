@@ -49,6 +49,7 @@ pub use maintenance_skip_evidence::{
     CompletedRunSkipReason, COMPLETED_RUN_SKIP_EVIDENCE_FIELD, REBUILD_RUN_KIND_CONTRACT_VERSION,
     VERIFY_RUN_KIND_CONTRACT_VERSION,
 };
+pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 mod human_derivation;
 mod models;
 mod phase_operations;

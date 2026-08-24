@@ -10,6 +10,7 @@
         "symbol": "record_revision_dependency_edges_in_tx"
       },
       "generation": "proposal-revision-dependency/v1",
+      "declarationSetGeneration": 1,
       "consumerKind": "proposal-revision",
       "declaration": "validated reconciliation-envelope sourceBasis rows"
     },

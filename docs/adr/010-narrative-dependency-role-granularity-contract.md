@@ -420,6 +420,15 @@ Head version == expectedVersion
 同一または古いGenerationはHeadを上書きできない。同世代の並行実行も一方だけがCASに
 成功し、他方は再利用または明示的失敗となる。
 
+D1のProposal Revision writerは、V1互換Edgeの文字列
+`proposal-revision-dependency/v1`とは別に、sealed Declaration Set用の数値
+`declarationSetGeneration = 1`を予約する。これはwriter側のコンパイル済み
+`PROPOSAL_REVISION_D1_PRODUCER_GENERATION: i64`とregistryのcross-field validationで
+一致を確認し、`/v1`の解析、親Generationのコピー、Revision番号からの導出を行わない。
+Legacy Application producerはこのD1フィールドを宣言しない。この段階は契約のprelude
+だけをratifyし、child declarationのmaterialization、Current Revision promotion、
+Freshness初期化、その他のC2B activationを開始しない。
+
 ### 13. Declaration Set Digest
 
 V2 Declaration Set Digestは、正規化・ソート済みの次の組から計算する。

@@ -438,6 +438,7 @@ requirements:
       - policies/narrative/retrieval-disclosure.json
       - policies/narrative/narrative-scope-relation-contract.json
       - policies/narrative/narrative-dependency-role-registry.json
+      - policies/narrative/narrative-dependency-producer-registry.json
       - policies/narrative/fixtures/dependency-role-contract.json
       - policies/narrative/fixtures/canonical-json-number-parity.json
       - policies/narrative/narrative-finding-contract.json
@@ -447,6 +448,7 @@ requirements:
       - policies/narrative/schemas/retrieval-disclosure.schema.json
       - policies/narrative/schemas/narrative-scope-relation-contract.schema.json
       - policies/narrative/schemas/narrative-dependency-role-registry.schema.json
+      - policies/narrative/schemas/narrative-dependency-producer-registry.schema.json
       - policies/narrative/schemas/narrative-artifact-authority.schema.json
       - policies/narrative/schemas/narrative-ir-contract.schema.json
       - policies/narrative/schemas/narrative-finding-contract.schema.json
@@ -479,6 +481,8 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/terminal_failure.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_contracts.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/mod.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/task_leases.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/legacy_backfill.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/restore_rebuild.rs
@@ -525,6 +529,7 @@ requirements:
       - src/features/narrative-extraction/reconciler/v2Adapter.test.ts
       - src/application/narrative-extraction/aiTasks/chronicleStageAudit.test.ts
       - scripts/quality/validate-execution-state-authority.test.mjs
+      - src-tauri/crates/grimodex-db/tests/narrative_maintenance_contracts.rs
       - src-tauri/crates/grimodex-db/tests/narrative_terminal_failure_projection.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/execution_state.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/repository.rs

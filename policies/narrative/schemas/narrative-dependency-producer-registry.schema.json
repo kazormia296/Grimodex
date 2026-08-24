@@ -61,6 +61,10 @@
           "type": "string",
           "minLength": 1
         },
+        "declarationSetGeneration": {
+          "type": "integer",
+          "minimum": 1
+        },
         "consumerKind": {
           "type": "string",
           "minLength": 1
@@ -70,7 +74,34 @@
           "minLength": 1
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "id": { "const": "proposal-revision-source-basis" }
+            },
+            "required": ["id"]
+          },
+          "then": {
+            "required": ["declarationSetGeneration"],
+            "properties": {
+              "declarationSetGeneration": { "const": 1 }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": { "const": "legacy-application-projection-dependency" }
+            },
+            "required": ["id"]
+          },
+          "then": {
+            "not": { "required": ["declarationSetGeneration"] }
+          }
+        }
+      ]
     }
   },
   "additionalProperties": false

@@ -14,4 +14,7 @@ Dependency Role V2 contracts into production.
 - `narrative-dependency-producer-registry.schema.json` validates the bundled
   Rust Dependency Edge producer-generation registry. Its writer module and
   symbol fields are additionally checked against the compiled producer paths
-  by the shared `grimodex-db` validator.
+  by the shared `grimodex-db` validator. The Proposal Revision entry also
+  carries the numeric D1 `declarationSetGeneration` contract; its value is
+  checked against the writer-owned Rust `i64` constant, while other producers
+  remain without that field.

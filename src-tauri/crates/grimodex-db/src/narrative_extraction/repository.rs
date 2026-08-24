@@ -17,6 +17,11 @@ use super::execution_state::next_run_lifecycle_timestamp_in_tx;
 /// This is paired with the bundled producer registry; bump both when the
 /// writer's declaration semantics change.
 pub(crate) const PROPOSAL_REVISION_DEPENDENCY_GENERATION: &str = "proposal-revision-dependency/v1";
+
+/// Numeric producer generation reserved for a Proposal Revision's D1 sealed
+/// Declaration Set. This is intentionally separate from the V1 string
+/// generation above; C2B must not derive it by parsing or copying that value.
+pub const PROPOSAL_REVISION_D1_PRODUCER_GENERATION: i64 = 1;
 use super::field_authority::{derive_decision_authority, TrustedDecisionActor};
 use super::models::{
     default_object_json, AppendDecisionPayload, AppendRevisionPayload, ArtifactInput,
