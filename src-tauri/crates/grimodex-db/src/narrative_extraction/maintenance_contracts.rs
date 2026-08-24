@@ -464,4 +464,23 @@ mod tests {
             producer_generation_set_digest(&reordered).expect("reordered digest")
         );
     }
+
+    #[test]
+    fn proposal_revision_d1_generation_drift_fails_closed() {
+        let mut document: serde_json::Value =
+            serde_json::from_str(BUNDLED_PRODUCER_REGISTRY).expect("registry JSON");
+        document["entries"]
+            .as_array_mut()
+            .expect("entries")
+            .iter_mut()
+            .find(|entry| entry["id"] == "proposal-revision-source-basis")
+            .expect("proposal revision producer")["declarationSetGeneration"] =
+            serde_json::json!(2);
+
+        let error = parse_dependency_producer_registry(&document.to_string())
+            .expect_err("a drifted D1 declaration generation must fail closed");
+        assert!(error
+            .to_string()
+            .contains("declarationSetGeneration"));
+    }
 }

@@ -7,6 +7,7 @@
 use grimodex_db::narrative_extraction::maintenance_contracts::{
     bundled_dependency_producer_registry, current_maintenance_coordinates,
 };
+use grimodex_db::narrative_extraction::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
 use serde_json::Value;
 
 #[test]
@@ -59,6 +60,21 @@ fn bundled_producer_registry_is_traceable_to_current_writer_paths() {
         .entries()
         .iter()
         .all(|entry| !entry.generation.is_empty() && !entry.declaration.is_empty()));
+}
+
+#[test]
+fn proposal_revision_registry_declares_numeric_d1_generation_parity() {
+    let registry = bundled_dependency_producer_registry().expect("bundled producer registry");
+    let entry = registry
+        .entries()
+        .iter()
+        .find(|entry| entry.id == "proposal-revision-source-basis")
+        .expect("proposal revision producer");
+
+    assert_eq!(
+        entry.declaration_set_generation,
+        Some(PROPOSAL_REVISION_D1_PRODUCER_GENERATION)
+    );
 }
 
 #[test]
