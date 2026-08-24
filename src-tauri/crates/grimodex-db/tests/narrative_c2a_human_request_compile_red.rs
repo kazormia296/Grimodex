@@ -855,9 +855,14 @@ fn accepts_native_verified_human_request_and_persists_native_human_actor() {
         "Human writer must not promote current revision"
     );
     assert_eq!(
-        (after.1, after.2, after.3, after.4, after.5, after.6, after.7, after.8),
-        (before.1, before.2, before.3, before.4, before.5, before.6, before.7, before.8),
-        "Human writer must not initialize C2B state or child declarations/edges"
+        (after.1, after.2, after.3, after.4),
+        (before.1, before.2, before.3, before.4),
+        "Human writer must not initialize new C2B global state"
+    );
+    assert_eq!(
+        (after.5, after.6, after.7, after.8),
+        (0, 0, 0, 0),
+        "Human writer must not initialize child declarations or edges"
     );
 }
 
